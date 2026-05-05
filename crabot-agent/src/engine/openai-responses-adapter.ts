@@ -5,7 +5,7 @@
  */
 
 import type { LLMAdapter, LLMAdapterConfig, LLMStreamParams } from './llm-adapter-types.js'
-import { isToolResultMessage, extractText, buildImageUrl, readSSEEvents, wrapOnRetry } from './llm-adapter-types.js'
+import { isToolResultMessage, extractText, buildImageUrl, readSSEEvents, wrapOnRetry, capToolResultForLLM } from './llm-adapter-types.js'
 import type { EngineMessage, ToolDefinition, StreamChunk, ContentBlock } from './types.js'
 import { HttpResponseError, streamWithRetry } from './retry-utils.js'
 import { isMaterialChunk } from './stream-processor.js'
@@ -31,10 +31,11 @@ export function normalizeMessagesForResponses(messages: ReadonlyArray<EngineMess
     if (isToolResultMessage(msg)) {
       for (const tr of msg.toolResults) {
         const { callId } = splitEncodedToolId(tr.tool_use_id)
+        const capped = capToolResultForLLM(tr.content)
         result.push({
           type: 'function_call_output',
           call_id: callId,
-          output: tr.is_error ? `Error: ${tr.content}` : tr.content,
+          output: tr.is_error ? `Error: ${capped}` : capped,
         })
       }
       continue

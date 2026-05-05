@@ -10,6 +10,7 @@ import {
   createAdapter,
   type LLMAdapterConfig,
 } from '../../src/engine/llm-adapter'
+import { normalizeMessagesForResponses } from '../../src/engine/openai-responses-adapter'
 import type { StreamChunk } from '../../src/engine/types'
 import {
   createUserMessage,
@@ -267,6 +268,50 @@ describe('normalizeMessagesForAnthropic', () => {
       const content = normalized[0].content as unknown[]
       expect(content).toHaveLength(3)
     })
+  })
+})
+
+describe('adapter-side hard cap (9MB) for oversized tool results', () => {
+  // 上游编排层（tool-orchestration.ts）已有 256KB 软截断；这里验证 adapter 层的最后防线，
+  // 防御绕过编排层（如直接构造 EngineMessage）触发 OpenAI Responses 10MB 协议错误。
+  function makeHugeToolResultMessage(): EngineMessage {
+    return createToolResultMessage('huge_tu', 'x'.repeat(10_000_000), false)
+  }
+
+  it('Anthropic normalize caps oversized tool_result content', () => {
+    const msg = makeHugeToolResultMessage()
+    const result = normalizeMessagesForAnthropic([msg])
+    const toolResult = (result[0] as unknown as { content: Array<Record<string, unknown>> }).content[0]
+    const content = toolResult.content as string
+    expect(typeof content).toBe('string')
+    expect(Buffer.byteLength(content, 'utf8')).toBeLessThanOrEqual(9_000_000)
+    expect(content).toContain('adapter hard cap')
+  })
+
+  it('OpenAI normalize caps oversized tool message content', () => {
+    const msg = makeHugeToolResultMessage()
+    const result = normalizeMessagesForOpenAI([msg])
+    const content = (result[0] as { content: string }).content
+    expect(Buffer.byteLength(content, 'utf8')).toBeLessThanOrEqual(9_000_000)
+    expect(content).toContain('adapter hard cap')
+  })
+
+  it('OpenAI Responses normalize caps oversized function_call_output', () => {
+    const msg = makeHugeToolResultMessage()
+    const result = normalizeMessagesForResponses([msg])
+    const output = (result[0] as { output: string }).output
+    expect(Buffer.byteLength(output, 'utf8')).toBeLessThanOrEqual(9_000_000)
+    expect(output).toContain('adapter hard cap')
+  })
+
+  it('does not modify normal-sized tool results', () => {
+    const msg = createToolResultMessage('small_tu', 'small content', false)
+    const anth = normalizeMessagesForAnthropic([msg])
+    const toolResult = (anth[0] as unknown as { content: Array<Record<string, unknown>> }).content[0]
+    expect(toolResult.content).toBe('small content')
+
+    const oai = normalizeMessagesForOpenAI([msg])
+    expect((oai[0] as { content: string }).content).toBe('small content')
   })
 })
 

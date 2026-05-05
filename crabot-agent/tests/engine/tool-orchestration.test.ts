@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { executeToolBatches, type ToolResultEntry } from '../../src/engine/tool-orchestration'
+import { executeToolBatches } from '../../src/engine/tool-orchestration'
 import { defineTool } from '../../src/engine/tool-framework'
 import type { ToolDefinition, ToolUseBlock } from '../../src/engine/types'
 
@@ -181,5 +181,45 @@ describe('executeToolBatches', () => {
     expect(results).toHaveLength(1)
     expect(results[0].is_error).toBe(true)
     expect(results[0].content).toContain('Tool not found: nonexistent_tool')
+  })
+
+  it('caps oversized tool output at 256KB to protect LLM context', async () => {
+    // 模拟一个忘记自截断的工具（如 MCP server 直接返回大文件）
+    const hugeOutputTool = defineTool({
+      name: 'huge_output',
+      description: 'Returns a 1MB string',
+      inputSchema: {},
+      isReadOnly: true,
+      call: async () => ({ output: 'x'.repeat(1_000_000), isError: false }),
+    })
+
+    const batches = [
+      { parallel: false, blocks: [makeBlock('huge_output', 'big1')] },
+    ]
+    const results = await executeToolBatches(batches, [hugeOutputTool])
+
+    expect(results).toHaveLength(1)
+    // stamp 加了时间戳头部，留余量
+    expect(Buffer.byteLength(results[0].content, 'utf8')).toBeLessThan(258_000)
+    expect(results[0].content).toContain('orchestration: tool output truncated')
+    expect(results[0].content).toContain('1000000 bytes') // 原始字节数
+  })
+
+  it('does not modify normal-sized tool output', async () => {
+    const normalTool = defineTool({
+      name: 'normal',
+      description: 'Returns a small string',
+      inputSchema: {},
+      isReadOnly: true,
+      call: async () => ({ output: 'small output', isError: false }),
+    })
+
+    const batches = [
+      { parallel: false, blocks: [makeBlock('normal', 'small1')] },
+    ]
+    const results = await executeToolBatches(batches, [normalTool])
+
+    expect(results[0].content).toContain('small output')
+    expect(results[0].content).not.toContain('truncated')
   })
 })

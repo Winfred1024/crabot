@@ -2,10 +2,47 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { defineTool } from '../tool-framework'
 import type { ToolDefinition } from '../types'
+import { byteLength } from '../byte-cap'
 
 const SKIP_DIRS = new Set(['node_modules', '.git', '.hg', '.svn', 'dist', '.next', '.cache'])
 
 const BINARY_CHECK_BYTES = 512
+
+// Grep 输出按 UTF-8 字节累加上限。命中行内容很长（K 线 / CSV / JSON 单行数 KB～MB）时，
+// 仅靠 head_limit（行数）无法兜住——必须按字节裁剪，否则会塞 N MB 进 toolResult。
+const MAX_OUTPUT_BYTES = 200_000
+
+function truncationHint(): string {
+  return (
+    `\n[truncated: hit ${MAX_OUTPUT_BYTES} byte cap. ` +
+    `用 glob 收窄文件类型 / 用 path 缩小搜索目录 / 降低 head_limit / 改用 count 模式。]`
+  )
+}
+
+/**
+ * 按 UTF-8 字节累加把 lines 收集成单字符串，超出 MAX_OUTPUT_BYTES / headLimit 即停。
+ * 三个 output_mode formatter 共用，确保截断行为一致。
+ */
+function joinWithCap(lines: Iterable<string>, headLimit: number): string {
+  const collected: string[] = []
+  let bytes = 0
+  let truncated = false
+
+  for (const line of lines) {
+    if (collected.length >= headLimit) break
+    const lineBytes = byteLength(line) + 1 // +1 for join newline
+    if (bytes + lineBytes > MAX_OUTPUT_BYTES) {
+      truncated = true
+      break
+    }
+    collected.push(line)
+    bytes += lineBytes
+  }
+
+  if (collected.length === 0) return 'No matches found'
+  const joined = collected.join('\n')
+  return truncated ? joined + truncationHint() : joined
+}
 
 function isBinaryBuffer(buffer: Buffer): boolean {
   const checkLength = Math.min(buffer.length, BINARY_CHECK_BYTES)
@@ -101,37 +138,32 @@ function searchFile(filePath: string, regex: RegExp): ReadonlyArray<MatchResult>
   return matches
 }
 
-function formatFilesWithMatches(
+function* uniqueFilePaths(
   allMatches: ReadonlyArray<ReadonlyArray<MatchResult>>,
-  headLimit: number
-): string {
+): Generator<string> {
   const seen = new Set<string>()
-  const result: string[] = []
-
-  for (const fileMatches of allMatches) {
-    if (result.length >= headLimit) break
-    if (fileMatches.length > 0) {
-      const fp = fileMatches[0].filePath
-      if (!seen.has(fp)) {
-        seen.add(fp)
-        result.push(fp)
-      }
-    }
-  }
-
-  return result.length > 0 ? result.join('\n') : 'No matches found'
-}
-
-function formatContent(
-  allMatches: ReadonlyArray<ReadonlyArray<MatchResult>>,
-  contextLines: number,
-  headLimit: number
-): string {
-  const outputLines: string[] = []
-
   for (const fileMatches of allMatches) {
     if (fileMatches.length === 0) continue
-    if (outputLines.length >= headLimit) break
+    const fp = fileMatches[0].filePath
+    if (seen.has(fp)) continue
+    seen.add(fp)
+    yield fp
+  }
+}
+
+function formatFilesWithMatches(
+  allMatches: ReadonlyArray<ReadonlyArray<MatchResult>>,
+  headLimit: number,
+): string {
+  return joinWithCap(uniqueFilePaths(allMatches), headLimit)
+}
+
+function* contentLines(
+  allMatches: ReadonlyArray<ReadonlyArray<MatchResult>>,
+  contextLines: number,
+): Generator<string> {
+  for (const fileMatches of allMatches) {
+    if (fileMatches.length === 0) continue
 
     const filePath = fileMatches[0].filePath
     const content = readFileIfText(filePath)
@@ -140,7 +172,6 @@ function formatContent(
     const lines = content.split('\n')
     const matchLineNumbers = new Set(fileMatches.map((m) => m.lineNumber))
 
-    // Collect all line numbers to display (matches + context)
     const displayLines = new Set<number>()
     for (const lineNum of matchLineNumbers) {
       const start = Math.max(1, lineNum - contextLines)
@@ -151,31 +182,35 @@ function formatContent(
     }
 
     const sortedLineNumbers = [...displayLines].sort((a, b) => a - b)
-
     for (const lineNum of sortedLineNumbers) {
-      if (outputLines.length >= headLimit) break
       const separator = matchLineNumbers.has(lineNum) ? ':' : '-'
-      outputLines.push(`${filePath}${separator}${lineNum}${separator}${lines[lineNum - 1]}`)
+      yield `${filePath}${separator}${lineNum}${separator}${lines[lineNum - 1]}`
     }
   }
+}
 
-  return outputLines.length > 0 ? outputLines.join('\n') : 'No matches found'
+function formatContent(
+  allMatches: ReadonlyArray<ReadonlyArray<MatchResult>>,
+  contextLines: number,
+  headLimit: number,
+): string {
+  return joinWithCap(contentLines(allMatches, contextLines), headLimit)
+}
+
+function* countLines(
+  allMatches: ReadonlyArray<ReadonlyArray<MatchResult>>,
+): Generator<string> {
+  for (const fileMatches of allMatches) {
+    if (fileMatches.length === 0) continue
+    yield `${fileMatches[0].filePath}:${fileMatches.length}`
+  }
 }
 
 function formatCount(
   allMatches: ReadonlyArray<ReadonlyArray<MatchResult>>,
-  headLimit: number
+  headLimit: number,
 ): string {
-  const result: string[] = []
-
-  for (const fileMatches of allMatches) {
-    if (result.length >= headLimit) break
-    if (fileMatches.length > 0) {
-      result.push(`${fileMatches[0].filePath}:${fileMatches.length}`)
-    }
-  }
-
-  return result.length > 0 ? result.join('\n') : 'No matches found'
+  return joinWithCap(countLines(allMatches), headLimit)
 }
 
 export function createGrepTool(cwd: string): ToolDefinition {

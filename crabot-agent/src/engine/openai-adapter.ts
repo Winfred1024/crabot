@@ -3,7 +3,7 @@
  */
 
 import type { LLMAdapter, LLMAdapterConfig, LLMStreamParams, LLMCallResponse } from './llm-adapter-types.js'
-import { isToolResultMessage, extractText, buildImageUrl, readSSELines, mergeConsecutiveUserMessages, wrapOnRetry } from './llm-adapter-types.js'
+import { isToolResultMessage, extractText, buildImageUrl, readSSELines, mergeConsecutiveUserMessages, wrapOnRetry, capToolResultForLLM } from './llm-adapter-types.js'
 import type { EngineMessage, ToolDefinition, StreamChunk, ContentBlock } from './types.js'
 import { HttpResponseError, streamWithRetry, withRetry } from './retry-utils.js'
 import { isMaterialChunk, parseToolInput } from './stream-processor.js'
@@ -66,7 +66,7 @@ export function normalizeMessagesForOpenAI(messages: ReadonlyArray<EngineMessage
   for (const msg of messages) {
     if (isToolResultMessage(msg)) {
       for (const tr of msg.toolResults) {
-        result.push({ role: 'tool', tool_call_id: tr.tool_use_id, content: tr.content })
+        result.push({ role: 'tool', tool_call_id: tr.tool_use_id, content: capToolResultForLLM(tr.content) })
       }
       continue
     }

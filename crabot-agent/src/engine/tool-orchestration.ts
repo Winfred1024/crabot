@@ -5,6 +5,7 @@ import type { HookExecutorContext } from '../hooks/types'
 import type { HookRegistry } from '../hooks/hook-registry'
 import { executeHooks } from '../hooks/hook-executor'
 import { stampToolResult, resolveTimezone } from '../utils/time'
+import { capWithMarker } from './byte-cap'
 
 export interface ToolResultEntry {
   readonly tool_use_id: string
@@ -21,6 +22,26 @@ export interface HookConfig {
 }
 
 const MAX_CONCURRENT = 10
+
+/**
+ * 工具结果统一字节兜底——任何工具（含 MCP / 第三方 / 未来新加的）若返回超大输出，
+ * 都在编排层硬截到 256KB。每个工具内部的截断（如 bash 100K / read 500K）是更友好的
+ * 软截断，但这里是 LLM context 层的最后保险——**不能让单个 toolResult > 几百 KB**：
+ *   - OpenAI Responses API 协议层 10MB 单字符串硬上限会让整轮 task fail
+ *   - >50KB 的 tool 输出对 LLM 推理也基本是噪声，应该走 Bash 摘要 / Read 截断查看
+ *
+ * 历史背景：曾在第 11 轮被 Grep 撞到 72MB 单条，触发 openai-responses HTTP 400
+ * `string_above_max_length`。修法选 256KB 是给单工具留出比 200KB（Grep 自截）稍宽的兜底空间。
+ */
+const MAX_TOOL_OUTPUT_BYTES = 256_000
+
+function capToolOutput(content: string): string {
+  const result = capWithMarker(content, MAX_TOOL_OUTPUT_BYTES, (originalBytes) =>
+    `\n\n[orchestration: tool output truncated from ${originalBytes} bytes to ${MAX_TOOL_OUTPUT_BYTES} bytes. ` +
+    `工具未自截断或单条超大，已强制裁剪。如需更多内容请改用更精确的查询参数 / 分页 / 文件读取。]`,
+  )
+  return result.content
+}
 
 export function extractFilePaths(input: Record<string, unknown>): string[] {
   const paths: string[] = []
@@ -108,7 +129,7 @@ async function executeSingleTool(
 
     return stampTiming({
       tool_use_id: block.id,
-      content: stamp(finalContent),
+      content: stamp(capToolOutput(finalContent)),
       ...(result.images !== undefined ? { images: result.images } : {}),
       is_error: result.isError,
     })

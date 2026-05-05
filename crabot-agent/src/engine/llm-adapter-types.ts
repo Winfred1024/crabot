@@ -9,6 +9,7 @@ import {
   isRetryableError,
   sleep,
 } from './retry-utils.js'
+import { capWithMarker } from './byte-cap.js'
 import type {
   EngineMessage,
   EngineToolResultMessage,
@@ -165,6 +166,18 @@ async function withStreamConsumptionRetry(
 
 export function isToolResultMessage(msg: EngineMessage): msg is EngineToolResultMessage {
   return msg.role === 'user' && 'toolResults' in msg
+}
+
+// Adapter-side hard cap：留 1MB 给 stamp / 序列化 metadata，避开 OpenAI Responses API
+// 单字符串 10MB 协议上限。正常路径下 tool-orchestration.ts 的 256KB 软截断会先生效；
+// 此处只接住绕过编排层的代码路径（如 sub-agent 直接构造 EngineMessage）。
+const TOOL_RESULT_HARD_CAP_BYTES = 9_000_000
+
+export function capToolResultForLLM(content: string): string {
+  return capWithMarker(content, TOOL_RESULT_HARD_CAP_BYTES, (originalBytes) =>
+    `\n\n[adapter hard cap: ${originalBytes} → ${TOOL_RESULT_HARD_CAP_BYTES} bytes. ` +
+    `若触发说明有路径绕过 orchestration 256KB 兜底。]`,
+  ).content
 }
 
 /** Extract concatenated text from content blocks */

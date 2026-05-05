@@ -14,7 +14,7 @@ import type {
 import { proxyManager } from 'crabot-shared'
 import type { LLMAdapter, LLMAdapterConfig, LLMStreamParams, LLMCallResponse } from './llm-adapter-types.js'
 import { streamWithRetry, withRetry } from './retry-utils.js'
-import { isToolResultMessage, mergeConsecutiveUserMessages, wrapOnRetry } from './llm-adapter-types.js'
+import { isToolResultMessage, mergeConsecutiveUserMessages, wrapOnRetry, capToolResultForLLM } from './llm-adapter-types.js'
 import { isMaterialChunk } from './stream-processor.js'
 import type { EngineMessage, ToolDefinition, StreamChunk, ContentBlock } from './types.js'
 
@@ -26,13 +26,14 @@ export function normalizeMessagesForAnthropic(messages: ReadonlyArray<EngineMess
       return {
         role: 'user',
         content: msg.toolResults.map((tr) => {
+          const capped = capToolResultForLLM(tr.content)
           if (tr.images?.length) {
             return {
               type: 'tool_result' as const,
               tool_use_id: tr.tool_use_id,
               is_error: tr.is_error,
               content: [
-                ...(tr.content ? [{ type: 'text' as const, text: tr.content }] : []),
+                ...(capped ? [{ type: 'text' as const, text: capped }] : []),
                 ...tr.images.map((img) => ({
                   type: 'image' as const,
                   source: {
@@ -47,7 +48,7 @@ export function normalizeMessagesForAnthropic(messages: ReadonlyArray<EngineMess
           return {
             type: 'tool_result' as const,
             tool_use_id: tr.tool_use_id,
-            content: tr.content,
+            content: capped,
             is_error: tr.is_error,
           }
         }),

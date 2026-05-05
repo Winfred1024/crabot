@@ -176,4 +176,41 @@ describe('createGrepTool', () => {
     expect(result.isError).toBe(true)
     expect(result.output).toContain('Invalid regex')
   })
+
+  it('truncates content output when total bytes exceed 200KB cap', async () => {
+    // 单行 1KB，写 500 行 → 500KB，远超 200KB cap
+    const longLine = 'x'.repeat(1024) + ' MATCH_ME'
+    const lines = Array.from({ length: 500 }, () => longLine)
+    fs.writeFileSync(path.join(tmpDir, 'src', 'huge.txt'), lines.join('\n'))
+
+    const result = await tool.call(
+      { pattern: 'MATCH_ME', output_mode: 'content', head_limit: 10000 },
+      {},
+    )
+
+    expect(result.isError).toBe(false)
+    expect(Buffer.byteLength(result.output, 'utf8')).toBeLessThanOrEqual(220_000) // hint 末尾留点 buffer
+    expect(result.output).toContain('truncated')
+    expect(result.output).toContain('hit')
+  })
+
+  it('truncates count mode output when too many files', async () => {
+    // 长文件名 + 大量文件，count 模式也能触发
+    fs.mkdirSync(path.join(tmpDir, 'big'), { recursive: true })
+    for (let i = 0; i < 5000; i++) {
+      const longName = `file-with-very-long-name-to-eat-bytes-${i.toString().padStart(8, '0')}.txt`
+      fs.writeFileSync(path.join(tmpDir, 'big', longName), 'MATCH_TARGET\n')
+    }
+
+    const result = await tool.call(
+      { pattern: 'MATCH_TARGET', output_mode: 'count', head_limit: 10000 },
+      {},
+    )
+
+    expect(result.isError).toBe(false)
+    expect(Buffer.byteLength(result.output, 'utf8')).toBeLessThanOrEqual(220_000)
+    if (Buffer.byteLength(result.output, 'utf8') > 100_000) {
+      expect(result.output).toContain('truncated')
+    }
+  })
 })
