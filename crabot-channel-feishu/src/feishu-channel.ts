@@ -27,6 +27,7 @@ import { FeishuClient, FeishuClientError, type SendReceive } from './feishu-clie
 import { WsSubscriber } from './ws-subscriber.js'
 import { SessionManager } from './session-manager.js'
 import { MessageStore, type StoredMessage } from './message-store.js'
+import { splitTextByTableLimit } from './card-table-guard.js'
 import {
   detectMentionCrab,
   injectMentionTags,
@@ -459,11 +460,32 @@ export class FeishuChannel extends ModuleBase {
       const fileKey = await this.materializeFile(params.content)
       result = await this.client.sendFile(receive, fileKey)
     } else {
-      const text = injectMentionTags(params.content.text ?? '', await this.resolveMentionsToOpenIds(params.features?.mentions))
-      const card = this.buildMarkdownCard(text)
-      result = card
-        ? await this.client.sendCard(receive, card)
-        : await this.client.sendText(receive, text)
+      // 飞书 markdown 卡片每张最多 5 个表格，超出会返回 230099。
+      // 在原始 text 上按段切分，再对每段注入 @ 标签后逐条发送。
+      const rawText = params.content.text ?? ''
+      const rawChunks = splitTextByTableLimit(rawText)
+      const mentionMap = await this.resolveMentionsToOpenIds(params.features?.mentions)
+      let lastResult!: { message_id: string; create_time: string }
+      for (const rawChunk of rawChunks) {
+        const sendText = injectMentionTags(rawChunk, mentionMap)
+        const card = this.buildMarkdownCard(sendText)
+        lastResult = card
+          ? await this.client.sendCard(receive, card)
+          : await this.client.sendText(receive, sendText)
+        const chunkSentAt = isoFromMillis(lastResult.create_time) ?? generateTimestamp()
+        await this.messageStore.append(
+          session.id,
+          this.buildOutboundStored(
+            lastResult.message_id,
+            rawChunks.length === 1 ? params.content : { ...params.content, text: rawChunk },
+            chunkSentAt,
+          ),
+        )
+      }
+      return {
+        platform_message_id: lastResult.message_id,
+        sent_at: isoFromMillis(lastResult.create_time) ?? generateTimestamp(),
+      }
     }
 
     const sentAt = isoFromMillis(result.create_time) ?? generateTimestamp()
