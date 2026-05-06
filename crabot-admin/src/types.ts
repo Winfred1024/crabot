@@ -99,6 +99,46 @@ export function createToolAccessConfig(defaultValue: boolean): ToolAccessConfig 
 }
 
 // ============================================================================
+// CLI 访问权限（按 crabot CLI domain 控制粒度）
+// ============================================================================
+
+export type CliPerm = 'none' | 'read' | 'write'
+
+export type CliDomain =
+  | 'provider'
+  | 'agent'
+  | 'mcp'
+  | 'skill'
+  | 'schedule'
+  | 'channel'
+  | 'friend'
+  | 'permission'
+  | 'config'
+  | 'undo'
+
+export const CLI_DOMAINS: readonly CliDomain[] = [
+  'provider', 'agent', 'mcp', 'skill', 'schedule',
+  'channel', 'friend', 'permission', 'config', 'undo',
+] as const
+
+export type CliAccessConfig = Record<CliDomain, CliPerm>
+
+export function createCliAccessConfig(defaultValue: CliPerm): CliAccessConfig {
+  return {
+    provider: defaultValue,
+    agent: defaultValue,
+    mcp: defaultValue,
+    skill: defaultValue,
+    schedule: defaultValue,
+    channel: defaultValue,
+    friend: defaultValue,
+    permission: defaultValue,
+    config: defaultValue,
+    undo: defaultValue,
+  }
+}
+
+// ============================================================================
 // PermissionTemplate（权限模板）
 // ============================================================================
 
@@ -109,6 +149,7 @@ export interface PermissionTemplate {
   is_system: boolean
   created_by?: FriendId
   tool_access: ToolAccessConfig
+  cli_access: CliAccessConfig
   storage: StoragePermission | null
   memory_scopes: string[]
   created_at: string
@@ -121,6 +162,7 @@ export interface PermissionTemplate {
 
 export interface SessionPermissionConfig {
   tool_access?: Partial<ToolAccessConfig>
+  cli_access?: Partial<CliAccessConfig>
   storage?: StoragePermission | null
   memory_scopes?: string[]
   template_id?: string
@@ -129,6 +171,7 @@ export interface SessionPermissionConfig {
 
 export interface FriendPermissionConfig {
   tool_access: ToolAccessConfig
+  cli_access: CliAccessConfig
   storage: StoragePermission | null
   memory_scopes: string[]
   updated_at: string
@@ -137,6 +180,7 @@ export interface FriendPermissionConfig {
 /** 合并后的权限（模板 + Session 覆盖） */
 export interface ResolvedPermissions {
   tool_access: ToolAccessConfig
+  cli_access: CliAccessConfig
   storage: StoragePermission | null
   memory_scopes: string[]
 }
@@ -408,6 +452,7 @@ export interface CreatePermissionTemplateParams {
   name: string
   description?: string
   tool_access: ToolAccessConfig
+  cli_access?: CliAccessConfig
   storage?: StoragePermission | null
   memory_scopes?: string[]
 }
@@ -421,6 +466,7 @@ export interface UpdatePermissionTemplateParams {
   name?: string
   description?: string
   tool_access?: ToolAccessConfig
+  cli_access?: CliAccessConfig
   storage?: StoragePermission | null
   memory_scopes?: string[]
 }
