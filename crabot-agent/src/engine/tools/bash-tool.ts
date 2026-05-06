@@ -13,6 +13,23 @@ import { BG_ENTITY_LIMIT_PER_OWNER } from '../bg-entities/types.js'
 const MAX_OUTPUT_LENGTH = 100000
 const DEFAULT_TIMEOUT_MS = 120000
 export const MAX_FOREGROUND_TIMEOUT_MS = 600_000
+/**
+ * 显式 timeout 超过此阈值时，工具层自动把同步调用转为 background 模式，
+ * 避免 agent loop 被堵几十秒。与 prompt-manager.ts 「长任务的处理」段
+ * "≥1 分钟必须 run_in_background=true" 的语义边界对齐。
+ *
+ * 判定条件刻意只覆盖**显式给出 timeout > 60s 的同步调用**——LLM 不传 timeout
+ * 时不预先转换（不破坏短命令体验），让默认 120s 兜底。
+ */
+export const AUTO_BG_TIMEOUT_THRESHOLD_MS = 60_000
+
+/**
+ * 自动转 bg 后建议给 LLM 的 Output(block=true, timeout_ms=...) 上限。
+ * 防止 LLM 给 timeout=600000+ 的同步 Bash 被转 bg 后，下一步直接用同样大的
+ * timeout_ms 调 Output(block=true)——那等于换种方式同步堵 agent loop。
+ * 120s 是 prompt L351 示例值。
+ */
+export const AUTO_BG_OUTPUT_BLOCK_CAP_MS = 120_000
 
 export interface BashBgContext {
   readonly registry: BgEntityRegistry
@@ -178,7 +195,7 @@ export function createBashTool(cwd: string, defaultTimeout?: number, bgCtx?: Bas
         command: { type: 'string', description: 'The bash command to execute' },
         timeout: {
           type: 'number',
-          description: `Foreground timeout in ms (default ${effectiveDefault}, max ${MAX_FOREGROUND_TIMEOUT_MS}). 超过会被 cap。run_in_background=true 时此参数无效。`,
+          description: `Foreground timeout in ms (default ${effectiveDefault}, max ${MAX_FOREGROUND_TIMEOUT_MS}). 超过会被 cap。**显式给出 > ${AUTO_BG_TIMEOUT_THRESHOLD_MS}ms 的 timeout 会被工具层自动改写为 run_in_background=true**——预估超 1 分钟的命令请直接用 run_in_background=true，不要靠 timeout 撑长同步等。run_in_background=true 时此参数无效。`,
         },
         run_in_background: {
           type: 'boolean',
@@ -205,8 +222,45 @@ export function createBashTool(cwd: string, defaultTimeout?: number, bgCtx?: Bas
         return runBg(command, bgCtx)
       }
 
+      // 自动转 bg：显式 timeout > 60s 且 bgCtx 可用 → 改写为 background 调用
+      // 这样 LLM 即使没遵守 prompt「≥1 分钟必须 bg」规则，工具层也会强制治理，
+      // 避免 agent loop 被堵到 timeout cap。tool_result 明确告知行为 + 拼真实
+      // shell_id + cap Output block 时间，让 LLM 不能变相同步等。
+      const explicitTimeout = typeof input.timeout === 'number' ? input.timeout : null
+      if (
+        explicitTimeout !== null &&
+        explicitTimeout > AUTO_BG_TIMEOUT_THRESHOLD_MS &&
+        bgCtx !== undefined
+      ) {
+        const bgResult = await runBg(command, bgCtx)
+        if (bgResult.isError) {
+          return bgResult
+        }
+        // 从 bgResult.output 提取 shell_id（runBg 返回格式："Shell spawned (...): shell_xxx\n..."）
+        const idMatch = bgResult.output.match(/shell_[0-9a-f]+/)
+        const shellId = idMatch ? idMatch[0] : '<shell_id>'
+        // cap Output block 时间，防止 LLM 给 timeout=600000+ 时下一步 Output(block=true) 又堵 agent loop
+        const suggestedBlockMs = Math.min(explicitTimeout, AUTO_BG_OUTPUT_BLOCK_CAP_MS)
+        return {
+          output: [
+            `[auto-converted to background]`,
+            `你给的 timeout=${explicitTimeout}ms 超过 ${AUTO_BG_TIMEOUT_THRESHOLD_MS}ms 阈值——工具层把它改写成了 run_in_background=true。`,
+            `（下次预估超 1 分钟的命令请直接传 run_in_background=true）`,
+            ``,
+            `Shell spawned: ${shellId}`,
+            ``,
+            `下一步（三选一）：`,
+            `  • 想等结果 → Output("${shellId}", block=true, timeout_ms=${suggestedBlockMs})`,
+            `  • 想做别的 → 现在就去做，bg 完成时下次 task prompt 头部会有 <bg-notification> 通知`,
+            `  • 想终止 → Kill("${shellId}")`,
+            `命令已在后台启动，不要重发同一命令。`,
+          ].join('\n'),
+          isError: false,
+        }
+      }
+
       // 前台路径：cap timeout（静默，不报错）
-      const requested = typeof input.timeout === 'number' ? input.timeout : effectiveDefault
+      const requested = explicitTimeout ?? effectiveDefault
       const timeoutMs = Math.min(requested, MAX_FOREGROUND_TIMEOUT_MS)
       return execCommand(command, cwd, timeoutMs, context.abortSignal)
     },
