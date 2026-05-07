@@ -110,6 +110,9 @@ import {
   type CreatePermissionTemplateParams,
   type UpdatePermissionTemplateParams,
   type DialogObjectChannelSession,
+  type CliAccessConfig,
+  CLI_DOMAINS,
+  createCliAccessConfig,
 } from './types.js'
 import { ModelProviderManager } from './model-provider-manager.js'
 import { AgentManager } from './agent-manager.js'
@@ -6340,9 +6343,18 @@ export class AdminModule extends ModuleBase {
   }
 
   private normalizeFriendPermissionConfig(friend: Friend, config: FriendPermissionConfig): FriendPermissionConfig {
+    // 兜底：旧持久化数据可能缺失 cli_access，或仅含部分 domain。
+    // 缺失时按 'none' 默认补齐，避免后续 resolution 抛错。
+    const incomingCli = config.cli_access as Partial<CliAccessConfig> | undefined
+    const cliAccess: CliAccessConfig =
+      incomingCli && CLI_DOMAINS.every((d) => d in incomingCli)
+        ? { ...(incomingCli as CliAccessConfig) }
+        : { ...createCliAccessConfig('none'), ...(incomingCli ?? {}) }
+
     if (friend.permission === 'master') {
       return {
         tool_access: { ...config.tool_access },
+        cli_access: cliAccess,
         storage: config.storage ? { ...config.storage } : null,
         memory_scopes: [...config.memory_scopes],
         updated_at: config.updated_at,
@@ -6351,6 +6363,7 @@ export class AdminModule extends ModuleBase {
 
     return {
       tool_access: { ...config.tool_access, desktop: false },
+      cli_access: cliAccess,
       storage: config.storage ? { ...config.storage } : null,
       memory_scopes: [...config.memory_scopes],
       updated_at: config.updated_at,
@@ -6405,6 +6418,7 @@ export class AdminModule extends ModuleBase {
       const normalizedConfig = this.normalizeFriendPermissionConfig(friend, explicitConfig)
       return {
         tool_access: { ...normalizedConfig.tool_access },
+        cli_access: { ...normalizedConfig.cli_access },
         storage: normalizedConfig.storage ? { ...normalizedConfig.storage } : null,
         memory_scopes: [...normalizedConfig.memory_scopes],
       }
@@ -6449,8 +6463,12 @@ export class AdminModule extends ModuleBase {
       throw new Error('Cannot update master friend permissions')
     }
 
+    // body.config 类型层 require cli_access（来自 Omit<FriendPermissionConfig, 'updated_at'>），
+    // 但旧 client 可能未升级；在此做运行时兜底，避免破坏 forward-compat。
+    const incomingCli = (config as { cli_access?: CliAccessConfig }).cli_access
     const nextConfig = this.normalizeFriendPermissionConfig(friend, {
       tool_access: { ...config.tool_access, desktop: false },
+      cli_access: incomingCli ? { ...incomingCli } : createCliAccessConfig('none'),
       storage: config.storage ? { ...config.storage } : null,
       memory_scopes: [...config.memory_scopes],
       updated_at: generateTimestamp(),
