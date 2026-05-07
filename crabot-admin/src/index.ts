@@ -134,6 +134,7 @@ import { createMemoryV2RestRouter } from './memory-v2-rest.js'
 import { OnboardingManager } from './onboarding-manager.js'
 import type { Onboarder } from 'crabot-shared'
 import { tailLogFile } from './module-log-tail.js'
+import { buildRecoveryTask } from './recovery-handler.js'
 
 // ============================================================================
 // JWT 工具函数
@@ -650,13 +651,18 @@ export class AdminModule extends ModuleBase {
           })
         }
         if (module_type === 'agent') {
-          // 事件 payload 已带端口，直接缓存避免后续 ensureAgentPort 多走一次 resolve
           if (typeof port === 'number' && port > 0) {
             this.agentPort = port
           }
-          console.log(`[Admin] Agent module ${module_id} started (port=${port}), pushing config as safety net...`)
+          const restartCount = (event.payload as { restart_count?: number }).restart_count ?? 0
+          console.log(`[Admin] Agent module ${module_id} started (port=${port}, restart_count=${restartCount}), pushing config as safety net...`)
           this.pushConfigToAgentModules().catch((err: Error) => {
             console.warn(`[Admin] Failed to push config to ${module_id}:`, err.message)
+          })
+
+          // Self-healing：扫 in-flight 任务标 failed + 生成 recovery 任务
+          this.runSelfHealingForAgentRestart(restartCount).catch((err: Error) => {
+            console.warn(`[Admin] Self-healing for ${module_id} failed: ${err.message}`)
           })
         }
         // 新启动的模块推送代理配置
@@ -3483,6 +3489,46 @@ export class AdminModule extends ModuleBase {
       throw new Error(AdminErrorCode.TASK_NOT_FOUND)
     }
     return { task }
+  }
+
+  /**
+   * Agent 模块重启后扫 in-flight 任务，标 failed 并生成 recovery 任务。
+   *
+   * @param restartCount agent 此次启动是第几次（0=首次，不做 self-healing）
+   */
+  private async runSelfHealingForAgentRestart(restartCount: number): Promise<void> {
+    if (restartCount <= 0) return
+
+    const executing = Array.from(this.tasks.values()).filter((t) => t.status === 'executing')
+    if (executing.length === 0) return
+
+    const now = generateTimestamp()
+    const interrupted = executing.filter((t) => !t.tags.includes('recovery'))
+
+    // 1. 把所有 in-flight 任务（含 recovery 自身）置 failed
+    for (const t of executing) {
+      t.status = 'failed'
+      t.error = 'agent_restarted_during_execution'
+      t.updated_at = now
+      this.publishAdminEvent('admin.task_status_changed', {
+        task_id: t.id,
+        old_status: 'executing',
+        new_status: 'failed',
+      })
+    }
+    console.log(`[Admin] Self-healing: marked ${executing.length} task(s) as failed (incl. ${executing.length - interrupted.length} recovery task)`)
+
+    // 2. 生成 recovery 任务（防雪崩：跳过自身就是 recovery 的）
+    const params = buildRecoveryTask(interrupted, restartCount, now)
+    if (params) {
+      const { task } = await this.handleCreateTask(params)
+      console.log(`[Admin] Self-healing: created recovery task ${task.id} for ${interrupted.length} interrupted task(s)`)
+    } else {
+      console.log(`[Admin] Self-healing: no recovery task needed (no non-recovery interrupted tasks)`)
+    }
+
+    // 3. 持久化任务变更
+    await this.saveData()
   }
 
   private async handleListTasks(params: ListTasksParams): Promise<{ items: Task[]; pagination: { page: number; page_size: number; total_items: number; total_pages: number } }> {
