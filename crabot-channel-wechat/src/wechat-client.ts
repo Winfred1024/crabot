@@ -25,6 +25,13 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+function toUnixMillis(input: string | undefined): string | undefined {
+  if (!input) return undefined
+  if (/^-?\d+$/.test(input)) return input
+  const parsed = Date.parse(input)
+  return Number.isFinite(parsed) ? String(parsed) : undefined
+}
+
 export class WechatClient {
   private readonly baseUrl: string
   private readonly apiKey: string
@@ -217,7 +224,8 @@ export class WechatClient {
   }
 
   /**
-   * 查询消息历史（代理 wechat-connector GET /api/v1/bot/messages）
+   * 查询消息历史（代理 wechat-connector GET /api/v1/bot/messages）。
+   * before/after 必须是毫秒 Unix 时间戳；connector 端用 BigInt 解析，传 ISO 串会 500。
    */
   async getMessages(params: {
     talker: string
@@ -228,8 +236,10 @@ export class WechatClient {
     const qs = new URLSearchParams()
     qs.set('talker', params.talker)
     if (params.limit) qs.set('limit', String(params.limit))
-    if (params.before) qs.set('before', params.before)
-    if (params.after) qs.set('after', params.after)
+    const before = toUnixMillis(params.before)
+    const after = toUnixMillis(params.after)
+    if (before !== undefined) qs.set('before', before)
+    if (after !== undefined) qs.set('after', after)
     const result = await this.get<Array<Record<string, unknown>>>(
       `/api/v1/bot/messages?${qs.toString()}`
     )
