@@ -231,6 +231,13 @@ export interface ModuleDefinition {
   env?: Record<string, string>
   /** 是否随 Module Manager 启动时自动启动，默认 true */
   auto_start: boolean
+  /**
+   * 模块意外退出（exit code ≠ 0 或信号）时是否自动重启。
+   * 重启策略：指数退避 1s/2s/4s/10s 上限；5 分钟内最多 3 次，超限置 error。
+   * 仅 crashed 原因触发；shutdown/forced/health_check_failed 不重启。
+   * 默认 false（保守）。
+   */
+  auto_restart?: boolean
   /** 启动顺序优先级，数字越小越先启动，默认 100 */
   start_priority: number
   /** 跳过健康检查和注册（用于不实现 Crabot 协议的工具进程，如 Vite） */
