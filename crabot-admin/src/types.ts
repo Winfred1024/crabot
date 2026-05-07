@@ -195,6 +195,27 @@ export interface UpdateFriendPermissionBody {
 }
 
 // ============================================================================
+// 解析"消息发起人"的 effective permissions（friend ∪ session 并集）
+// ============================================================================
+
+export interface ResolvePrincipalPermissionsParams {
+  /** 发送者 friend ID（无 friend_id 时不传）*/
+  sender_friend_id?: FriendId
+  session_id: SessionId
+  session_type: 'private' | 'group'
+}
+
+export interface ResolvePrincipalPermissionsResult {
+  resolved: ResolvedPermissions
+  /** 解析时使用的来源信息，便于 audit 与调试 */
+  sources: {
+    friend_template_id?: string
+    session_template_id?: string
+    fallback?: 'minimal'
+  }
+}
+
+// ============================================================================
 // Dialog Object（对话对象）读模型
 // ============================================================================
 

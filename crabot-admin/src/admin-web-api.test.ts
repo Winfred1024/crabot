@@ -1136,6 +1136,103 @@ describe('Admin Web API', () => {
       expect(admin['friendPermissionConfigs'].has(friendId)).toBe(false)
     })
   })
+
+  describe('resolve_principal_permissions REST', () => {
+    it('master friend → 全 write 短路', async () => {
+      const token = await loginAndGetToken()
+      const friendId = 'master-resolve-test'
+      admin['friends'].set(friendId, {
+        id: friendId,
+        display_name: 'Master Resolve',
+        permission: 'master',
+        channel_identities: [],
+        created_at: '2026-04-21T00:00:00.000Z',
+        updated_at: '2026-04-21T00:00:00.000Z',
+      })
+
+      const response = await makeWebRequest<{ resolved: { cli_access: Record<string, string> }, sources: { friend_template_id?: string } }>(
+        TEST_WEB_PORT,
+        `/api/permissions/resolve-principal`,
+        'POST',
+        { sender_friend_id: friendId, session_id: 'any-session', session_type: 'group' },
+        token,
+      )
+      expect(response.statusCode).toBe(200)
+      expect(response.body.resolved.cli_access.provider).toBe('write')
+      expect(response.body.resolved.cli_access.schedule).toBe('write')
+      expect(response.body.sources.friend_template_id).toBe('master_private')
+    })
+
+    it('无 friend，session 挂 group_scheduler → schedule=write', async () => {
+      const token = await loginAndGetToken()
+      const sessionId = 'group-scheduler-session-test'
+      admin['sessionConfigs'].set(sessionId, {
+        template_id: 'group_scheduler',
+        updated_at: '2026-04-21T00:00:00.000Z',
+      })
+
+      const response = await makeWebRequest<{ resolved: { cli_access: Record<string, string> }, sources: { session_template_id?: string } }>(
+        TEST_WEB_PORT,
+        `/api/permissions/resolve-principal`,
+        'POST',
+        { session_id: sessionId, session_type: 'group' },
+        token,
+      )
+      expect(response.statusCode).toBe(200)
+      expect(response.body.resolved.cli_access.schedule).toBe('write')
+      expect(response.body.resolved.cli_access.provider).toBe('none')
+      expect(response.body.sources.session_template_id).toBe('group_scheduler')
+    })
+
+    it('friend(standard) ∪ session(group_scheduler) → 并集中 schedule=write', async () => {
+      const token = await loginAndGetToken()
+      const friendId = 'normal-union-test'
+      const sessionId = 'union-session-test'
+      admin['friends'].set(friendId, {
+        id: friendId,
+        display_name: 'Normal Union',
+        permission: 'normal',
+        permission_template_id: 'standard',
+        channel_identities: [],
+        created_at: '2026-04-21T00:00:00.000Z',
+        updated_at: '2026-04-21T00:00:00.000Z',
+      })
+      admin['sessionConfigs'].set(sessionId, {
+        template_id: 'group_scheduler',
+        updated_at: '2026-04-21T00:00:00.000Z',
+      })
+
+      const response = await makeWebRequest<{ resolved: { cli_access: Record<string, string>, tool_access: Record<string, boolean> }, sources: { friend_template_id?: string, session_template_id?: string } }>(
+        TEST_WEB_PORT,
+        `/api/permissions/resolve-principal`,
+        'POST',
+        { sender_friend_id: friendId, session_id: sessionId, session_type: 'group' },
+        token,
+      )
+      expect(response.statusCode).toBe(200)
+      expect(response.body.resolved.cli_access.schedule).toBe('write')
+      expect(response.body.resolved.tool_access.task).toBe(true)
+      expect(response.body.resolved.cli_access.provider).toBe('none')
+      expect(response.body.sources.friend_template_id).toBe('standard')
+      expect(response.body.sources.session_template_id).toBe('group_scheduler')
+    })
+
+    it('无 friend 无 session_config → minimal 兜底', async () => {
+      const token = await loginAndGetToken()
+      const response = await makeWebRequest<{ resolved: { cli_access: Record<string, string>, tool_access: Record<string, boolean> }, sources: { fallback?: string } }>(
+        TEST_WEB_PORT,
+        `/api/permissions/resolve-principal`,
+        'POST',
+        { session_id: 'totally-unknown-session', session_type: 'private' },
+        token,
+      )
+      expect(response.statusCode).toBe(200)
+      expect(response.body.resolved.tool_access.messaging).toBe(true)
+      expect(response.body.resolved.tool_access.shell).toBe(false)
+      expect(response.body.resolved.cli_access.provider).toBe('none')
+      expect(response.body.sources.fallback).toBe('minimal')
+    })
+  })
 })
 
 // Helper functions

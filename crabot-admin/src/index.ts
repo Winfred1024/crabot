@@ -113,7 +113,10 @@ import {
   type CliAccessConfig,
   CLI_DOMAINS,
   createCliAccessConfig,
+  type ResolvePrincipalPermissionsParams,
+  type ResolvePrincipalPermissionsResult,
 } from './types.js'
+import { unionResolved } from './permission-resolution.js'
 import { ModelProviderManager } from './model-provider-manager.js'
 import { AgentManager } from './agent-manager.js'
 import { ChannelManager } from './channel-manager.js'
@@ -482,6 +485,7 @@ export class AdminModule extends ModuleBase {
     this.registerMethod('get_friend_permissions', async (params: { friend_id: FriendId }) =>
       await this.handleGetFriendPermission(params.friend_id)
     )
+    this.registerMethod('resolve_principal_permissions', this.resolvePrincipalPermissions.bind(this))
     this.registerMethod('get_session_config', this.handleGetSessionConfig.bind(this))
     this.registerMethod('update_session_config', this.handleUpdateSessionConfig.bind(this))
     this.registerMethod('delete_session_config', this.handleDeleteSessionConfig.bind(this))
@@ -1421,6 +1425,15 @@ export class AdminModule extends ModuleBase {
           res.writeHead(status, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ error: err.message, code: err.code }))
         }
+        return
+      }
+
+      // Effective permissions 解析（agent 用，跨 friend × session）
+      if (pathname === '/api/permissions/resolve-principal' && req.method === 'POST') {
+        const body = await this.readJsonBody<ResolvePrincipalPermissionsParams>(req)
+        const result = await this.resolvePrincipalPermissions(body)
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(result))
         return
       }
 
@@ -6436,6 +6449,76 @@ export class AdminModule extends ModuleBase {
       }
       throw error
     }
+  }
+
+  /**
+   * 解析"消息发起人"的 effective permissions（friend ∪ session 并集）
+   *
+   * 设计意图：让 hook 层用统一一份 ResolvedPermissions 判断 cli_access / tool_access，
+   * 不再在 agent 侧分私聊/群聊两条解析路径。
+   *
+   * 语义：
+   * - master friend 短路：直接返回 master_private 模板的解析结果
+   * - 非 master：friend ResolvedPermissions ∪ session ResolvedPermissions
+   * - 都缺：fallback 到 minimal 模板
+   */
+  private async resolvePrincipalPermissions(
+    params: ResolvePrincipalPermissionsParams,
+  ): Promise<ResolvePrincipalPermissionsResult> {
+    const sources: ResolvePrincipalPermissionsResult['sources'] = {}
+
+    // 1. friend 侧
+    let friendResolved: ResolvedPermissions | null = null
+    if (params.sender_friend_id) {
+      const friend = this.friends.get(params.sender_friend_id)
+      if (friend) {
+        friendResolved = this.buildResolvedFriendPermissions(friend)
+        sources.friend_template_id = friend.permission === 'master'
+          ? 'master_private'
+          : (friend.permission_template_id ?? 'standard')
+
+        // master 短路：直接返回，跳过 session 合并
+        if (friend.permission === 'master' && friendResolved) {
+          return { resolved: friendResolved, sources }
+        }
+      }
+    }
+
+    // 2. session 侧
+    let sessionResolved: ResolvedPermissions | null = null
+    const sessionConfig = this.sessionConfigs.get(params.session_id) ?? null
+    if (sessionConfig?.template_id) {
+      try {
+        sessionResolved = this.permissionTemplateManager.resolvePermissions(
+          sessionConfig.template_id,
+          sessionConfig,
+        )
+        sources.session_template_id = sessionConfig.template_id
+      } catch (err) {
+        console.warn(`[Admin] resolvePrincipalPermissions: session template '${sessionConfig.template_id}' missing for session ${params.session_id}:`, err)
+      }
+    }
+
+    // 3. 都没有 → minimal 兜底
+    if (!friendResolved && !sessionResolved) {
+      sources.fallback = 'minimal'
+      return {
+        resolved: this.permissionTemplateManager.resolvePermissions('minimal', null),
+        sources,
+      }
+    }
+
+    // 4. 取并集
+    const merged = unionResolved(friendResolved, sessionResolved)
+    if (!merged) {
+      // 不可达：以上前提保证至少一方非 null，但兜底 minimal
+      sources.fallback = 'minimal'
+      return {
+        resolved: this.permissionTemplateManager.resolvePermissions('minimal', null),
+        sources,
+      }
+    }
+    return { resolved: merged, sources }
   }
 
   private async handleGetFriendPermission(friendId: FriendId): Promise<GetFriendPermissionResult> {
