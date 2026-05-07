@@ -83,6 +83,18 @@ class ApiClient {
   async delete<T>(endpoint: string): Promise<T> {
     return this.request<T>(endpoint, { method: 'DELETE' })
   }
+
+  listModules() {
+    return this.get<{ modules: Array<{ module_id: string; module_type: string; status: string; pid?: number; port: number; last_health_status?: string }> }>('/modules')
+  }
+
+  getModuleLog(moduleId: string, tail = 500) {
+    return this.get<{ module_id: string; lines: number; content: string }>(`/modules/${encodeURIComponent(moduleId)}/log?tail=${tail}`)
+  }
+
+  restartModule(moduleId: string) {
+    return this.post<{ ok: boolean }>(`/modules/${encodeURIComponent(moduleId)}/restart`, {})
+  }
 }
 
 export const api = new ApiClient()

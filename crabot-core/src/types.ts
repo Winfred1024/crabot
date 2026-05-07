@@ -60,6 +60,17 @@ export interface ModuleRuntime extends ModuleDefinition {
   installed_at?: string
   /** 启动检测发现 schema 不匹配时的详情，仅当 status === 'schema_mismatch' 时设置 */
   schema_mismatch?: { code_version: string; data_version: string | null }
+  /**
+   * 自动重启尝试历史（auto_restart=true 时使用），用于 RestartPolicy 窗口限流。
+   * 每次 crashed 触发自动重启时 push 一个时间戳；窗口外的会被裁剪。
+   */
+  restart_history?: import('./restart-policy.js').RestartHistory
+  /**
+   * 主动停止标记：当用户/admin/MM 主动调 stopModuleProcess 时设为 true，
+   * proc.on('exit') 看到此标记则跳过自动重启决策（不污染 restart_history、不发自愈事件）。
+   * 标记本身在每次 startModuleProcess 进入 starting 状态时清零。
+   */
+  intentional_stop?: boolean
 }
 
 // ============================================================================
@@ -107,6 +118,8 @@ export interface ModuleStartedPayload {
   module_id: ModuleId
   module_type: string
   port: number
+  /** 重启计数（首次启动 0；每次自动重启 +1）。Admin self-healing 据此判断是否扫 in-flight task */
+  restart_count?: number
 }
 
 export interface ModuleStoppedPayload {
@@ -138,6 +151,14 @@ export interface ModuleDefinitionUnregisteredPayload {
   module_type: string
 }
 
+export interface SystemDiskLowPayload {
+  path: string
+  available_bytes: number
+  total_bytes: number
+  threshold_bytes: number
+  available_percent: number
+}
+
 /**
  * 模块停止原因
  */
@@ -158,6 +179,7 @@ export const ModuleManagerEventType = {
   MODULE_HEALTH_CHANGED: 'module_manager.module_health_changed',
   MODULE_DEFINITION_REGISTERED: 'module_manager.module_definition_registered',
   MODULE_DEFINITION_UNREGISTERED: 'module_manager.module_definition_unregistered',
+  SYSTEM_DISK_LOW: 'system.disk_low',
 } as const
 
 // ============================================================================
@@ -204,6 +226,13 @@ export function createModuleDefinitionUnregisteredEvent(
   payload: ModuleDefinitionUnregisteredPayload
 ): Event<ModuleDefinitionUnregisteredPayload> {
   return createEvent(ModuleManagerEventType.MODULE_DEFINITION_UNREGISTERED, source, payload)
+}
+
+export function createSystemDiskLowEvent(
+  source: ModuleId,
+  payload: SystemDiskLowPayload
+): Event<SystemDiskLowPayload> {
+  return createEvent(ModuleManagerEventType.SYSTEM_DISK_LOW, source, payload)
 }
 
 // ============================================================================

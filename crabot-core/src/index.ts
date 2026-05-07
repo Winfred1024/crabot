@@ -38,10 +38,13 @@ import {
   createModuleHealthChangedEvent,
   createModuleDefinitionRegisteredEvent,
   createModuleDefinitionUnregisteredEvent,
+  createSystemDiskLowEvent,
   runtimeToInfo,
   runtimeToResolved,
 } from './types.js'
 import { PortAllocator } from './port-allocator.js'
+import { scheduleRestart } from './restart-policy.js'
+import { checkDiskLow } from './disk-watcher.js'
 
 // ============================================================================
 // 类型定义
@@ -70,14 +73,17 @@ export class ModuleManager {
 
   private server: http.Server | null = null
   private healthCheckTimer: NodeJS.Timeout | null = null
+  private diskWatcherTimer: NodeJS.Timeout | null = null
   private isShuttingDown = false
   private readonly logsDir: string
+  private readonly dataDir: string
 
   constructor(config: Partial<ModuleManagerConfig> = {}, dataDir: string) {
     this.config = { ...DEFAULT_CONFIG, ...config }
     this.portAllocator = new PortAllocator(this.config.port_range, dataDir)
     this.logsDir = path.join(dataDir, 'logs')
     fs.mkdirSync(this.logsDir, { recursive: true })
+    this.dataDir = dataDir
 
     // 注册所有方法处理器
     this.registerMethod('register', this.handleRegister.bind(this))
@@ -138,6 +144,24 @@ export class ModuleManager {
         console.log(`[ModuleManager] Listening on port ${this.config.port}`)
         this.startHealthCheckTimer()
 
+        // 磁盘水位线监控（每 60s 一次；同状态不重复广播 → 去抖）
+        let lastWasLow = false
+        this.diskWatcherTimer = setInterval(async () => {
+          const r = await checkDiskLow(this.dataDir, 1_000_000_000) // 1GB 阈值
+          if (r.is_low && !lastWasLow && r.payload) {
+            lastWasLow = true
+            this.publishEvent(
+              createSystemDiskLowEvent('module-manager', r.payload)
+            ).catch(console.error)
+            console.warn(
+              `[ModuleManager] DISK LOW: ${(r.available_bytes / 1e9).toFixed(2)}GB free at ${r.payload.path}`
+            )
+          } else if (!r.is_low && lastWasLow) {
+            lastWasLow = false
+            console.log(`[ModuleManager] Disk recovered: ${(r.available_bytes / 1e9).toFixed(2)}GB free`)
+          }
+        }, 60_000)
+
         // 启动 auto_start 模块
         this.startAutoStartModules().catch(console.error)
 
@@ -160,6 +184,12 @@ export class ModuleManager {
     if (this.healthCheckTimer) {
       clearInterval(this.healthCheckTimer)
       this.healthCheckTimer = null
+    }
+
+    // 停止磁盘水位线监控定时器
+    if (this.diskWatcherTimer) {
+      clearInterval(this.diskWatcherTimer)
+      this.diskWatcherTimer = null
     }
 
     // 停止所有运行中的模块
@@ -308,6 +338,7 @@ export class ModuleManager {
         module_id: params.module_id,
         module_type: params.module_type,
         port: params.port,
+        restart_count: runtime.restart_history?.attempts.length ?? 0,
       })
     )
 
@@ -694,6 +725,7 @@ export class ModuleManager {
     }
 
     runtime.status = 'starting'
+    runtime.intentional_stop = false
 
     // 替换 entry 中的 {PORT} 模板
     const entry = (entryOverride ?? runtime.entry).replace(/{PORT}/g, String(runtime.port))
@@ -747,30 +779,63 @@ export class ModuleManager {
       // 模块进程消亡 → 同步清订阅，防止重启后 register 累加
       this.removeSubscriptionsBySubscriber(moduleId)
 
-      if (wasRunning && !this.isShuttingDown) {
-        // 意外退出
-        const reason: ModuleStopReason =
-          code === 0 ? 'shutdown' : signal ? 'crashed' : 'crashed'
+      if (!wasRunning || this.isShuttingDown) return
 
-        this.publishEvent(
-          createModuleStoppedEvent('module-manager', {
-            module_id: moduleId,
-            module_type: runtime.module_type,
-            reason,
-          })
-        ).catch(console.error)
+      const reason: ModuleStopReason =
+        code === 0 ? 'shutdown' : signal ? 'crashed' : 'crashed'
 
-        if (code !== 0) {
-          runtime.status = 'error'
-          this.publishEvent(
-            createModuleHealthChangedEvent('module-manager', {
-              module_id: moduleId,
-              previous: 'healthy',
-              current: 'unhealthy',
-            })
-          ).catch(console.error)
-        }
+      this.publishEvent(
+        createModuleStoppedEvent('module-manager', {
+          module_id: moduleId,
+          module_type: runtime.module_type,
+          reason,
+        })
+      ).catch(console.error)
+
+      if (code === 0) return // 正常退出，到此为止
+
+      // 主动停止（哪怕被 SIGKILL）也不算 crashed，不走 RestartPolicy
+      if (runtime.intentional_stop) {
+        runtime.intentional_stop = false
+        return
       }
+
+      // 意外退出
+      runtime.status = 'error'
+
+      // 自动重启决策（仅 auto_restart=true 模块走 RestartPolicy）
+      if (runtime.auto_restart) {
+        const decision = scheduleRestart(
+          runtime.restart_history ?? { attempts: [] },
+          Date.now()
+        )
+        runtime.restart_history = decision.next_history
+
+        if (decision.should_restart) {
+          console.log(
+            `[ModuleManager] Auto-restart ${moduleId} in ${decision.delay_ms}ms (attempt ${decision.next_history.attempts.length}/3)`
+          )
+          setTimeout(() => {
+            // 已开始 shutdown 或被人工启动则跳过
+            if (this.isShuttingDown || runtime.status === 'running' || runtime.status === 'starting') return
+            this.startModuleProcess(moduleId).catch((err) => {
+              console.error(`[ModuleManager] Auto-restart failed for ${moduleId}:`, err)
+            })
+          }, decision.delay_ms)
+          return // 不发 health_changed unhealthy（仍在自愈）
+        }
+
+        console.error(`[ModuleManager] ${moduleId} restart suppressed: ${decision.reason}`)
+      }
+
+      // 不重启或重启耗尽 → 公告不健康
+      this.publishEvent(
+        createModuleHealthChangedEvent('module-manager', {
+          module_id: moduleId,
+          previous: 'healthy',
+          current: 'unhealthy',
+        })
+      ).catch(console.error)
     })
 
     proc.on('error', (error) => {
@@ -789,6 +854,7 @@ export class ModuleManager {
           module_id: moduleId,
           module_type: runtime.module_type,
           port: runtime.port,
+          restart_count: runtime.restart_history?.attempts.length ?? 0,
         })
       ).catch(console.error)
     }
@@ -796,6 +862,7 @@ export class ModuleManager {
 
   private async stopModuleProcess(moduleId: ModuleId, reason: ModuleStopReason): Promise<void> {
     const runtime = this.modules.get(moduleId)
+    if (runtime) runtime.intentional_stop = true
     const proc = this.processes.get(moduleId)
 
     if (!runtime) {

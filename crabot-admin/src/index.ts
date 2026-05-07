@@ -133,6 +133,8 @@ import {
 import { createMemoryV2RestRouter } from './memory-v2-rest.js'
 import { OnboardingManager } from './onboarding-manager.js'
 import type { Onboarder } from 'crabot-shared'
+import { tailLogFile } from './module-log-tail.js'
+import { buildRecoveryTask } from './recovery-handler.js'
 
 // ============================================================================
 // JWT 工具函数
@@ -649,13 +651,18 @@ export class AdminModule extends ModuleBase {
           })
         }
         if (module_type === 'agent') {
-          // 事件 payload 已带端口，直接缓存避免后续 ensureAgentPort 多走一次 resolve
           if (typeof port === 'number' && port > 0) {
             this.agentPort = port
           }
-          console.log(`[Admin] Agent module ${module_id} started (port=${port}), pushing config as safety net...`)
+          const restartCount = (event.payload as { restart_count?: number }).restart_count ?? 0
+          console.log(`[Admin] Agent module ${module_id} started (port=${port}, restart_count=${restartCount}), pushing config as safety net...`)
           this.pushConfigToAgentModules().catch((err: Error) => {
             console.warn(`[Admin] Failed to push config to ${module_id}:`, err.message)
+          })
+
+          // Self-healing：扫 in-flight 任务标 failed + 生成 recovery 任务
+          this.runSelfHealingForAgentRestart(restartCount).catch((err: Error) => {
+            console.warn(`[Admin] Self-healing for ${module_id} failed: ${err.message}`)
           })
         }
         // 新启动的模块推送代理配置
@@ -664,7 +671,19 @@ export class AdminModule extends ModuleBase {
         })
         break
       }
-      case 'module_manager.module_stopped':
+      case 'module_manager.module_stopped': {
+        const { module_id, module_type } = event.payload as { module_id: string; module_type: string }
+        this.invalidatePortCache(module_id, module_type)
+        break
+      }
+      case 'module_manager.module_health_changed': {
+        const { module_id, current } = event.payload as { module_id: string; current: string }
+        if (current === 'unhealthy') {
+          // 拿不到 module_type → 清所有可能命中的缓存（保险）
+          this.invalidatePortCache(module_id, 'unknown')
+        }
+        break
+      }
       case 'module_manager.module_error':
         break
 
@@ -1701,6 +1720,22 @@ export class AdminModule extends ModuleBase {
       const bgEntityIdMatch = pathname.match(/^\/api\/bg-entities\/([^/]+)$/)
       if (bgEntityIdMatch && req.method === 'DELETE') {
         await this.handleKillBgEntityApi(req, res, decodeURIComponent(bgEntityIdMatch[1]))
+        return
+      }
+
+      // 模块管理 REST：列出模块 + 看日志 + 重启
+      if (req.method === 'GET' && pathname === '/api/modules') {
+        await this.handleListModulesApi(req, res)
+        return
+      }
+      const moduleLogMatch = pathname.match(/^\/api\/modules\/([^/]+)\/log$/)
+      if (moduleLogMatch && req.method === 'GET') {
+        await this.handleGetModuleLogApi(req, res, decodeURIComponent(moduleLogMatch[1]), url)
+        return
+      }
+      const moduleRestartMatch = pathname.match(/^\/api\/modules\/([^/]+)\/restart$/)
+      if (moduleRestartMatch && req.method === 'POST') {
+        await this.handleRestartModuleApi(req, res, decodeURIComponent(moduleRestartMatch[1]))
         return
       }
 
@@ -3454,6 +3489,46 @@ export class AdminModule extends ModuleBase {
       throw new Error(AdminErrorCode.TASK_NOT_FOUND)
     }
     return { task }
+  }
+
+  /**
+   * Agent 模块重启后扫 in-flight 任务，标 failed 并生成 recovery 任务。
+   *
+   * @param restartCount agent 此次启动是第几次（0=首次，不做 self-healing）
+   */
+  private async runSelfHealingForAgentRestart(restartCount: number): Promise<void> {
+    if (restartCount <= 0) return
+
+    const executing = Array.from(this.tasks.values()).filter((t) => t.status === 'executing')
+    if (executing.length === 0) return
+
+    const now = generateTimestamp()
+    const interrupted = executing.filter((t) => !t.tags.includes('recovery'))
+
+    // 1. 把所有 in-flight 任务（含 recovery 自身）置 failed
+    for (const t of executing) {
+      t.status = 'failed'
+      t.error = 'agent_restarted_during_execution'
+      t.updated_at = now
+      this.publishAdminEvent('admin.task_status_changed', {
+        task_id: t.id,
+        old_status: 'executing',
+        new_status: 'failed',
+      })
+    }
+    console.log(`[Admin] Self-healing: marked ${executing.length} task(s) as failed (incl. ${executing.length - interrupted.length} recovery task)`)
+
+    // 2. 生成 recovery 任务（防雪崩：跳过自身就是 recovery 的）
+    const params = buildRecoveryTask(interrupted, restartCount, now)
+    if (params) {
+      const { task } = await this.handleCreateTask(params)
+      console.log(`[Admin] Self-healing: created recovery task ${task.id} for ${interrupted.length} interrupted task(s)`)
+    } else {
+      console.log(`[Admin] Self-healing: no recovery task needed (no non-recovery interrupted tasks)`)
+    }
+
+    // 3. 持久化任务变更
+    await this.saveData()
   }
 
   private async handleListTasks(params: ListTasksParams): Promise<{ items: Task[]; pagination: { page: number; page_size: number; total_items: number; total_pages: number } }> {
@@ -6611,6 +6686,26 @@ export class AdminModule extends ModuleBase {
   private agentPort = 0
 
   /**
+   * 模块意外退出/不健康时清相应类型的端口缓存。
+   * agent 模块清 agentPort；memory 模块清 memoryModules 列表的对应项。
+   */
+  private invalidatePortCache(moduleId: string, moduleType: string): void {
+    if (moduleType === 'agent' || moduleId === 'crabot-agent') {
+      if (this.agentPort > 0) {
+        console.log(`[Admin] Invalidating cached agentPort=${this.agentPort} for ${moduleId}`)
+        this.agentPort = 0
+      }
+    }
+    if (moduleType === 'memory' || moduleType === 'unknown') {
+      const before = this.memoryModules.length
+      this.memoryModules = this.memoryModules.filter((m) => m.module_id !== moduleId)
+      if (this.memoryModules.length !== before) {
+        console.log(`[Admin] Invalidated cached memory port for ${moduleId}`)
+      }
+    }
+  }
+
+  /**
    * 确保 Agent 端口已解析，如果缓存为空则重新解析
    */
   private async ensureAgentPort(): Promise<number> {
@@ -6619,6 +6714,29 @@ export class AdminModule extends ModuleBase {
     }
     await this.resolveAgentPort()
     return this.agentPort
+  }
+
+  /**
+   * 包装 RPC 调 agent，遇 ECONNREFUSED 自动清缓存重试一次。
+   * 调用方应该用这个而不是裸 rpcClient.call(agentPort, ...)。
+   */
+  private async callAgentRpc<P, R>(method: string, params: P): Promise<R> {
+    const tryOnce = async (): Promise<R> => {
+      const port = await this.ensureAgentPort()
+      if (!port) throw new Error('Agent not available')
+      return this.rpcClient.call<P, R>(port, method, params, this.config.moduleId)
+    }
+    try {
+      return await tryOnce()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg.includes('ECONNREFUSED') || msg.includes('connect failed')) {
+        console.log(`[Admin] callAgentRpc(${method}) hit ECONNREFUSED, clearing cache and retrying once...`)
+        this.agentPort = 0
+        return tryOnce() // 再试一次（让 resolve 拿新端口或抛 503-style 错误）
+      }
+      throw err
+    }
   }
 
   private memoryModules: Array<{ module_id: string; port: number; name: string }> = []
@@ -6667,25 +6785,23 @@ export class AdminModule extends ModuleBase {
     url: URL
   ): Promise<void> {
     try {
-      const port = await this.ensureAgentPort()
-      if (!port) {
-        res.writeHead(503, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'Agent not available' }))
-        return
-      }
       const limit = parseInt(url.searchParams.get('limit') ?? '20', 10)
       const offset = parseInt(url.searchParams.get('offset') ?? '0', 10)
       const status = url.searchParams.get('status') ?? undefined
-      const result = await this.rpcClient.call<
+      const result = await this.callAgentRpc<
         { limit?: number; offset?: number; status?: string },
         { traces: unknown[]; total: number }
-      >(port, 'get_traces', { limit, offset, status }, this.config.moduleId)
+      >('get_traces', { limit, offset, status })
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify(result))
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
-      res.writeHead(500, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ error: msg }))
+      const isUnreachable =
+        msg.includes('Agent not available') ||
+        msg.includes('ECONNREFUSED') ||
+        msg.includes('connect failed')
+      res.writeHead(isUnreachable ? 503 : 500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: isUnreachable ? 'Agent not available' : msg }))
     }
   }
 
@@ -6695,16 +6811,10 @@ export class AdminModule extends ModuleBase {
     traceId: string
   ): Promise<void> {
     try {
-      const port = await this.ensureAgentPort()
-      if (!port) {
-        res.writeHead(503, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'Agent not available' }))
-        return
-      }
-      const result = await this.rpcClient.call<
+      const result = await this.callAgentRpc<
         { trace_id: string },
         { trace: unknown }
-      >(port, 'get_trace', { trace_id: traceId }, this.config.moduleId)
+      >('get_trace', { trace_id: traceId })
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify(result))
     } catch (error) {
@@ -6713,8 +6823,12 @@ export class AdminModule extends ModuleBase {
         res.writeHead(404, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: msg }))
       } else {
-        res.writeHead(500, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: msg }))
+        const isUnreachable =
+          msg.includes('Agent not available') ||
+          msg.includes('ECONNREFUSED') ||
+          msg.includes('connect failed')
+        res.writeHead(isUnreachable ? 503 : 500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: isUnreachable ? 'Agent not available' : msg }))
       }
     }
   }
@@ -6724,28 +6838,26 @@ export class AdminModule extends ModuleBase {
     res: ServerResponse
   ): Promise<void> {
     try {
-      const port = await this.ensureAgentPort()
-      if (!port) {
-        res.writeHead(503, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'Agent not available' }))
-        return
-      }
       const body = await new Promise<string>((resolve) => {
         let data = ''
         req.on('data', (chunk) => { data += chunk })
         req.on('end', () => resolve(data))
       })
       const params = body ? (JSON.parse(body) as { before?: string; trace_ids?: string[] }) : {}
-      const result = await this.rpcClient.call<
+      const result = await this.callAgentRpc<
         { before?: string; trace_ids?: string[] },
         { cleared_count: number }
-      >(port, 'clear_traces', params, this.config.moduleId)
+      >('clear_traces', params)
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify(result))
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
-      res.writeHead(500, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ error: msg }))
+      const isUnreachable =
+        msg.includes('Agent not available') ||
+        msg.includes('ECONNREFUSED') ||
+        msg.includes('connect failed')
+      res.writeHead(isUnreachable ? 503 : 500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: isUnreachable ? 'Agent not available' : msg }))
     }
   }
 
@@ -6755,12 +6867,6 @@ export class AdminModule extends ModuleBase {
     url: URL
   ): Promise<void> {
     try {
-      const port = await this.ensureAgentPort()
-      if (!port) {
-        res.writeHead(503, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'Agent not available' }))
-        return
-      }
       const params: Record<string, unknown> = {}
       const taskId = url.searchParams.get('task_id')
       if (taskId) params.task_id = taskId
@@ -6774,12 +6880,76 @@ export class AdminModule extends ModuleBase {
       params.limit = parseInt(url.searchParams.get('limit') ?? '20', 10)
       params.offset = parseInt(url.searchParams.get('offset') ?? '0', 10)
 
-      const result = await this.rpcClient.call<
+      const result = await this.callAgentRpc<
         Record<string, unknown>,
         { traces: unknown[]; total: number }
-      >(port, 'search_traces', params, this.config.moduleId)
+      >('search_traces', params)
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify(result))
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      const isUnreachable =
+        msg.includes('Agent not available') ||
+        msg.includes('ECONNREFUSED') ||
+        msg.includes('connect failed')
+      res.writeHead(isUnreachable ? 503 : 500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: isUnreachable ? 'Agent not available' : msg }))
+    }
+  }
+
+  private async handleListModulesApi(_req: IncomingMessage, res: ServerResponse): Promise<void> {
+    try {
+      const result = await this.rpcClient.callModuleManager<unknown, { modules: unknown[] }>(
+        'list_modules',
+        {},
+        this.config.moduleId
+      )
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(result))
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: msg }))
+    }
+  }
+
+  private async handleGetModuleLogApi(
+    _req: IncomingMessage,
+    res: ServerResponse,
+    moduleId: string,
+    url: URL
+  ): Promise<void> {
+    try {
+      const lines = parseInt(url.searchParams.get('tail') ?? '500', 10)
+      const cappedLines = Math.min(Math.max(lines, 1), 5000)
+      // MM 子进程日志统一在 ${DATA_DIR}/logs/<id>.log（见 crabot-core/index.ts spawn）
+      // admin 自己的 DATA_DIR 是 ${DATA_DIR}/admin，所以要 resolve 到上一级
+      const dataDir = process.env.DATA_DIR ?? './data'
+      const logsDir = path.resolve(dataDir, '..', 'logs')
+      const logFile = path.join(logsDir, `${moduleId}.log`)
+      const content = await tailLogFile(logFile, cappedLines)
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ module_id: moduleId, lines: cappedLines, content }))
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: msg }))
+    }
+  }
+
+  private async handleRestartModuleApi(
+    _req: IncomingMessage,
+    res: ServerResponse,
+    moduleId: string
+  ): Promise<void> {
+    try {
+      const result = await this.rpcClient.callModuleManager<{ module_id: string }, unknown>(
+        'restart_module',
+        { module_id: moduleId },
+        this.config.moduleId
+      )
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: true, result }))
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
       res.writeHead(500, { 'Content-Type': 'application/json' })

@@ -170,6 +170,29 @@ node scripts/debug-agent.mjs modules  # 查看 MM 注册的模块
 
 完整调试手册：[docs/agent-debugging.md](docs/agent-debugging.md)
 
+## 模块恢复机制（已上线）
+
+### 自动重启
+
+- 内置核心模块（admin/agent/memory）`auto_restart: true`，意外退出走指数退避
+- 退避：1s → 2s → 4s → 8s → 10s 上限
+- 限流：5 分钟内最多 3 次；超限置 status=error，发 module.health_changed 事件
+- 仅 `crashed` 触发；`shutdown`/`forced` 不重启
+
+### 人工兜底
+
+- Admin Web `/modules` 页：模块状态 + 看日志 + 一键重启
+- 子进程 stdout/stderr 持续落到 `data/logs/<moduleId>.log`
+- agent fatal 错误（unhandled rejection / uncaught exception）写到 `data/agent/fatal.log`
+
+### Self-healing recovery 任务
+
+- agent 重启（restart_count>0）后，admin 自动：
+  1. 把所有 status=executing 任务标 failed
+  2. 为非 recovery in-flight 任务生成一条 recovery worker 任务（tags=['recovery'], priority=high）
+  3. 让 agent 用 search_traces / get_task_details 自查每条进度并续办或汇报
+- 防雪崩：recovery 任务自身崩了不再派生新 recovery
+
 ## 开发环境（必须了解）
 
 ### dev.sh（推荐的开发方式）

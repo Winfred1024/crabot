@@ -1,8 +1,21 @@
 # Crabot 项目进度
 
-> 最后更新：2026-04-30 — 原生飞书 Channel
+> 最后更新：2026-05-07 — 模块恢复 & Self-Healing
 
-## 最新里程碑（2026-04-30 — 原生飞书 Channel）
+## 最新里程碑（2026-05-07 — 模块恢复 & Self-Healing）
+
+补齐"模块意外退出后的自动/人工/agent 恢复"能力。spec/plan：`crabot-docs/superpowers/plans/2026-05-07-module-recovery-and-self-healing.md`。
+
+- **MM 自动重启**：`ModuleDefinition.auto_restart` 字段实装；指数退避 1s/2s/4s/8s/10s + 5min 内 3 次窗口限流；超限置 status=error 并发 module.health_changed；admin/agent/memory 内置模块默认开启。
+- **DiskWatcher**：MM 启动 60s 周期检查 dataDir 所在挂载点剩余空间，跌破 1GB 阈值发 system.disk_low 事件（注入式 statfsFn 便于单测，状态去抖避免重复广播）。修因 5/7 凌晨 agent 静默猝死的根因——磁盘满 ENOSPC + 没 fatal handler。
+- **Admin 端口缓存失效**：onEvent 订阅 module_stopped / module_health_changed → 清 agentPort / memoryModules 相应缓存；新增 callAgentRpc helper 在 ECONNREFUSED 时清缓存重试一次；4 个 agent trace handler 切到 helper，把不可达错误返 503 而非 500（修因 5/7 admin 接口报 500 的根因）。
+- **Admin REST + Web UI**：新增 `GET /api/modules`、`GET /api/modules/:id/log?tail=N`（读 data/logs/<id>.log）、`POST /api/modules/:id/restart`；admin web `/modules` 页加运行状态面板（5s 轮询 + 着色状态 + 查看日志弹窗 + 重启确认）。
+- **Self-healing recovery 任务**：agent module_started(restart_count>0) 触发 admin runSelfHealingForAgentRestart：扫所有 status=executing 任务标 failed → 用 buildRecoveryTask 纯函数构造 recovery worker 任务（tags=['recovery'], priority=high, source.origin=system）→ handleCreateTask + saveData。防雪崩：跳过 tags 已含 'recovery' 的 in-flight，避免 recovery 任务自身崩了无限派生。
+- **协议变更**：`protocol-module-manager.md` §6.0 加 auto_restart 字段定义 + §6.1 行为详细说明 + §4.3 system.disk_low 事件 schema + 内置模块示例 yaml；`protocol-admin.md` Task 类型尾追加 Recovery Task 约定（标识/来源/优先级/防雪崩/任务描述）。
+- **测试**：crabot-core 69/69 + crabot-admin 316/317（pre-existing model-provider 失败跟本次无关）+ admin-web 145/145 + RestartPolicy/DiskWatcher/RecoveryHandler/agent-port-cache/module-rest-api 5 个新单测文件。
+- **配套兜底（5/7 同期）**：crabot-agent main 入口加 process.on('uncaughtException'/'unhandledRejection') → 写 ${DATA_DIR}/fatal.log 后 exit(1)；MM 子进程 stdout/stderr 同步落到 ${DATA_DIR}/logs/<moduleId>.log（保留 console 转发用于 dev 体验）。
+
+## 上一里程碑（2026-04-30 — 原生飞书 Channel）
 
 新增 `crabot-channel-feishu` 模块，飞书接入脱离 OpenClaw shim，扫码 onboarding 完整 Web 流程。spec：`crabot-docs/superpowers/specs/2026-04-30-native-feishu-channel-design.md`，plan：`crabot-docs/superpowers/plans/2026-04-30-native-feishu-channel.md`。
 
