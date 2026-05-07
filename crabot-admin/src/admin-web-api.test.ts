@@ -7,7 +7,7 @@ import http from 'node:http'
 import fs from 'node:fs/promises'
 import AdminModule from './index.js'
 import type { ChannelMessageRef, DialogObjectApplication, Friend, FriendPermissionConfig, LoginResponse } from './types.js'
-import { AdminErrorCode } from './types.js'
+import { AdminErrorCode, createCliAccessConfig } from './types.js'
 
 const TEST_PROTOCOL_PORT = 19807
 const TEST_WEB_PORT = 13007
@@ -700,6 +700,7 @@ describe('Admin Web API', () => {
           remote_exec: false,
           desktop: false,
         },
+        cli_access: createCliAccessConfig('none'),
         storage: null,
         memory_scopes: ['should-not-apply'],
         updated_at: '2026-04-21T00:00:00.000Z',
@@ -735,6 +736,7 @@ describe('Admin Web API', () => {
           remote_exec: true,
           desktop: true,
         },
+        cli_access: createCliAccessConfig('write'),
         storage: { workspace_path: '/', access: 'readwrite' },
         memory_scopes: [],
       })
@@ -769,6 +771,7 @@ describe('Admin Web API', () => {
           remote_exec: false,
           desktop: false,
         },
+        cli_access: createCliAccessConfig('none'),
         storage: null,
         memory_scopes: [],
       })
@@ -802,6 +805,7 @@ describe('Admin Web API', () => {
           remote_exec: false,
           desktop: false,
         },
+        cli_access: createCliAccessConfig('none'),
         storage: null,
         memory_scopes: [],
       })
@@ -867,6 +871,7 @@ describe('Admin Web API', () => {
           remote_exec: true,
           desktop: true,
         },
+        cli_access: createCliAccessConfig('write'),
         storage: { workspace_path: '/', access: 'readwrite' },
         memory_scopes: [],
       })
@@ -1048,6 +1053,7 @@ describe('Admin Web API', () => {
       expect(readResponse.body.config?.updated_at).toBe(saveResponse.body.config.updated_at)
       expect(readResponse.body.resolved).toEqual({
         ...requestedConfig,
+        cli_access: createCliAccessConfig('none'),
       })
     })
 
