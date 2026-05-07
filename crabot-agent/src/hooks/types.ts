@@ -1,3 +1,6 @@
+import type { ResolvedPermissions } from '../types.js'
+import type { ReviewResult } from '../agent/cli-content-reviewer.js'
+
 export type HookEvent = 'PreToolUse' | 'PostToolUse' | 'Stop'
 
 export interface HookDefinition {
@@ -40,9 +43,20 @@ export interface LspManagerLike {
   getDiagnostics(filePath: string): Promise<ReadonlyArray<FormattedDiagnostic>>
 }
 
+export type ContentReviewer = (params: {
+  readonly effectivePermissions: ResolvedPermissions
+  readonly commandText: string
+}) => Promise<ReviewResult>
+
 export interface InternalHandlerContext {
   readonly workingDirectory: string
   readonly lspManager?: LspManagerLike
+  /** 当前消息发起人是否 master（master 短路免审核） */
+  readonly senderIsMaster?: boolean
+  /** 发起人 effective permissions（friend ∪ session）*/
+  readonly resolvedPermissions?: ResolvedPermissions
+  /** 内容审核器（schedule add 等需要审核的命令使用） */
+  readonly contentReviewer?: ContentReviewer
 }
 
 export type InternalHandler = (
@@ -55,4 +69,8 @@ export interface HookExecutorContext {
   readonly lspManager?: LspManagerLike
   readonly adapter?: import('../engine/llm-adapter-types.js').LLMAdapter
   readonly model?: string
+  /** ↓ Task 8 新增：CLI 权限闸需要的上下文 */
+  readonly senderIsMaster?: boolean
+  readonly resolvedPermissions?: ResolvedPermissions
+  readonly contentReviewer?: ContentReviewer
 }

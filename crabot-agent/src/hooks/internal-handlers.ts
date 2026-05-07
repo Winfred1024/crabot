@@ -4,7 +4,7 @@ import { exec } from 'child_process'
 import * as fs from 'fs'
 import * as fsp from 'fs/promises'
 import * as path from 'path'
-import { CLI_WRITE_SUBCOMMANDS } from 'crabot-shared'
+import { classifyCliSubcommand, REQUIRES_CONTENT_REVIEW } from 'crabot-shared'
 import { parseCrabotInvocation } from './crabot-cmd-parser.js'
 
 const handlers = new Map<string, InternalHandler>()
@@ -75,25 +75,97 @@ registerInternalHandler('compile-check', async (_input, context) => {
   })
 })
 
-// --- Built-in: block-cli-write ---
-// 解析 Bash 命令中的 crabot 调用，拦截 write 类子命令和 --reveal
-registerInternalHandler('block-cli-write', async (input, _context) => {
+// --- Built-in: cli-permission-gate ---
+// 解析 Bash 命令中的 crabot 调用，按 effective permissions 决策：
+//   1. --reveal → 永远 block（master 也不行）
+//   2. 未识别子命令 → fail-closed block（master 也拦，避免新命令未入表前默认放行）
+//   3. master → 短路放行
+//   4. 硬闸：cli_access[domain] 与 (read/write) 不匹配 → block
+//   5. 软闸：REQUIRES_CONTENT_REVIEW（仅 schedule add）→ 调 contentReviewer，deny → block
+registerInternalHandler('cli-permission-gate', async (input, context) => {
   const cmdStr = String(input.toolInput?.['command'] ?? '')
   const parsed = parseCrabotInvocation(cmdStr)
   if (!parsed) return { action: 'continue' }
+
+  // 1. --reveal 永不放行（master 也不行，by design）
   if (parsed.hasReveal) {
-    return { action: 'block', message: '`--reveal` 仅在 master 私聊场景可用。' }
+    return {
+      action: 'block',
+      message: 'PERMISSION_DENIED: `--reveal` 永不暴露给 agent。',
+    }
   }
-  if (CLI_WRITE_SUBCOMMANDS.has(parsed.subcommand)) {
-    return { action: 'block', message: `命令 \`crabot ${parsed.subcommand}\` 仅在 master 私聊场景可用。` }
+
+  // 2. 解析 (domain, kind) —— 未识别 fail-closed，即便 master 也拦
+  const cls = classifyCliSubcommand(parsed.subcommand)
+  if (!cls) {
+    return {
+      action: 'block',
+      message: `PERMISSION_DENIED: 未识别的 crabot 子命令 \`${parsed.subcommand}\`（fail-closed）。`,
+    }
   }
+
+  // 3. master 短路（master 身份特权，不依赖 cli_access 配置）
+  if (context.senderIsMaster) {
+    return { action: 'continue' }
+  }
+
+  // 4. 硬闸：cli_access[domain]
+  const cliAccess = context.resolvedPermissions?.cli_access
+  if (!cliAccess) {
+    return {
+      action: 'block',
+      message: 'PERMISSION_DENIED: 当前权限上下文缺失，无法放行 CLI 命令（fail-closed）。',
+    }
+  }
+  const allowed = cliAccess[cls.domain]
+  const passes =
+    (cls.kind === 'read' && (allowed === 'read' || allowed === 'write')) ||
+    (cls.kind === 'write' && allowed === 'write')
+  if (!passes) {
+    return {
+      action: 'block',
+      message: `PERMISSION_DENIED: cli_access.${cls.domain}=${allowed}，无法执行 ${cls.kind} 命令 \`${parsed.subcommand}\`。`,
+    }
+  }
+
+  // 5. 软闸：内容审核（仅 schedule add）
+  if (REQUIRES_CONTENT_REVIEW.has(parsed.subcommand)) {
+    if (!context.contentReviewer || !context.resolvedPermissions) {
+      return {
+        action: 'block',
+        message: 'PERMISSION_DENIED: 内容审核器未配置（fail-closed）。',
+      }
+    }
+    const review = await context.contentReviewer({
+      effectivePermissions: context.resolvedPermissions,
+      commandText: cmdStr,
+    })
+    if (review.verdict === 'deny') {
+      return {
+        action: 'block',
+        message: `PERMISSION_DENIED: 该请求未通过内容审核 — ${review.reason}`,
+      }
+    }
+  }
+
   return { action: 'continue' }
 })
 
-// --- Built-in: block-cli (legacy alias) ---
+// --- Legacy alias: block-cli-write → cli-permission-gate ---
+registerInternalHandler('block-cli-write', async (input, context) => {
+  const fwd = getInternalHandler('cli-permission-gate')
+  if (!fwd) {
+    return { action: 'block', message: 'PERMISSION_DENIED: cli-permission-gate handler 未注册。' }
+  }
+  return fwd(input, context)
+})
+
+// --- Legacy alias: block-cli → cli-permission-gate ---
 registerInternalHandler('block-cli', async (input, context) => {
-  const fwd = getInternalHandler('block-cli-write')
-  if (!fwd) return { action: 'block', message: 'CLI 管理命令仅在 master 私聊场景可用。' }
+  const fwd = getInternalHandler('cli-permission-gate')
+  if (!fwd) {
+    return { action: 'block', message: 'PERMISSION_DENIED: cli-permission-gate handler 未注册。' }
+  }
   return fwd(input, context)
 })
 

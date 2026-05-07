@@ -13,7 +13,7 @@ export function createCliPermissionHook(): HookDefinition {
     matcher: 'Bash',
     if: 'Bash(crabot *)',
     type: 'command',
-    command: '__internal:block-cli-write',
+    command: '__internal:cli-permission-gate',
   }
 }
 

@@ -29,6 +29,9 @@ async function executeSingleHook(
       return await executeCommandHook(hook, input, {
         workingDirectory: context.workingDirectory,
         lspManager: context.lspManager,
+        senderIsMaster: context.senderIsMaster,
+        resolvedPermissions: context.resolvedPermissions,
+        contentReviewer: context.contentReviewer,
       })
     }
 
