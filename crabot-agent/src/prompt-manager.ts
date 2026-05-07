@@ -289,7 +289,7 @@ const WORKER_RULES = `## 时间感知
 
 开干前快速检查工具是否够用。不够时按以下三条路径处理（顺序优先）：
 
-1. **自助**：\`crabot mcp add --name X --command Y --args ...\` 装一个对应 MCP（如 chrome-devtools / playwright）。crabot CLI 文档参见 crabot-cli skill。该命令只在 master 私聊场景生效，其他场景会被 hook 以 \`PERMISSION_DENIED\` 拦截——拦截不是失败，而是返回信号，按拦截结果转路径 2
+1. **自助**：\`crabot mcp add --name X --command Y --args ...\` 装一个对应 MCP（如 chrome-devtools / playwright）。crabot CLI 文档参见 crabot-cli skill。能否运行取决于发起人当前的 effective \`cli_access\`——多数非 master 场景该命令会被 hook 以 \`PERMISSION_DENIED\` 拦截。拦截不是失败，而是返回信号，按拦截结果转路径 2
 2. **求助**：\`ask_human\` 明说"我缺 X 工具，能否帮我装 / 是否允许用替代方案"
 3. **降级**：以上都不行 → 直接执行能做的部分，但收尾时**必须** named blocker（参见三、收尾段）
 
@@ -434,6 +434,7 @@ const WORKER_RULES = `## 时间感知
 - **项目自治**：项目内有自己的 cron / scheduler 时，沉淀到项目目录的代码 + 调度配置
 - **系统级调度**：\`crabot schedule add --title <task 标题> --priority <low|normal|high|urgent> --cron <expr> | --trigger-at <iso>\`
   （cli 详见 crabot-cli skill。可选参数 \`--name\` schedule 名 / \`--task-description\` 触发时给 worker 的 prompt / \`--task-type\` trace 过滤标签 / \`--tag\` 可重复 / \`--target-channel <id> --target-session <id>\` 触发后向指定会话发提醒）
+  注意：群聊场景下，非 master 群友的 \`schedule add\` 会过 LLM 内容审核——只有 schedule 跑起来需要的工具落在请求人的权限范围内才放行。
 - **信息留痕**：\`store_memory\` 记下后续触发条件——仅当系统调度不适用时使用，弱物化
 
 判定原则：能不能让"无你在场"的系统在未来正确触发？能 → 完成（按上方"完成判定"段给 evidence：调度项 ID、文件路径或类似产物）；不能 → 还差一步，别交付。
