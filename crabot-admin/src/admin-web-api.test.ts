@@ -1232,6 +1232,49 @@ describe('Admin Web API', () => {
       expect(response.body.resolved.cli_access.provider).toBe('none')
       expect(response.body.sources.fallback).toBe('minimal')
     })
+
+    it('群聊 无 friend 无 session_config → group_default 兜底（非 friend 发言人按群聊默认权限）', async () => {
+      const token = await loginAndGetToken()
+      const response = await makeWebRequest<{ resolved: { tool_access: Record<string, boolean> }, sources: { session_template_id?: string, fallback?: string } }>(
+        TEST_WEB_PORT,
+        `/api/permissions/resolve-principal`,
+        'POST',
+        { session_id: 'group-stranger-no-config-session', session_type: 'group' },
+        token,
+      )
+      expect(response.statusCode).toBe(200)
+      // group_default：除 desktop 外全部 true
+      expect(response.body.resolved.tool_access.messaging).toBe(true)
+      expect(response.body.resolved.tool_access.shell).toBe(true)
+      expect(response.body.resolved.tool_access.task).toBe(true)
+      expect(response.body.resolved.tool_access.desktop).toBe(false)
+      expect(response.body.sources.session_template_id).toBe('group_default')
+      expect(response.body.sources.fallback).toBeUndefined()
+    })
+
+    it('群聊 无 friend，sessionConfig 缺 template_id 但带 tool_access 覆盖 → group_default 基底 ∪ session 覆盖', async () => {
+      const token = await loginAndGetToken()
+      const sessionId = 'group-legacy-session-no-template'
+      // 模拟旧数据：sessionConfig 没有 template_id 但有 tool_access 覆盖
+      admin['sessionConfigs'].set(sessionId, {
+        tool_access: { shell: false } as Partial<{ shell: boolean }>,
+        updated_at: '2026-04-21T00:00:00.000Z',
+      } as never)
+
+      const response = await makeWebRequest<{ resolved: { tool_access: Record<string, boolean> }, sources: { session_template_id?: string } }>(
+        TEST_WEB_PORT,
+        `/api/permissions/resolve-principal`,
+        'POST',
+        { session_id: sessionId, session_type: 'group' },
+        token,
+      )
+      expect(response.statusCode).toBe(200)
+      expect(response.body.resolved.tool_access.shell).toBe(false)         // session 覆盖
+      expect(response.body.resolved.tool_access.messaging).toBe(true)      // group_default 基底
+      expect(response.body.resolved.tool_access.task).toBe(true)
+      expect(response.body.resolved.tool_access.desktop).toBe(false)
+      expect(response.body.sources.session_template_id).toBe('group_default')
+    })
   })
 })
 

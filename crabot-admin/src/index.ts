@@ -6485,21 +6485,27 @@ export class AdminModule extends ModuleBase {
     }
 
     // 2. session 侧
+    // 群聊：始终以 group_default 作为基底（叠 sessionConfig 字段覆盖），
+    //   非 friend 发言人也按群聊默认权限处理 —— 这是合并 resolveGroupPermissions 时
+    //   语义遗失的回填（commit c609772 引入的 regression）。
+    // 私聊：仅当 sessionConfig 显式 template_id 时才解析；陌生人走 minimal 兜底。
     let sessionResolved: ResolvedPermissions | null = null
     const sessionConfig = this.sessionConfigs.get(params.session_id) ?? null
-    if (sessionConfig?.template_id) {
+    const sessionTemplateId = sessionConfig?.template_id
+      ?? (params.session_type === 'group' ? 'group_default' : null)
+    if (sessionTemplateId) {
       try {
         sessionResolved = this.permissionTemplateManager.resolvePermissions(
-          sessionConfig.template_id,
+          sessionTemplateId,
           sessionConfig,
         )
-        sources.session_template_id = sessionConfig.template_id
+        sources.session_template_id = sessionTemplateId
       } catch (err) {
-        console.warn(`[Admin] resolvePrincipalPermissions: session template '${sessionConfig.template_id}' missing for session ${params.session_id}:`, err)
+        console.warn(`[Admin] resolvePrincipalPermissions: session template '${sessionTemplateId}' missing for session ${params.session_id}:`, err)
       }
     }
 
-    // 3. 都没有 → minimal 兜底
+    // 3. 都没有 → minimal 兜底（仅私聊路径会到这里；群聊已被 group_default 兜住）
     if (!friendResolved && !sessionResolved) {
       sources.fallback = 'minimal'
       return {
