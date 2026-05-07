@@ -7,6 +7,8 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process'
+import fs from 'node:fs'
+import path from 'node:path'
 import http from 'node:http'
 import {
   type Request,
@@ -69,10 +71,13 @@ export class ModuleManager {
   private server: http.Server | null = null
   private healthCheckTimer: NodeJS.Timeout | null = null
   private isShuttingDown = false
+  private readonly logsDir: string
 
   constructor(config: Partial<ModuleManagerConfig> = {}, dataDir: string) {
     this.config = { ...DEFAULT_CONFIG, ...config }
     this.portAllocator = new PortAllocator(this.config.port_range, dataDir)
+    this.logsDir = path.join(dataDir, 'logs')
+    fs.mkdirSync(this.logsDir, { recursive: true })
 
     // 注册所有方法处理器
     this.registerMethod('register', this.handleRegister.bind(this))
@@ -694,6 +699,13 @@ export class ModuleManager {
     const entry = (entryOverride ?? runtime.entry).replace(/{PORT}/g, String(runtime.port))
     const [command, ...args] = this.parseEntry(entry)
 
+    // 子进程日志同时落盘到 ${DATA_DIR}/logs/<moduleId>.log，
+    // 避免子进程崩溃时 console pipe 里的栈被丢失看不到。
+    // 'a' 模式 append；轮转交给用户/外部工具
+    const logFile = path.join(this.logsDir, `${moduleId}.log`)
+    const logStream = fs.createWriteStream(logFile, { flags: 'a' })
+    logStream.write(`\n[${generateTimestamp()}] === spawn ${moduleId} ===\n`)
+
     const proc = spawn(command, args, {
       cwd: runtime.cwd,
       env: {
@@ -709,13 +721,19 @@ export class ModuleManager {
     this.processes.set(moduleId, proc)
     runtime.pid = proc.pid
 
-    // 处理输出
+    // 处理输出：同时落盘 + 终端转发（dev/调试可见）
     proc.stdout?.on('data', (data: Buffer) => {
+      logStream.write(data)
       console.log(`[${moduleId}] ${data.toString().trim()}`)
     })
 
     proc.stderr?.on('data', (data: Buffer) => {
+      logStream.write(data)
       console.error(`[${moduleId}] ${data.toString().trim()}`)
+    })
+
+    proc.once('exit', () => {
+      logStream.end(`[${generateTimestamp()}] === exit ${moduleId} ===\n`)
     })
 
     // 处理进程退出

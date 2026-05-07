@@ -2,10 +2,40 @@
  * Unified Agent 模块入口
  */
 
+import fs from 'node:fs'
+import path from 'node:path'
 import { UnifiedAgent } from './unified-agent.js'
 import { RpcClient } from 'crabot-shared'
 import { ConfigLoader } from './core/config-loader.js'
 import type { UnifiedAgentConfig } from './types.js'
+
+// 未捕获错误兜底：写到 fatal.log 并退出（让 MM 看到 code≠0 → status=error）
+// 此前 agent 静默猝死无栈，是因为 process.on('unhandledRejection'/'uncaughtException') 缺失
+const fatalLogPath = path.join(process.env.DATA_DIR ?? './data', 'fatal.log')
+function writeFatal(kind: string, err: unknown, extra?: Record<string, unknown>): void {
+  const ts = new Date().toISOString()
+  const stack = err instanceof Error ? (err.stack ?? err.message) : String(err)
+  const meta = extra ? ` ${JSON.stringify(extra)}` : ''
+  const line = `[${ts}] [${kind}]${meta}\n${stack}\n\n`
+  try {
+    fs.mkdirSync(path.dirname(fatalLogPath), { recursive: true })
+    fs.appendFileSync(fatalLogPath, line, 'utf-8')
+  } catch {
+    // 写盘失败（如 ENOSPC）也别挡 stderr 输出
+  }
+  try { process.stderr.write(line) } catch { /* ignore */ }
+}
+
+process.on('uncaughtException', (err, origin) => {
+  writeFatal('uncaughtException', err, { origin })
+  // 异常已落盘，主动退出让 MM 把状态置 error
+  process.exit(1)
+})
+
+process.on('unhandledRejection', (reason, promise) => {
+  writeFatal('unhandledRejection', reason, { promise: String(promise) })
+  process.exit(1)
+})
 
 async function main(): Promise<void> {
   // 初始化 RpcClient（用于从 Admin 获取配置）
