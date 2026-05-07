@@ -1021,13 +1021,6 @@ export class WorkerHandler {
 
 
   /**
-   * Map EngineResult to ExecuteTaskResult.
-   *
-   * 当 finalText 为空（模型坚持沉默 end_turn）：summary 用诚实占位、final_reply
-   * 留空让 channel 不发假托汇报。用户追问时由 Front 走 create_task 让 worker
-   * 用 get_task_details 拉 trace 自己再汇报。
-   */
-  /**
    * 构造 cli-permission-gate hook 用的内容审核器。
    *
    * 复用 worker 自身 LLM adapter / model（fast 档暂未单独配置）。schedule add 频率低，
@@ -1040,6 +1033,13 @@ export class WorkerHandler {
       reviewCliContent({ effectivePermissions, commandText, adapter, modelId })
   }
 
+  /**
+   * Map EngineResult to ExecuteTaskResult.
+   *
+   * 当 finalText 为空（模型坚持沉默 end_turn）：summary 用诚实占位、final_reply
+   * 留空让 channel 不发假托汇报。用户追问时由 Front 走 create_task 让 worker
+   * 用 get_task_details 拉 trace 自己再汇报。
+   */
   private mapEngineResult(
     taskId: TaskId,
     result: EngineResult,
