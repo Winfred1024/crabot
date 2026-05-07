@@ -133,6 +133,7 @@ import {
 import { createMemoryV2RestRouter } from './memory-v2-rest.js'
 import { OnboardingManager } from './onboarding-manager.js'
 import type { Onboarder } from 'crabot-shared'
+import { tailLogFile } from './module-log-tail.js'
 
 // ============================================================================
 // JWT 工具函数
@@ -1713,6 +1714,22 @@ export class AdminModule extends ModuleBase {
       const bgEntityIdMatch = pathname.match(/^\/api\/bg-entities\/([^/]+)$/)
       if (bgEntityIdMatch && req.method === 'DELETE') {
         await this.handleKillBgEntityApi(req, res, decodeURIComponent(bgEntityIdMatch[1]))
+        return
+      }
+
+      // 模块管理 REST：列出模块 + 看日志 + 重启
+      if (req.method === 'GET' && pathname === '/api/modules') {
+        await this.handleListModulesApi(req, res)
+        return
+      }
+      const moduleLogMatch = pathname.match(/^\/api\/modules\/([^/]+)\/log$/)
+      if (moduleLogMatch && req.method === 'GET') {
+        await this.handleGetModuleLogApi(req, res, decodeURIComponent(moduleLogMatch[1]), url)
+        return
+      }
+      const moduleRestartMatch = pathname.match(/^\/api\/modules\/([^/]+)\/restart$/)
+      if (moduleRestartMatch && req.method === 'POST') {
+        await this.handleRestartModuleApi(req, res, decodeURIComponent(moduleRestartMatch[1]))
         return
       }
 
@@ -6831,6 +6848,66 @@ export class AdminModule extends ModuleBase {
         msg.includes('connect failed')
       res.writeHead(isUnreachable ? 503 : 500, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: isUnreachable ? 'Agent not available' : msg }))
+    }
+  }
+
+  private async handleListModulesApi(_req: IncomingMessage, res: ServerResponse): Promise<void> {
+    try {
+      const result = await this.rpcClient.callModuleManager<unknown, { modules: unknown[] }>(
+        'list_modules',
+        {},
+        this.config.moduleId
+      )
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(result))
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: msg }))
+    }
+  }
+
+  private async handleGetModuleLogApi(
+    _req: IncomingMessage,
+    res: ServerResponse,
+    moduleId: string,
+    url: URL
+  ): Promise<void> {
+    try {
+      const lines = parseInt(url.searchParams.get('tail') ?? '500', 10)
+      const cappedLines = Math.min(Math.max(lines, 1), 5000)
+      // MM 子进程日志统一在 ${DATA_DIR}/logs/<id>.log（见 crabot-core/index.ts spawn）
+      // admin 自己的 DATA_DIR 是 ${DATA_DIR}/admin，所以要 resolve 到上一级
+      const dataDir = process.env.DATA_DIR ?? './data'
+      const logsDir = path.resolve(dataDir, '..', 'logs')
+      const logFile = path.join(logsDir, `${moduleId}.log`)
+      const content = await tailLogFile(logFile, cappedLines)
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ module_id: moduleId, lines: cappedLines, content }))
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: msg }))
+    }
+  }
+
+  private async handleRestartModuleApi(
+    _req: IncomingMessage,
+    res: ServerResponse,
+    moduleId: string
+  ): Promise<void> {
+    try {
+      const result = await this.rpcClient.callModuleManager<{ module_id: string }, unknown>(
+        'restart_module',
+        { module_id: moduleId },
+        this.config.moduleId
+      )
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: true, result }))
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: msg }))
     }
   }
 
