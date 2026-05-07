@@ -38,6 +38,8 @@ export function buildRecoveryTask(
   })
 
   const description = [
+    `[重启时间：${nowISO}]`,
+    '',
     `你刚刚因故重启了。重启前有以下 ${interrupted.length} 条任务正在执行但被强制中断：`,
     '',
     ...lines,
