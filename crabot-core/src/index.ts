@@ -725,6 +725,7 @@ export class ModuleManager {
     }
 
     runtime.status = 'starting'
+    runtime.intentional_stop = false
 
     // 替换 entry 中的 {PORT} 模板
     const entry = (entryOverride ?? runtime.entry).replace(/{PORT}/g, String(runtime.port))
@@ -793,6 +794,12 @@ export class ModuleManager {
 
       if (code === 0) return // 正常退出，到此为止
 
+      // 主动停止（哪怕被 SIGKILL）也不算 crashed，不走 RestartPolicy
+      if (runtime.intentional_stop) {
+        runtime.intentional_stop = false
+        return
+      }
+
       // 意外退出
       runtime.status = 'error'
 
@@ -855,6 +862,7 @@ export class ModuleManager {
 
   private async stopModuleProcess(moduleId: ModuleId, reason: ModuleStopReason): Promise<void> {
     const runtime = this.modules.get(moduleId)
+    if (runtime) runtime.intentional_stop = true
     const proc = this.processes.get(moduleId)
 
     if (!runtime) {
