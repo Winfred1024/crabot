@@ -45,10 +45,10 @@ describe('Friend permission resolution surfaces cli_access', () => {
 
   it('Friend 类型存在且符合预期形状（cross-check 不破坏既有 friend 模型）', () => {
     const f: Friend = {
-      id: 'f1' as Friend['id'],
+      id: 'f1',
       display_name: 'Test',
       permission: 'normal',
-      identities: [],
+      channel_identities: [],
       created_at: 't',
       updated_at: 't',
     }

@@ -835,6 +835,7 @@ describe('Admin Web API', () => {
           remote_exec: false,
           desktop: false,
         },
+        cli_access: createCliAccessConfig('none'),
         storage: null,
         memory_scopes: [],
       })
@@ -944,6 +945,7 @@ describe('Admin Web API', () => {
           remote_exec: false,
           desktop: true,
         },
+        cli_access: createCliAccessConfig('none'),
         storage: null,
         memory_scopes: ['scope-stale'],
         updated_at: '2026-04-21T00:00:00.000Z',
@@ -1036,6 +1038,7 @@ describe('Admin Web API', () => {
           remote_exec: false,
           desktop: false,
         },
+        cli_access: createCliAccessConfig('none'),
         storage: { workspace_path: '/workspace/projects', access: 'readwrite' as const },
         memory_scopes: ['scope-a', 'scope-b'],
       }
@@ -1114,6 +1117,7 @@ describe('Admin Web API', () => {
           remote_exec: false,
           desktop: false,
         },
+        cli_access: createCliAccessConfig('none'),
         storage: null,
         memory_scopes: ['scope-delete'],
         updated_at: '2026-04-21T00:00:00.000Z',
