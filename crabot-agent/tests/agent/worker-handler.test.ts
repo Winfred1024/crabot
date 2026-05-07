@@ -59,6 +59,10 @@ function makeContext(): WorkerAgentContext {
     short_term_memories: [],
     long_term_memories: [],
     available_tools: [],
+    time_windows: {
+      recent_messages_window_hours: 4,
+      short_term_memory_window_hours: 12,
+    },
   }
 }
 

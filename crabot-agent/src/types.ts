@@ -22,14 +22,22 @@ import type {
 export interface OrchestrationConfig {
   /** Admin 共享存储路径 */
   admin_config_path: string
-  /** Front Agent 上下文中的近期聊天记录数量上限 */
-  front_context_recent_messages_limit: number
-  /** Front Agent 上下文中的短期记忆数量上限 */
-  front_context_memory_limit: number
-  /** Worker Agent 上下文中的近期聊天记录数量上限 */
-  worker_recent_messages_limit: number
-  /** Worker Agent 上下文中的短期记忆数量上限 */
-  worker_short_term_memory_limit: number
+  /** Front Agent 近期聊天记录的时间窗口（小时） */
+  front_context_recent_messages_window_hours: number
+  /** Front Agent 近期聊天记录的硬上限（防止 busy 群爆 prompt） */
+  front_context_recent_messages_max_cap: number
+  /** Front Agent 短期记忆的时间窗口（小时） */
+  front_context_short_term_memory_window_hours: number
+  /** Front Agent 短期记忆的硬上限 */
+  front_context_short_term_memory_max_cap: number
+  /** Worker Agent 近期聊天记录的时间窗口（小时） */
+  worker_recent_messages_window_hours: number
+  /** Worker Agent 近期聊天记录的硬上限 */
+  worker_recent_messages_max_cap: number
+  /** Worker Agent 短期记忆的时间窗口（小时） */
+  worker_short_term_memory_window_hours: number
+  /** Worker Agent 短期记忆的硬上限 */
+  worker_short_term_memory_max_cap: number
   /** Worker Agent 上下文中的长期记忆数量上限 */
   worker_long_term_memory_limit: number
   /** Front Agent 处理超时（秒） */
@@ -378,6 +386,15 @@ export interface ResolvedModule {
 // Agent 上下文（对齐 protocol-agent-v2.md）
 // ============================================================================
 
+/**
+ * 上下文时间窗口元数据。让 prompt 构建器在 section 标题里显示真实窗口大小，
+ * 而不是 hardcode；同时 LLM 看到窗口边界后能判断"窗口外的事件需要主动调工具查"。
+ */
+export interface ContextTimeWindows {
+  recent_messages_window_hours: number
+  short_term_memory_window_hours: number
+}
+
 export interface FrontAgentContext {
   sender_friend: Friend
   recent_messages: ChannelMessage[]
@@ -394,6 +411,8 @@ export interface FrontAgentContext {
   scene_profile?: RuntimeSceneProfile
   /** Crabot's display name on the current channel (e.g. group nickname) */
   crab_display_name?: string
+  /** 用于 prompt 渲染时显示窗口边界 */
+  time_windows: ContextTimeWindows
 }
 
 export interface WorkerAgentContext {
@@ -409,6 +428,8 @@ export interface WorkerAgentContext {
   admin_endpoint: ResolvedModule
   memory_endpoint: ResolvedModule
   channel_endpoints: ResolvedModule[]
+  /** 用于 prompt 渲染时显示窗口边界 */
+  time_windows: ContextTimeWindows
   sandbox_path_mappings?: Array<{
     sandbox_path: string
     host_path: string

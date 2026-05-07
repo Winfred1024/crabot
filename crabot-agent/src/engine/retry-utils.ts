@@ -6,6 +6,11 @@
 export const DEFAULT_MAX_RETRIES = 10
 export const DEFAULT_RETRY_DELAY_MS = 10_000
 
+// 过载/限流类错误的指数退避参数。常规 socket 类错误仍走 DEFAULT_RETRY_DELAY_MS 固定间隔，
+// 因为这类错误一般是瞬时网络抖动，等久了反而拖慢恢复；过载错误则需要让上游 server 喘气。
+export const BACKOFF_MAX_DELAY_MS = 60_000
+const BACKOFF_JITTER_RATIO = 0.2
+
 const RETRYABLE_CODES = new Set([
   // POSIX
   'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE',
@@ -20,7 +25,30 @@ const RETRYABLE_MESSAGE_PATTERNS = [
   'fetch failed', 'terminated', 'socket hang up', 'network error',
 ]
 
+// 上游 body 里出现这些 code 时视为过载/限流，走指数退避（包括 HTTP 400 的非标准载体）。
+// 目前只见过 ChatGPT Codex 后端用 HTTP 400 + server_is_overloaded；其他 provider 后续按样本补。
+const OVERLOADED_BODY_CODES = new Set([
+  'server_is_overloaded',
+])
+
+// HTTP status 黑名单：明确指示客户端永久错误（认证 / 越权 / 不存在 / 方法错误 / 校验失败），
+// 重试无意义。其他 4xx（含 400）和所有 5xx 都默认走重试 —— 现实中很多上游把 transient
+// 错误（过载 / 路由抖动 / token 过期）伪装成 400，按状态码白名单一刀切会错杀整轮请求。
+const NON_RETRYABLE_HTTP_STATUS = new Set([401, 403, 404, 405, 422])
+
+// body code 黑名单：上游把"客户端永久错误"塞进 HTTP 400 body 的特殊 code。
+// 这类错误重试也不会成功（同输入再发还是被拦），必须在状态码默认重试之前先短路。
+const NON_RETRYABLE_BODY_CODES = new Set([
+  'content_filter',           // 内容审查命中
+  'invalid_prompt',           // prompt 结构不合法
+  'invalid_request_error',    // 通用请求错（OpenAI 风格）
+  'invalid_api_key',
+  'invalid_authentication',
+])
+
 export class HttpResponseError extends Error {
+  private parsedBodyCode: string | null | undefined
+
   constructor(
     public readonly status: number,
     public readonly body: string,
@@ -29,10 +57,65 @@ export class HttpResponseError extends Error {
     super(`${label} HTTP ${status}: ${body.slice(0, 300)}`)
     this.name = 'HttpResponseError'
   }
+
+  /** body 中的 `code` 字段（如有），用于识别非标准过载/错误码。结果缓存。 */
+  get bodyCode(): string | null {
+    if (this.parsedBodyCode === undefined) {
+      this.parsedBodyCode = extractBodyCode(this.body)
+    }
+    return this.parsedBodyCode
+  }
+}
+
+function extractBodyCode(body: string): string | null {
+  try {
+    const obj = JSON.parse(body) as unknown
+    if (obj && typeof obj === 'object') {
+      const code = (obj as { code?: unknown }).code
+      if (typeof code === 'string') return code
+    }
+  } catch { /* not JSON */ }
+  return null
 }
 
 export function isRetryableStatus(status: number): boolean {
-  return status === 408 || status === 429 || (status >= 500 && status < 600)
+  if (status < 400 || status >= 600) return false
+  return !NON_RETRYABLE_HTTP_STATUS.has(status)
+}
+
+/**
+ * 是否属于过载/限流类错误，需要走指数退避。包含：
+ *   - HTTP 429（标准限流）
+ *   - HttpResponseError body code 命中 OVERLOADED_BODY_CODES（如 server_is_overloaded 走 HTTP 400）
+ *   - SDK error 自带 status === 429
+ */
+export function isOverloadedError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false
+
+  if (err instanceof HttpResponseError) {
+    if (err.status === 429) return true
+    if (err.bodyCode && OVERLOADED_BODY_CODES.has(err.bodyCode)) return true
+    return false
+  }
+
+  const sdkStatus = (err as Error & { status?: unknown }).status
+  if (sdkStatus === 429) return true
+
+  return false
+}
+
+/**
+ * 计算单次重试前的等待时间。
+ *   - useBackoff=false：固定 baseDelayMs
+ *   - useBackoff=true：base * 2^attempt（cap 在 BACKOFF_MAX_DELAY_MS），叠加 ±20% 抖动避免雷暴
+ *
+ * attempt 为 0-indexed —— 第一次失败时 attempt=0，对应 base * 1。
+ */
+export function computeRetryDelayMs(attempt: number, baseDelayMs: number, useBackoff: boolean): number {
+  if (!useBackoff) return baseDelayMs
+  const exp = Math.min(baseDelayMs * Math.pow(2, attempt), BACKOFF_MAX_DELAY_MS)
+  const jitter = exp * BACKOFF_JITTER_RATIO * (Math.random() * 2 - 1)
+  return Math.max(0, Math.round(exp + jitter))
 }
 
 export function isRetryableError(err: unknown): boolean {
@@ -40,6 +123,8 @@ export function isRetryableError(err: unknown): boolean {
   if (err.name === 'AbortError') return false
 
   if (err instanceof HttpResponseError) {
+    // 先短路 body code 黑名单（如 content_filter）—— 这类错误即使包在 5xx 里也不该重试
+    if (err.bodyCode && NON_RETRYABLE_BODY_CODES.has(err.bodyCode)) return false
     return isRetryableStatus(err.status)
   }
 
@@ -132,19 +217,21 @@ export async function withRetry<T>(
       if (abortSignal?.aborted) throw err
       if (!isRetryableError(err)) throw err
       if (attempt >= maxRetries) throw err
+      const useBackoff = isOverloadedError(err)
+      const actualDelay = computeRetryDelayMs(attempt, delayMs, useBackoff)
       console.error(
-        `[${label}] attempt ${attempt + 1}/${maxRetries + 1} failed, retrying in ${delayMs}ms:`,
+        `[${label}] attempt ${attempt + 1}/${maxRetries + 1} failed, retrying in ${actualDelay}ms${useBackoff ? ' (backoff)' : ''}:`,
         err,
       )
       try {
         options.onRetry?.({
           attempt: attempt + 1,
           maxAttempts: maxRetries + 1,
-          delayMs,
+          delayMs: actualDelay,
           error: err instanceof Error ? err : new Error(String(err)),
         })
       } catch { /* observability callback must not break retry */ }
-      await sleep(delayMs, abortSignal)
+      await sleep(actualDelay, abortSignal)
     }
   }
   throw new Error(`${label}: retry loop exited unexpectedly`)
@@ -181,19 +268,21 @@ export async function* streamWithRetry<T>(
       if (abortSignal?.aborted) throw err
       if (!isRetryableError(err)) throw err
       if (attempt >= maxRetries) throw err
+      const useBackoff = isOverloadedError(err)
+      const actualDelay = computeRetryDelayMs(attempt, delayMs, useBackoff)
       console.error(
-        `[${label}] attempt ${attempt + 1}/${maxRetries + 1} failed, retrying in ${delayMs}ms:`,
+        `[${label}] attempt ${attempt + 1}/${maxRetries + 1} failed, retrying in ${actualDelay}ms${useBackoff ? ' (backoff)' : ''}:`,
         err,
       )
       try {
         options.onRetry?.({
           attempt: attempt + 1,
           maxAttempts: maxRetries + 1,
-          delayMs,
+          delayMs: actualDelay,
           error: err instanceof Error ? err : new Error(String(err)),
         })
       } catch { /* observability callback must not break retry */ }
-      await sleep(delayMs, abortSignal)
+      await sleep(actualDelay, abortSignal)
     }
   }
 }

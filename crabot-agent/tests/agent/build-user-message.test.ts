@@ -6,7 +6,7 @@ import type { ChannelMessage, FrontAgentContext, ShortTermMemoryEntry } from '..
 // 工厂函数
 // ===========================================================================
 
-function makeMessage(overrides: Partial<ChannelMessage> & { text?: string; sender?: string } = {}): ChannelMessage {
+function makeMessage(overrides: Omit<Partial<ChannelMessage>, 'sender'> & { text?: string; sender?: string } = {}): ChannelMessage {
   return {
     platform_message_id: overrides.platform_message_id ?? 'msg_1',
     session: overrides.session ?? { session_id: 'sess-1', channel_id: 'ch-wechat', type: 'private' },
@@ -35,6 +35,10 @@ function makeContext(overrides: Partial<FrontAgentContext> = {}): FrontAgentCont
     short_term_memories: [],
     active_tasks: [],
     available_tools: [],
+    time_windows: {
+      recent_messages_window_hours: 6,
+      short_term_memory_window_hours: 12,
+    },
     ...overrides,
   }
 }
@@ -60,7 +64,7 @@ describe('buildUserMessage', () => {
       makeContext({ recent_messages: recentMessages }),
     )
 
-    expect(result).toContain('## 最近消息（共 3 条）')
+    expect(result).toContain('## 最近消息（当前 session，最近 6 小时，3 条）')
     expect(result).toContain('Alice: 把统计结果通过 feishu 发给我')
     expect(result).toContain('Crabot: 飞书渠道发送消息时遇到问题')
     expect(result).toContain('Alice: 再重新尝试发送')
@@ -76,19 +80,20 @@ describe('buildUserMessage', () => {
       makeContext({ recent_messages: recentMessages }),
     )
 
-    expect(result).toContain('## 最近消息（共 20 条）')
+    expect(result).toContain('## 最近消息（当前 session，最近 6 小时，20 条）')
     // 第一条和最后一条都应该在
     expect(result).toContain('User0: 消息 0')
     expect(result).toContain('User19: 消息 19')
   })
 
-  it('recent_messages 为空时不渲染最近消息章节', () => {
+  it('recent_messages 为空时仍渲染章节并给出空窗口提示（让 LLM 知道窗口边界）', () => {
     const result = buildUserMessage(
       [makeMessage({ text: 'hi' })],
       makeContext({ recent_messages: [] }),
     )
 
-    expect(result).not.toContain('## 最近消息')
+    expect(result).toContain('## 最近消息（当前 session，最近 6 小时，0 条）')
+    expect(result).toContain('过去 6 小时本会话无消息')
   })
 
   it('最近 3 条消息按 maxLen=2000 截断', () => {
@@ -161,10 +166,33 @@ describe('buildUserMessage', () => {
   // short_term_memories 注入
   // -----------------------------------------------------------------------
 
-  it('应该注入短期记忆', () => {
+  function makeShortTerm(overrides: Partial<ShortTermMemoryEntry> = {}): ShortTermMemoryEntry {
+    return {
+      id: overrides.id ?? 'mem-stub',
+      content: overrides.content ?? 'stub',
+      keywords: overrides.keywords ?? [],
+      event_time: overrides.event_time ?? new Date().toISOString(),
+      persons: overrides.persons ?? [],
+      entities: overrides.entities ?? [],
+      source: overrides.source ?? { type: 'task' },
+      compressed: overrides.compressed ?? false,
+      visibility: overrides.visibility ?? 'public',
+      scopes: overrides.scopes ?? [],
+      created_at: overrides.created_at ?? new Date().toISOString(),
+      ...(overrides.refs ? { refs: overrides.refs } : {}),
+      ...(overrides.topic ? { topic: overrides.topic } : {}),
+    }
+  }
+
+  it('短期记忆按完整内容注入（带 channel/session/task 锚点 + 相对时间）', () => {
     const memories: ShortTermMemoryEntry[] = [
-      { memory_id: 'mem-1', content: '用户之前让我发送统计报告', timestamp: '2026-03-28T00:00:00Z' },
-      { memory_id: 'mem-2', content: '发送失败了，飞书渠道有问题', timestamp: '2026-03-28T00:01:00Z' },
+      makeShortTerm({
+        id: 'mem-1',
+        content: '用户在 X 群让发统计报告',
+        source: { channel_id: 'ch-wechat', session_id: 'sess-X', type: 'task' },
+        refs: { task_id: 'task-A' },
+      }),
+      makeShortTerm({ id: 'mem-2', content: '发送失败了，飞书渠道有问题' }),
     ]
 
     const result = buildUserMessage(
@@ -172,19 +200,23 @@ describe('buildUserMessage', () => {
       makeContext({ short_term_memories: memories }),
     )
 
-    expect(result).toContain('该用户有 2 条短期记忆')
+    // 新格式：section 标题带时窗 + 条数；条目带 source 锚点和正文
+    expect(result).toContain('## 短期记忆（跨所有 channel/session 的近期事件流水，最近 12 小时，2 条）')
+    expect(result).toContain('用户在 X 群让发统计报告')
+    expect(result).toContain('channel=ch-wechat')
+    expect(result).toContain('session=sess-X')
+    expect(result).toContain('task=task-A')
+    expect(result).toContain('发送失败了，飞书渠道有问题')
   })
 
-  it('短期记忆超过 200 字符时应截断', () => {
-    const longMemory: ShortTermMemoryEntry = { memory_id: 'mem-1', content: 'B'.repeat(250), timestamp: '2026-03-28T00:00:00Z' }
-
+  it('短期记忆为空时仍渲染章节并提示主动 search_short_term', () => {
     const result = buildUserMessage(
       [makeMessage({ text: 'hi' })],
-      makeContext({ short_term_memories: [longMemory] }),
+      makeContext({ short_term_memories: [] }),
     )
 
-    // Current format shows count instead of individual memory contents
-    expect(result).toContain('该用户有 1 条短期记忆')
+    expect(result).toContain('## 短期记忆（跨所有 channel/session 的近期事件流水，最近 12 小时，0 条）')
+    expect(result).toContain('过去 12 小时内无相关短期记忆')
   })
 
   // -----------------------------------------------------------------------

@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest'
-import { streamWithRetry } from '../../src/engine/retry-utils'
+import {
+  BACKOFF_MAX_DELAY_MS,
+  HttpResponseError,
+  computeRetryDelayMs,
+  isOverloadedError,
+  isRetryableError,
+  streamWithRetry,
+  withRetry,
+} from '../../src/engine/retry-utils'
 
 class SocketError extends Error {
   readonly code = 'UND_ERR_SOCKET'
@@ -108,6 +116,130 @@ describe('streamWithRetry', () => {
     }).rejects.toThrow(/bad request/)
 
     expect(attempts).toBe(1)
+  })
+
+  it('treats HTTP 400 with body code "server_is_overloaded" as retryable + backoff', async () => {
+    const err = new HttpResponseError(
+      400,
+      JSON.stringify({ code: 'server_is_overloaded', message: 'overloaded' }),
+      'openai-responses-adapter',
+    )
+    expect(isRetryableError(err)).toBe(true)
+    expect(isOverloadedError(err)).toBe(true)
+    expect(err.bodyCode).toBe('server_is_overloaded')
+  })
+
+  it('treats generic HTTP 400 as retryable (no body code) with fixed-interval delay', async () => {
+    // HTTP 4xx 的不可重试白名单仅 401/403/404/405/422，其他 4xx 默认重试，避开错杀
+    // 上游把 transient 错（过载/路由抖动/token 过期）伪装成 400 的情况。
+    const err = new HttpResponseError(400, 'unknown reason', 'test')
+    expect(isRetryableError(err)).toBe(true)
+    expect(isOverloadedError(err)).toBe(false)
+  })
+
+  it('treats auth-class HTTP errors (401/403/404/422) as non-retryable', async () => {
+    for (const status of [401, 403, 404, 422]) {
+      const err = new HttpResponseError(status, '', 'test')
+      expect(isRetryableError(err)).toBe(false)
+      expect(isOverloadedError(err)).toBe(false)
+    }
+  })
+
+  it('treats body-code blacklist (content_filter / invalid_prompt) as non-retryable even on retryable status', async () => {
+    for (const code of ['content_filter', 'invalid_prompt', 'invalid_request_error']) {
+      const err = new HttpResponseError(400, JSON.stringify({ code }), 'test')
+      expect(isRetryableError(err)).toBe(false)
+    }
+    // 即便包在 5xx 里也短路 —— 客户端永久错不该被状态码意外救活
+    const err500 = new HttpResponseError(500, JSON.stringify({ code: 'content_filter' }), 'test')
+    expect(isRetryableError(err500)).toBe(false)
+  })
+
+  it('treats HTTP 429 as retryable + backoff regardless of body', async () => {
+    const err = new HttpResponseError(429, 'Too Many Requests', 'test')
+    expect(isRetryableError(err)).toBe(true)
+    expect(isOverloadedError(err)).toBe(true)
+  })
+
+  it('computeRetryDelayMs: fixed delay when useBackoff=false', () => {
+    expect(computeRetryDelayMs(0, 1_000, false)).toBe(1_000)
+    expect(computeRetryDelayMs(5, 1_000, false)).toBe(1_000)
+  })
+
+  it('computeRetryDelayMs: exponential growth with ±20% jitter, capped at BACKOFF_MAX_DELAY_MS', () => {
+    const base = 10_000
+    // attempt 0 → ~base; attempt 3 → ~base*8 = 80k → capped at 60k
+    const samples0 = Array.from({ length: 50 }, () => computeRetryDelayMs(0, base, true))
+    const samples3 = Array.from({ length: 50 }, () => computeRetryDelayMs(3, base, true))
+
+    for (const v of samples0) {
+      expect(v).toBeGreaterThanOrEqual(base * 0.8 - 1)
+      expect(v).toBeLessThanOrEqual(base * 1.2 + 1)
+    }
+    for (const v of samples3) {
+      expect(v).toBeGreaterThanOrEqual(BACKOFF_MAX_DELAY_MS * 0.8 - 1)
+      expect(v).toBeLessThanOrEqual(BACKOFF_MAX_DELAY_MS * 1.2 + 1)
+    }
+  })
+
+  it('withRetry: surfaces backoff delay via onRetry callback for overloaded errors', async () => {
+    const calls: number[] = []
+    const baseDelay = 100
+    let attempts = 0
+
+    const result = await withRetry(
+      'test',
+      async () => {
+        attempts += 1
+        if (attempts < 3) {
+          throw new HttpResponseError(
+            400,
+            JSON.stringify({ code: 'server_is_overloaded' }),
+            'test',
+          )
+        }
+        return 'ok'
+      },
+      {
+        delayMs: baseDelay,
+        maxRetries: 5,
+        onRetry: (e) => calls.push(e.delayMs),
+      },
+    )
+
+    expect(result).toBe('ok')
+    expect(attempts).toBe(3)
+    // attempt 0 delay ≈ base (±20%); attempt 1 delay ≈ base*2 (±20%)
+    expect(calls).toHaveLength(2)
+    expect(calls[0]).toBeGreaterThanOrEqual(baseDelay * 0.8 - 1)
+    expect(calls[0]).toBeLessThanOrEqual(baseDelay * 1.2 + 1)
+    expect(calls[1]).toBeGreaterThanOrEqual(baseDelay * 2 * 0.8 - 1)
+    expect(calls[1]).toBeLessThanOrEqual(baseDelay * 2 * 1.2 + 1)
+  })
+
+  it('withRetry: keeps fixed delay for non-overloaded retryable errors', async () => {
+    const calls: number[] = []
+    const baseDelay = 50
+    let attempts = 0
+
+    await withRetry(
+      'test',
+      async () => {
+        attempts += 1
+        if (attempts < 3) {
+          const inner = Object.assign(new Error('socket'), { code: 'ECONNRESET' })
+          throw Object.assign(new TypeError('terminated'), { cause: inner })
+        }
+        return 'ok'
+      },
+      {
+        delayMs: baseDelay,
+        maxRetries: 5,
+        onRetry: (e) => calls.push(e.delayMs),
+      },
+    )
+
+    expect(calls).toEqual([baseDelay, baseDelay])
   })
 
   it('honors maxRetries cap when failures keep happening pre-material', async () => {

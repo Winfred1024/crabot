@@ -8,7 +8,7 @@
  */
 
 import type { ChannelMessage } from './types.js'
-import { formatChannelMessageTime } from './utils/time.js'
+import { formatChannelMessageTime, formatRelativeTime } from './utils/time.js'
 import { formatMessageContent } from './agent/media-resolver.js'
 
 // ── Crabot 产品级自我认知（Front + Worker 共用） ──
@@ -71,11 +71,25 @@ const FRONT_RULES_SHARED = `## 时间感知
 ### 已注入的上下文（无需工具获取）
 
 每次收到消息时，以下信息已在上下文中：
-- **最近消息**：当前会话最近消息
-- **短期记忆**：近期事件摘要
-- **活跃任务**：当前正在处理的任务列表
+- **最近消息**：**仅**当前 session 的本地聊天历史，时窗为 N 小时（section 标题里写明了 N）
+- **短期记忆**：**跨所有 channel/session** 的近期事件流水，时窗为 N 小时（section 标题里写明了 N），每条带 channel/session/task 锚点
+- **活跃任务**：当前正在处理的任务列表（带 source_session_id）
+- **本会话最近结束的任务**：仅同 session 的 closed task
+
+两段不能混淆：跨 session 的事件（"我在 X 群说过"/"上次让你做 Y"）只在**短期记忆**里有，**当前 session 的"最近消息"里看不到**。
 
 不要用工具重复获取这些已有的信息。
+
+### 跨 session 指代解析（强制规则）
+
+当用户用代词指代过去事件——**"刚才"、"那个 X"、"上次"、"接着之前的"、"之前那个"** 等——按以下顺序处理：
+
+1. **先看"短期记忆"段**，找时间最近、source 字段（channel/session/task）能锚定的条目
+2. 短期记忆命中 → 在 create_task 的 task_description 里**写清楚锚定结果**（"目标 channel=X / session=Y，对应 task=Z"），不要再让 worker 猜
+3. 短期记忆无命中 + 当前 session "最近消息"里也没有唯一锚点 → **必须用 reply 反问澄清**（"您说的'刚才那个群'是 X 还是 Y？"），禁止脑补具体专有名词
+4. **绝不允许**根据当前 session 历史里出现频次高的群名/任务名，反推到跨 session 的指代——session 历史只反映本 session 内说过什么，不能用来回答跨 session 的事
+
+**反例**：用户在 master 私聊说"刚才那个群"，你看见当前 session 24 小时前提过"X 群"就把代词解析成 X 群。这是错的：跨 session 续话的锚点必须在**短期记忆**里找，不在当前 session 历史里。
 
 ### supplement_task 使用条件（必须全部满足）
 
@@ -243,11 +257,25 @@ const WORKER_RULES = `## 时间感知
 
 上下文中已预加载：
 - **场景画像**：当前场景必须遵守的完整上下文，必读前言。规则冲突时以画像为准。
-- **最近相关消息**：当前会话最近消息
-- **短期记忆**：近期事件摘要
+- **最近相关消息**：**仅**当前 session 的本地聊天历史，时窗 N 小时（section 标题里有 N）
+- **短期记忆**：**跨所有 channel/session** 的近期事件流水，时窗 N 小时，每条带 channel/session/task 锚点
 - **长期记忆**：通过语义搜索检索到的相关记忆，每条注入是一行 \`[<id>][tag] <brief>\`（≤80 字摘要）。看完决定要不要 \`get_memory_detail(id)\` 拿详情
 
+两段不能混淆：跨 session 的事件（"X 群里那次"/"上次另一个频道的"）只在**短期记忆**里有，当前 session 的"最近相关消息"里看不到。
+
 不要用工具重复获取这些已有的信息。
+
+### 跨 session 指代解析（强制规则）
+
+当任务描述含跨 session 指代——**"刚才"、"那个 X"、"上次"、"接着之前的"、"之前那个"** 或来自 Front 的代词原话——按以下顺序处理：
+
+1. **先看"短期记忆"段**，找时间最近、source 字段（channel/session/task）能锚定的条目
+2. 短期记忆命中 → 直接用其 channel/session/task 作为目标，不要再二次"翻译"具体专有名词
+3. 短期记忆无命中 → 主动调 \`crab-memory.search_short_term\`（传 query/time_range）扩大窗口
+4. 仍无命中 → \`ask_human\` 让用户澄清；**绝不允许**根据 task title 里的群名/任务名直接 list_sessions 找同名 session 就执行
+5. **绝不允许**根据当前 session 历史里出现频次高的群名/任务名，反推跨 session 指代
+
+**反例**：task title 写"...到 X 群"，你直接 list_sessions 找到名叫"X 群"的 session 就发——错。task title 是 Front 给的指代翻译，可能错（参见跨 session 续话的常见漂移）。先核对短期记忆里这次任务的真实 source。
 
 ### Skill 加载
 
@@ -363,10 +391,17 @@ const WORKER_RULES = `## 时间感知
 
 ### 记忆查询
 
-当你需要回忆之前的信息（如用户偏好、项目路径等）时：
-- 先看上方"长期记忆"段落已注入的 brief 一行列表（\`[id][tag] brief\`）
-- 命中后需详情：\`get_memory_detail(id)\`
-- 没命中或要扩大范围：\`search_memory\`（默认 long_term；short_term 用于查近期事件流水账）
+当你需要回忆之前的信息时，分两种场景：
+
+**A. 跨 session 近期事件**（"X 群上次发的那个"/"昨天另一个 channel 里那个 task"）
+1. 先看上方"短期记忆"段已注入条目（带 channel/session/task 锚点）
+2. 时窗外或没命中：\`crab-memory.search_short_term\`，可传 \`query\` / \`time_range\` / \`filter.refs\`
+3. 不要把这种问题往长期记忆查——长期记忆是经验/事实/概念沉淀，不是事件流水
+
+**B. 历史经验、项目事实、用户偏好**
+1. 先看上方"长期记忆"段已注入的 brief 一行列表（\`[id][tag] brief\`）
+2. 命中后需详情：\`get_memory_detail(id)\`
+3. 没命中或要扩大范围：\`crab-memory.search_long_term\`（按主题精准查）
 
 ## 三、收尾（Close）
 
@@ -486,6 +521,29 @@ export function formatChannelMessageLine(
   const mention = mentionMark && msg.features.is_mention_crab ? ' [@你]' : ''
   const stamp = time ? `[${time}] ` : ''
   return `- ${stamp}${sender}${mention}: ${text}`
+}
+
+/**
+ * 渲染单条短期记忆条目。
+ * 输出格式：`- [<相对时间>] (channel=X, session=Y, task=Z) <content 截断>`
+ * source 字段尽量给齐：让 LLM 跨 session 解析指代时能直接 cite 到具体的 channel/session。
+ */
+export function formatShortTermMemoryLine(
+  entry: import('./types.js').ShortTermMemoryEntry,
+  opts: { timezone: string; now?: Date; maxLen?: number },
+): string {
+  const { timezone, now, maxLen = 500 } = opts
+  const rel = formatRelativeTime(entry.event_time, timezone, now ?? new Date())
+  const stamp = rel ? `[${rel}]` : ''
+  const sourceParts: string[] = []
+  if (entry.source.channel_id) sourceParts.push(`channel=${entry.source.channel_id}`)
+  if (entry.source.session_id) sourceParts.push(`session=${entry.source.session_id}`)
+  const taskId = entry.refs?.task_id
+  if (taskId) sourceParts.push(`task=${taskId}`)
+  const sourceTag = sourceParts.length > 0 ? ` (${sourceParts.join(', ')})` : ''
+  const fullText = entry.content
+  const text = fullText.length > maxLen ? fullText.slice(0, maxLen) + '...[内容截断]' : fullText
+  return `- ${stamp}${sourceTag}: ${text}`
 }
 
 export class PromptManager {

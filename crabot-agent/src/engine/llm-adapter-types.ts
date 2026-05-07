@@ -6,6 +6,8 @@ import { StreamProcessor } from './stream-processor.js'
 import {
   DEFAULT_MAX_RETRIES,
   DEFAULT_RETRY_DELAY_MS,
+  computeRetryDelayMs,
+  isOverloadedError,
   isRetryableError,
   sleep,
 } from './retry-utils.js'
@@ -141,20 +143,22 @@ async function withStreamConsumptionRetry(
       if (params.signal?.aborted) throw err
       if (!isRetryableError(err)) throw err
       if (attempt >= maxRetries) throw err
+      const useBackoff = isOverloadedError(err)
+      const actualDelay = computeRetryDelayMs(attempt, delayMs, useBackoff)
       console.error(
-        `[callNonStreaming] stream attempt ${attempt + 1}/${maxRetries + 1} failed, retrying in ${delayMs}ms:`,
+        `[callNonStreaming] stream attempt ${attempt + 1}/${maxRetries + 1} failed, retrying in ${actualDelay}ms${useBackoff ? ' (backoff)' : ''}:`,
         err,
       )
       try {
         params.onRetry?.({
           attempt: attempt + 1,
           maxAttempts: maxRetries + 1,
-          delayMs,
+          delayMs: actualDelay,
           error: err instanceof Error ? err : new Error(String(err)),
           source: 'mid-stream',
         })
       } catch { /* observability callback must not break retry */ }
-      await sleep(delayMs, params.signal)
+      await sleep(actualDelay, params.signal)
       // 下一轮 loop 会用全新 processor + 重新 call adapter.stream()，
       // 服务端生成新 response（partial 浪费，但 task 能完成）
     }

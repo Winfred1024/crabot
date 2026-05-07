@@ -1820,7 +1820,7 @@ export class UnifiedAgent extends ModuleBase {
           title: string
           description: string
           assigned_worker: string
-          source: { origin: string; source_module_id: string }
+          source: { origin: string; source_module_id: string; trigger_type: 'scheduled' }
           input?: Record<string, unknown>
         },
         { task: { id: string } }
@@ -1831,9 +1831,13 @@ export class UnifiedAgent extends ModuleBase {
           title,
           description,
           assigned_worker: workerId,
+          // trigger_type='scheduled' 让 Front prompt 给任务打 [定时/巡检任务，禁止 supplement]
+          // 标签，并让 engine 兜底（unified-agent.handleLocalSupplement / dispatcher.handleSupplementTask）
+          // 把 LLM 误投递的 supplement 自动降级为 create_task。漏传过会导致防线全部失效。
           source: {
             origin: 'system',
             source_module_id: this.config.moduleId,
+            trigger_type: 'scheduled',
           },
           input: { schedule_id },
         },

@@ -71,6 +71,10 @@ function makeContext(): FrontAgentContext {
     short_term_memories: [],
     active_tasks: [],
     available_tools: [],
+    time_windows: {
+      recent_messages_window_hours: 6,
+      short_term_memory_window_hours: 12,
+    },
   }
 }
 
@@ -147,6 +151,35 @@ describe('FrontHandler', () => {
       const callArgs = mockRunFrontLoop.mock.calls[0][0]
       expect(callArgs).toHaveProperty('adapter')
       expect(callArgs).toHaveProperty('model', 'test-model')
+    })
+
+    it('supplement_task 候选集排除 trigger_type=scheduled 的任务', async () => {
+      // 历史 bug：Front 把巡检/定时任务一并塞进 supplement_task 的候选 enum，
+      // LLM 会误把用户新需求 supplement 到正在跑的巡检任务上，覆盖巡检本职。
+      // 修复：context-assembler 拿到的 active_tasks 仍然全集进 prompt 渲染（让 LLM 能
+      // 答"巡检在干嘛"），但喂给 supplement_task tool enum 的 activeTaskIds 必须只装
+      // 非 scheduled 的 task_id——从源头砍掉 LLM 的错误选择面。
+      mockRunFrontLoop.mockResolvedValue({
+        decision: { type: 'direct_reply', reply: { type: 'text', text: 'OK' } },
+      })
+
+      const { handler } = makeFrontHandler()
+      const context: FrontAgentContext = {
+        ...makeContext(),
+        active_tasks: [
+          { task_id: 't_manual_1', title: '用户请求处理', status: 'executing', priority: 'normal', trigger_type: 'manual' },
+          { task_id: 't_scheduled_1', title: '巡检', status: 'executing', priority: 'normal', trigger_type: 'scheduled' },
+          { task_id: 't_legacy', title: '老数据无 trigger_type', status: 'executing', priority: 'normal' },
+          { task_id: 't_manual_2', title: '另一个用户任务', status: 'executing', priority: 'normal', trigger_type: 'manual' },
+        ],
+      }
+
+      await handler.handleMessage({ messages: makeMessages(), context })
+
+      const callArgs = mockRunFrontLoop.mock.calls[0][0]
+      // 只剩非 scheduled；trigger_type 缺失（旧数据）按非 scheduled 处理（保留）
+      expect(callArgs.activeTaskIds).toEqual(['t_manual_1', 't_legacy', 't_manual_2'])
+      expect(callArgs.activeTaskIds).not.toContain('t_scheduled_1')
     })
 
     it('应该处理错误并返回错误消息（私聊）', async () => {

@@ -21,7 +21,7 @@ import type {
   TraceCallback,
 } from '../types.js'
 import { formatNow, formatTaskCreatedAt } from '../utils/time.js'
-import { formatChannelMessageLine } from '../prompt-manager.js'
+import { formatChannelMessageLine, formatShortTermMemoryLine } from '../prompt-manager.js'
 
 export type UserMessageContent = string | ContentBlock[]
 
@@ -86,12 +86,21 @@ export class FrontHandler {
     }
 
     try {
+      // supplement_task 候选集只装"非 scheduled"任务的 ID。
+      // 巡检/定时任务由调度引擎自主跑，用户即使主题相关也应走 create_task 开新任务，
+      // 而不是 supplement 覆盖它本职。从源头把这类 task_id 排除出 enum，比靠
+      // prompt 提醒 + engine 兜底更稳——LLM 选择面里根本没有它们。
+      // active_tasks 全集仍照常进 prompt 渲染，让 LLM 能回答"巡检在干嘛"。
+      const supplementableTaskIds = context.active_tasks
+        .filter(t => t.trigger_type !== 'scheduled')
+        .map(t => t.task_id)
+
       const result = await runFrontLoop({
         systemPrompt: this.getSystemPrompt(isGroup),
         userMessage,
         rawUserText,
         allowSilent,
-        activeTaskIds: context.active_tasks.map(t => t.task_id),
+        activeTaskIds: supplementableTaskIds,
         adapter: this.adapter,
         model: this.model,
         toolExecutor: this.toolExecutor,
@@ -147,8 +156,8 @@ function formatElapsed(ms: number): string {
 export function buildUserMessage(
   messages: ChannelMessage[],
   context: FrontAgentContext,
-  imageBlocks: Array<{ type: 'image'; source: { type: 'base64' | 'url'; media_type: string; data: string } }> | undefined,
-  timezone: string,
+  imageBlocks?: Array<{ type: 'image'; source: { type: 'base64' | 'url'; media_type: string; data: string } }>,
+  timezone: string = 'UTC',
 ): UserMessageContent {
   const parts: string[] = []
   const isGroup = messages[0]?.session?.type === 'group'
@@ -249,21 +258,35 @@ export function buildUserMessage(
     parts.push(`- 当前 Session ID: ${session.session_id}`)
   }
 
-  // ── 记忆系统提示 ──
+  const shortTermHours = context.time_windows.short_term_memory_window_hours
+  const recentHours = context.time_windows.recent_messages_window_hours
+
+  // ── 短期记忆（跨 channel/session 流水账，时窗内全量内容） ──
+  // 设计目的：解决跨 session 续话的指代漂移（"刚才那个群" / "上次那个" 指向另一 session 的事件）。
+  // recent_messages 只盖当前 session，跨 session 的锚点必须靠这一段提供。
+  parts.push(`\n## 短期记忆（跨所有 channel/session 的近期事件流水，最近 ${shortTermHours} 小时，${context.short_term_memories.length} 条）`)
   if (context.short_term_memories.length > 0) {
-    parts.push(`\n- 该用户有 ${context.short_term_memories.length} 条短期记忆（近期事件流水账，记录跨所有 channel/session 的事件摘要，如"用户要求修改某项目"、"任务 X 已完成"等）。短期记忆不是聊天记录。如需查看特定 session 的原始聊天消息，使用 get_history 工具。`)
+    parts.push('当用户用代词指代过去事件（"刚才那个 X"/"上次"/"接着之前的"）时，先看这里再做决策——条目带 channel/session/task 锚点，可直接 cite。')
+    for (const mem of context.short_term_memories) {
+      parts.push(formatShortTermMemoryLine(mem, { timezone, now, maxLen: 500 }))
+    }
+  } else {
+    parts.push(`过去 ${shortTermHours} 小时内无相关短期记忆。如需更早的事件流水，可在 create_task 的 description 里说明，让 worker 调 \`crab-memory.search_short_term\` 查。`)
   }
 
-  // ── 最近消息 ──
+  // ── 最近消息（仅当前 session，时窗内全量） ──
   // 越靠近当前消息越重要，给更大的字符预算，保留完整的行动 offer / 决策上下文。
+  // 注意：本段只反映当前 session 的本地历史，回答跨 session 指代必须看上方"短期记忆"段。
+  parts.push(`\n## 最近消息（当前 session，最近 ${recentHours} 小时，${context.recent_messages.length} 条）`)
   if (context.recent_messages.length > 0) {
-    parts.push(`\n## 最近消息（共 ${context.recent_messages.length} 条）`)
     const total = context.recent_messages.length
     for (let i = 0; i < total; i++) {
       const distFromEnd = total - 1 - i
       const maxLen = distFromEnd < 3 ? 2000 : distFromEnd < 10 ? 600 : 300
       parts.push(formatChannelMessageLine(context.recent_messages[i], { timezone, now, maxLen }))
     }
+  } else {
+    parts.push(`过去 ${recentHours} 小时本会话无消息。如需更早的本会话历史，调 \`get_history\` 工具。`)
   }
 
   // ── 当前消息 ──

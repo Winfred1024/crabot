@@ -21,10 +21,14 @@ const defaultMemoryPermissions: MemoryPermissions = {
 
 const defaultConfig: OrchestrationConfig = {
   admin_config_path: '',
-  front_context_recent_messages_limit: 20,
-  front_context_memory_limit: 10,
-  worker_recent_messages_limit: 50,
-  worker_short_term_memory_limit: 20,
+  front_context_recent_messages_window_hours: 6,
+  front_context_recent_messages_max_cap: 50,
+  front_context_short_term_memory_window_hours: 12,
+  front_context_short_term_memory_max_cap: 30,
+  worker_recent_messages_window_hours: 4,
+  worker_recent_messages_max_cap: 50,
+  worker_short_term_memory_window_hours: 12,
+  worker_short_term_memory_max_cap: 30,
   worker_long_term_memory_limit: 20,
   front_agent_timeout: 30,
   session_state_ttl: 300,
@@ -32,6 +36,10 @@ const defaultConfig: OrchestrationConfig = {
   front_agent_queue_max_length: 10,
   front_agent_queue_timeout: 60,
 }
+
+// 时窗内的时间戳（早于 now 1 秒），保证测试 fixture 不被 since-filter 排除。
+// 单独抽出来是因为 fetchRecentMessages 用 Date.now() 算 since，固定 ISO（如 '2026-01-01'）会被裁掉。
+const recentTs = () => new Date(Date.now() - 1000).toISOString()
 
 describe('ContextAssembler', () => {
   let assembler: ContextAssembler
@@ -58,7 +66,7 @@ describe('ContextAssembler', () => {
         sender: { friend_id: 'friend-1', platform_user_id: 'u1', platform_display_name: 'Test User' },
         content: { type: 'text', text: 'hi' },
         features: { is_mention_crab: false },
-        platform_timestamp: '2026-01-01T00:00:00Z',
+        platform_timestamp: recentTs(),
       },
     ]
     const shortMem = [{ memory_id: 'mem1', content: 'fact', timestamp: '2026-01-01T00:00:00Z' }]
@@ -147,7 +155,7 @@ describe('ContextAssembler', () => {
         sender: { friend_id: 'friend-1', platform_user_id: 'u1', platform_display_name: 'Test User' },
         content: { type: 'text', text: 'hi' },
         features: { is_mention_crab: false },
-        platform_timestamp: '2026-01-01T00:00:00Z',
+        platform_timestamp: recentTs(),
       },
     ]
     const shortMem = [{ memory_id: 'mem1', content: 'fact', timestamp: '2026-01-01T00:00:00Z' }]
@@ -310,7 +318,7 @@ describe('ContextAssembler', () => {
         sender: { friend_id: 'friend-1', platform_user_id: 'u1', platform_display_name: 'Stranger' },
         content: { type: 'text', text: '/认主' },
         features: { is_mention_crab: false },
-        platform_timestamp: '2026-04-30T09:30:00Z',
+        platform_timestamp: new Date(Date.now() - 3000).toISOString(),
       },
       {
         platform_message_id: 'm2',
@@ -321,7 +329,7 @@ describe('ContextAssembler', () => {
           text: '渠道未认主，请输入"/认主"，然后到 crabot 后台 对话对象->申请队列 中进行审批创建 Master 后方可正常对话。',
         },
         features: { is_mention_crab: false },
-        platform_timestamp: '2026-04-30T09:30:01Z',
+        platform_timestamp: new Date(Date.now() - 2000).toISOString(),
       },
       {
         platform_message_id: 'm3',
@@ -329,7 +337,7 @@ describe('ContextAssembler', () => {
         sender: { friend_id: 'friend-1', platform_user_id: 'u1', platform_display_name: 'Stranger' },
         content: { type: 'text', text: 'hi' },
         features: { is_mention_crab: false },
-        platform_timestamp: '2026-04-30T09:31:00Z',
+        platform_timestamp: new Date(Date.now() - 1000).toISOString(),
       },
     ]
 

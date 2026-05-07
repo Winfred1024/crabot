@@ -64,7 +64,7 @@ import { DELEGATE_TASK_SYSTEM_PROMPT } from './subagent-prompts.js'
 import { HumanMessageQueue } from '../engine/human-message-queue.js'
 import { createCodingExpertHookRegistry, createCliBlockHook } from '../hooks/defaults.js'
 import { HookRegistry } from '../hooks/hook-registry.js'
-import { PromptManager, formatChannelMessageLine } from '../prompt-manager.js'
+import { PromptManager, formatChannelMessageLine, formatShortTermMemoryLine } from '../prompt-manager.js'
 import { formatNow, formatChannelMessageTime, resolveTimezone, formatRuntimeMs } from '../utils/time.js'
 import { getInstanceSkillsDir } from '../core/data-paths.js'
 import { TodoStore } from './worker-todo-store.js'
@@ -1224,20 +1224,34 @@ export class WorkerHandler {
       parts.push(`- Channel ID: ${context.task_origin.channel_id}`)
       parts.push(`- Session ID: ${context.task_origin.session_id}`)
     }
-    const hasShortTerm = context.short_term_memories.length > 0
+    const shortTermHours = context.time_windows.short_term_memory_window_hours
+    const recentHours = context.time_windows.recent_messages_window_hours
+
     parts.push('\n## 记忆系统')
-    if (hasShortTerm) {
-      parts.push(`\n### 短期记忆（${context.short_term_memories.length} 条）`)
-      parts.push('近期事件流水账，记录跨所有 channel/session 的事件摘要。不是聊天记录。')
+
+    // 短期记忆（跨 channel/session 流水账）：解决跨 session 指代漂移的核心数据来源
+    parts.push(`\n### 短期记忆（跨所有 channel/session 的近期事件流水，最近 ${shortTermHours} 小时，${context.short_term_memories.length} 条）`)
+    if (context.short_term_memories.length > 0) {
+      parts.push('当任务描述含跨 session 指代（"刚才那个 X"/"上次"/"接着之前的"）时，先看这里再行动——条目带 channel/session/task 锚点。')
+      for (const mem of context.short_term_memories) {
+        parts.push(formatShortTermMemoryLine(mem, { timezone, now, maxLen: 500 }))
+      }
+    } else {
+      parts.push(`过去 ${shortTermHours} 小时内无短期记忆。需要更早的事件流水时主动调 \`crab-memory.search_short_term\`（传 query/time_range）。`)
     }
+
     parts.push('\n### 长期记忆')
     parts.push('长期记忆**不预填**到上下文。当任务需要历史经验、过去做过的类似事、相关事实背景时，')
     parts.push('主动调用 `crab-memory.search_long_term` 工具按主题精准查询，必要时再用 `crab-memory.get_memory` 取详情。')
+
+    // 最近消息（仅当前 session）：本 session 本地历史，回答跨 session 指代请看上方"短期记忆"
+    parts.push(`\n## 最近相关消息（当前 session，最近 ${recentHours} 小时，${context.recent_messages?.length ?? 0} 条）`)
     if (context.recent_messages && context.recent_messages.length > 0) {
-      parts.push(`\n## 最近相关消息（共 ${context.recent_messages.length} 条）`)
       for (const m of context.recent_messages) {
         parts.push(formatChannelMessageLine(m, { timezone, now, maxLen: 500 }))
       }
+    } else {
+      parts.push(`过去 ${recentHours} 小时本会话无消息。如需更早的本会话历史，调 \`get_history\` 工具。`)
     }
 
     // Front immediate reply — tell Worker what was already said to avoid repetition

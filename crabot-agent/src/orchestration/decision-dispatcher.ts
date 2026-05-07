@@ -225,6 +225,7 @@ export class DecisionDispatcher {
         source: {
           origin: string
           source_module_id: string
+          trigger_type: 'manual'
           channel_id?: string
           session_id?: string
           friend_id?: string
@@ -238,10 +239,13 @@ export class DecisionDispatcher {
         title: decision.task_title,
         description: decision.task_description,
         priority: decision.priority,
+        // trigger_type='manual'：admin_chat 与 human 都是人类驱动；
+        // 'scheduled' 只属于 handleCreateTaskFromSchedule 这条调度路径。
         source: params.admin_chat_callback
           ? {
               origin: 'admin_chat',
               source_module_id: params.admin_chat_callback.source_module_id,
+              trigger_type: 'manual',
             }
           : {
               origin: 'human',
@@ -249,6 +253,7 @@ export class DecisionDispatcher {
               channel_id: params.channel_id,
               session_id: params.session_id,
               friend_id: params.messages[params.messages.length - 1].sender.friend_id,
+              trigger_type: 'manual',
             },
       },
       this.moduleId,

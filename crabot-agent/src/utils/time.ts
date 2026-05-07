@@ -130,6 +130,27 @@ export function formatChannelMessageTime(isoTimestamp: string, timezone: string,
 }
 
 /**
+ * 相对时间渲染。用于短期记忆等需要让 LLM 直观感知 recency 的场景。
+ * - <60s: "<1 分钟前"
+ * - <60min: "X 分钟前"
+ * - <24h: "X 小时前"
+ * - 跨日：fallback 到 `MM-DD HH:MM`
+ */
+export function formatRelativeTime(isoTimestamp: string, timezone: string, now: Date = new Date()): string {
+  const ts = new Date(isoTimestamp)
+  if (Number.isNaN(ts.getTime())) return ''
+  const ageMs = now.getTime() - ts.getTime()
+  if (ageMs < 0) return formatChannelMessageTime(isoTimestamp, timezone, now)
+  const ageSec = Math.floor(ageMs / 1000)
+  if (ageSec < 60) return '<1 分钟前'
+  const ageMin = Math.floor(ageSec / 60)
+  if (ageMin < 60) return `${ageMin} 分钟前`
+  const ageHour = Math.floor(ageMin / 60)
+  if (ageHour < 24) return `${ageHour} 小时前`
+  return formatChannelMessageTime(isoTimestamp, timezone, now)
+}
+
+/**
  * 任务创建时间渲染。同日 `HH:MM`，跨日 `MM-DD HH:MM`。
  * 输入毫秒时间戳。
  */

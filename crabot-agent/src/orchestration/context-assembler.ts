@@ -37,7 +37,8 @@ interface AssembleParams {
 
 interface MemoryFetchParams {
   friendId?: string
-  limit?: number
+  windowHours: number
+  maxCap: number
   minVisibility?: 'private' | 'internal' | 'public'
   accessibleScopes?: string[]
   sessionType?: 'private' | 'group'
@@ -122,12 +123,14 @@ export class ContextAssembler {
       this.withSubSpan(traceCtx, 'fetch_recent_messages', () => this.fetchRecentMessages(
         params.session_id,
         params.channel_id,
-        this.config.front_context_recent_messages_limit,
+        this.config.front_context_recent_messages_window_hours,
+        this.config.front_context_recent_messages_max_cap,
         sessionType
       )),
       this.withSubSpan(traceCtx, 'fetch_short_term_memory', () => this.fetchShortTermMemory({
         friendId: params.friend_id,
-        limit: this.config.front_context_memory_limit,
+        windowHours: this.config.front_context_short_term_memory_window_hours,
+        maxCap: this.config.front_context_short_term_memory_max_cap,
         minVisibility: memoryPermissions.read_min_visibility,
         accessibleScopes: memoryPermissions.read_accessible_scopes,
         sessionType,
@@ -153,6 +156,10 @@ export class ContextAssembler {
       crab_display_name: params.crab_display_name,
       available_tools: [],
       ...(sceneProfile ? { scene_profile: sceneProfile } : {}),
+      time_windows: {
+        recent_messages_window_hours: this.config.front_context_recent_messages_window_hours,
+        short_term_memory_window_hours: this.config.front_context_short_term_memory_window_hours,
+      },
     }
   }
 
@@ -180,12 +187,14 @@ export class ContextAssembler {
       this.withSubSpan(traceCtx, 'fetch_recent_messages', () => this.fetchRecentMessages(
         params.session_id,
         params.channel_id,
-        this.config.worker_recent_messages_limit,
+        this.config.worker_recent_messages_window_hours,
+        this.config.worker_recent_messages_max_cap,
         workerSessionType
       )),
       this.withSubSpan(traceCtx, 'fetch_short_term_memory', () => this.fetchShortTermMemory({
         friendId: params.friend_id,
-        limit: this.config.worker_short_term_memory_limit,
+        windowHours: this.config.worker_short_term_memory_window_hours,
+        maxCap: this.config.worker_short_term_memory_max_cap,
         minVisibility: memoryPermissions.read_min_visibility,
         accessibleScopes: memoryPermissions.read_accessible_scopes,
         sessionType: workerSessionType,
@@ -220,6 +229,10 @@ export class ContextAssembler {
         write_scopes: memoryPermissions.write_scopes,
       },
       ...(sceneProfile ? { scene_profile: sceneProfile } : {}),
+      time_windows: {
+        recent_messages_window_hours: this.config.worker_recent_messages_window_hours,
+        short_term_memory_window_hours: this.config.worker_short_term_memory_window_hours,
+      },
     }
   }
 
@@ -240,6 +253,10 @@ export class ContextAssembler {
       admin_endpoint: adminEndpoint,
       memory_endpoint: memoryEndpoint,
       channel_endpoints: channelEndpoints,
+      time_windows: {
+        recent_messages_window_hours: this.config.worker_recent_messages_window_hours,
+        short_term_memory_window_hours: this.config.worker_short_term_memory_window_hours,
+      },
       memory_permissions: {
         write_visibility: 'internal',
         write_scopes: [],
@@ -254,18 +271,24 @@ export class ContextAssembler {
   private async fetchRecentMessages(
     sessionId: SessionId,
     channelId: ModuleId,
-    limit: number,
+    windowHours: number,
+    maxCap: number,
     sessionType: 'private' | 'group' = 'private'
   ): Promise<ChannelMessage[]> {
+    const sinceIso = new Date(Date.now() - windowHours * 3600 * 1000).toISOString()
     try {
       // admin-web 频道：从 Admin 的 get_chat_history RPC 获取（无 Channel 模块）
       if (channelId === 'admin-web') {
         const adminPort = await this.getAdminPort()
         const result = await this.rpcClient.call<
-          { limit: number; before?: string },
+          { limit: number; before?: string; after?: string },
           { messages: ChannelMessage[] }
-        >(adminPort, 'get_chat_history', { limit }, this.moduleId)
-        return result.messages.filter(filterChannelClaimNoise)
+        >(adminPort, 'get_chat_history', { limit: maxCap, after: sinceIso }, this.moduleId)
+        // admin 端不一定支持 after，本地兜底过滤
+        return result.messages
+          .filter((m) => !m.platform_timestamp || m.platform_timestamp >= sinceIso)
+          .slice(-maxCap)
+          .filter(filterChannelClaimNoise)
       }
 
       // 其他 Channel：通过 Module Manager 解析 Channel 模块并调用 get_history
@@ -274,7 +297,7 @@ export class ContextAssembler {
 
       const channelPort = modules[0].port
       const result = await this.rpcClient.call<
-        { session_id: SessionId; limit: number },
+        { session_id: SessionId; limit: number; time_range?: { after?: string } },
         { items: Array<{
           platform_message_id: string
           sender: { friend_id?: string; platform_user_id: string; platform_display_name: string }
@@ -285,11 +308,14 @@ export class ContextAssembler {
       >(
         channelPort,
         'get_history',
-        { session_id: sessionId, limit },
+        { session_id: sessionId, limit: maxCap, time_range: { after: sinceIso } },
         this.moduleId
       )
       // 注入 session 上下文，转换为 ChannelMessage，并过滤认主指令 + 引导话术
+      // 后过滤：channel 不一定支持 time_range.after，本地兜底；并按 maxCap 截断尾部
       return result.items
+        .filter((msg) => !msg.platform_timestamp || msg.platform_timestamp >= sinceIso)
+        .slice(-maxCap)
         .map((msg) => ({
           platform_message_id: msg.platform_message_id,
           session: {
@@ -319,10 +345,12 @@ export class ContextAssembler {
   }
 
   private async fetchShortTermMemory(params: FetchShortTermMemoryParams): Promise<ShortTermMemoryEntry[]> {
-    const { friendId, limit, minVisibility = 'public', accessibleScopes, sessionType = 'private' } = params
+    const { friendId, windowHours, maxCap, minVisibility = 'public', accessibleScopes, sessionType = 'private' } = params
 
     // 私聊需要 friendId 做个人记忆过滤；群聊靠 scope 隔离，不需要 friendId
     if (sessionType === 'private' && !friendId) return []
+
+    const sinceIso = new Date(Date.now() - windowHours * 3600 * 1000).toISOString()
 
     try {
       const memoryPort = await this.getMemoryPort()
@@ -336,6 +364,7 @@ export class ContextAssembler {
       const result = await this.rpcClient.call<
         {
           filter?: { refs?: Record<string, string> }
+          time_range?: { start?: string; end?: string }
           sort_by?: string
           limit?: number
           min_visibility?: string
@@ -347,8 +376,9 @@ export class ContextAssembler {
         'search_short_term',
         {
           ...(filter && { filter }),
+          time_range: { start: sinceIso },
           sort_by: 'event_time',
-          limit: limit ?? this.config.worker_short_term_memory_limit,
+          limit: maxCap,
           min_visibility: minVisibility,
           ...(accessibleScopes !== undefined && { accessible_scopes: accessibleScopes }),
         },

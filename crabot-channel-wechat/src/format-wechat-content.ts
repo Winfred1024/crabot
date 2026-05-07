@@ -132,6 +132,8 @@ export function formatWechatContent(
       const quotedSender = s('quoted_sender_name')
       const quotedContent = s('quoted_content')
       const quotedSvrId = s('quoted_svr_id')
+      const quotedResourceUrl = s('quoted_resource_url')
+      const quotedMsgType = typeof raw.quoted_msg_type === 'number' ? raw.quoted_msg_type : undefined
 
       const parts: string[] = []
       if (quotedSender || quotedContent) {
@@ -140,12 +142,34 @@ export function formatWechatContent(
         parts.push('')  // blank line after blockquote
       }
       parts.push(text)
+      const composedText = parts.join('\n')
+
+      const features: Partial<MessageFeatures> = quotedSvrId
+        ? { quote_message_id: quotedSvrId }
+        : {}
+
+      // 当被引用消息携带 resource URL 时，把 content 升级为对应媒体类型，
+      // 使 Agent 端的 media-resolver 能下载并喂给 LLM（仅 image 会真正进 ImageBlock，
+      // file 至少把 URL 透传给 Agent，便于工具下载）。
+      // quoted_msg_type 是微信原始 type：1=图片、47=表情、3/42=名片缩略、10/43=视频。
+      if (quotedResourceUrl && quotedMsgType !== undefined) {
+        if (quotedMsgType === 1 || quotedMsgType === 47 || quotedMsgType === 3 || quotedMsgType === 42) {
+          return {
+            content: { type: 'image', text: composedText, media_url: quotedResourceUrl },
+            features,
+          }
+        }
+        if (quotedMsgType === 10 || quotedMsgType === 43) {
+          return {
+            content: { type: 'file', text: composedText, media_url: quotedResourceUrl, mime_type: 'video/mp4' },
+            features,
+          }
+        }
+      }
 
       return {
-        content: { type: 'text', text: parts.join('\n') },
-        features: {
-          ...(quotedSvrId ? { quote_message_id: quotedSvrId } : {}),
-        },
+        content: { type: 'text', text: composedText },
+        features,
       }
     }
 

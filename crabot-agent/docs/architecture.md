@@ -477,13 +477,17 @@ orchestration:
   # 会话状态 TTL（秒）
   session_state_ttl: 300
 
-  # Front Agent 上下文限制
-  front_context_recent_messages_limit: 20
-  front_context_memory_limit: 10
+  # Front Agent 上下文（时窗 + 硬上限：whichever bites first）
+  front_context_recent_messages_window_hours: 6
+  front_context_recent_messages_max_cap: 50
+  front_context_short_term_memory_window_hours: 12
+  front_context_short_term_memory_max_cap: 30
 
-  # Worker Agent 上下文限制
-  worker_recent_messages_limit: 50
-  worker_short_term_memory_limit: 20
+  # Worker Agent 上下文
+  worker_recent_messages_window_hours: 4
+  worker_recent_messages_max_cap: 50
+  worker_short_term_memory_window_hours: 12
+  worker_short_term_memory_max_cap: 30
   worker_long_term_memory_limit: 30
 
   # 超时配置
