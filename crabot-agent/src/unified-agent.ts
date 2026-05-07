@@ -20,9 +20,6 @@ import type {
   MemoryPermissions,
   ResolvedPermissions,
   ToolAccessConfig,
-  StoragePermission,
-  SessionPermissionConfig,
-  FriendPermissionConfig,
   TaskId,
   FriendId,
   Friend,
@@ -625,8 +622,8 @@ export class UnifiedAgent extends ModuleBase {
         return
       }
 
-      // 5. 解析权限（模板 + Session 覆盖）
-      const resolvedPerms = await this.resolveSessionPermissions(friend, session.session_id)
+      // 5. 解析权限（friend ∪ session 并集，admin 侧统一处理 master 短路/explicit-config 优先/minimal 兜底）
+      const resolvedPerms = await this.resolvePrincipalPermissions(friend, session.session_id, 'private')
       this.currentResolvedPerms = resolvedPerms
       const memPerms = await this.deriveMemoryPermissions(friend, session.session_id, resolvedPerms)
 
@@ -839,8 +836,12 @@ export class UnifiedAgent extends ModuleBase {
         barrierTaskIds = this.setupBarriers(session.channel_id, sessionId)
       }
 
-      // 群聊权限：group_default 模板 + Session 覆盖
-      const resolvedPerms = await this.resolveGroupPermissions(sessionId)
+      // 群聊权限：以 lastEntry.friend 为发起人解析 friend ∪ session 并集
+      const resolvedPermsRaw = await this.resolvePrincipalPermissions(lastEntry.friend, sessionId, 'group')
+      // 群聊 memory_scopes 为空时 fallback 到 [sessionId]，避免 cross-group leakage
+      const resolvedPerms = resolvedPermsRaw && resolvedPermsRaw.memory_scopes.length === 0
+        ? { ...resolvedPermsRaw, memory_scopes: [sessionId] }
+        : resolvedPermsRaw
       this.currentResolvedPerms = resolvedPerms
       const memPerms = resolvedPerms
         ? {
@@ -1011,91 +1012,41 @@ export class UnifiedAgent extends ModuleBase {
   }
 
   /**
-   * 从 Admin 获取合并后的 session 权限（模板 + Session 覆盖）
+   * 调 admin RPC 解析"消息发起人"effective permissions（friend ∪ session 并集）。
+   *
+   * 取代旧的 resolveSessionPermissions / resolveGroupPermissions 双路径：
+   * - master 短路、minimal 兜底、friend explicit-config 优先于 template 等语义
+   *   全部由 admin 侧 `resolve_principal_permissions` 统一实现
+   * - 私聊：senderFriend = 私聊对端 friend
+   * - 群聊：senderFriend = 该批次最后一条消息的 friend（即真实发言者，享其个人 friend 模板）
+   *
+   * @param senderFriend  发起人 Friend（陌生人/无 friend_id 时传 undefined）
+   * @param sessionId     消息所在 session
+   * @param sessionType   private | group
    */
-  private async resolveSessionPermissions(
-    friend: Friend,
+  private async resolvePrincipalPermissions(
+    senderFriend: Friend | undefined,
     sessionId: string,
+    sessionType: 'private' | 'group',
   ): Promise<ResolvedPermissions | null> {
-    const friendPermissions = await this.fetchFriendPermissions(friend)
-    if (friendPermissions === null) {
-      return null
-    }
-    if (friendPermissions.config) {
-      return friendPermissions.resolved
-    }
-
-    const templateId = friend.permission === 'master'
-      ? 'master_private'
-      : (friend.permission_template_id ?? 'standard')
-
-    if (!templateId) return null
-    return this.resolvePermissionsForTemplate(templateId, sessionId)
-  }
-
-  private async fetchFriendPermissions(friend: Friend): Promise<{
-    config: FriendPermissionConfig | null
-    resolved: ResolvedPermissions | null
-  } | null> {
     try {
       const adminPort = await this.getAdminPort()
-      return await this.rpcClient.call<
-        { friend_id: string },
-        { config: FriendPermissionConfig | null; resolved: ResolvedPermissions | null }
-      >(adminPort, 'get_friend_permissions', { friend_id: friend.id }, this.config.moduleId)
+      const result = await this.rpcClient.call<
+        { sender_friend_id?: string; session_id: string; session_type: 'private' | 'group' },
+        { resolved: ResolvedPermissions; sources: Record<string, string> }
+      >(
+        adminPort,
+        'resolve_principal_permissions',
+        {
+          ...(senderFriend ? { sender_friend_id: senderFriend.id } : {}),
+          session_id: sessionId,
+          session_type: sessionType,
+        },
+        this.config.moduleId,
+      )
+      return result.resolved
     } catch (err) {
-      console.warn(`[Agent] Failed to resolve friend permissions for ${friend.id}:`, err)
-      return null
-    }
-  }
-
-  /**
-   * 群聊权限解析：使用 group_default 模板 + Session 覆盖
-   */
-  private async resolveGroupPermissions(sessionId: string): Promise<ResolvedPermissions | null> {
-    const resolved = await this.resolvePermissionsForTemplate('group_default', sessionId)
-    if (!resolved) return null
-    // 群聊：memory_scopes 为空时 fallback 到 [sessionId]，避免写入跨群可见
-    const memoryScopes = resolved.memory_scopes.length > 0 ? resolved.memory_scopes : [sessionId]
-    return { ...resolved, memory_scopes: memoryScopes }
-  }
-
-  /**
-   * 从 Admin 获取模板 + Session 配置并增量合并。两个 RPC 并行调用。
-   */
-  private async resolvePermissionsForTemplate(templateId: string, sessionId: string): Promise<ResolvedPermissions | null> {
-    try {
-      const adminPort = await this.getAdminPort()
-
-      const [templateResult, sessionResult] = await Promise.all([
-        this.rpcClient.call<
-          { template_id: string },
-          { template: { tool_access: ToolAccessConfig; storage: StoragePermission | null; memory_scopes: string[] } }
-        >(adminPort, 'get_permission_template', { template_id: templateId }, this.config.moduleId),
-        this.rpcClient.call<
-          { session_id: string },
-          { config: SessionPermissionConfig | null }
-        >(adminPort, 'get_session_config', { session_id: sessionId }, this.config.moduleId),
-      ])
-
-      const template = templateResult.template
-      const sessionConfig = sessionResult.config
-
-      const toolAccess = sessionConfig?.tool_access
-        ? { ...template.tool_access, ...sessionConfig.tool_access }
-        : { ...template.tool_access }
-
-      const storage = sessionConfig?.storage !== undefined
-        ? sessionConfig.storage
-        : template.storage
-
-      const memoryScopes = sessionConfig?.memory_scopes !== undefined
-        ? sessionConfig.memory_scopes
-        : template.memory_scopes
-
-      return { tool_access: toolAccess, storage, memory_scopes: memoryScopes }
-    } catch (err) {
-      console.warn(`[Agent] Failed to resolve permissions for template ${templateId}:`, err)
+      console.warn(`[Agent] resolvePrincipalPermissions failed for session ${sessionId}:`, err)
       return null
     }
   }

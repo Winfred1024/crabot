@@ -444,7 +444,7 @@ export interface WorkerAgentContext {
    * 任务执行权限（模板 + Session 覆盖）。
    *
    * 三种来源：
-   * 1. 私聊/群聊消息触发：Front 处理消息时由 UnifiedAgent.resolveSessionPermissions 解析后塞入
+   * 1. 私聊/群聊消息触发：Front 处理消息时由 UnifiedAgent.resolvePrincipalPermissions 解析后塞入
    * 2. Schedule 触发：Admin 端按 `creator_friend_id` 解析（系统内置走 master_private）后随 RPC 下发
    * 3. 都没有：worker 兜底回 FAIL_CLOSED_TOOL_ACCESS（仅 messaging）
    *
