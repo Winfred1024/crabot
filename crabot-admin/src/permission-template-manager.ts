@@ -10,8 +10,9 @@ import type {
   UpdatePermissionTemplateParams,
   ResolvedPermissions,
   SessionPermissionConfig,
+  CliAccessConfig,
 } from './types.js'
-import { createToolAccessConfig } from './types.js'
+import { createToolAccessConfig, createCliAccessConfig, CLI_DOMAINS } from './types.js'
 import { generateId, generateTimestamp } from 'crabot-shared'
 
 export class PermissionTemplateManager {
@@ -24,14 +25,21 @@ export class PermissionTemplateManager {
     }
   }
 
-  /** 迁移旧数据：补齐缺失的 desktop 字段（默认 false，master_private 除外在 initSystemTemplates 时回填） */
+  /** 迁移旧数据：补齐缺失的 desktop 字段（默认 false，master_private 除外在 initSystemTemplates 时回填） + cli_access */
   private normalize(t: PermissionTemplate): PermissionTemplate {
-    if (!t.tool_access) return t
-    if (typeof t.tool_access.desktop === 'boolean') return t
-    return {
-      ...t,
-      tool_access: { ...t.tool_access, desktop: false },
+    let normalized = t
+    // desktop 字段补默认（旧数据）
+    if (normalized.tool_access && typeof normalized.tool_access.desktop !== 'boolean') {
+      normalized = { ...normalized, tool_access: { ...normalized.tool_access, desktop: false } }
     }
+    // cli_access 字段补默认（旧数据）
+    if (!normalized.cli_access || !CLI_DOMAINS.every(d => d in normalized.cli_access)) {
+      normalized = {
+        ...normalized,
+        cli_access: { ...createCliAccessConfig('none'), ...(normalized.cli_access ?? {}) },
+      }
+    }
+    return normalized
   }
 
   /** 非 master_private 模板的 desktop 必须为 false */
@@ -58,6 +66,7 @@ export class PermissionTemplateManager {
         description: 'Master 用户私聊的权限配置',
         is_system: true,
         tool_access: createToolAccessConfig(true),
+        cli_access: createCliAccessConfig('write'),
         storage: { workspace_path: '/', access: 'readwrite' },
         memory_scopes: [],
         created_at: now,
@@ -69,6 +78,7 @@ export class PermissionTemplateManager {
         description: '群聊的默认权限配置（除 desktop/computer-use 外全部开放）',
         is_system: true,
         tool_access: { ...createToolAccessConfig(true), desktop: false },
+        cli_access: createCliAccessConfig('none'),
         storage: null,
         memory_scopes: [],
         created_at: now,
@@ -80,6 +90,7 @@ export class PermissionTemplateManager {
         description: '最低权限配置',
         is_system: true,
         tool_access: { ...createToolAccessConfig(false), messaging: true },
+        cli_access: createCliAccessConfig('none'),
         storage: null,
         memory_scopes: [],
         created_at: now,
@@ -91,6 +102,19 @@ export class PermissionTemplateManager {
         description: '普通用户的权限配置',
         is_system: true,
         tool_access: { ...createToolAccessConfig(false), memory: true, messaging: true, task: true },
+        cli_access: createCliAccessConfig('none'),
+        storage: null,
+        memory_scopes: [],
+        created_at: now,
+        updated_at: now,
+      },
+      {
+        id: 'group_scheduler',
+        name: '群聊排程',
+        description: '群聊场景下允许群成员通过 LLM 审核创建简单定时任务（如提醒）',
+        is_system: true,
+        tool_access: { ...createToolAccessConfig(false), memory: true, messaging: true, task: true },
+        cli_access: { ...createCliAccessConfig('none'), schedule: 'write' },
         storage: null,
         memory_scopes: [],
         created_at: now,
@@ -122,6 +146,7 @@ export class PermissionTemplateManager {
       description: params.description,
       is_system: false,
       tool_access: this.enforceDesktopPolicy(id, params.tool_access),
+      cli_access: params.cli_access ?? createCliAccessConfig('none'),
       storage: params.storage ?? null,
       memory_scopes: params.memory_scopes ?? [],
       created_at: now,
@@ -144,6 +169,7 @@ export class PermissionTemplateManager {
       ...(params.name !== undefined ? { name: params.name } : {}),
       ...(params.description !== undefined ? { description: params.description } : {}),
       ...(params.tool_access !== undefined ? { tool_access: this.enforceDesktopPolicy(existing.id, params.tool_access) } : {}),
+      ...(params.cli_access !== undefined ? { cli_access: params.cli_access } : {}),
       ...(params.storage !== undefined ? { storage: params.storage } : {}),
       ...(params.memory_scopes !== undefined ? { memory_scopes: params.memory_scopes } : {}),
       updated_at: generateTimestamp(),
@@ -175,6 +201,7 @@ export class PermissionTemplateManager {
     if (!sessionConfig) {
       return {
         tool_access: { ...template.tool_access },
+        cli_access: { ...template.cli_access },
         storage: template.storage ? { ...template.storage } : null,
         memory_scopes: [...template.memory_scopes],
       }
@@ -184,6 +211,10 @@ export class PermissionTemplateManager {
       ? { ...template.tool_access, ...sessionConfig.tool_access }
       : { ...template.tool_access }
 
+    const cliAccess: CliAccessConfig = sessionConfig.cli_access
+      ? { ...template.cli_access, ...sessionConfig.cli_access }
+      : { ...template.cli_access }
+
     const storage: StoragePermission | null = sessionConfig.storage !== undefined
       ? sessionConfig.storage
       : (template.storage ? { ...template.storage } : null)
@@ -192,6 +223,6 @@ export class PermissionTemplateManager {
       ? [...sessionConfig.memory_scopes]
       : [...template.memory_scopes]
 
-    return { tool_access: toolAccess, storage, memory_scopes: memoryScopes }
+    return { tool_access: toolAccess, cli_access: cliAccess, storage, memory_scopes: memoryScopes }
   }
 }

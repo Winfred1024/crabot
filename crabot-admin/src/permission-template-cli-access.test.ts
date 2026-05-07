@@ -7,6 +7,7 @@ import {
   type PermissionTemplate,
 } from './types.js'
 import { createToolAccessConfig } from './types.js'
+import { PermissionTemplateManager } from './permission-template-manager.js'
 
 describe('CliAccessConfig', () => {
   it('CLI_DOMAINS 列出全部 10 个 domain', () => {
@@ -36,5 +37,97 @@ describe('CliAccessConfig', () => {
       updated_at: 't',
     }
     expect(t.cli_access.schedule).toBe('none')
+  })
+})
+
+describe('PermissionTemplateManager.initSystemTemplates 的 cli_access 默认', () => {
+  const mgr = new PermissionTemplateManager()
+  mgr.initSystemTemplates()
+
+  it('master_private: cli_access 全部 write', () => {
+    const t = mgr.get('master_private')!
+    for (const d of CLI_DOMAINS) {
+      expect(t.cli_access[d]).toBe('write')
+    }
+  })
+
+  it('group_default: cli_access 全部 none（群默认收紧）', () => {
+    const t = mgr.get('group_default')!
+    for (const d of CLI_DOMAINS) {
+      expect(t.cli_access[d]).toBe('none')
+    }
+  })
+
+  it('standard: cli_access 全部 none（friend 默认无 self-management）', () => {
+    const t = mgr.get('standard')!
+    for (const d of CLI_DOMAINS) {
+      expect(t.cli_access[d]).toBe('none')
+    }
+  })
+
+  it('minimal: cli_access 全部 none（兜底）', () => {
+    const t = mgr.get('minimal')!
+    for (const d of CLI_DOMAINS) {
+      expect(t.cli_access[d]).toBe('none')
+    }
+  })
+
+  it('group_scheduler: schedule=write，其他 none', () => {
+    const t = mgr.get('group_scheduler')!
+    expect(t).toBeDefined()
+    expect(t.cli_access.schedule).toBe('write')
+    for (const d of CLI_DOMAINS) {
+      if (d === 'schedule') continue
+      expect(t.cli_access[d]).toBe('none')
+    }
+  })
+
+  it('group_scheduler: tool_access 至少含 messaging/memory/task', () => {
+    const t = mgr.get('group_scheduler')!
+    expect(t.tool_access.messaging).toBe(true)
+    expect(t.tool_access.memory).toBe(true)
+    expect(t.tool_access.task).toBe(true)
+  })
+})
+
+describe('PermissionTemplateManager.resolvePermissions cli_access 合并', () => {
+  const mgr = new PermissionTemplateManager()
+  mgr.initSystemTemplates()
+
+  it('无 sessionConfig 直接返回模板的 cli_access 拷贝', () => {
+    const r = mgr.resolvePermissions('master_private', null)
+    expect(r.cli_access.provider).toBe('write')
+  })
+
+  it('sessionConfig.cli_access 部分覆盖：模板未指定的项保持模板值', () => {
+    const r = mgr.resolvePermissions('group_default', {
+      cli_access: { schedule: 'write' },
+      template_id: 'group_default',
+      updated_at: 'x',
+    })
+    expect(r.cli_access.schedule).toBe('write')
+    expect(r.cli_access.provider).toBe('none')  // 模板默认
+  })
+})
+
+describe('PermissionTemplateManager.normalize 补缺失 cli_access', () => {
+  it('旧数据无 cli_access 字段时填入全 none', () => {
+    const mgr = new PermissionTemplateManager()
+    mgr.loadFromArray([{
+      id: 'legacy',
+      name: 'Legacy',
+      is_system: false,
+      tool_access: createToolAccessConfig(false),
+      // cli_access intentionally missing — 模拟旧持久化数据
+      storage: null,
+      memory_scopes: [],
+      created_at: 't',
+      updated_at: 't',
+    } as never])
+    const t = mgr.get('legacy')!
+    expect(t.cli_access).toBeDefined()
+    for (const d of CLI_DOMAINS) {
+      expect(t.cli_access[d]).toBe('none')
+    }
   })
 })
