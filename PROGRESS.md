@@ -1,8 +1,25 @@
 # Crabot 项目进度
 
-> 最后更新：2026-05-07 — 模块恢复 & Self-Healing
+> 最后更新：2026-05-07 — CLI 权限统一进 Friend + Session 模板
 
-## 最新里程碑（2026-05-07 — 模块恢复 & Self-Healing）
+## 最新里程碑（2026-05-07 — CLI 权限统一进 Friend + Session 模板）
+
+把 crabot CLI 的权限闸从硬编码 `isMasterPrivate` 单 bit 升级为按发起人解析 effective permissions（friend ∪ session 并集）+ schedule add 内容 LLM 审核。master 在群聊享完整 CLI 权限；群友在被升级到 `group_scheduler` 模板的群里可创建受审核的简单定时任务。plan：`docs/superpowers/plans/2026-05-06-cli-permission-friend-session-union.md`。
+
+- **types.ts（admin / agent / web）**：新增 `CliPerm`/`CliDomain`/`CLI_DOMAINS`/`CliAccessConfig`，扩 `PermissionTemplate`/`SessionPermissionConfig`/`FriendPermissionConfig`/`ResolvedPermissions` 各加 `cli_access` 字段。`crabot-shared` 是 `CliDomain` 的单一真相来源，admin/agent 各自重新定义 `CliPerm`/`CliAccessConfig` 但 union 字面量从 shared import 来防漂移。
+- **PermissionTemplateManager**：5 个系统模板（master_private 全 write / group_default 全 none / minimal 全 none / standard 全 none / 新增 group_scheduler 仅 schedule=write 且 tool_access 含 messaging+memory+task）；normalize 自动给旧持久化数据补默认；resolvePermissions 合并 session.cli_access；旧 friendPermissionConfig 缺 cli_access 时由 normalizeFriendPermissionConfig 兜底全 'none'。
+- **Admin RPC + REST**：新增 `resolve_principal_permissions`（friend ∪ session 并集；master 短路；都缺 → minimal 兜底）。helper 拆到 `permission-resolution.ts`：`unionCliPerm` rank 取大、`unionStorage` path 不一致时取受限侧（防提权）、`unionResolved` 单边返回也 deep clone（不暴露引用）。REST 路径 `POST /api/permissions/resolve-principal`。
+- **Agent unified-agent**：原 `resolveSessionPermissions` / `resolveGroupPermissions` 双路径合并为 `resolvePrincipalPermissions(senderFriend?, sessionId, sessionType)` 调新 RPC；删除 4 个旧 method（净 -87/+38 行）。
+- **crabot-shared cli-domains**：新增 `classifyCliSubcommand(subcommand) → {domain, kind} | null`（48 个映射含 provider test/refresh）+ `REQUIRES_CONTENT_REVIEW = new Set(['schedule add'])`。`CLI_WRITE_SUBCOMMANDS` 标 deprecated。
+- **agent hook**：`block-cli-write` 升级为 `cli-permission-gate`（按 `cli_access[domain]` 判定 + schedule add LLM 审核）；worker-handler 无条件注册（不再分 master 私聊），把 `senderIsMaster` / `resolvedPermissions` / `contentReviewer` 通过 `EngineOptions → query-loop → HookExecutorContext` 透传到 hook 内部。`isMasterPrivate` 局部变量保留给 progress digest / bg entity persistence 独立语义。fail-closed 6 处：`--reveal` 永拦 / 未识别 subcommand / 缺 resolvedPermissions / cli_access 不够 / 缺 reviewer / reviewer deny。reviewer **抛错**也 fail-closed deny（hook 内显式 try/catch，防 hook-executor 把异常吞成 continue）。
+- **cli-content-reviewer**：fast model 调 LLM judge schedule 描述工具是否落在 effective tool_access 范围内。fail-closed：throw / parse 失败 / 非法 verdict 全 deny。`parseVerdict` 用 bracket-balance 解析（避免 reason 字段含 `}` 提前截断）+ markdown 围栏剥离。复用 worker 自身 `sdkEnv` 的 adapter（schedule add 频率低，单独 review slot 留作 follow-up）。
+- **Admin Web**：PermissionTemplate 编辑页加 cli_access 配置段（10 个 domain × none/read/write 下拉），types.ts + service 同步加 CliAccessConfig。
+- **Prompt + Skill**：`crabot-cli` skill 重写到 v3.0.0；Worker prompt L264 / L401 去"仅 master 私聊"，引向"按发起人 cli_access"+ schedule 审核语义。
+- **协议文档**：`crabot-docs/protocols/protocol-admin.md` §3.2 加 `cli_access` 字段 + §3.2.7 `resolve_principal_permissions` RPC 描述（**待 master 在 crabot-docs 仓库独立提交**——sibling repo 边界）。
+- **测试**：crabot-shared 29/29 + crabot-admin 341/342（1 pre-existing model-provider flake）+ crabot-agent 776/776 + crabot-admin-web 145/145，4 个包 tsc 0 errors。新增覆盖：14 个 cli-permission-gate hook 单测（含 reviewer-throws fail-closed）+ 6 个 cli-content-reviewer 单测（含 bracket-balance 解析）+ 11 个 unionResolved/unionCliPerm/unionStorage 单测 + 12 个 PermissionTemplateManager.cli_access 单测 + 4 个 resolve_principal_permissions REST 集成 + 1 个 cli-domains shared 单测套（覆盖大小写敏感）。
+- **端到端验证（待 master 自跑）**：4 条路径 — (a) master 群聊 `crabot mcp toggle` 全权 / (b) master 私聊回归 / (c) group_scheduler 模板群里普通群友 `@crabot 提醒张三 3 点开会` 通过审核 / (d) 同群普通群友 `@crabot 3 点跑 rm -rf` 被审核拒。
+
+## 上一里程碑（2026-05-07 — 模块恢复 & Self-Healing）
 
 补齐"模块意外退出后的自动/人工/agent 恢复"能力。spec/plan：`crabot-docs/superpowers/plans/2026-05-07-module-recovery-and-self-healing.md`。
 
