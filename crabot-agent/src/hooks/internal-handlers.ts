@@ -136,10 +136,21 @@ registerInternalHandler('cli-permission-gate', async (input, context) => {
         message: 'PERMISSION_DENIED: 内容审核器未配置（fail-closed）。',
       }
     }
-    const review = await context.contentReviewer({
-      effectivePermissions: context.resolvedPermissions,
-      commandText: cmdStr,
-    })
+    // 显式 try/catch：reviewer 抛错时本 handler 必须 fail-closed deny。
+    // 不能依赖 hook-executor 的 catch（它会把 error 转成 action:'continue'，等于 fail-OPEN，
+    // 完全破坏内容审核的安全语义）。
+    let review
+    try {
+      review = await context.contentReviewer({
+        effectivePermissions: context.resolvedPermissions,
+        commandText: cmdStr,
+      })
+    } catch (err) {
+      return {
+        action: 'block',
+        message: `PERMISSION_DENIED: 内容审核器异常（fail-closed） — ${err instanceof Error ? err.message : String(err)}`,
+      }
+    }
     if (review.verdict === 'deny') {
       return {
         action: 'block',

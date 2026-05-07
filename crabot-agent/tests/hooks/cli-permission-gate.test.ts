@@ -128,6 +128,19 @@ describe('cli-permission-gate hook', () => {
     expect(r.message).toContain('shell')
   })
 
+  it('schedule add：reviewer throw → block (fail-closed，hook 自己 catch，不依赖 hook-executor)', async () => {
+    const handler = getInternalHandler('cli-permission-gate')!
+    const reviewer = vi.fn(async () => { throw new Error('LLM 503') })
+    const ctx = makeCtx({ resolvedPermissions: groupSchedulerPerms, contentReviewer: reviewer })
+    const r = await handler(
+      { event: 'PreToolUse', toolInput: { command: 'crabot schedule add --task-description test' } },
+      ctx,
+    )
+    expect(r.action).toBe('block')
+    expect(r.message).toContain('PERMISSION_DENIED')
+    expect(r.message).toContain('LLM 503')
+  })
+
   it('schedule add：master 跳过 reviewer', async () => {
     const handler = getInternalHandler('cli-permission-gate')!
     const reviewer = vi.fn()
