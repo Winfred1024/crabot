@@ -166,8 +166,34 @@ export interface StoragePermission {
   access: 'read' | 'readwrite'
 }
 
+// ============================================================================
+// CLI 访问权限（与 admin 端 types.ts CliAccessConfig 保持同构）
+// ============================================================================
+
+export type CliPerm = 'none' | 'read' | 'write'
+
+export type CliDomain =
+  | 'provider'
+  | 'agent'
+  | 'mcp'
+  | 'skill'
+  | 'schedule'
+  | 'channel'
+  | 'friend'
+  | 'permission'
+  | 'config'
+  | 'undo'
+
+export const CLI_DOMAINS: readonly CliDomain[] = [
+  'provider', 'agent', 'mcp', 'skill', 'schedule',
+  'channel', 'friend', 'permission', 'config', 'undo',
+] as const
+
+export type CliAccessConfig = Record<CliDomain, CliPerm>
+
 export interface ResolvedPermissions {
   tool_access: ToolAccessConfig
+  cli_access: CliAccessConfig
   storage: StoragePermission | null
   memory_scopes: string[]
 }

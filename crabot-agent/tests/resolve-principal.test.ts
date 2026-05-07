@@ -23,6 +23,11 @@ const RESOLVED_OK: ResolvedPermissions = {
     remote_exec: false,
     desktop: false,
   },
+  cli_access: {
+    provider: 'none', agent: 'none', mcp: 'none', skill: 'none',
+    schedule: 'none', channel: 'none', friend: 'none',
+    permission: 'none', config: 'none', undo: 'none',
+  },
   storage: null,
   memory_scopes: ['scope-a'],
 }
