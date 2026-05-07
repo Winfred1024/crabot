@@ -52,6 +52,14 @@ export { ProxyManager, proxyManager } from './proxy-manager.js'
 export { CLI_WRITE_SUBCOMMANDS, CLI_MUST_CONFIRM_SUBCOMMANDS } from './cli-write-commands.js'
 
 export {
+  classifyCliSubcommand,
+  REQUIRES_CONTENT_REVIEW,
+  type CliKind,
+  type CliClassification,
+  type CliDomain,
+} from './cli-domains.js'
+
+export {
   CLAIM_COMMANDS,
   CLAIM_PAIR_COMMANDS,
   UNCLAIMED_HINT_TEXT,

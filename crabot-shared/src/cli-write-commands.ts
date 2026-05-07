@@ -1,4 +1,8 @@
 // 所有 write 权限的 crabot CLI 子命令。Agent 在非 master 私聊场景遇到这些会被 hook 拦截。
+/**
+ * @deprecated 已被 cli-domains.ts 的 classifyCliSubcommand(...) 取代。
+ * 仅保留作为外部脚本兼容期；agent hook 不再使用此 set 判定 write 类。
+ */
 export const CLI_WRITE_SUBCOMMANDS: ReadonlySet<string> = new Set([
   'provider add', 'provider delete',
   'agent config', 'agent restart', 'agent set-model',
