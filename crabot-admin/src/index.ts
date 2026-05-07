@@ -664,7 +664,19 @@ export class AdminModule extends ModuleBase {
         })
         break
       }
-      case 'module_manager.module_stopped':
+      case 'module_manager.module_stopped': {
+        const { module_id, module_type } = event.payload as { module_id: string; module_type: string }
+        this.invalidatePortCache(module_id, module_type)
+        break
+      }
+      case 'module_manager.module_health_changed': {
+        const { module_id, current } = event.payload as { module_id: string; current: string }
+        if (current === 'unhealthy') {
+          // 拿不到 module_type → 清所有可能命中的缓存（保险）
+          this.invalidatePortCache(module_id, 'unknown')
+        }
+        break
+      }
       case 'module_manager.module_error':
         break
 
@@ -6611,6 +6623,26 @@ export class AdminModule extends ModuleBase {
   private agentPort = 0
 
   /**
+   * 模块意外退出/不健康时清相应类型的端口缓存。
+   * agent 模块清 agentPort；memory 模块清 memoryModules 列表的对应项。
+   */
+  private invalidatePortCache(moduleId: string, moduleType: string): void {
+    if (moduleType === 'agent' || moduleId === 'crabot-agent') {
+      if (this.agentPort > 0) {
+        console.log(`[Admin] Invalidating cached agentPort=${this.agentPort} for ${moduleId}`)
+        this.agentPort = 0
+      }
+    }
+    if (moduleType === 'memory' || moduleType === 'unknown') {
+      const before = this.memoryModules.length
+      this.memoryModules = this.memoryModules.filter((m) => m.module_id !== moduleId)
+      if (this.memoryModules.length !== before) {
+        console.log(`[Admin] Invalidated cached memory port for ${moduleId}`)
+      }
+    }
+  }
+
+  /**
    * 确保 Agent 端口已解析，如果缓存为空则重新解析
    */
   private async ensureAgentPort(): Promise<number> {
@@ -6619,6 +6651,29 @@ export class AdminModule extends ModuleBase {
     }
     await this.resolveAgentPort()
     return this.agentPort
+  }
+
+  /**
+   * 包装 RPC 调 agent，遇 ECONNREFUSED 自动清缓存重试一次。
+   * 调用方应该用这个而不是裸 rpcClient.call(agentPort, ...)。
+   */
+  private async callAgentRpc<P, R>(method: string, params: P): Promise<R> {
+    const tryOnce = async (): Promise<R> => {
+      const port = await this.ensureAgentPort()
+      if (!port) throw new Error('Agent not available')
+      return this.rpcClient.call<P, R>(port, method, params, this.config.moduleId)
+    }
+    try {
+      return await tryOnce()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg.includes('ECONNREFUSED') || msg.includes('connect failed')) {
+        console.log(`[Admin] callAgentRpc(${method}) hit ECONNREFUSED, clearing cache and retrying once...`)
+        this.agentPort = 0
+        return tryOnce() // 再试一次（让 resolve 拿新端口或抛 503-style 错误）
+      }
+      throw err
+    }
   }
 
   private memoryModules: Array<{ module_id: string; port: number; name: string }> = []
@@ -6667,25 +6722,23 @@ export class AdminModule extends ModuleBase {
     url: URL
   ): Promise<void> {
     try {
-      const port = await this.ensureAgentPort()
-      if (!port) {
-        res.writeHead(503, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'Agent not available' }))
-        return
-      }
       const limit = parseInt(url.searchParams.get('limit') ?? '20', 10)
       const offset = parseInt(url.searchParams.get('offset') ?? '0', 10)
       const status = url.searchParams.get('status') ?? undefined
-      const result = await this.rpcClient.call<
+      const result = await this.callAgentRpc<
         { limit?: number; offset?: number; status?: string },
         { traces: unknown[]; total: number }
-      >(port, 'get_traces', { limit, offset, status }, this.config.moduleId)
+      >('get_traces', { limit, offset, status })
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify(result))
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
-      res.writeHead(500, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ error: msg }))
+      const isUnreachable =
+        msg.includes('Agent not available') ||
+        msg.includes('ECONNREFUSED') ||
+        msg.includes('connect failed')
+      res.writeHead(isUnreachable ? 503 : 500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: isUnreachable ? 'Agent not available' : msg }))
     }
   }
 
@@ -6695,16 +6748,10 @@ export class AdminModule extends ModuleBase {
     traceId: string
   ): Promise<void> {
     try {
-      const port = await this.ensureAgentPort()
-      if (!port) {
-        res.writeHead(503, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'Agent not available' }))
-        return
-      }
-      const result = await this.rpcClient.call<
+      const result = await this.callAgentRpc<
         { trace_id: string },
         { trace: unknown }
-      >(port, 'get_trace', { trace_id: traceId }, this.config.moduleId)
+      >('get_trace', { trace_id: traceId })
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify(result))
     } catch (error) {
@@ -6713,8 +6760,12 @@ export class AdminModule extends ModuleBase {
         res.writeHead(404, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: msg }))
       } else {
-        res.writeHead(500, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: msg }))
+        const isUnreachable =
+          msg.includes('Agent not available') ||
+          msg.includes('ECONNREFUSED') ||
+          msg.includes('connect failed')
+        res.writeHead(isUnreachable ? 503 : 500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: isUnreachable ? 'Agent not available' : msg }))
       }
     }
   }
@@ -6724,28 +6775,26 @@ export class AdminModule extends ModuleBase {
     res: ServerResponse
   ): Promise<void> {
     try {
-      const port = await this.ensureAgentPort()
-      if (!port) {
-        res.writeHead(503, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'Agent not available' }))
-        return
-      }
       const body = await new Promise<string>((resolve) => {
         let data = ''
         req.on('data', (chunk) => { data += chunk })
         req.on('end', () => resolve(data))
       })
       const params = body ? (JSON.parse(body) as { before?: string; trace_ids?: string[] }) : {}
-      const result = await this.rpcClient.call<
+      const result = await this.callAgentRpc<
         { before?: string; trace_ids?: string[] },
         { cleared_count: number }
-      >(port, 'clear_traces', params, this.config.moduleId)
+      >('clear_traces', params)
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify(result))
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
-      res.writeHead(500, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ error: msg }))
+      const isUnreachable =
+        msg.includes('Agent not available') ||
+        msg.includes('ECONNREFUSED') ||
+        msg.includes('connect failed')
+      res.writeHead(isUnreachable ? 503 : 500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: isUnreachable ? 'Agent not available' : msg }))
     }
   }
 
@@ -6755,12 +6804,6 @@ export class AdminModule extends ModuleBase {
     url: URL
   ): Promise<void> {
     try {
-      const port = await this.ensureAgentPort()
-      if (!port) {
-        res.writeHead(503, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'Agent not available' }))
-        return
-      }
       const params: Record<string, unknown> = {}
       const taskId = url.searchParams.get('task_id')
       if (taskId) params.task_id = taskId
@@ -6774,16 +6817,20 @@ export class AdminModule extends ModuleBase {
       params.limit = parseInt(url.searchParams.get('limit') ?? '20', 10)
       params.offset = parseInt(url.searchParams.get('offset') ?? '0', 10)
 
-      const result = await this.rpcClient.call<
+      const result = await this.callAgentRpc<
         Record<string, unknown>,
         { traces: unknown[]; total: number }
-      >(port, 'search_traces', params, this.config.moduleId)
+      >('search_traces', params)
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify(result))
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
-      res.writeHead(500, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ error: msg }))
+      const isUnreachable =
+        msg.includes('Agent not available') ||
+        msg.includes('ECONNREFUSED') ||
+        msg.includes('connect failed')
+      res.writeHead(isUnreachable ? 503 : 500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: isUnreachable ? 'Agent not available' : msg }))
     }
   }
 
