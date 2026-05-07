@@ -145,6 +145,14 @@ export interface ModuleDefinitionUnregisteredPayload {
   module_type: string
 }
 
+export interface SystemDiskLowPayload {
+  path: string
+  available_bytes: number
+  total_bytes: number
+  threshold_bytes: number
+  available_percent: number
+}
+
 /**
  * 模块停止原因
  */
@@ -165,6 +173,7 @@ export const ModuleManagerEventType = {
   MODULE_HEALTH_CHANGED: 'module_manager.module_health_changed',
   MODULE_DEFINITION_REGISTERED: 'module_manager.module_definition_registered',
   MODULE_DEFINITION_UNREGISTERED: 'module_manager.module_definition_unregistered',
+  SYSTEM_DISK_LOW: 'system.disk_low',
 } as const
 
 // ============================================================================
@@ -211,6 +220,13 @@ export function createModuleDefinitionUnregisteredEvent(
   payload: ModuleDefinitionUnregisteredPayload
 ): Event<ModuleDefinitionUnregisteredPayload> {
   return createEvent(ModuleManagerEventType.MODULE_DEFINITION_UNREGISTERED, source, payload)
+}
+
+export function createSystemDiskLowEvent(
+  source: ModuleId,
+  payload: SystemDiskLowPayload
+): Event<SystemDiskLowPayload> {
+  return createEvent(ModuleManagerEventType.SYSTEM_DISK_LOW, source, payload)
 }
 
 // ============================================================================

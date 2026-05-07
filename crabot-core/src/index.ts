@@ -38,11 +38,13 @@ import {
   createModuleHealthChangedEvent,
   createModuleDefinitionRegisteredEvent,
   createModuleDefinitionUnregisteredEvent,
+  createSystemDiskLowEvent,
   runtimeToInfo,
   runtimeToResolved,
 } from './types.js'
 import { PortAllocator } from './port-allocator.js'
 import { scheduleRestart } from './restart-policy.js'
+import { checkDiskLow } from './disk-watcher.js'
 
 // ============================================================================
 // 类型定义
@@ -71,14 +73,17 @@ export class ModuleManager {
 
   private server: http.Server | null = null
   private healthCheckTimer: NodeJS.Timeout | null = null
+  private diskWatcherTimer: NodeJS.Timeout | null = null
   private isShuttingDown = false
   private readonly logsDir: string
+  private readonly dataDir: string
 
   constructor(config: Partial<ModuleManagerConfig> = {}, dataDir: string) {
     this.config = { ...DEFAULT_CONFIG, ...config }
     this.portAllocator = new PortAllocator(this.config.port_range, dataDir)
     this.logsDir = path.join(dataDir, 'logs')
     fs.mkdirSync(this.logsDir, { recursive: true })
+    this.dataDir = dataDir
 
     // 注册所有方法处理器
     this.registerMethod('register', this.handleRegister.bind(this))
@@ -139,6 +144,24 @@ export class ModuleManager {
         console.log(`[ModuleManager] Listening on port ${this.config.port}`)
         this.startHealthCheckTimer()
 
+        // 磁盘水位线监控（每 60s 一次；同状态不重复广播 → 去抖）
+        let lastWasLow = false
+        this.diskWatcherTimer = setInterval(async () => {
+          const r = await checkDiskLow(this.dataDir, 1_000_000_000) // 1GB 阈值
+          if (r.is_low && !lastWasLow && r.payload) {
+            lastWasLow = true
+            this.publishEvent(
+              createSystemDiskLowEvent('module-manager', r.payload)
+            ).catch(console.error)
+            console.warn(
+              `[ModuleManager] DISK LOW: ${(r.available_bytes / 1e9).toFixed(2)}GB free at ${r.payload.path}`
+            )
+          } else if (!r.is_low && lastWasLow) {
+            lastWasLow = false
+            console.log(`[ModuleManager] Disk recovered: ${(r.available_bytes / 1e9).toFixed(2)}GB free`)
+          }
+        }, 60_000)
+
         // 启动 auto_start 模块
         this.startAutoStartModules().catch(console.error)
 
@@ -161,6 +184,12 @@ export class ModuleManager {
     if (this.healthCheckTimer) {
       clearInterval(this.healthCheckTimer)
       this.healthCheckTimer = null
+    }
+
+    // 停止磁盘水位线监控定时器
+    if (this.diskWatcherTimer) {
+      clearInterval(this.diskWatcherTimer)
+      this.diskWatcherTimer = null
     }
 
     // 停止所有运行中的模块
