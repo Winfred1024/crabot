@@ -29,10 +29,28 @@ describe('unionStorage', () => {
   it('两方 null → null', () => {
     expect(unionStorage(null, null)).toBeNull()
   })
-  it('access 取较宽（readwrite > read）', () => {
+  it('同 path → access 取较宽（readwrite > read）', () => {
     const a = { workspace_path: '/x', access: 'read' as const }
-    const b = { workspace_path: '/y', access: 'readwrite' as const }
-    expect(unionStorage(a, b)?.access).toBe('readwrite')
+    const b = { workspace_path: '/x', access: 'readwrite' as const }
+    expect(unionStorage(a, b)).toEqual({ workspace_path: '/x', access: 'readwrite' })
+    expect(unionStorage(b, a)).toEqual({ workspace_path: '/x', access: 'readwrite' })
+  })
+  it('不同 path → 取受限侧（read 胜 readwrite，避免提权）', () => {
+    const aRead = { workspace_path: '/x', access: 'read' as const }
+    const bRW = { workspace_path: '/y', access: 'readwrite' as const }
+    expect(unionStorage(aRead, bRW)).toEqual(aRead)
+    expect(unionStorage(bRW, aRead)).toEqual(aRead)
+  })
+  it('不同 path、access 同级 → 取 a 侧', () => {
+    const a = { workspace_path: '/x', access: 'read' as const }
+    const b = { workspace_path: '/y', access: 'read' as const }
+    expect(unionStorage(a, b)).toEqual(a)
+  })
+  it('不返回输入引用（clone）', () => {
+    const a = { workspace_path: '/x', access: 'read' as const }
+    const r = unionStorage(a, null)!
+    expect(r).not.toBe(a)
+    expect(r).toEqual(a)
   })
 })
 
@@ -48,10 +66,15 @@ describe('unionResolved', () => {
     expect(unionResolved(null, null)).toBeNull()
   })
 
-  it('一边 null → 另一边', () => {
+  it('一边 null → 另一边（结构相等但不共享引用）', () => {
     const a = make(true, 'write')
-    expect(unionResolved(a, null)).toEqual(a)
-    expect(unionResolved(null, a)).toEqual(a)
+    const left = unionResolved(a, null)!
+    expect(left).toEqual(a)
+    expect(left).not.toBe(a)
+    expect(left.tool_access).not.toBe(a.tool_access)
+    const right = unionResolved(null, a)!
+    expect(right).toEqual(a)
+    expect(right).not.toBe(a)
   })
 
   it('tool_access 按 OR 合并', () => {
