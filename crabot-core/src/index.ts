@@ -42,6 +42,7 @@ import {
   runtimeToResolved,
 } from './types.js'
 import { PortAllocator } from './port-allocator.js'
+import { scheduleRestart } from './restart-policy.js'
 
 // ============================================================================
 // 类型定义
@@ -308,6 +309,7 @@ export class ModuleManager {
         module_id: params.module_id,
         module_type: params.module_type,
         port: params.port,
+        restart_count: runtime.restart_history?.attempts.length ?? 0,
       })
     )
 
@@ -747,30 +749,57 @@ export class ModuleManager {
       // 模块进程消亡 → 同步清订阅，防止重启后 register 累加
       this.removeSubscriptionsBySubscriber(moduleId)
 
-      if (wasRunning && !this.isShuttingDown) {
-        // 意外退出
-        const reason: ModuleStopReason =
-          code === 0 ? 'shutdown' : signal ? 'crashed' : 'crashed'
+      if (!wasRunning || this.isShuttingDown) return
 
-        this.publishEvent(
-          createModuleStoppedEvent('module-manager', {
-            module_id: moduleId,
-            module_type: runtime.module_type,
-            reason,
-          })
-        ).catch(console.error)
+      const reason: ModuleStopReason =
+        code === 0 ? 'shutdown' : signal ? 'crashed' : 'crashed'
 
-        if (code !== 0) {
-          runtime.status = 'error'
-          this.publishEvent(
-            createModuleHealthChangedEvent('module-manager', {
-              module_id: moduleId,
-              previous: 'healthy',
-              current: 'unhealthy',
+      this.publishEvent(
+        createModuleStoppedEvent('module-manager', {
+          module_id: moduleId,
+          module_type: runtime.module_type,
+          reason,
+        })
+      ).catch(console.error)
+
+      if (code === 0) return // 正常退出，到此为止
+
+      // 意外退出
+      runtime.status = 'error'
+
+      // 自动重启决策（仅 auto_restart=true 模块走 RestartPolicy）
+      if (runtime.auto_restart) {
+        const decision = scheduleRestart(
+          runtime.restart_history ?? { attempts: [] },
+          Date.now()
+        )
+        runtime.restart_history = decision.next_history
+
+        if (decision.should_restart) {
+          console.log(
+            `[ModuleManager] Auto-restart ${moduleId} in ${decision.delay_ms}ms (attempt ${decision.next_history.attempts.length}/3)`
+          )
+          setTimeout(() => {
+            // 已开始 shutdown 或被人工启动则跳过
+            if (this.isShuttingDown || runtime.status === 'running' || runtime.status === 'starting') return
+            this.startModuleProcess(moduleId).catch((err) => {
+              console.error(`[ModuleManager] Auto-restart failed for ${moduleId}:`, err)
             })
-          ).catch(console.error)
+          }, decision.delay_ms)
+          return // 不发 health_changed unhealthy（仍在自愈）
         }
+
+        console.error(`[ModuleManager] ${moduleId} restart suppressed: ${decision.reason}`)
       }
+
+      // 不重启或重启耗尽 → 公告不健康
+      this.publishEvent(
+        createModuleHealthChangedEvent('module-manager', {
+          module_id: moduleId,
+          previous: 'healthy',
+          current: 'unhealthy',
+        })
+      ).catch(console.error)
     })
 
     proc.on('error', (error) => {
@@ -789,6 +818,7 @@ export class ModuleManager {
           module_id: moduleId,
           module_type: runtime.module_type,
           port: runtime.port,
+          restart_count: runtime.restart_history?.attempts.length ?? 0,
         })
       ).catch(console.error)
     }

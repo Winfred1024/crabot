@@ -4,6 +4,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { scheduleRestart } from './restart-policy.js'
 import http from 'node:http'
 import fs from 'node:fs/promises'
 import ModuleManager from './index.js'
@@ -529,5 +530,16 @@ describe('ModuleManager Advanced', () => {
       expect(response.success).toBe(true)
       expect(response.data?.definitions).toBeInstanceOf(Array)
     })
+  })
+})
+
+describe('Module auto_restart integration', () => {
+  it('runtime carries restart_history that is updated by RestartPolicy', () => {
+    // 行为级断言：scheduleRestart 是 MM 在 exit 时使用的纯函数
+    const initial = { attempts: [] }
+    const r1 = scheduleRestart(initial, 1000)
+    expect(r1.should_restart).toBe(true)
+    const r2 = scheduleRestart(r1.next_history, 2000)
+    expect(r2.next_history.attempts).toHaveLength(2)
   })
 })

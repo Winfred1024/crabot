@@ -60,6 +60,11 @@ export interface ModuleRuntime extends ModuleDefinition {
   installed_at?: string
   /** 启动检测发现 schema 不匹配时的详情，仅当 status === 'schema_mismatch' 时设置 */
   schema_mismatch?: { code_version: string; data_version: string | null }
+  /**
+   * 自动重启尝试历史（auto_restart=true 时使用），用于 RestartPolicy 窗口限流。
+   * 每次 crashed 触发自动重启时 push 一个时间戳；窗口外的会被裁剪。
+   */
+  restart_history?: import('./restart-policy.js').RestartHistory
 }
 
 // ============================================================================
@@ -107,6 +112,8 @@ export interface ModuleStartedPayload {
   module_id: ModuleId
   module_type: string
   port: number
+  /** 重启计数（首次启动 0；每次自动重启 +1）。Admin self-healing 据此判断是否扫 in-flight task */
+  restart_count?: number
 }
 
 export interface ModuleStoppedPayload {
