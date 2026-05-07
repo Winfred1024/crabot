@@ -37,6 +37,8 @@ const SUBCOMMAND_TO_CLASSIFICATION: ReadonlyMap<string, CliClassification> = new
   ['provider list',         { domain: 'provider',   kind: 'read'  }],
   ['provider show',         { domain: 'provider',   kind: 'read'  }],
   ['provider add',          { domain: 'provider',   kind: 'write' }],
+  ['provider test',         { domain: 'provider',   kind: 'write' }],
+  ['provider refresh',      { domain: 'provider',   kind: 'write' }],
   ['provider delete',       { domain: 'provider',   kind: 'write' }],
   // agent
   ['agent list',            { domain: 'agent',      kind: 'read'  }],
@@ -93,6 +95,15 @@ const SUBCOMMAND_TO_CLASSIFICATION: ReadonlyMap<string, CliClassification> = new
   ['undo',                  { domain: 'undo',       kind: 'write' }],
 ])
 
+/**
+ * 把 subcommand 字符串映射到 (domain, kind)。
+ *
+ * **输入约定**：subcommand 应已被上游（`parseCrabotInvocation`）规整过——大小写敏感、
+ * 单空格分隔、无前后空白。本函数不做规整。
+ *
+ * **null 返回的语义**：未识别的 subcommand。**调用方（cli-permission-gate hook）必须 fail-closed**——
+ * 一律 deny，避免新加的 CLI 命令在分类表更新前默认放行。这是用 null 而不是 throw 的语义前提。
+ */
 export function classifyCliSubcommand(subcommand: string): CliClassification | null {
   return SUBCOMMAND_TO_CLASSIFICATION.get(subcommand) ?? null
 }

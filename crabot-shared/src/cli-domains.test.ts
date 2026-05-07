@@ -5,11 +5,19 @@ import { classifyCliSubcommand, REQUIRES_CONTENT_REVIEW } from './cli-domains.js
 describe('classifyCliSubcommand', () => {
   it('write 类命令', () => {
     assert.deepEqual(classifyCliSubcommand('provider add'), { domain: 'provider', kind: 'write' })
+    assert.deepEqual(classifyCliSubcommand('provider test'), { domain: 'provider', kind: 'write' })
+    assert.deepEqual(classifyCliSubcommand('provider refresh'), { domain: 'provider', kind: 'write' })
     assert.deepEqual(classifyCliSubcommand('schedule add'), { domain: 'schedule', kind: 'write' })
     assert.deepEqual(classifyCliSubcommand('mcp toggle'), { domain: 'mcp', kind: 'write' })
     assert.deepEqual(classifyCliSubcommand('agent set-model'), { domain: 'agent', kind: 'write' })
     assert.deepEqual(classifyCliSubcommand('config switch-default'), { domain: 'config', kind: 'write' })
     assert.deepEqual(classifyCliSubcommand('undo'), { domain: 'undo', kind: 'write' })
+  })
+
+  it('大小写敏感：大写或混合大小写视为未知（fail-closed 由调用方负责 deny）', () => {
+    assert.equal(classifyCliSubcommand('Provider list'), null)
+    assert.equal(classifyCliSubcommand('PROVIDER LIST'), null)
+    assert.equal(classifyCliSubcommand('Schedule Add'), null)
   })
 
   it('read 类命令', () => {
