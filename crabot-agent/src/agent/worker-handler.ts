@@ -62,8 +62,10 @@ import { createSubAgentTool } from '../engine/sub-agent.js'
 import type { SubAgentDefinition } from './subagent-prompts.js'
 import { DELEGATE_TASK_SYSTEM_PROMPT } from './subagent-prompts.js'
 import { HumanMessageQueue } from '../engine/human-message-queue.js'
-import { createCodingExpertHookRegistry, createCliBlockHook } from '../hooks/defaults.js'
+import { createCodingExpertHookRegistry, createCliPermissionHook } from '../hooks/defaults.js'
 import { HookRegistry } from '../hooks/hook-registry.js'
+import type { ContentReviewer } from '../hooks/types.js'
+import { reviewCliContent } from './cli-content-reviewer.js'
 import { PromptManager, formatChannelMessageLine, formatShortTermMemoryLine } from '../prompt-manager.js'
 import { formatNow, formatChannelMessageTime, resolveTimezone, formatRuntimeMs } from '../utils/time.js'
 import { getInstanceSkillsDir } from '../core/data-paths.js'
@@ -707,8 +709,11 @@ export class WorkerHandler {
       }
 
       // 6. Set up trace and progress tracking
+      // senderIsMaster：master 在任何 session（私聊/群聊）都享受 CLI 全权（cli-permission-gate 短路依据）
+      // 注意 isMasterPrivate（master + 私聊）保留给 progress digest / bg entity persistence 等独立语义
+      const senderIsMaster = context.sender_friend?.permission === 'master'
       const isMasterPrivate =
-        context.sender_friend?.permission === 'master'
+        senderIsMaster
         && context.task_origin?.session_type === 'private'
 
       let loopSpanId: string | undefined
@@ -783,16 +788,15 @@ export class WorkerHandler {
         // reportMode === 'silent' → no digest, no text forward
       }
 
-      // 6b. CLI 权限控制：非 master 私聊注入 CLI 拦截 hook
-      let workerHookRegistry: HookRegistry | undefined
-      if (!isMasterPrivate) {
-        workerHookRegistry = new HookRegistry()
-        workerHookRegistry.register(createCliBlockHook())
-      }
+      // 6b. CLI 权限闸：所有场景都注册，hook 内按 resolvedPermissions/cli_access 判定放行/拒绝
+      // （历史：原本只在非 master 私聊注册 — 现已改为按 effective permissions 统一闸，
+      //  isMasterPrivate 仅保留给 progress digest / bg entity persistence 等独立语义）
+      const workerHookRegistry: HookRegistry = new HookRegistry()
+      workerHookRegistry.register(createCliPermissionHook())
 
       // 6c. 注入 CLI 环境变量（CRABOT_TOKEN + CRABOT_ACTOR）
       // 总是注入（不论 isMasterPrivate）—— token 只是让子进程能调 CLI；
-      // 真正的权限边界在 CLI 层 (block-cli-write hook 限制 write 命令到 master_private)。
+      // 真正的权限边界在 cli-permission-gate hook（按 effective cli_access 判定）。
       // 不注入会让群聊/非 master 任务的 read 类 CLI（如 'crabot mcp list'）也跑不起来。
       if (!process.env.CRABOT_TOKEN) {
         const dataDir = process.env.DATA_DIR ?? './data'
@@ -810,8 +814,9 @@ export class WorkerHandler {
 
       // CRABOT_TASK_FRIEND_ID：当前 task 关联的 friend（master 私聊 = master id；定时任务 = 空）。
       // CLI write 命令（如 `crabot schedule add`）从这里读取并填到请求体的 creator_friend_id，
-      // **不通过 CLI flag 传**，避免 LLM 通过命令行参数伪造身份。block-cli-write hook 已经把
-      // write 命令限制在 master_private，所以这里非空时一定是 master。
+      // **不通过 CLI flag 传**，避免 LLM 通过命令行参数伪造身份。
+      // 真正的写权限闸由 cli-permission-gate hook 按 effective cli_access[domain] + 内容审核判定；
+      // 这里 friend_id 来自 task_origin，可能是 master / 普通 friend / 系统 schedule（空）。
       const taskFriendId = context.task_origin?.friend_id
       if (taskFriendId) {
         process.env.CRABOT_TASK_FRIEND_ID = taskFriendId
@@ -841,6 +846,9 @@ export class WorkerHandler {
             return [createUserMessage(injection), ...messages]
           },
           hookRegistry: workerHookRegistry,
+          senderIsMaster,
+          ...(context.resolved_permissions ? { resolvedPermissions: context.resolved_permissions } : {}),
+          contentReviewer: this.buildContentReviewer(),
           onLiveProgress: (event: LiveProgressEvent) => {
             // Update in-memory snapshot so ContextAssembler can read it.
             // 容错：如果任务已被清理（极端情况下 abort 后还有 in-flight 回调），略过。
@@ -1019,6 +1027,19 @@ export class WorkerHandler {
    * 留空让 channel 不发假托汇报。用户追问时由 Front 走 create_task 让 worker
    * 用 get_task_details 拉 trace 自己再汇报。
    */
+  /**
+   * 构造 cli-permission-gate hook 用的内容审核器。
+   *
+   * 复用 worker 自身 LLM adapter / model（fast 档暂未单独配置）。schedule add 频率低，
+   * 性能不敏感；后续若需独立 review slot，加新 sdkEnv 字段即可，不影响调用 site。
+   */
+  private buildContentReviewer(): ContentReviewer {
+    const adapter = adapterFromSdkEnv(this.sdkEnv)
+    const modelId = this.sdkEnv.modelId
+    return async ({ effectivePermissions, commandText }) =>
+      reviewCliContent({ effectivePermissions, commandText, adapter, modelId })
+  }
+
   private mapEngineResult(
     taskId: TaskId,
     result: EngineResult,

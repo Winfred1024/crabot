@@ -72,7 +72,15 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
   const workingDirectory = process.cwd()
   const hooks: HookConfig | undefined = options.hookRegistry ? {
     registry: options.hookRegistry,
-    context: { workingDirectory, adapter, model: options.model, lspManager: options.lspManager },
+    context: {
+      workingDirectory,
+      adapter,
+      model: options.model,
+      lspManager: options.lspManager,
+      senderIsMaster: options.senderIsMaster,
+      resolvedPermissions: options.resolvedPermissions,
+      contentReviewer: options.contentReviewer,
+    },
   } : undefined
 
   for (let turn = 0; turn < maxTurns; turn++) {

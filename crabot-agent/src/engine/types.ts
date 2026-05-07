@@ -227,6 +227,12 @@ export interface EngineOptions {
   readonly lspManager?: import('../hooks/types').LspManagerLike
   /** IANA 时区名（如 "Asia/Shanghai"），用于 tool_result 时间戳渲染 */
   readonly timezone?: string
+  /** 当前消息发起人是否 master——CLI permission gate hook 的 master 短路依据 */
+  readonly senderIsMaster?: boolean
+  /** 发起人 effective permissions（friend ∪ session 并集）——CLI permission gate hook 用 */
+  readonly resolvedPermissions?: import('../types.js').ResolvedPermissions
+  /** 内容审核器——CLI permission gate 在 schedule add 时调用 */
+  readonly contentReviewer?: import('../hooks/types.js').ContentReviewer
   /**
    * 在 context-manager compaction 完成后回调，返回最终注入到 messages 的数组。
    * 用于在 compaction 边界注入 per-task 状态（如 worker 的 todo active list），
