@@ -98,11 +98,37 @@ function formatPerms(p: ResolvedPermissions): string {
 }
 
 function parseVerdict(text: string): ReviewResult | null {
-  // 容忍 markdown 围栏 ```json ... ```
-  const m = text.match(/\{[\s\S]*?"verdict"[\s\S]*?\}/)
-  if (!m) return null
+  // 1. 剥 markdown 围栏 ```json ... ``` 或 ``` ... ```
+  let body = text.trim()
+  const fence = body.match(/^```(?:json)?\s*([\s\S]*?)\s*```\s*$/)
+  if (fence) body = fence[1]!.trim()
+
+  // 2. 用 bracket-balance 找第一个完整 JSON object（避免 reason 内含 `}` 时 lazy regex 截断）
+  const start = body.indexOf('{')
+  if (start < 0) return null
+  let depth = 0
+  let end = -1
+  let inStr = false
+  let escape = false
+  for (let i = start; i < body.length; i++) {
+    const c = body[i]
+    if (inStr) {
+      if (escape) { escape = false; continue }
+      if (c === '\\') { escape = true; continue }
+      if (c === '"') inStr = false
+      continue
+    }
+    if (c === '"') { inStr = true; continue }
+    if (c === '{') depth++
+    else if (c === '}') {
+      depth--
+      if (depth === 0) { end = i; break }
+    }
+  }
+  if (end < 0) return null
+
   try {
-    const obj = JSON.parse(m[0]) as { verdict?: string; reason?: string }
+    const obj = JSON.parse(body.slice(start, end + 1)) as { verdict?: string; reason?: string }
     if (obj.verdict !== 'approve' && obj.verdict !== 'deny') return null
     return { verdict: obj.verdict, reason: String(obj.reason ?? '') }
   } catch {

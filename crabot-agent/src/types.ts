@@ -168,21 +168,16 @@ export interface StoragePermission {
 
 // ============================================================================
 // CLI 访问权限（与 admin 端 types.ts CliAccessConfig 保持同构）
+//
+// CliDomain 直接从 crabot-shared 导入——shared 是 agent hook + admin RPC 共享的协议层；
+// 这里不再重新定义 union 字面量，避免漂移。CliPerm / CLI_DOMAINS / CliAccessConfig 仍保留
+// agent 本地定义（admin 也有自己的副本），但 domain 字面量从 shared 单一来源得到。
 // ============================================================================
 
-export type CliPerm = 'none' | 'read' | 'write'
+import type { CliDomain } from 'crabot-shared'
+export type { CliDomain }
 
-export type CliDomain =
-  | 'provider'
-  | 'agent'
-  | 'mcp'
-  | 'skill'
-  | 'schedule'
-  | 'channel'
-  | 'friend'
-  | 'permission'
-  | 'config'
-  | 'undo'
+export type CliPerm = 'none' | 'read' | 'write'
 
 export const CLI_DOMAINS: readonly CliDomain[] = [
   'provider', 'agent', 'mcp', 'skill', 'schedule',

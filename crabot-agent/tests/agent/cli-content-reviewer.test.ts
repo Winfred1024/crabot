@@ -97,4 +97,19 @@ describe('reviewCliContent', () => {
     })
     expect(result.verdict).toBe('approve')
   })
+
+  it('reason 字段内含 } 不会让解析提前截断（bracket-balance）', async () => {
+    const adapter = makeAdapter({
+      response: '{"verdict":"approve","reason":"如 ${date} 模板含 } 字符也合法"}',
+    })
+    const result = await reviewCliContent({
+      effectivePermissions: groupSchedulerPerms,
+      commandText: 'crabot schedule add --task-description 任意',
+      adapter,
+      modelId: 'claude-haiku-4-5',
+    })
+    expect(result.verdict).toBe('approve')
+    expect(result.reason).toContain('${date}')
+    expect(result.reason).toContain('}')
+  })
 })
