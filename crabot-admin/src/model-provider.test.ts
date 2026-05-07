@@ -249,38 +249,43 @@ describe('ModelProviderManager', () => {
       expect(connectionInfo.format).toBe('openai')
     })
 
-    it('should resolve model config from module config', async () => {
-      const params: CreateModelProviderParams = {
-        name: 'Test Provider',
+    it('module config overrides global default for the same role', async () => {
+      // 创建两个 provider（global 默认用 A，模块覆盖用 B），验证 module 配置优先
+      const globalProvider = await manager.createProvider({
+        name: 'Global Provider',
         type: 'manual',
         format: 'openai',
-        endpoint: 'http://localhost:11434/v1',
-        api_key: 'test-key',
-        models: [
-          {
-            model_id: 'test-embedding',
-            display_name: 'Test Embedding',
-            type: 'embedding',
-            dimension: 1536,
-          },
-        ],
-      }
+        endpoint: 'http://global.example/v1',
+        api_key: 'global-key',
+        models: [{ model_id: 'global-llm', display_name: 'Global LLM', type: 'llm' }],
+      })
+      const moduleProvider = await manager.createProvider({
+        name: 'Module Provider',
+        type: 'manual',
+        format: 'openai',
+        endpoint: 'http://module.example/v1',
+        api_key: 'module-key',
+        models: [{ model_id: 'module-llm', display_name: 'Module LLM', type: 'llm' }],
+      })
 
-      const provider = await manager.createProvider(params)
-
-      await manager.updateModuleConfig('memory-default', {
-        embedding_provider_id: provider.id,
-        embedding_model_id: 'test-embedding',
+      await manager.updateGlobalConfig({
+        default_llm_provider_id: globalProvider.id,
+        default_llm_model_id: 'global-llm',
+      })
+      await manager.updateModuleConfig('test-module', {
+        llm_provider_id: moduleProvider.id,
+        llm_model_id: 'module-llm',
       })
 
       const connectionInfo = await manager.resolveModelConfig({
-        module_id: 'memory-default',
-        role: 'embedding',
+        module_id: 'test-module',
+        role: 'llm',
       })
 
-      expect(connectionInfo.endpoint).toBe('http://localhost:11434/v1')
-      expect(connectionInfo.model_id).toBe('test-embedding')
-      expect(connectionInfo.dimension).toBe(1536)
+      // 应解析到 module 级配置而非 global 默认
+      expect(connectionInfo.endpoint).toBe('http://module.example/v1')
+      expect(connectionInfo.apikey).toBe('module-key')
+      expect(connectionInfo.model_id).toBe('module-llm')
     })
 
     it('should throw error when no config found', async () => {
