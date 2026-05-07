@@ -3,7 +3,7 @@
  */
 
 import { api } from './api'
-import type { PermissionTemplate, ToolAccessConfig, StoragePermission, PaginatedResponse } from '../types'
+import type { PermissionTemplate, ToolAccessConfig, CliAccessConfig, StoragePermission, PaginatedResponse } from '../types'
 
 export const permissionTemplateService = {
   async list(params?: {
@@ -27,6 +27,7 @@ export const permissionTemplateService = {
     name: string
     description?: string
     tool_access: ToolAccessConfig
+    cli_access?: CliAccessConfig
     storage?: StoragePermission | null
     memory_scopes?: string[]
   }): Promise<{ template: PermissionTemplate }> {
@@ -37,6 +38,7 @@ export const permissionTemplateService = {
     name?: string
     description?: string
     tool_access?: ToolAccessConfig
+    cli_access?: CliAccessConfig
     storage?: StoragePermission | null
     memory_scopes?: string[]
   }): Promise<{ template: PermissionTemplate }> {

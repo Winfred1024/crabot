@@ -403,12 +403,66 @@ export interface StoragePermission {
   access: 'read' | 'readwrite'
 }
 
+// ============================================================================
+// CLI 访问权限（按 crabot CLI domain 控制粒度）
+// ============================================================================
+
+export type CliPerm = 'none' | 'read' | 'write'
+
+export type CliDomain =
+  | 'provider'
+  | 'agent'
+  | 'mcp'
+  | 'skill'
+  | 'schedule'
+  | 'channel'
+  | 'friend'
+  | 'permission'
+  | 'config'
+  | 'undo'
+
+export const CLI_DOMAINS: readonly CliDomain[] = [
+  'provider', 'agent', 'mcp', 'skill', 'schedule',
+  'channel', 'friend', 'permission', 'config', 'undo',
+] as const
+
+export type CliAccessConfig = Record<CliDomain, CliPerm>
+
+export const CLI_DOMAIN_LABELS: Record<CliDomain, string> = {
+  provider: 'Provider（模型提供商）',
+  agent: 'Agent（AI 实例）',
+  mcp: 'MCP（工具市场）',
+  skill: 'Skill（技能）',
+  schedule: 'Schedule（定时任务）',
+  channel: 'Channel（消息通道）',
+  friend: 'Friend（熟人）',
+  permission: 'Permission（权限模板）',
+  config: 'Config（全局配置）',
+  undo: 'Undo（撤销）',
+}
+
+export function createCliAccessConfig(defaultValue: CliPerm): CliAccessConfig {
+  return {
+    provider: defaultValue,
+    agent: defaultValue,
+    mcp: defaultValue,
+    skill: defaultValue,
+    schedule: defaultValue,
+    channel: defaultValue,
+    friend: defaultValue,
+    permission: defaultValue,
+    config: defaultValue,
+    undo: defaultValue,
+  }
+}
+
 export interface PermissionTemplate {
   id: string
   name: string
   description?: string
   is_system: boolean
   tool_access: ToolAccessConfig
+  cli_access: CliAccessConfig
   storage: StoragePermission | null
   memory_scopes: string[]
   created_at: string

@@ -2,8 +2,8 @@ import React, { useState } from 'react'
 import { Button } from '../../components/Common/Button'
 import { useToast } from '../../contexts/ToastContext'
 import { permissionTemplateService } from '../../services/permission-template'
-import type { PermissionTemplate, ToolCategory, ToolAccessConfig, StoragePermission } from '../../types'
-import { TOOL_CATEGORIES, TOOL_CATEGORY_LABELS } from '../../types'
+import type { PermissionTemplate, ToolCategory, ToolAccessConfig, CliDomain, CliPerm, CliAccessConfig, StoragePermission } from '../../types'
+import { TOOL_CATEGORIES, TOOL_CATEGORY_LABELS, CLI_DOMAINS, CLI_DOMAIN_LABELS, createCliAccessConfig } from '../../types'
 
 interface PermissionTemplateFormProps {
   template?: PermissionTemplate
@@ -27,6 +27,7 @@ interface FormState {
   name: string
   description: string
   tool_access: ToolAccessConfig
+  cli_access: CliAccessConfig
   storage_enabled: boolean
   workspace_path: string
   storage_access: 'read' | 'readwrite'
@@ -39,6 +40,7 @@ function buildInitialState(template?: PermissionTemplate): FormState {
       name: '',
       description: '',
       tool_access: { ...DEFAULT_TOOL_ACCESS },
+      cli_access: createCliAccessConfig('none'),
       storage_enabled: false,
       workspace_path: '',
       storage_access: 'read',
@@ -49,6 +51,7 @@ function buildInitialState(template?: PermissionTemplate): FormState {
     name: template.name,
     description: template.description ?? '',
     tool_access: { ...template.tool_access },
+    cli_access: { ...template.cli_access },
     storage_enabled: template.storage !== null,
     workspace_path: template.storage?.workspace_path ?? '',
     storage_access: template.storage?.access ?? 'read',
@@ -95,6 +98,16 @@ export const PermissionTemplateForm: React.FC<PermissionTemplateFormProps> = ({
     }))
   }
 
+  const setCliAccess = (domain: CliDomain, value: CliPerm) => {
+    setForm(prev => ({
+      ...prev,
+      cli_access: {
+        ...prev.cli_access,
+        [domain]: value,
+      },
+    }))
+  }
+
   const handleSave = async () => {
     const name = form.name.trim()
     if (!name) {
@@ -116,6 +129,7 @@ export const PermissionTemplateForm: React.FC<PermissionTemplateFormProps> = ({
         name,
         description: form.description.trim() || undefined,
         tool_access: form.tool_access,
+        cli_access: form.cli_access,
         storage,
         memory_scopes,
       }
@@ -221,6 +235,48 @@ export const PermissionTemplateForm: React.FC<PermissionTemplateFormProps> = ({
               </label>
             )
           })}
+        </div>
+      </div>
+
+      {/* CLI Access */}
+      <div>
+        <label style={labelStyle}>CLI 访问权限</label>
+        <div style={{ ...hintStyle, marginBottom: '0.5rem' }}>
+          按 crabot CLI domain 控制粒度。none = 拦截所有该 domain 命令；read = 仅 list/show/doctor；write = 全部命令。
+        </div>
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr 1fr',
+          gap: '0.5rem',
+          marginTop: '0.25rem',
+        }}>
+          {CLI_DOMAINS.map(domain => (
+            <label
+              key={domain}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                padding: '0.5rem 0.75rem',
+                borderRadius: '6px',
+                background: 'var(--bg-secondary)',
+                fontSize: '0.875rem',
+              }}
+            >
+              <span style={{ flex: 1 }}>{CLI_DOMAIN_LABELS[domain]}</span>
+              <select
+                className="input"
+                style={{ width: '7rem' }}
+                value={form.cli_access[domain]}
+                onChange={e => setCliAccess(domain, e.target.value as CliPerm)}
+                disabled={isSystem}
+              >
+                <option value="none">none</option>
+                <option value="read">read</option>
+                <option value="write">write</option>
+              </select>
+            </label>
+          ))}
         </div>
       </div>
 
