@@ -75,6 +75,7 @@ const CORE_MODULES: Array<ModuleDefinition & Record<string, unknown>> = [
     entry: isDev ? 'npx tsx --watch src/main.ts' : 'node dist/main.js',
     cwd: ADMIN_DIR,
     auto_start: isDev || fs.existsSync(path.join(ADMIN_DIR, 'dist', 'main.js')),
+    auto_restart: true,
     start_priority: 10,
     env: {
       CRABOT_ADMIN_PORT: ADMIN_RPC_PORT,
@@ -92,6 +93,7 @@ const CORE_MODULES: Array<ModuleDefinition & Record<string, unknown>> = [
     entry: 'node dist/main.js',
     cwd: AGENT_DIR,
     auto_start: fs.existsSync(path.join(AGENT_DIR, 'dist', 'main.js')),
+    auto_restart: true,
     start_priority: 20,
     env: {
       CONFIG_PATH: path.join(AGENT_DIR, 'config.yaml'),
@@ -114,6 +116,7 @@ const CORE_MODULES: Array<ModuleDefinition & Record<string, unknown>> = [
     cwd: MEMORY_DIR,
     data_dir: path.join(DATA_DIR, 'memory'),
     auto_start: fs.existsSync(path.join(MEMORY_DIR, 'src', 'main.py')),
+    auto_restart: true,
     start_priority: 15,  // 在 admin(10) 之后启动，确保配置已就绪
     env: {
       CRABOT_MEMORY_DATA_DIR: path.join(DATA_DIR, 'memory'),
