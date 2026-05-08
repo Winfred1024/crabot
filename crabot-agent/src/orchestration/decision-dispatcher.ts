@@ -612,6 +612,9 @@ export class DecisionDispatcher {
         // 解析 worker summary 末尾的 ```json``` 块（结构化输出契约）
         const outcome = extractTaskOutcome(result.summary, 200)
 
+        // 注：定时任务路径不调 sendReplyToUser（推送走 channel pusher 而非 chat reply）。
+        // 若日后此处加 sendReplyToUser，记得也走 extractTaskOutcome(...).stripped_summary 剥 JSON 块。
+
         // 写入短期记忆（系统级参数）
         this.memoryWriter.writeTaskFinished({
           task_id: task.id,

@@ -104,4 +104,22 @@ not valid json {
     const r = extractTaskOutcome(summary, 200)
     expect(r.outcome_brief).toHaveLength(200)
   })
+
+  it('summary 中夹带内联 ```json 块时只匹配末尾契约块', () => {
+    const summary = `解释：返回值如 \`\`\`json
+{"a":1}
+\`\`\` 这样。
+
+\`\`\`json
+{"outcome_brief":"完成","process_highlights":[]}
+\`\`\``
+    const r = extractTaskOutcome(summary, 200)
+    expect(r.parsed).toBe(true)
+    expect(r.outcome_brief).toBe('完成')
+    expect(r.process_highlights).toEqual([])
+    // stripped_summary 应保留前面的解释段（含内联 ```json 例子）
+    expect(r.stripped_summary).toContain('解释：返回值如')
+    expect(r.stripped_summary).toContain('{"a":1}')
+    expect(r.stripped_summary).not.toContain('"outcome_brief"')
+  })
 })

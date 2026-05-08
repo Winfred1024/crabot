@@ -23,7 +23,9 @@ export interface TaskOutcomeFields {
   parsed: boolean
 }
 
-const JSON_FENCE_RE = /\n*```json\s*\n([\s\S]*?)\n```\s*$/
+// 锚到 summary 末尾的最后一个 ```json fence。负向预查 (?!```json\s*\n) 保证捕获组
+// 不会跨越中间内联的 ```json 例子（worker 在解释 API/config 时可能会写）。
+const JSON_FENCE_RE = /\n*```json\s*\n((?:(?!```json\s*\n)[\s\S])*?)\n```\s*$/
 
 export function extractTaskOutcome(summary: string, maxBriefLen: number): TaskOutcomeFields {
   const match = summary.match(JSON_FENCE_RE)
