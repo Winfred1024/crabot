@@ -5,7 +5,7 @@ import { translateChannelError } from '../../src/mcp/error-translator.js'
 describe('translateChannelError', () => {
   it('CHANNEL_LIST_GROUPS_NOT_SUPPORTED → 带 hint', () => {
     const err = new RpcCallError('CHANNEL_LIST_GROUPS_NOT_SUPPORTED', 'tg bot 不支持')
-    const out = translateChannelError(err, '列群')
+    const out = translateChannelError(err)
     expect(out).toEqual({
       error_code: 'CHANNEL_LIST_GROUPS_NOT_SUPPORTED',
       error: 'tg bot 不支持',
@@ -15,13 +15,13 @@ describe('translateChannelError', () => {
 
   it('CHANNEL_LIST_CONTACTS_NOT_SUPPORTED → 列联系人 hint', () => {
     const err = new RpcCallError('CHANNEL_LIST_CONTACTS_NOT_SUPPORTED', 'tg 不支持')
-    const out = translateChannelError(err, '列联系人')
+    const out = translateChannelError(err)
     expect(out.hint).toContain('list_sessions')
   })
 
   it('PERMISSION_DENIED → 透传 missing_scope，不强加 hint', () => {
     const err = new RpcCallError('PERMISSION_DENIED', '缺 scope', { missing_scope: 'contact:user.base:readonly' })
-    const out = translateChannelError(err, '列联系人')
+    const out = translateChannelError(err)
     expect(out).toEqual({
       error_code: 'PERMISSION_DENIED',
       error: '缺 scope',
@@ -31,13 +31,13 @@ describe('translateChannelError', () => {
 
   it('其他错误 → 透传 message，不加 hint', () => {
     const err = new RpcCallError('SOME_OTHER', 'oops')
-    const out = translateChannelError(err, '列群')
+    const out = translateChannelError(err)
     expect(out).toEqual({ error_code: 'SOME_OTHER', error: 'oops' })
   })
 
   it('非 RpcCallError 包装为 INTERNAL', () => {
     const err = new Error('plain')
-    const out = translateChannelError(err, '列群')
+    const out = translateChannelError(err)
     expect(out).toEqual({ error_code: 'INTERNAL', error: 'plain' })
   })
 })

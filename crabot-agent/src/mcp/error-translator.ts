@@ -7,7 +7,7 @@ export interface TranslatedError {
   missing_scope?: string
 }
 
-export function translateChannelError(err: unknown, action: '列联系人' | '列群'): TranslatedError {
+export function translateChannelError(err: unknown): TranslatedError {
   if (!(err instanceof RpcCallError)) {
     return {
       error_code: 'INTERNAL',
