@@ -159,7 +159,7 @@ describe('FeishuClient.listContacts', () => {
     const client = new FeishuClient({ app_id: 'a', app_secret: 's', domain: 'feishu' })
     ;(client as unknown as { client: typeof fakeApi }).client = fakeApi as never
 
-    const result = await client.listContacts({ search: '张', page_size: 20 })
+    const result = await client.listContacts({ page_size: 20 })
     expect(fakeApi.contact.v3.user.list).toHaveBeenCalledWith(
       expect.objectContaining({
         params: expect.objectContaining({ page_size: 20 }),
