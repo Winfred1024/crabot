@@ -28,9 +28,9 @@ def _run_sync(fn):
 _VIS_ORDER = {"private": 3, "internal": 2, "public": 1}
 
 
-# 抽词正则：unicode 字母 / 数字 / 下划线（\w）+ 中日韩统一表意文字（一-鿿）
-# 主流中文范围 U+4E00..U+9FFF 即 '一'..'鿿'，覆盖 GB2312/CJK Unified Ideographs。
-_FTS_TOKEN_RE = re.compile(r'[\w一-鿿]+', re.UNICODE)
+# Python `\w` 在 re.UNICODE 下已覆盖字母/数字/下划线 + CJK Unified Ideographs +
+# CJK 扩展 A/B、Hangul、Kana 等所有 Unicode letter，无需额外 CJK class。
+_FTS_TOKEN_RE = re.compile(r'\w+', re.UNICODE)
 
 
 def _escape_fts_query(query: str) -> str:
@@ -96,6 +96,10 @@ class ShortTermStore:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_st_event_time ON short_term_memory (event_time DESC)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_st_visibility ON short_term_memory (visibility)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_st_compressed ON short_term_memory (compressed)")
+        # tokenize='trigram'：spec 原写 unicode61，但实测 unicode61 不切 CJK 连续字符串
+        # （例如 '排行榜每日早报已发送到微信群' 整体为一 token），导致中文 query 0 命中。
+        # trigram 把任意 3 字符序列入索引，CJK / 英文混合都能召回。详见
+        # crabot-docs/superpowers/plans/2026-05-08-short-term-memory-fts-phase1.md Task 2。
         cur.execute(
             """
             CREATE VIRTUAL TABLE IF NOT EXISTS short_term_fts USING fts5(
@@ -198,6 +202,11 @@ class ShortTermStore:
         - sort_by='event_time'（默认）：有 query 时按 (rank, event_time DESC)，无 query 时按 event_time DESC
         - sort_by='relevance'：纯按 BM25 rank（FTS5 中 rank ASC = 越相关越靠前）
         其他过滤（visibility / scopes / time_range / refs / persons / entities / topic）维持原语义。
+
+        注意：FTS 索引基于 trigram tokenizer，最小匹配单位是 3 字符。
+        若 query 抽词后所有 token 都 <3 字符（例如 2 字 CJK"微信"、2 字 ASCII"gh"），
+        FTS 路径不生效，退化为 `event_time DESC` 全量扫描——返回会忽略 query 意图。
+        调用方在该场景应拓宽 time_range 或接受退化行为。
         """
         clauses: List[str] = []
         params: List[Any] = []

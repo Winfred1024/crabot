@@ -115,15 +115,14 @@ def test_fts_bm25_relevance_ordering(store):
 
 
 def test_fts_special_chars_in_query_no_error(store):
+    """FTS5 特殊字符（"、(、)）经 _escape_fts_query 转义后不应触发 syntax error。"""
     asyncio.run(store.add_short_term(_make_entry(
         "m1", "test content with special chars",
     )))
 
-    results = asyncio.run(store.search_short_term(query='test "quoted"', limit=10))
-    assert len(results) >= 0  # 不抛异常即可
-
-    results = asyncio.run(store.search_short_term(query="(hello)", limit=10))
-    assert len(results) >= 0
+    # 不抛异常即可（_escape_fts_query 会丢弃所有 FTS5 特殊字符）
+    asyncio.run(store.search_short_term(query='test "quoted"', limit=10))
+    asyncio.run(store.search_short_term(query="(hello)", limit=10))
 
 
 def test_fts_empty_query_falls_back_to_time_order(store):
@@ -174,8 +173,9 @@ def test_fts_pure_chinese_query_recalls(store):
 def test_fts_short_query_falls_through(store):
     """trigram 固有限制：<3 字符 query 不会命中任何条目。当前实现下应安全退化。"""
     asyncio.run(store.add_short_term(_make_entry("m1", "微信群相关内容")))
-    # 2 字 CJK query
+
+    # 2 字 CJK query → _escape_fts_query 返回空 → 不走 FTS path → 退化到 event_time DESC
+    # 行为是返回所有可见条目（忽略 query 意图）—— 本测试锁住该折衷
     results = asyncio.run(store.search_short_term(query="微信", limit=10))
-    # trigram 下 '微信' 切不出 trigram，_escape_fts_query 返回空 → 不走 FTS path → 退化到 time DESC（返回所有条目）
-    # 该行为是已知折衷；本测试只确认不报错
-    assert isinstance(results, list)
+    assert len(results) == 1, "退化路径应返回全部 1 条"
+    assert results[0].id == "m1", "退化路径不是因 query 命中，是因 fallback"
