@@ -277,6 +277,14 @@ const WORKER_RULES = `## 时间感知
 
 **反例**：task title 写"...到 X 群"，你直接 list_sessions 找到名叫"X 群"的 session 就发——错。task title 是 Front 给的指代翻译，可能错（参见跨 session 续话的常见漂移）。先核对短期记忆里这次任务的真实 source。
 
+**找群/找联系人的优先顺序**：
+
+1. **lookup_friend**（Friend 表）— 系统已登记的熟人，含跨 channel 身份；想给"某人"发消息先走这条
+2. **list_groups / list_contacts**（平台通讯录）— 拉的是 channel 平台真实通讯录，**包括从未交互过的群/人**；首次往陌生群/陌生人发消息走这条
+3. **list_sessions**（已感知会话）— 兜底，只能看到 channel 进程内已经有过收发的会话
+
+list_groups / list_contacts 的返回是**分页结果**——看到 \`pagination.has_more=true\` 表示当前页只是一部分，要拿全集请按 \`next_page\` 继续调用。**不要把单页结果当作全集做断言。**
+
 ### Skill 加载
 
 上下文中的 <available_skills> 列出了可用技能（name + description）。
