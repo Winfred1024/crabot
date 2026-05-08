@@ -115,3 +115,61 @@ describe('WechatClient.listGroups', () => {
     }
   })
 })
+
+describe('WechatClient.listContacts', () => {
+  it('calls GET /api/v1/bot/contacts with keyword/page/pageSize 并把字段映射到协议', async () => {
+    const { server, recorded } = createFakeServer(() => ({
+      body: {
+        code: 0,
+        data: {
+          items: [
+            {
+              fieldUsername: 'wxid_test1',
+              fieldNickname: '测试联系人',
+              fieldConRemark: '老李',
+              iconUrl: 'https://avatar.example/1.png',
+            },
+            {
+              fieldUsername: 'wxid_test2',
+              fieldNickname: 'Bob',
+            },
+          ],
+          total: 2,
+          page: 1,
+          pageSize: 20,
+        },
+      },
+    }))
+    const base = await listen(server)
+    try {
+      const client = new WechatClient(base, 'wct_test')
+      const result = await client.listContacts({ keyword: '测试', page: 1, pageSize: 20 })
+
+      expect(recorded).toHaveLength(1)
+      expect(recorded[0].method).toBe('GET')
+      expect(recorded[0].url).toBe('/api/v1/bot/contacts?keyword=%E6%B5%8B%E8%AF%95&page=1&pageSize=20')
+      expect(recorded[0].authorization).toBe('Bearer wct_test')
+      expect(result.items).toEqual([
+        { username: 'wxid_test1', nickname: '测试联系人', remark: '老李', avatar_url: 'https://avatar.example/1.png' },
+        { username: 'wxid_test2', nickname: 'Bob' },
+      ])
+      expect(result.pagination.total).toBe(2)
+    } finally {
+      server.close()
+    }
+  })
+
+  it('未传参时不带任何 query', async () => {
+    const { server, recorded } = createFakeServer(() => ({
+      body: { code: 0, data: { items: [], total: 0, page: 1, pageSize: 20 } },
+    }))
+    const base = await listen(server)
+    try {
+      const client = new WechatClient(base, 'wct_test')
+      await client.listContacts()
+      expect(recorded[0].url).toBe('/api/v1/bot/contacts')
+    } finally {
+      server.close()
+    }
+  })
+})

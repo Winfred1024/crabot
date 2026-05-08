@@ -160,6 +160,60 @@ export class WechatClient {
   }
 
   /**
+   * 列出联系人（分页）。
+   *
+   * 调 wechat-connector GET /api/v1/bot/contacts。返回结构与 listGroups 类似，
+   * 不 catch 错误，由上层决定。
+   */
+  async listContacts(params: {
+    keyword?: string
+    page?: number
+    pageSize?: number
+  } = {}): Promise<{
+    items: Array<{ username: string; nickname: string; remark?: string; avatar_url?: string }>
+    pagination: {
+      page: number
+      pageSize: number
+      total: number
+      totalPages: number
+    }
+  }> {
+    const qs = new URLSearchParams()
+    if (params.keyword) qs.set('keyword', params.keyword)
+    if (params.page) qs.set('page', String(params.page))
+    if (params.pageSize) qs.set('pageSize', String(params.pageSize))
+
+    const suffix = qs.toString() ? `?${qs.toString()}` : ''
+    const raw = await this.get<{
+      items: Array<Record<string, unknown>>
+      total?: number
+      page?: number
+      pageSize?: number
+    }>(`/api/v1/bot/contacts${suffix}`)
+
+    const items = (raw.items ?? []).map((item) => {
+      const username = String(item.fieldUsername ?? '')
+      const nickname = String(item.fieldNickname ?? username)
+      const remarkRaw = item.fieldConRemark
+      const avatarRaw = item.iconUrl
+      const out: { username: string; nickname: string; remark?: string; avatar_url?: string } = {
+        username,
+        nickname,
+      }
+      if (typeof remarkRaw === 'string' && remarkRaw.length > 0) out.remark = remarkRaw
+      if (typeof avatarRaw === 'string' && avatarRaw.length > 0) out.avatar_url = avatarRaw
+      return out
+    })
+
+    const page = Number(raw.page ?? params.page ?? 1)
+    const pageSize = Number(raw.pageSize ?? params.pageSize ?? items.length ?? 0)
+    const total = Number(raw.total ?? items.length)
+    const totalPages = pageSize > 0 ? Math.max(1, Math.ceil(total / pageSize)) : 1
+
+    return { items, pagination: { page, pageSize, total, totalPages } }
+  }
+
+  /**
    * 列出群组（分页）。
    *
    * 与 getContact/getGroup/getGroupMembers 不同，本方法不 catch 错误：

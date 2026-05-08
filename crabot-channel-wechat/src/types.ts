@@ -145,6 +145,10 @@ export interface ChannelCapabilities {
   max_file_size: number | null
   supports_file_path: boolean
   allowed_file_paths: string[]
+  /** 是否支持 list_contacts */
+  supports_list_contacts: boolean
+  /** 是否支持 list_groups */
+  supports_list_groups: boolean
 }
 
 export interface SendMessageParams {
@@ -235,4 +239,51 @@ export interface WechatChannelConfig {
   mode: 'socketio' | 'webhook'
   /** Webhook 模式下本地监听端口 */
   webhook_port?: number
+}
+
+// ============================================================================
+// List Contacts / List Groups 接口
+// ============================================================================
+
+export interface ListContactsParams {
+  search?: string
+  pagination?: PaginationParams
+}
+
+export interface ContactItem {
+  platform_user_id: string
+  display_name: string
+  remark?: string
+  avatar_url?: string
+}
+
+export interface ListContactsResult {
+  items: ContactItem[]
+  pagination: {
+    page: number
+    page_size: number
+    total_items: number
+    total_pages: number
+  }
+}
+
+export interface ListGroupsParams {
+  search?: string
+  pagination?: PaginationParams
+}
+
+export interface GroupItem {
+  platform_session_id: string
+  group_name: string
+  member_count?: number
+}
+
+export interface ListGroupsResult {
+  items: GroupItem[]
+  pagination: {
+    page: number
+    page_size: number
+    total_items: number
+    total_pages: number
+  }
 }
