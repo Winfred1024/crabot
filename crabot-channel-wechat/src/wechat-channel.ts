@@ -485,15 +485,12 @@ export class WechatChannel extends ModuleBase {
     })
 
     return {
-      items: raw.items.map((it): ContactItem => {
-        const out: ContactItem = {
-          platform_user_id: it.username,
-          display_name: it.nickname,
-        }
-        if (it.remark) out.remark = it.remark
-        if (it.avatar_url) out.avatar_url = it.avatar_url
-        return out
-      }),
+      items: raw.items.map((it): ContactItem => ({
+        platform_user_id: it.username,
+        display_name: it.nickname,
+        ...(it.remark ? { remark: it.remark } : {}),
+        ...(it.avatar_url ? { avatar_url: it.avatar_url } : {}),
+      })),
       pagination: {
         page: raw.pagination.page,
         page_size: raw.pagination.pageSize,
