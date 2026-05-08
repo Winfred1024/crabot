@@ -37,11 +37,12 @@ def _escape_fts_query(query: str) -> str:
     """把任意用户 query 转成安全的 FTS5 trigram MATCH 表达式。
 
     策略：
-    - 抽取 unicode 字母/数字/下划线 + CJK Unified Ideographs 为 token
+    - 用 ``_FTS_TOKEN_RE``（``\\w+`` 在 re.UNICODE 下涵盖字母/数字/下划线 + 全部 Unicode
+      letter，包含 CJK / Hangul / Kana 等）抽 token
     - 丢弃 <3 字符的 token（trigram 索引最小单位是 3-gram，更短的 token 永远 0 命中）
-    - trigram 不要求 phrase 边界，但保留引号作防御性写法，避免 query 里出现的关键词被
-      意外解释成 FTS5 操作符（如 ``NEAR``）；引号里的内容仍按 trigram 切
-    - 所有 FTS5 特殊字符（"、*、:、(、)）被自然丢弃
+    - 每 token 用引号包成 phrase + 用 OR 连接：避免 query 里的字面词被 FTS5 当作操作符
+      （如 ``NEAR``）；引号里的内容仍按 trigram 切
+    - FTS5 特殊字符（"、*、:、(、)）经 token 抽取被自然丢弃
 
     返回空串表示无可用 token，调用方应跳过 FTS 路径。
     """

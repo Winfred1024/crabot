@@ -64,7 +64,8 @@ def test_build_fts_creates_table_and_indexes(tmp_path):
     conn.close()
 
 
-def test_migrate_creates_backup_and_writes_version(tmp_path):
+def test_migrate_creates_backup_and_logs_rebuild(tmp_path):
+    """SCHEMA_VERSION 由 upgrade framework 回写，本脚本只负责备份 + 重建索引。"""
     data_dir = tmp_path / "memory"
     data_dir.mkdir()
     db = data_dir / "short_term.db"
@@ -75,11 +76,8 @@ def test_migrate_creates_backup_and_writes_version(tmp_path):
     backups = list(data_dir.glob("short_term.db.v3.backup-*"))
     assert len(backups) == 1, "升级应生成一个 v3 备份"
 
-    version_file = data_dir / "SCHEMA_VERSION"
-    assert version_file.exists()
-    assert version_file.read_text().strip() == "v4"
-
     assert any("FTS rebuild" in line for line in log)
+    assert (data_dir / "upgrade-v3-to-v4.log").exists()
 
 
 def test_migrate_idempotent_when_already_v4(tmp_path):
@@ -104,11 +102,10 @@ def test_migrate_handles_missing_db(tmp_path):
     data_dir = tmp_path / "memory"
     data_dir.mkdir()
 
-    log = migrate(data_dir)
-    # SCHEMA_VERSION 仍写入
-    assert (data_dir / "SCHEMA_VERSION").read_text().strip() == "v4"
-    # 无 backup 生成
+    migrate(data_dir)
+
     assert len(list(data_dir.glob("short_term.db.v3.backup-*"))) == 0
+    assert (data_dir / "upgrade-v3-to-v4.log").exists()
 
 
 def test_build_fts_rolls_back_on_rebuild_failure(tmp_path, monkeypatch):

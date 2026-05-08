@@ -21,7 +21,6 @@ describe('extractTaskOutcome', () => {
       '缺 vod_ids 校验导致 nil deref',
     ])
     expect(r.stripped_summary).toBe('已修复 /fav 500 接口，根因是 vod_ids 未校验。')
-    expect(r.parsed).toBe(true)
   })
 
   it('无 JSON 块 → fallback：brief = summary.slice(0,200), highlights = [], stripped = summary 原文', () => {
@@ -30,7 +29,6 @@ describe('extractTaskOutcome', () => {
     expect(r.outcome_brief).toBe('简单回复。')
     expect(r.process_highlights).toEqual([])
     expect(r.stripped_summary).toBe('简单回复。')
-    expect(r.parsed).toBe(false)
   })
 
   it('JSON 块格式错（缺字段）→ fallback', () => {
@@ -40,7 +38,6 @@ describe('extractTaskOutcome', () => {
 { "wrong_field": "x" }
 \`\`\``
     const r = extractTaskOutcome(summary, 200)
-    expect(r.parsed).toBe(false)
     expect(r.outcome_brief).toBe('回复。')
     expect(r.process_highlights).toEqual([])
   })
@@ -52,14 +49,12 @@ describe('extractTaskOutcome', () => {
 not valid json {
 \`\`\``
     const r = extractTaskOutcome(summary, 200)
-    expect(r.parsed).toBe(false)
     expect(r.outcome_brief).toBe('回复。')
   })
 
   it('summary 过长时 fallback brief 截到 maxLen 字', () => {
     const summary = '甲'.repeat(500)
     const r = extractTaskOutcome(summary, 200)
-    expect(r.parsed).toBe(false)
     expect(r.outcome_brief).toHaveLength(200)
   })
 
@@ -114,7 +109,6 @@ not valid json {
 {"outcome_brief":"完成","process_highlights":[]}
 \`\`\``
     const r = extractTaskOutcome(summary, 200)
-    expect(r.parsed).toBe(true)
     expect(r.outcome_brief).toBe('完成')
     expect(r.process_highlights).toEqual([])
     // stripped_summary 应保留前面的解释段（含内联 ```json 例子）

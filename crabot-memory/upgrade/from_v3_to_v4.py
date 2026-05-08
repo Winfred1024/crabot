@@ -100,19 +100,17 @@ def build_fts_index(db_path: Path, log: List[str]) -> None:
         conn.close()
 
 
-def write_schema_version(data_dir: Path, log: List[str]) -> None:
-    version_file = data_dir / "SCHEMA_VERSION"
-    version_file.write_text("v4\n", encoding="utf-8")
-    log.append(f"SCHEMA_VERSION: written v4 to {version_file}")
-
-
 def migrate(data_dir: Path) -> List[str]:
+    """v3 → v4 迁移。
+
+    SCHEMA_VERSION 由 upgrade framework (`scripts/upgrade-lib/migrate.mjs`) 在脚本
+    成功返回后回写，本脚本不重复处理。
+    """
     log: List[str] = []
     log.append(f"=== v3 → v4 migration started at {datetime.now().isoformat()} ===")
     db = data_dir / "short_term.db"
     backup_short_term(db, log)
     build_fts_index(db, log)
-    write_schema_version(data_dir, log)
     log.append(f"=== v3 → v4 migration completed at {datetime.now().isoformat()} ===")
 
     log_file = data_dir / "upgrade-v3-to-v4.log"

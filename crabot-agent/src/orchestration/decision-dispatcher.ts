@@ -401,52 +401,27 @@ export class DecisionDispatcher {
           console.error(`[DecisionDispatcher] Failed to update task status: ${msg}`)
         })
 
-        // 解析 worker summary 末尾的 ```json``` 块（结构化输出契约）
         const outcome = extractTaskOutcome(result.summary, 200)
-
-        // 写入短期记忆（fire-and-forget）
-        const friendName = params.senderFriend?.display_name ?? 'Unknown'
-        const friendId = params.messages[params.messages.length - 1]?.sender?.friend_id ?? ''
-        this.memoryWriter.writeTaskFinished({
-          task_id: task.id,
-          task_title: task.title,
+        this.finalizeTaskMemory({
+          taskId: task.id,
+          taskTitle: task.title,
           outcome: result.outcome,
-          outcome_brief: outcome.outcome_brief,
-          process_highlights: outcome.process_highlights,
-          friend_name: friendName,
-          friend_id: friendId,
-          channel_id: params.channel_id,
-          session_id: params.session_id,
+          outcomeBrief: outcome.outcome_brief,
+          processHighlights: outcome.process_highlights,
+          detailContent: outcome.stripped_summary,
+          friendName: params.senderFriend?.display_name ?? 'Unknown',
+          friendId: params.messages[params.messages.length - 1]?.sender?.friend_id ?? '',
+          channelId: params.channel_id,
+          sessionId: params.session_id,
           visibility: params.memoryPermissions.write_visibility,
           scopes: params.memoryPermissions.write_scopes,
-          trace_id: result.trace_id,
-        }).catch(() => {})
+          traceId: result.trace_id,
+        })
 
-        // 任务完成时同时尝试抽 case（fire-and-forget；失败静默）
-        // 用 stripped_summary，避免 JSON 块进 long-term lesson
-        {
-          const briefSrc = `${task.title} → ${outcome.outcome_brief}`.slice(0, 80)
-          this.memoryWriter.quickCapture({
-            type: 'lesson',
-            brief: briefSrc,
-            content: `任务 ${task.id}（${task.title}）${result.outcome === 'completed' ? '完成' : '失败'}：${outcome.stripped_summary}`,
-            source_ref: { type: 'conversation', task_id: task.id, channel_id: params.channel_id, session_id: params.session_id },
-            entities: [],
-            tags: [`task_outcome:${result.outcome}`],
-            importance_factors: {
-              proximity: 0.6,
-              surprisal: result.outcome === 'failed' ? 0.8 : 0.4,
-              entity_priority: 0.5,
-              unambiguity: 0.6,
-            },
-          }).catch(() => undefined)
-        }
-
-        // 回复用户（仅当 Worker 提供了 final_reply 时）
-        // final_reply.text 同样可能挂着 ```json``` 契约块，剥掉后再发给用户
+        // worker 的 final_reply.text 与 result.summary 同源（worker-handler 1054-1058），
+        // 复用 outcome.stripped_summary 避免再 parse 一次。
         if (result.final_reply?.text) {
-          const sanitizedReply = extractTaskOutcome(result.final_reply.text, 200).stripped_summary
-          await this.sendReplyToUser(sanitizedReply, params)
+          await this.sendReplyToUser(outcome.stripped_summary, params)
         }
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error)
@@ -464,41 +439,21 @@ export class DecisionDispatcher {
 
         await this.sendReplyToUser('任务处理失败，请稍后重试', params).catch(() => {})
 
-        const failFriendName = params.senderFriend?.display_name ?? 'Unknown'
-        const failFriendId = params.messages[params.messages.length - 1]?.sender?.friend_id ?? ''
-        // 失败路径 msg 是 error.message 纯文本，没有 JSON 块需解析，直接 slice
-        this.memoryWriter.writeTaskFinished({
-          task_id: task.id,
-          task_title: task.title,
+        // 失败路径 msg 是 error.message 纯文本，无 JSON 契约块。
+        this.finalizeTaskMemory({
+          taskId: task.id,
+          taskTitle: task.title,
           outcome: 'failed',
-          outcome_brief: msg.slice(0, 200),
-          process_highlights: [],
-          friend_name: failFriendName,
-          friend_id: failFriendId,
-          channel_id: params.channel_id,
-          session_id: params.session_id,
+          outcomeBrief: msg.slice(0, 200),
+          processHighlights: [],
+          detailContent: msg,
+          friendName: params.senderFriend?.display_name ?? 'Unknown',
+          friendId: params.messages[params.messages.length - 1]?.sender?.friend_id ?? '',
+          channelId: params.channel_id,
+          sessionId: params.session_id,
           visibility: params.memoryPermissions.write_visibility,
           scopes: params.memoryPermissions.write_scopes,
-        }).catch(() => {})
-
-        // 任务完成时同时尝试抽 case（fire-and-forget；失败静默）
-        {
-          const briefSrc = `${task.title} → ${msg}`.slice(0, 80)
-          this.memoryWriter.quickCapture({
-            type: 'lesson',
-            brief: briefSrc,
-            content: `任务 ${task.id}（${task.title}）失败：${msg}`,
-            source_ref: { type: 'conversation', task_id: task.id, channel_id: params.channel_id, session_id: params.session_id },
-            entities: [],
-            tags: [`task_outcome:failed`],
-            importance_factors: {
-              proximity: 0.6,
-              surprisal: 0.8,
-              entity_priority: 0.5,
-              unambiguity: 0.6,
-            },
-          }).catch(() => undefined)
-        }
+        })
       }
     }
 
@@ -609,48 +564,22 @@ export class DecisionDispatcher {
           console.error(`[DecisionDispatcher] Failed to update scheduled task status: ${msg}`)
         })
 
-        // 解析 worker summary 末尾的 ```json``` 块（结构化输出契约）
         const outcome = extractTaskOutcome(result.summary, 200)
-
-        // 注：定时任务路径不调 sendReplyToUser（推送走 channel pusher 而非 chat reply）。
-        // 若日后此处加 sendReplyToUser，记得也走 extractTaskOutcome(...).stripped_summary 剥 JSON 块。
-
-        // 写入短期记忆（系统级参数）
-        this.memoryWriter.writeTaskFinished({
-          task_id: task.id,
-          task_title: task.title,
+        this.finalizeTaskMemory({
+          taskId: task.id,
+          taskTitle: task.title,
           outcome: result.outcome,
-          outcome_brief: outcome.outcome_brief,
-          process_highlights: outcome.process_highlights,
-          friend_name: 'system',
-          friend_id: '',
-          channel_id: '',
-          session_id: '',
+          outcomeBrief: outcome.outcome_brief,
+          processHighlights: outcome.process_highlights,
+          detailContent: outcome.stripped_summary,
+          friendName: 'system',
+          friendId: '',
+          channelId: '',
+          sessionId: '',
           visibility: 'internal',
           scopes: [],
-          trace_id: result.trace_id,
-        }).catch(() => {})
-
-        // 任务完成时同时尝试抽 case（fire-and-forget；失败静默）
-        // 用 stripped_summary，避免 JSON 块进 long-term lesson
-        {
-          const briefSrc = `${task.title} → ${outcome.outcome_brief}`.slice(0, 80)
-          this.memoryWriter.quickCapture({
-            type: 'lesson',
-            brief: briefSrc,
-            content: `任务 ${task.id}（${task.title}）${result.outcome === 'completed' ? '完成' : '失败'}：${outcome.stripped_summary}`,
-            source_ref: { type: 'conversation', task_id: task.id, channel_id: '', session_id: '' },
-            entities: [],
-            tags: [`task_outcome:${result.outcome}`],
-            importance_factors: {
-              proximity: 0.6,
-              surprisal: result.outcome === 'failed' ? 0.8 : 0.4,
-              entity_priority: 0.5,
-              unambiguity: 0.6,
-            },
-          }).catch(() => undefined)
-        }
-
+          traceId: result.trace_id,
+        })
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error)
         console.error(`[DecisionDispatcher] Background scheduled task ${task.id} failed: ${msg}`)
@@ -665,45 +594,87 @@ export class DecisionDispatcher {
           )
         } catch { /* best effort */ }
 
-        // 失败路径 msg 是 error.message 纯文本，没有 JSON 块需解析，直接 slice
-        this.memoryWriter.writeTaskFinished({
-          task_id: task.id,
-          task_title: task.title,
+        // 失败路径 msg 是 error.message 纯文本，无 JSON 契约块。
+        this.finalizeTaskMemory({
+          taskId: task.id,
+          taskTitle: task.title,
           outcome: 'failed',
-          outcome_brief: msg.slice(0, 200),
-          process_highlights: [],
-          friend_name: 'system',
-          friend_id: '',
-          channel_id: '',
-          session_id: '',
+          outcomeBrief: msg.slice(0, 200),
+          processHighlights: [],
+          detailContent: msg,
+          friendName: 'system',
+          friendId: '',
+          channelId: '',
+          sessionId: '',
           visibility: 'internal',
           scopes: [],
-        }).catch(() => {})
-
-        // 任务完成时同时尝试抽 case（fire-and-forget；失败静默）
-        {
-          const briefSrc = `${task.title} → ${msg}`.slice(0, 80)
-          this.memoryWriter.quickCapture({
-            type: 'lesson',
-            brief: briefSrc,
-            content: `任务 ${task.id}（${task.title}）失败：${msg}`,
-            source_ref: { type: 'conversation', task_id: task.id, channel_id: '', session_id: '' },
-            entities: [],
-            tags: [`task_outcome:failed`],
-            importance_factors: {
-              proximity: 0.6,
-              surprisal: 0.8,
-              entity_priority: 0.5,
-              unambiguity: 0.6,
-            },
-          }).catch(() => undefined)
-        }
+        })
       }
     }
 
     run().catch((err) => {
       console.error(`[DecisionDispatcher] Unexpected error in scheduled task: ${err}`)
     })
+  }
+
+  /**
+   * task_finished 事件的双写：短期记忆 brief + 亮点（writeTaskFinished）
+   * + 长期记忆 case 候选（quickCapture）。两者均 fire-and-forget。
+   *
+   * `detailContent` 是 quickCapture 写入 long-term inbox 的 lesson 正文；成功路径传
+   * stripped_summary（避免 JSON 契约块进 lesson），失败路径传 error.message。
+   */
+  private finalizeTaskMemory(args: {
+    taskId: string
+    taskTitle: string
+    outcome: 'completed' | 'failed'
+    outcomeBrief: string
+    processHighlights: readonly string[]
+    detailContent: string
+    friendName: string
+    friendId: string
+    channelId: string
+    sessionId: string
+    visibility: 'private' | 'internal' | 'public'
+    scopes: string[]
+    traceId?: string
+  }): void {
+    const {
+      taskId, taskTitle, outcome, outcomeBrief, processHighlights, detailContent,
+      friendName, friendId, channelId, sessionId, visibility, scopes, traceId,
+    } = args
+
+    this.memoryWriter.writeTaskFinished({
+      task_id: taskId,
+      task_title: taskTitle,
+      outcome,
+      outcome_brief: outcomeBrief,
+      process_highlights: [...processHighlights],
+      friend_name: friendName,
+      friend_id: friendId,
+      channel_id: channelId,
+      session_id: sessionId,
+      visibility,
+      scopes,
+      ...(traceId ? { trace_id: traceId } : {}),
+    }).catch(() => {})
+
+    const briefSrc = `${taskTitle} → ${outcomeBrief}`.slice(0, 80)
+    const outcomeLabel = outcome === 'completed' ? '完成' : '失败'
+    this.memoryWriter.quickCapture({
+      type: 'lesson',
+      brief: briefSrc,
+      content: `任务 ${taskId}（${taskTitle}）${outcomeLabel}：${detailContent}`,
+      source_ref: { type: 'conversation', task_id: taskId, channel_id: channelId, session_id: sessionId },
+      entities: [],
+      tags: [`task_outcome:${outcome}`],
+      importance_factors: {
+        proximity: 0.6,
+        surprisal: outcome === 'failed' ? 0.8 : 0.4,
+        entity_priority: 0.5,
+        unambiguity: 0.6,
+      },
+    }).catch(() => undefined)
   }
 
   /**

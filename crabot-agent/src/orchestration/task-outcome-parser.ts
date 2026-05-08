@@ -1,16 +1,11 @@
 /**
- * Phase 2：从 worker 任务最终 summary 末尾的 ```json {...}``` 块解析结构化输出。
+ * 从 worker 最终 summary 末尾的 ```json {...}``` fence 块解析 outcome_brief +
+ * process_highlights，并返回剥掉 fence 的 stripped_summary（用户面用）。
  *
- * Worker prompt 要求在最终回复末尾追加一个 ```json fence 块，含：
- *   { "outcome_brief": "...", "process_highlights": ["..", "..", ".."] }
+ * 解析失败（无 fence / 语法错 / 字段缺失）走 fallback：brief = stripped_summary.slice(0,
+ * maxLen)、highlights = []。fence 存在但内容坏时仍剥掉 fence——避免无效 ```json``` 泄到用户面。
  *
- * - 解析成功 → 返回结构化字段 + stripped_summary（去除 JSON 块的纯文本）
- * - 无 fence 块 → fallback：brief = summary.slice(0, maxLen), highlights = [],
- *   stripped_summary = summary 原文
- * - fence 块存在但内容坏了（语法错 / 字段缺失）→ fallback：brief / stripped 都从
- *   summary 里把 fence 块剥掉再返回，避免无效 ```json``` 噪声泄到用户面
- *
- * 失败不抛异常 — 调用方拿到的字段总是合法可用。
+ * 不抛异常，调用方拿到的字段总是合法可用。
  */
 
 const MAX_HIGHLIGHTS = 3
@@ -20,7 +15,6 @@ export interface TaskOutcomeFields {
   outcome_brief: string
   process_highlights: string[]
   stripped_summary: string
-  parsed: boolean
 }
 
 // 锚到 summary 末尾的最后一个 ```json fence。负向预查 (?!```json\s*\n) 保证捕获组
@@ -29,16 +23,11 @@ const JSON_FENCE_RE = /\n*```json\s*\n((?:(?!```json\s*\n)[\s\S])*?)\n```\s*$/
 
 export function extractTaskOutcome(summary: string, maxBriefLen: number): TaskOutcomeFields {
   const match = summary.match(JSON_FENCE_RE)
-
-  // 即使 JSON 块解析失败，也应把 fence 块从 brief / stripped 里剥掉，
-  // 避免用户面文本里残留无效的 ```json ...```（worker 还是按契约附带了块，
-  // 只是内容坏了 — 不应让用户看到这个噪声）。
-  const fallbackText = match ? summary.slice(0, match.index!).trimEnd() : summary
+  const strippedSummary = match ? summary.slice(0, match.index!).trimEnd() : summary
   const fallback = (): TaskOutcomeFields => ({
-    outcome_brief: fallbackText.slice(0, maxBriefLen),
+    outcome_brief: strippedSummary.slice(0, maxBriefLen),
     process_highlights: [],
-    stripped_summary: fallbackText,
-    parsed: false,
+    stripped_summary: strippedSummary,
   })
 
   if (!match) return fallback()
@@ -59,17 +48,11 @@ export function extractTaskOutcome(summary: string, maxBriefLen: number): TaskOu
   if (typeof brief !== 'string' || !Array.isArray(highlights)) return fallback()
   if (!highlights.every((h) => typeof h === 'string')) return fallback()
 
-  const trimmedBrief = brief.slice(0, maxBriefLen)
-  const trimmedHighlights = (highlights as string[])
-    .slice(0, MAX_HIGHLIGHTS)
-    .map((h) => h.slice(0, MAX_HIGHLIGHT_LEN))
-
-  const strippedSummary = summary.slice(0, match.index!).trimEnd()
-
   return {
-    outcome_brief: trimmedBrief,
-    process_highlights: trimmedHighlights,
+    outcome_brief: brief.slice(0, maxBriefLen),
+    process_highlights: (highlights as string[])
+      .slice(0, MAX_HIGHLIGHTS)
+      .map((h) => h.slice(0, MAX_HIGHLIGHT_LEN)),
     stripped_summary: strippedSummary,
-    parsed: true,
   }
 }
