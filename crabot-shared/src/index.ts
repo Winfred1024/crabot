@@ -41,6 +41,9 @@ export {
 export {
   ModuleBase,
   RpcClient,
+  RpcError,
+  RpcCallError,
+  formatHandlerError,
   type ModuleConfig,
   type ModuleMetadata,
   type RpcTraceContext,

@@ -26,6 +26,51 @@ import {
 import { proxyManager } from './proxy-manager.js'
 
 // ============================================================================
+// 自定义错误类
+// ============================================================================
+
+/**
+ * 模块 RPC handler 抛出此类时，module-base 会用对应 code 返回 createErrorResponse；
+ * 否则统一压成 INTERNAL_ERROR。
+ */
+export class RpcError extends Error {
+  public readonly code: string
+  public readonly details?: Record<string, unknown>
+  constructor(code: string, message: string, details?: Record<string, unknown>) {
+    super(message)
+    this.name = 'RpcError'
+    this.code = code
+    this.details = details
+  }
+}
+
+/**
+ * RpcClient.call 收到失败 response 时 reject 此类，调用方可拿到原 code/details。
+ */
+export class RpcCallError extends Error {
+  public readonly code: string
+  public readonly details?: Record<string, unknown>
+  constructor(code: string, message: string, details?: Record<string, unknown>) {
+    super(message)
+    this.name = 'RpcCallError'
+    this.code = code
+    this.details = details
+  }
+}
+
+/**
+ * 把 handler 抛出的异常格式化为 ErrorResponse。
+ * 抽出此函数是为了让单元测试不必起完整 ModuleBase。
+ */
+export function formatHandlerError(error: unknown, requestId: string): Response<never> {
+  if (error instanceof RpcError) {
+    return createErrorResponse(requestId, error.code, error.message, error.details)
+  }
+  const errorMessage = error instanceof Error ? error.message : String(error)
+  return createErrorResponse(requestId, GlobalErrorCode.INTERNAL_ERROR, errorMessage)
+}
+
+// ============================================================================
 // 类型定义
 // ============================================================================
 
@@ -202,7 +247,11 @@ export class RpcClient {
                     error: errMsg,
                   })
                 }
-                reject(new Error(errMsg))
+                reject(new RpcCallError(
+                  response.error?.code ?? 'INTERNAL_ERROR',
+                  response.error?.message ?? 'Unknown error',
+                  response.error?.details,
+                ))
               }
             } catch (e) {
               const errMsg = `Failed to parse response: ${String(e)}`
@@ -605,12 +654,7 @@ export abstract class ModuleBase {
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify(response))
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
-      const errorResponse = createErrorResponse(
-        request?.id ?? generateId(),
-        GlobalErrorCode.INTERNAL_ERROR,
-        errorMessage
-      )
+      const errorResponse = formatHandlerError(error, request?.id ?? generateId())
       res.writeHead(500, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify(errorResponse))
     }
