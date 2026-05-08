@@ -1009,6 +1009,11 @@ export class AdminModule extends ModuleBase {
         return
       }
 
+      if (pathname === '/api/oauth/chatgpt/import' && req.method === 'POST') {
+        await this.handleOAuthChatGPTImport(req, res)
+        return
+      }
+
       if (pathname.match(/^\/api\/oauth\/chatgpt\/[^/]+\/logout$/) && req.method === 'POST') {
         const providerId = pathname.split('/')[4]
         await this.handleOAuthChatGPTLogout(req, res, providerId)
@@ -4738,6 +4743,64 @@ export class AdminModule extends ModuleBase {
       res.writeHead(400, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
     }
+  }
+
+  private async handleOAuthChatGPTImport(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const oauthMod = await import('./oauth/openai-codex-oauth.js')
+
+    let body: { auth_json?: string } | null = null
+    try {
+      body = await this.readJsonBody<{ auth_json?: string }>(req)
+    } catch (err) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'Invalid JSON' }))
+      return
+    }
+
+    const text = body?.auth_json?.trim()
+    if (!text) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: '请上传或粘贴 auth.json 内容' }))
+      return
+    }
+
+    // 第一层：结构 + JWT 解析
+    let parsed: import('./oauth/openai-codex-oauth.js').OAuthLoginResult
+    try {
+      parsed = oauthMod.parseCodexAuthJson(text)
+    } catch (err) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+      return
+    }
+
+    // 第二层：服务端实战校验（拉一次 /models）
+    if (!parsed.account_id) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'auth.json 缺少 account_id' }))
+      return
+    }
+    try {
+      await oauthMod.validateChatGPTAccessToken(parsed.access_token, parsed.account_id)
+    } catch (err) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+      return
+    }
+
+    // 校验通过：取消任何 pending 扫码流程，把 result 写入 lastOAuthResult，
+    // 后续 createProvider/importFromVendor 流程会消费它（与扫码登录路径完全一致）。
+    oauthMod.cancelOAuthFlow()
+    this.oauthLoginPromise = null
+    this.lastOAuthResult = parsed
+
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({
+      status: 'success',
+      email: parsed.email,
+      account_id: parsed.account_id,
+      expires_at: parsed.expires_at,
+    }))
   }
 
   private async handleOAuthChatGPTStatus(_req: IncomingMessage, res: ServerResponse): Promise<void> {

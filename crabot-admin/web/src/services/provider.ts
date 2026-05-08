@@ -93,6 +93,12 @@ export const providerService = {
     return api.post('/oauth/chatgpt/manual-callback', { redirect_url: redirectUrl })
   },
 
+  async importChatGPTAuthJson(
+    authJson: string,
+  ): Promise<{ status: 'success'; email?: string; account_id?: string; expires_at?: number }> {
+    return api.post('/oauth/chatgpt/import', { auth_json: authJson })
+  },
+
   async getOAuthStatus(): Promise<{
     status: 'idle' | 'pending' | 'success' | 'failed'
     email?: string

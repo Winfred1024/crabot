@@ -96,6 +96,112 @@ export interface OAuthLoginResult {
   email?: string
 }
 
+/**
+ * 把 Codex CLI 的 auth.json 文本解析成 OAuthLoginResult。
+ *
+ * 接受 Codex CLI（~/.codex/auth.json）的标准结构：
+ * { tokens: { access_token, refresh_token, account_id, id_token? }, ... }
+ *
+ * 只做结构 + JWT 解析层的校验，不发网络请求。
+ * 网络层校验应单独调 validateChatGPTAccessToken 完成。
+ */
+export function parseCodexAuthJson(text: string): OAuthLoginResult {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch (err) {
+    throw new Error(`auth.json 不是合法的 JSON：${err instanceof Error ? err.message : String(err)}`)
+  }
+
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('auth.json 必须是对象')
+  }
+
+  const tokens = (parsed as { tokens?: unknown }).tokens
+  if (!tokens || typeof tokens !== 'object') {
+    throw new Error('auth.json 缺少 tokens 字段')
+  }
+
+  const t = tokens as Record<string, unknown>
+  const accessToken = typeof t.access_token === 'string' ? t.access_token : null
+  const refreshToken = typeof t.refresh_token === 'string' ? t.refresh_token : null
+  const fileAccountId = typeof t.account_id === 'string' ? t.account_id : undefined
+
+  if (!accessToken) {
+    throw new Error('auth.json 缺少 tokens.access_token 字段')
+  }
+  if (!refreshToken) {
+    throw new Error('auth.json 缺少 tokens.refresh_token 字段')
+  }
+
+  const info = extractTokenInfo(accessToken)
+  // extractTokenInfo 在 JWT 解析失败时会回退到 { expiresAt: now + 1h }，
+  // 但不会标记失败。这里通过"必须能解出 chatgpt_account_id"反向探测合法性。
+  const jwtAccountId = info.accountId
+  const accountId = jwtAccountId ?? fileAccountId
+
+  if (!jwtAccountId && !fileAccountId) {
+    throw new Error('access_token 无法解析出 chatgpt_account_id，文件可能损坏或不是 Codex CLI 的 auth.json')
+  }
+
+  if (info.expiresAt < Date.now()) {
+    const ageMin = Math.round((Date.now() - info.expiresAt) / 60_000)
+    throw new Error(`access_token 已过期 ${ageMin} 分钟，请在 Codex CLI 上重新登录后再导入`)
+  }
+
+  return {
+    access_token: accessToken,
+    refresh_token: refreshToken,
+    expires_at: info.expiresAt,
+    account_id: accountId,
+    email: info.email,
+  }
+}
+
+/**
+ * 调一次 ChatGPT Codex 后端 /models 端点验证 access_token + account_id 是否被服务端接受。
+ *
+ * 这一步不可省略：fetchVendorModels 在拉模型失败时会吞错并回退到 default_models，
+ * 因此仅靠后续的 createProvider 流程拿不到真实的服务端校验结果。
+ *
+ * 失败时抛 Error，包含分级错误文案（401/403 / 网络错误 / 未知）。
+ */
+export async function validateChatGPTAccessToken(
+  accessToken: string,
+  accountId: string,
+): Promise<void> {
+  const { resolveCodexClientVersion } = await import('./codex-client-version.js')
+  const clientVersion = await resolveCodexClientVersion()
+  const url = `https://chatgpt.com/backend-api/codex/models?client_version=${encodeURIComponent(clientVersion)}`
+
+  let response: Response
+  try {
+    response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'ChatGPT-Account-Id': accountId,
+      },
+    })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    throw new Error(`无法连接 ChatGPT 后端：${msg}（请检查网络 / 代理）`)
+  }
+
+  if (response.status === 401 || response.status === 403) {
+    const body = await response.text().catch(() => '')
+    throw new Error(
+      `token 被服务端拒绝（HTTP ${response.status}）：可能账号已登出所有设备或订阅已失效，请在 Codex CLI 上重新登录` +
+      (body ? `。响应：${body.slice(0, 200)}` : ''),
+    )
+  }
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '')
+    throw new Error(`ChatGPT 后端返回 HTTP ${response.status}：${body.slice(0, 200) || '未知错误'}`)
+  }
+}
+
 interface PendingOAuthFlow {
   state: string
   codeVerifier: string

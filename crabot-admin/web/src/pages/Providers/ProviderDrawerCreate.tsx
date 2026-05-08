@@ -38,6 +38,12 @@ export const ProviderDrawerCreate: React.FC<ProviderDrawerCreateProps> = ({
   const pollRef = useRef<{ interval?: ReturnType<typeof setInterval>; timeout?: ReturnType<typeof setTimeout> }>({})
   const finalizingRef = useRef(false)
 
+  // auth.json 导入相关状态
+  const [authJsonOpen, setAuthJsonOpen] = useState(false)
+  const [authJsonText, setAuthJsonText] = useState('')
+  const [authJsonFileName, setAuthJsonFileName] = useState('')
+  const [authJsonImporting, setAuthJsonImporting] = useState(false)
+
   useEffect(() => () => {
     if (pollRef.current.interval) clearInterval(pollRef.current.interval)
     if (pollRef.current.timeout) clearTimeout(pollRef.current.timeout)
@@ -146,6 +152,38 @@ export const ProviderDrawerCreate: React.FC<ProviderDrawerCreateProps> = ({
       toast.success('授权链接已复制')
     } catch {
       toast.error('复制失败，请手动选中链接复制')
+    }
+  }
+
+  const handleAuthJsonFile = (file: File | null) => {
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      setAuthJsonText(typeof reader.result === 'string' ? reader.result : '')
+      setAuthJsonFileName(file.name)
+    }
+    reader.onerror = () => {
+      toast.error('读取文件失败')
+    }
+    reader.readAsText(file)
+  }
+
+  const handleImportAuthJson = async () => {
+    const text = authJsonText.trim()
+    if (!text) {
+      toast.error('请上传或粘贴 auth.json 内容')
+      return
+    }
+    setAuthJsonImporting(true)
+    try {
+      const result = await providerService.importChatGPTAuthJson(text)
+      // 沿用扫码登录的成功路径：lastOAuthResult 已写入服务端，
+      // finalizeOAuthSuccess 会调 importFromVendor 拉模型 + 创建 provider。
+      await finalizeOAuthSuccess(result.email ?? '')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '导入 auth.json 失败')
+    } finally {
+      setAuthJsonImporting(false)
     }
   }
 
@@ -294,6 +332,95 @@ export const ProviderDrawerCreate: React.FC<ProviderDrawerCreateProps> = ({
                   style={{ width: '100%', marginTop: '0.5rem' }}>
                   {isLoopbackAccess ? '登录 ChatGPT' : '开始登录（手动粘贴回调）'}
                 </Button>
+              )}
+
+              {oauthStatus === 'idle' && (
+                <div style={{ marginTop: '0.75rem' }}>
+                  <button
+                    type="button"
+                    onClick={() => setAuthJsonOpen(o => !o)}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      padding: 0,
+                      color: 'var(--text-secondary)',
+                      fontSize: '0.8rem',
+                      cursor: 'pointer',
+                      textDecoration: 'underline dotted',
+                    }}
+                  >
+                    {authJsonOpen ? '收起' : '或导入 Codex CLI 的 auth.json'}
+                  </button>
+
+                  {authJsonOpen && (
+                    <div style={{
+                      marginTop: '0.5rem',
+                      background: 'var(--surface-2, #1a1a1d)',
+                      border: '1px solid var(--border-color, #2a2a2e)',
+                      borderRadius: '4px',
+                      padding: '0.75rem',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '0.5rem',
+                    }}>
+                      <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                        如果你已经在本机用 Codex CLI 登录过，可以直接导入 <code>~/.codex/auth.json</code>，无需再扫码。
+                        <br />
+                        <strong style={{ color: 'var(--warning, #d4a017)' }}>注意：</strong>
+                        Codex CLI 与 Crabot 同时使用同一份 auth.json 时，任一方刷新 token 都会让另一方失效。
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <label
+                          htmlFor="auth-json-file"
+                          style={{
+                            background: 'var(--surface-3, #262629)',
+                            border: '1px solid var(--border-color, #2a2a2e)',
+                            borderRadius: '4px',
+                            padding: '0.4rem 0.75rem',
+                            fontSize: '0.78rem',
+                            cursor: 'pointer',
+                            flexShrink: 0,
+                          }}
+                        >
+                          选择文件
+                        </label>
+                        <input
+                          id="auth-json-file"
+                          type="file"
+                          accept=".json,application/json"
+                          style={{ display: 'none' }}
+                          onChange={e => handleAuthJsonFile(e.target.files?.[0] ?? null)}
+                        />
+                        <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {authJsonFileName || '未选择文件'}
+                        </span>
+                      </div>
+
+                      <textarea
+                        className="textarea"
+                        placeholder="或直接粘贴 auth.json 内容"
+                        rows={6}
+                        value={authJsonText}
+                        onChange={e => {
+                          setAuthJsonText(e.target.value)
+                          if (authJsonFileName) setAuthJsonFileName('')
+                        }}
+                        style={{ fontSize: '0.75rem', fontFamily: 'monospace' }}
+                      />
+
+                      <Button
+                        type="button"
+                        variant="primary"
+                        onClick={handleImportAuthJson}
+                        disabled={authJsonImporting || saving || !selectedVendor || !authJsonText.trim()}
+                        style={{ width: '100%' }}
+                      >
+                        {authJsonImporting ? '校验中...' : '导入 auth.json'}
+                      </Button>
+                    </div>
+                  )}
+                </div>
               )}
 
               {oauthStatus === 'pending' && isLoopbackAccess && (
