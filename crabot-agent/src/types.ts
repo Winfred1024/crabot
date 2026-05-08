@@ -666,8 +666,17 @@ export interface HandleMessageResult {
 export interface ExecuteTaskResult {
   task_id: TaskId
   outcome: 'completed' | 'failed'
+  /** 任务最终输出全文（含 worker 给用户的自然语言回复 + 末尾 JSON 块原文）。
+   *  系统层用作 admin task result 的 summary 字段；不直接进短期记忆。 */
   summary: string
+  /** 任务最终给用户的回复内容（dispatcher 会从 summary 里 strip JSON 块后构造）。 */
   final_reply?: MessageContent
+  /** Phase 2：从 summary 末尾 JSON 块解析得到的简明摘要（≤200 字）。
+   *  worker 未产出或解析失败时由 dispatcher fallback 填 summary.slice(0,200)。 */
+  outcome_brief?: string
+  /** Phase 2：过程亮点（异常 / 兜底 / 关键决策），每条 ≤80 字最多 3 条。
+   *  worker 未产出或解析失败时为空数组 []。 */
+  process_highlights?: string[]
 }
 
 // ============================================================================

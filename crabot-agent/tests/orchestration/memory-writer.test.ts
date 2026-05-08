@@ -118,3 +118,82 @@ describe('MemoryWriter phase 3 helpers', () => {
     errorSpy.mockRestore()
   })
 })
+
+describe('writeTaskFinished — Phase 2 structured content', () => {
+  it('content 为 brief 一行（无亮点时不带过程亮点段）', async () => {
+    const calls: any[] = []
+    const rpcClient = { call: vi.fn((_p, _m, payload) => { calls.push(payload); return Promise.resolve({}) }) } as any
+    const writer = new MemoryWriter(rpcClient, 'agent-test', () => 19002)
+
+    await writer.writeTaskFinished({
+      task_id: 't-1',
+      task_title: '示例任务',
+      outcome: 'completed',
+      outcome_brief: '已修复 /fav 500，根因 vod_ids 未校验',
+      process_highlights: [],
+      friend_name: 'FuFu',
+      friend_id: 'f-1',
+      channel_id: 'telegram-001',
+      session_id: 's-1',
+      visibility: 'public',
+      scopes: [],
+      trace_id: 'tr-1',
+    })
+
+    expect(calls).toHaveLength(1)
+    const content: string = calls[0].content
+    expect(content).toBe('任务 t-1（示例任务）完成：已修复 /fav 500，根因 vod_ids 未校验')
+    expect(content).not.toMatch(/过程亮点/)
+  })
+
+  it('content 含过程亮点 markdown 列表', async () => {
+    const calls: any[] = []
+    const rpcClient = { call: vi.fn((_p, _m, payload) => { calls.push(payload); return Promise.resolve({}) }) } as any
+    const writer = new MemoryWriter(rpcClient, 'agent-test', () => 19002)
+
+    await writer.writeTaskFinished({
+      task_id: 't-2',
+      task_title: 'GitHub 早报',
+      outcome: 'completed',
+      outcome_brief: '已发送早报到微信群',
+      process_highlights: [
+        'list_groups 失败（Method not found），改用 list_sessions 兜底定位群成功',
+        'GitHub API 403 rate limit → 改用 trending 页面数据',
+      ],
+      friend_name: 'FuFu',
+      friend_id: 'f-1',
+      channel_id: 'feishu-fengyan',
+      session_id: 's-2',
+      visibility: 'public',
+      scopes: [],
+      trace_id: 'tr-2',
+    })
+
+    const content: string = calls[0].content
+    expect(content).toMatch(/^任务 t-2（GitHub 早报）完成：已发送早报到微信群\n\n过程亮点:/)
+    expect(content).toMatch(/- list_groups 失败/)
+    expect(content).toMatch(/- GitHub API 403/)
+  })
+
+  it('outcome failed 时 content 用"失败"措辞', async () => {
+    const calls: any[] = []
+    const rpcClient = { call: vi.fn((_p, _m, payload) => { calls.push(payload); return Promise.resolve({}) }) } as any
+    const writer = new MemoryWriter(rpcClient, 'agent-test', () => 19002)
+
+    await writer.writeTaskFinished({
+      task_id: 't-3',
+      task_title: '失败任务',
+      outcome: 'failed',
+      outcome_brief: 'API 限流，未完成',
+      process_highlights: ['连续 3 次重试均 429'],
+      friend_name: 'FuFu',
+      friend_id: 'f-1',
+      channel_id: 'admin-web',
+      session_id: 's-3',
+      visibility: 'public',
+      scopes: [],
+    })
+
+    expect(calls[0].content).toMatch(/^任务 t-3（失败任务）失败：API 限流/)
+  })
+})

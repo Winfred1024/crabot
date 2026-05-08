@@ -29,7 +29,10 @@ export interface WriteTaskFinishedParams extends MemoryWriteBase {
   task_id: string
   task_title: string
   outcome: 'completed' | 'failed'
-  summary: string
+  /** 简明摘要（≤200 字）；调用方负责长度截断 */
+  outcome_brief: string
+  /** 过程亮点（异常 / 兜底 / 关键决策），每条 ≤80 字最多 3 条；无亮点传 [] */
+  process_highlights: string[]
   friend_name: string
   friend_id: string
   channel_id: string
@@ -93,12 +96,27 @@ export class MemoryWriter {
   /** Task 完成/失败事件 */
   async writeTaskFinished(params: WriteTaskFinishedParams): Promise<void> {
     const outcomeLabel = params.outcome === 'completed' ? '完成' : '失败'
-    const content = `任务 ${params.task_id}（${params.task_title}）${outcomeLabel}：${params.summary}`
+    const head = `任务 ${params.task_id}（${params.task_title}）${outcomeLabel}：${params.outcome_brief}`
+
+    const lines: string[] = [head]
+    if (params.process_highlights.length > 0) {
+      lines.push('', '过程亮点:')
+      for (const h of params.process_highlights) {
+        lines.push(`- ${h}`)
+      }
+    }
+    const content = lines.join('\n')
 
     await this.write({
       content,
       source: { type: 'conversation' as const, channel_id: params.channel_id, session_id: params.session_id },
-      refs: { task_id: params.task_id, friend_id: params.friend_id, session_id: params.session_id, channel_id: params.channel_id, ...(params.trace_id ? { trace_id: params.trace_id } : {}) },
+      refs: {
+        task_id: params.task_id,
+        friend_id: params.friend_id,
+        session_id: params.session_id,
+        channel_id: params.channel_id,
+        ...(params.trace_id ? { trace_id: params.trace_id } : {}),
+      },
       persons: [params.friend_name],
       entities: [params.task_id],
       topic: params.task_title,
