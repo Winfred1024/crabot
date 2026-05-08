@@ -5,7 +5,11 @@ import type { TraceStore } from '../core/trace-store'
 export function createSearchTracesTool(traceStore: TraceStore): ToolDefinition {
   return defineTool({
     name: 'search_traces',
-    description: '搜索历史执行记录。可按任务ID、时间范围、关键词检索。用于回顾历史任务的执行过程、回答用户关于"之前做过什么"的问题。',
+    description:
+      '已知 task_id 或 trace_id 时取过程详情：span 树、tool_call 序列、错误堆栈、执行流水。' +
+      '【不要】用本工具的 keyword 字段当作"找历史 task 用什么 ID"的关键词探路——召回率低、噪声大、消耗轮数。' +
+      '该场景应先调 `search_short_term`（事件流水账自带 task_id/trace_id 锚点），拿到 ID 后再用本工具取详情。' +
+      '仅在已知 ID 或确实需要全库通搜（无更优锚点）时才用 keyword 字段。',
     inputSchema: {
       type: 'object',
       properties: {

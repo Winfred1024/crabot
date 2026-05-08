@@ -106,3 +106,20 @@ describe('search_traces tool', () => {
     }
   })
 })
+
+describe('search_traces tool description', () => {
+  it('强调已知 task_id 或 trace_id 时取详情', () => {
+    const tool = createSearchTracesTool({} as unknown as TraceStore)
+    expect(tool.description).toMatch(/已知.*task_id|已知.*trace_id/)
+  })
+
+  it('明确不适合作为找历史 ID 的关键词探路', () => {
+    const tool = createSearchTracesTool({} as unknown as TraceStore)
+    expect(tool.description).toMatch(/不适合.*关键词|不要.*关键词探路|【不要】|不要.*探路/)
+  })
+
+  it('引导先 search_short_term', () => {
+    const tool = createSearchTracesTool({} as unknown as TraceStore)
+    expect(tool.description).toContain('search_short_term')
+  })
+})

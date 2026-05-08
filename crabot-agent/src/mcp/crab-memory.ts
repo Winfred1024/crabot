@@ -172,11 +172,12 @@ export function createCrabMemoryServer(
       ),
   server.tool(
         'search_memory',
-        '搜索记忆。短期=事件流水账，长期=认知知识库（返回 brief 列表）。',
+        '搜索记忆。short_term=跨 session 事件流水账（每条自带 channel/session/task/trace 锚点）；long_term=认知知识库（事实/经验/概念）。' +
+        '【short_term 用途】未知 task_id/trace_id 时回溯历史事件的入口——任何需要回答"哪一次任务/事件 / 上一次怎么处理 / 之前为什么变成这样"的问题，先调本工具（level=short_term）拿锚点，再用 search_traces / get_task_details 取详情。',
         {
-          query: z.string().describe('自然语言搜索查询'),
+          query: z.string().describe('FTS5 全文检索查询（trigram tokenizer，CJK/英文混合都支持）；query 抽词后 <3 字符的 token 不命中（trigram 固有限制）'),
           level: z.enum(['short_term', 'long_term']).default('long_term')
-            .describe('搜索范围：short_term=近期事件流水账, long_term=认知知识库'),
+            .describe('搜索范围：short_term=事件流水账（找历史 ID 的入口），long_term=认知知识库'),
           limit: z.number().min(1).max(20).default(5)
             .describe('返回数量上限'),
         },
