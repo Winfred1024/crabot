@@ -109,3 +109,66 @@ def test_migrate_handles_missing_db(tmp_path):
     assert (data_dir / "SCHEMA_VERSION").read_text().strip() == "v4"
     # 无 backup 生成
     assert len(list(data_dir.glob("short_term.db.v3.backup-*"))) == 0
+
+
+def test_build_fts_rolls_back_on_rebuild_failure(tmp_path, monkeypatch):
+    """模拟 INSERT 'rebuild' 失败：transaction 应回滚，DB 不应留下 FTS 表 + trigger 残骸。"""
+    db = tmp_path / "short_term.db"
+    _make_v3_db(db)
+
+    # 替换 sqlite3.connect：返回 wrapper，让 cursor.execute 在看到 'rebuild' 时抛异常
+    real_connect = sqlite3.connect
+
+    class _FailingCursor:
+        def __init__(self, real_cur):
+            self._real = real_cur
+
+        def execute(self, sql, *params):
+            if "VALUES('rebuild')" in sql:
+                raise sqlite3.OperationalError("simulated rebuild failure")
+            return self._real.execute(sql, *params)
+
+        def fetchone(self):
+            return self._real.fetchone()
+
+        def fetchall(self):
+            return self._real.fetchall()
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    class _ConnWrapper:
+        def __init__(self, real_conn):
+            self._real = real_conn
+
+        def cursor(self):
+            return _FailingCursor(self._real.cursor())
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    def fake_connect(path, *args, **kwargs):
+        return _ConnWrapper(real_connect(path, *args, **kwargs))
+
+    monkeypatch.setattr("upgrade.from_v3_to_v4.sqlite3.connect", fake_connect)
+
+    log = []
+    with pytest.raises(sqlite3.OperationalError):
+        build_fts_index(db, log)
+
+    # 关键验证：transaction 回滚后，DB 里不应有 FTS 表或 trigger 残骸
+    conn = sqlite3.connect(str(db))
+    fts_table = conn.execute(
+        "SELECT name FROM sqlite_master WHERE name = 'short_term_fts'"
+    ).fetchone()
+    assert fts_table is None, "rollback 后 FTS 表不应存在"
+
+    triggers = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='short_term_memory'"
+    ).fetchall()
+    assert len(triggers) == 0, f"rollback 后不应有 trigger 残骸，实际：{[t[0] for t in triggers]}"
+
+    # 主表数据应原封不动
+    count = conn.execute("SELECT COUNT(*) FROM short_term_memory").fetchone()[0]
+    assert count == 1, "主表数据不应受影响"
+    conn.close()

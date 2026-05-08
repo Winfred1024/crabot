@@ -42,50 +42,58 @@ def build_fts_index(db_path: Path, log: List[str]) -> None:
         log.append("short_term.db: not present, skipping FTS build")
         return
 
-    conn = sqlite3.connect(str(db_path))
+    # isolation_level=None 关闭 sqlite3 模块的隐式 transaction 管理，
+    # 由我们显式控制 BEGIN/COMMIT/ROLLBACK，确保 DDL + rebuild 是原子的。
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
     try:
         cur = conn.cursor()
-        # 幂等：先 drop 现有的 FTS 表 + trigger 再重建
-        cur.execute("DROP TRIGGER IF EXISTS short_term_ai")
-        cur.execute("DROP TRIGGER IF EXISTS short_term_ad")
-        cur.execute("DROP TRIGGER IF EXISTS short_term_au")
-        cur.execute("DROP TABLE IF EXISTS short_term_fts")
+        cur.execute("BEGIN")
+        try:
+            # 幂等：先 drop 现有的 FTS 表 + trigger 再重建
+            cur.execute("DROP TRIGGER IF EXISTS short_term_ai")
+            cur.execute("DROP TRIGGER IF EXISTS short_term_ad")
+            cur.execute("DROP TRIGGER IF EXISTS short_term_au")
+            cur.execute("DROP TABLE IF EXISTS short_term_fts")
 
-        cur.execute("""
-            CREATE VIRTUAL TABLE short_term_fts USING fts5(
-                content,
-                topic,
-                keywords,
-                content='short_term_memory',
-                content_rowid='rowid',
-                tokenize='trigram'
-            )
-        """)
-        cur.execute("""
-            CREATE TRIGGER short_term_ai
-            AFTER INSERT ON short_term_memory BEGIN
-                INSERT INTO short_term_fts(rowid, content, topic, keywords)
-                VALUES (new.rowid, new.content, COALESCE(new.topic, ''), new.keywords);
-            END
-        """)
-        cur.execute("""
-            CREATE TRIGGER short_term_ad
-            AFTER DELETE ON short_term_memory BEGIN
-                INSERT INTO short_term_fts(short_term_fts, rowid, content, topic, keywords)
-                VALUES ('delete', old.rowid, old.content, COALESCE(old.topic, ''), old.keywords);
-            END
-        """)
-        cur.execute("""
-            CREATE TRIGGER short_term_au
-            AFTER UPDATE ON short_term_memory BEGIN
-                INSERT INTO short_term_fts(short_term_fts, rowid, content, topic, keywords)
-                VALUES ('delete', old.rowid, old.content, COALESCE(old.topic, ''), old.keywords);
-                INSERT INTO short_term_fts(rowid, content, topic, keywords)
-                VALUES (new.rowid, new.content, COALESCE(new.topic, ''), new.keywords);
-            END
-        """)
-        cur.execute("INSERT INTO short_term_fts(short_term_fts) VALUES('rebuild')")
-        conn.commit()
+            cur.execute("""
+                CREATE VIRTUAL TABLE short_term_fts USING fts5(
+                    content,
+                    topic,
+                    keywords,
+                    content='short_term_memory',
+                    content_rowid='rowid',
+                    tokenize='trigram'
+                )
+            """)
+            cur.execute("""
+                CREATE TRIGGER short_term_ai
+                AFTER INSERT ON short_term_memory BEGIN
+                    INSERT INTO short_term_fts(rowid, content, topic, keywords)
+                    VALUES (new.rowid, new.content, COALESCE(new.topic, ''), new.keywords);
+                END
+            """)
+            cur.execute("""
+                CREATE TRIGGER short_term_ad
+                AFTER DELETE ON short_term_memory BEGIN
+                    INSERT INTO short_term_fts(short_term_fts, rowid, content, topic, keywords)
+                    VALUES ('delete', old.rowid, old.content, COALESCE(old.topic, ''), old.keywords);
+                END
+            """)
+            cur.execute("""
+                CREATE TRIGGER short_term_au
+                AFTER UPDATE ON short_term_memory BEGIN
+                    INSERT INTO short_term_fts(short_term_fts, rowid, content, topic, keywords)
+                    VALUES ('delete', old.rowid, old.content, COALESCE(old.topic, ''), old.keywords);
+                    INSERT INTO short_term_fts(rowid, content, topic, keywords)
+                    VALUES (new.rowid, new.content, COALESCE(new.topic, ''), new.keywords);
+                END
+            """)
+            cur.execute("INSERT INTO short_term_fts(short_term_fts) VALUES('rebuild')")
+            cur.execute("COMMIT")
+        except Exception:
+            # rebuild / DDL 中途失败：回滚以避免留下"空 FTS + 活 trigger"残骸
+            cur.execute("ROLLBACK")
+            raise
         count = cur.execute("SELECT COUNT(*) FROM short_term_fts").fetchone()[0]
         log.append(f"short_term.db: FTS rebuild done, {count} rows indexed")
     finally:
@@ -122,10 +130,25 @@ def main() -> int:
         print(f"data dir not found: {data_dir}", file=sys.stderr)
         return 1
 
-    log = migrate(data_dir)
-    for line in log:
-        print(line)
-    return 0
+    try:
+        log = migrate(data_dir)
+        for line in log:
+            print(line)
+        return 0
+    except Exception:
+        # migrate 抛异常时，best-effort 把失败信息追加到 log 文件
+        # 否则 operator 失去主要调试信息（migrate 内部成功步骤已经写过部分 log，
+        # 这里只追加 traceback，不重复写完整 log）
+        import traceback
+        log_file = data_dir / "upgrade-v3-to-v4.log"
+        try:
+            with log_file.open("a", encoding="utf-8") as f:
+                f.write(f"\n=== upgrade FAILED at {datetime.now().isoformat()} ===\n")
+                traceback.print_exc(file=f)
+        except Exception:
+            pass  # 日志写不出也不要再嵌套异常
+        traceback.print_exc(file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
