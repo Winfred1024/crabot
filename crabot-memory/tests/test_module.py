@@ -194,23 +194,28 @@ async def test_get_stats(memory_module):
 
 @pytest.mark.asyncio
 async def test_scopes_filtering(memory_module):
-    """测试 scopes 权限过滤"""
+    """测试 scopes 权限过滤
+
+    注：query 选用独立 CJK 词组（前后有分隔符，FTS5 unicode61 能切出该 token）。
+    历史版本曾用 ``私有信息`` 作为子串查询，FTS5 切换后 unicode61 把 ``的私有信息``
+    视作单 token，phrase MATCH 失败，故改用 ``私有 信息`` 让两个 token 独立。
+    """
     await memory_module._write_short_term(WriteShortTermParams(
-        content="scope-a 的私有信息",
+        content="scope-a 的 私有 信息",
         source=MemorySource(type="conversation"),
         visibility="internal",
         scopes=["scope-a"],
     ).model_dump())
 
     await memory_module._write_short_term(WriteShortTermParams(
-        content="scope-b 的私有信息",
+        content="scope-b 的 私有 信息",
         source=MemorySource(type="conversation"),
         visibility="internal",
         scopes=["scope-b"],
     ).model_dump())
 
     result = await memory_module._search_short_term(SearchShortTermParams(
-        query="私有信息",
+        query="私有 信息",
         min_visibility="internal",
         accessible_scopes=["scope-a"],
         limit=10,

@@ -70,3 +70,87 @@ def test_fts_delete_trigger_syncs_row(store):
         "SELECT COUNT(*) AS c FROM short_term_fts"
     ).fetchone()["c"]
     assert fts_count == 0
+
+
+def test_fts_chinese_multi_word_recall(store):
+    asyncio.run(store.add_short_term(_make_entry(
+        "m1", "GitHub 排行榜每日早报已发送到微信群", topic="GitHub 早报",
+    )))
+    asyncio.run(store.add_short_term(_make_entry(
+        "m2", "list_groups 失败 改用 list_sessions 兜底成功", topic="排查失败",
+    )))
+    asyncio.run(store.add_short_term(_make_entry(
+        "m3", "quant-signal 持续策略收益迭代", topic="quant 策略",
+    )))
+
+    results = asyncio.run(store.search_short_term(query="GitHub 微信群", limit=10))
+    ids = [r.id for r in results]
+    assert "m1" in ids, "GitHub + 微信群 双词应命中 m1"
+    assert "m3" not in ids, "无关条目不应命中"
+
+
+def test_fts_keyword_field_searchable(store):
+    asyncio.run(store.add_short_term(_make_entry(
+        "m1", "完成内容", keywords=["GitHub", "排行榜"],
+    )))
+
+    results = asyncio.run(store.search_short_term(query="GitHub", limit=10))
+    assert len(results) == 1
+    assert results[0].id == "m1", "keywords 字段应进入 FTS 索引"
+
+
+def test_fts_bm25_relevance_ordering(store):
+    asyncio.run(store.add_short_term(_make_entry(
+        "m_strong", "list_groups 失败 list_groups 排查 list_groups 兜底",
+    )))
+    asyncio.run(store.add_short_term(_make_entry(
+        "m_weak", "list_groups 一笔带过的提及",
+    )))
+
+    results = asyncio.run(store.search_short_term(
+        query="list_groups", sort_by="relevance", limit=10,
+    ))
+    ids = [r.id for r in results]
+    assert ids[0] == "m_strong", "高频命中条目应排首位"
+
+
+def test_fts_special_chars_in_query_no_error(store):
+    asyncio.run(store.add_short_term(_make_entry(
+        "m1", "test content with special chars",
+    )))
+
+    results = asyncio.run(store.search_short_term(query='test "quoted"', limit=10))
+    assert len(results) >= 0  # 不抛异常即可
+
+    results = asyncio.run(store.search_short_term(query="(hello)", limit=10))
+    assert len(results) >= 0
+
+
+def test_fts_empty_query_falls_back_to_time_order(store):
+    asyncio.run(store.add_short_term(_make_entry("m1", "first")))
+    asyncio.run(store.add_short_term(_make_entry("m2", "second")))
+
+    results = asyncio.run(store.search_short_term(query=None, limit=10))
+    assert len(results) == 2  # 两条都返回，按 event_time DESC
+
+
+def test_fts_au_trigger_via_raw_update(store):
+    """AU trigger 通过 raw UPDATE 触发；add_short_term 走 INSERT OR REPLACE 不会经 AU trigger。"""
+    entry = _make_entry("m1", "old content", topic="old topic")
+    asyncio.run(store.add_short_term(entry))
+
+    # raw UPDATE 触发 AU trigger
+    store._conn.execute(
+        "UPDATE short_term_memory SET content = ?, topic = ? WHERE id = ?",
+        ("new content with GitHub", "new topic", "m1"),
+    )
+    store._conn.commit()
+
+    # FTS 应反映新内容
+    results = asyncio.run(store.search_short_term(query="GitHub", limit=10))
+    assert len(results) == 1
+    assert results[0].id == "m1"
+
+    # 旧内容应已不可搜
+    old_results = asyncio.run(store.search_short_term(query="old", limit=10))
+    assert all(r.id != "m1" for r in old_results) or len(old_results) == 0

@@ -10,6 +10,7 @@ v2→v3 迁移见 crabot-memory/upgrade/from_v2_to_v3.py。
 import asyncio
 import json
 import logging
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -25,6 +26,24 @@ def _run_sync(fn):
 
 
 _VIS_ORDER = {"private": 3, "internal": 2, "public": 1}
+
+
+# 抽词正则：unicode 字母 / 数字 / 下划线（\w）+ 中日韩统一表意文字（一-鿿）
+# 主流中文范围 U+4E00..U+9FFF 即 '一'..'鿿'，覆盖 GB2312/CJK Unified Ideographs。
+_FTS_TOKEN_RE = re.compile(r'[\w一-鿿]+', re.UNICODE)
+
+
+def _escape_fts_query(query: str) -> str:
+    """把任意用户 query 转成安全的 FTS5 MATCH 表达式。
+
+    策略：抽取 unicode 字母 / 数字 / 中日韩字符为 token，每个 token 用引号包成 phrase，
+    再用 OR 连接。所有 FTS5 特殊字符（"、*、:、(、)）被自然丢弃。
+    返回空串表示无可用 token，调用方应跳过 MATCH 分支。
+    """
+    tokens = _FTS_TOKEN_RE.findall(query)
+    if not tokens:
+        return ""
+    return " OR ".join(f'"{t}"' for t in tokens)
 
 
 def _visibility_filter_sql(min_visibility: Visibility) -> Optional[str]:
@@ -170,8 +189,10 @@ class ShortTermStore:
     ) -> List[ShortTermMemoryEntry]:
         """检索短期记忆。
 
-        v3：query 改为 SQLite LIKE 字面匹配（不再走向量）。其他过滤（visibility / scopes /
-        time_range / refs / persons / entities / topic）维持 v2 语义。
+        v3.1：query 走 FTS5 MATCH（unicode61 分词），BM25 内置排序。
+        - sort_by='event_time'（默认）：有 query 时按 (rank, event_time DESC)，无 query 时按 event_time DESC
+        - sort_by='relevance'：纯按 BM25 rank（FTS5 中 rank ASC = 越相关越靠前）
+        其他过滤（visibility / scopes / time_range / refs / persons / entities / topic）维持原语义。
         """
         clauses: List[str] = []
         params: List[Any] = []
@@ -188,20 +209,31 @@ class ShortTermStore:
                 clauses.append("event_time <= ?")
                 params.append(time_range["end"])
 
+        # FTS5 MATCH 分支：仅当 query 非空且能抽出 token 时生效
+        fts_join = ""
         if query:
-            # 字面匹配。中文 query 不依赖分词，直接子串匹配 content/topic。
-            clauses.append("(content LIKE ? OR topic LIKE ?)")
-            wildcard = f"%{query}%"
-            params.extend([wildcard, wildcard])
+            escaped = _escape_fts_query(query)
+            if escaped:
+                fts_join = "JOIN short_term_fts f ON f.rowid = m.rowid"
+                clauses.append("short_term_fts MATCH ?")
+                params.append(escaped)
 
         if filter_topic:
             clauses.append("topic = ?")
             params.append(filter_topic)
 
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        order = "ORDER BY event_time DESC" if sort_by == "event_time" else ""
+
+        if fts_join:
+            if sort_by == "relevance":
+                order = "ORDER BY rank"
+            else:  # event_time（默认）
+                order = "ORDER BY rank, event_time DESC"
+        else:
+            order = "ORDER BY event_time DESC" if sort_by == "event_time" else ""
+
         # 用 limit*2 取一波再后过滤，避免后过滤截断不足
-        sql = f"SELECT * FROM short_term_memory {where} {order} LIMIT ?"
+        sql = f"SELECT m.* FROM short_term_memory m {fts_join} {where} {order} LIMIT ?"
         params.append(limit * 2)
 
         def _do():
