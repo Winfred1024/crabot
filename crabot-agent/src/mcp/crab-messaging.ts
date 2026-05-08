@@ -315,8 +315,7 @@ export function buildMessagingTools(
           )
           return wrapText(annotatePagination(result, { requestedPage: page, requestedPageSize: page_size, userSpecifiedPageSize }))
         } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err)
-          return wrapText({ error_code: 'INTERNAL', error: `Channel 不可用: ${msg}` })
+          return wrapText(translateChannelError(err))
         }
       },
     },
