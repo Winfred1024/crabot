@@ -154,3 +154,28 @@ def test_fts_au_trigger_via_raw_update(store):
     # 旧内容应已不可搜
     old_results = asyncio.run(store.search_short_term(query="old", limit=10))
     assert all(r.id != "m1" for r in old_results) or len(old_results) == 0
+
+
+def test_fts_pure_chinese_query_recalls(store):
+    """trigram 应当让纯中文 query 也能召回（unicode61 在此处会失效，故这是分水岭测试）。"""
+    asyncio.run(store.add_short_term(_make_entry(
+        "m1", "排行榜每日早报已发送到微信群",
+    )))
+    asyncio.run(store.add_short_term(_make_entry(
+        "m2", "quant-signal 持续策略收益迭代",
+    )))
+    # 4 字纯中文 query
+    results = asyncio.run(store.search_short_term(query="微信群", limit=10))
+    ids = [r.id for r in results]
+    assert "m1" in ids, "纯中文 3-gram query 应命中 m1"
+    assert "m2" not in ids
+
+
+def test_fts_short_query_falls_through(store):
+    """trigram 固有限制：<3 字符 query 不会命中任何条目。当前实现下应安全退化。"""
+    asyncio.run(store.add_short_term(_make_entry("m1", "微信群相关内容")))
+    # 2 字 CJK query
+    results = asyncio.run(store.search_short_term(query="微信", limit=10))
+    # trigram 下 '微信' 切不出 trigram，_escape_fts_query 返回空 → 不走 FTS path → 退化到 time DESC（返回所有条目）
+    # 该行为是已知折衷；本测试只确认不报错
+    assert isinstance(results, list)

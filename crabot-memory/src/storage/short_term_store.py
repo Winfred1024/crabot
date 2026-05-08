@@ -34,13 +34,18 @@ _FTS_TOKEN_RE = re.compile(r'[\w一-鿿]+', re.UNICODE)
 
 
 def _escape_fts_query(query: str) -> str:
-    """把任意用户 query 转成安全的 FTS5 MATCH 表达式。
+    """把任意用户 query 转成安全的 FTS5 trigram MATCH 表达式。
 
-    策略：抽取 unicode 字母 / 数字 / 中日韩字符为 token，每个 token 用引号包成 phrase，
-    再用 OR 连接。所有 FTS5 特殊字符（"、*、:、(、)）被自然丢弃。
-    返回空串表示无可用 token，调用方应跳过 MATCH 分支。
+    策略：
+    - 抽取 unicode 字母/数字/下划线 + CJK Unified Ideographs 为 token
+    - 丢弃 <3 字符的 token（trigram 索引最小单位是 3-gram，更短的 token 永远 0 命中）
+    - trigram 不要求 phrase 边界，但保留引号作防御性写法，避免 query 里出现的关键词被
+      意外解释成 FTS5 操作符（如 ``NEAR``）；引号里的内容仍按 trigram 切
+    - 所有 FTS5 特殊字符（"、*、:、(、)）被自然丢弃
+
+    返回空串表示无可用 token，调用方应跳过 FTS 路径。
     """
-    tokens = _FTS_TOKEN_RE.findall(query)
+    tokens = [t for t in _FTS_TOKEN_RE.findall(query) if len(t) >= 3]
     if not tokens:
         return ""
     return " OR ".join(f'"{t}"' for t in tokens)
@@ -99,7 +104,7 @@ class ShortTermStore:
                 keywords,
                 content='short_term_memory',
                 content_rowid='rowid',
-                tokenize='unicode61 remove_diacritics 2'
+                tokenize='trigram'
             )
             """
         )
@@ -189,7 +194,7 @@ class ShortTermStore:
     ) -> List[ShortTermMemoryEntry]:
         """检索短期记忆。
 
-        v3.1：query 走 FTS5 MATCH（unicode61 分词），BM25 内置排序。
+        v3.1：query 走 FTS5 MATCH（trigram 分词），BM25 内置排序。
         - sort_by='event_time'（默认）：有 query 时按 (rank, event_time DESC)，无 query 时按 event_time DESC
         - sort_by='relevance'：纯按 BM25 rank（FTS5 中 rank ASC = 越相关越靠前）
         其他过滤（visibility / scopes / time_range / refs / persons / entities / topic）维持原语义。
