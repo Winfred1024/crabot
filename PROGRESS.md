@@ -1,8 +1,33 @@
 # Crabot 项目进度
 
-> 最后更新：2026-05-07 — CLI 权限统一进 Friend + Session 模板
+> 最后更新：2026-05-08 — crab-messaging list 工具对齐（修早报 list_groups 失败）
 
-## 最新里程碑（2026-05-07 — CLI 权限统一进 Friend + Session 模板）
+## 最新里程碑（2026-05-08 — crab-messaging list_contacts/list_groups 路由修正 + 分页可见性）
+
+修复 2026-05-08 早报 trace `f0f7d4bb` 暴露的"`list_groups` 必失败"bug：自 2026-04-04 commit `f48fbb9` 引入以来，`crab-messaging` MCP 的 `list_contacts` / `list_groups` 工具一直把 RPC 路由到 `adminPort.list_sessions`（admin 端从来没有这个 method），每次调用必返回 `Method "list_sessions" not found`，靠 LLM 改名重试到 `list_sessions` 兜底掩盖。
+
+spec：`crabot-docs/superpowers/specs/2026-05-08-messaging-list-tools-alignment-design.md`
+plan：`crabot-docs/superpowers/plans/2026-05-08-messaging-list-tools-alignment.md`
+
+- **协议文档（crabot-docs 子 repo）**：`protocol-crab-messaging.md` §2.1 / §4 把笔误的 admin "list_contacts" 改回 `list_friends`（admin 管 Friend 表，channel 才有 Contact 概念）；§2.7 / §2.8 加错误码表。`protocol-channel.md` 新增 §3.13 list_contacts / §3.14 list_groups 接口定义（基于 PaginatedResult），§3.2 ChannelCapabilities 加 supports_list_contacts/groups 字段。`base-protocol.md` GlobalErrorCode 加 PERMISSION_DENIED。
+- **crabot-shared**：`module-base.ts` 加 RpcError / RpcCallError / formatHandlerError，让 handler 抛 RpcError 时 code/details 透传到 response.error；让 RpcClient.call 收到 success=false 时 reject RpcCallError 携带原 code/details（之前只剩 message 的普通 Error）。`base-protocol.ts` GlobalErrorCode 加 PERMISSION_DENIED 常量避免下游用裸字符串。
+- **crabot-channel-wechat**：types.ts 加 supports_list_contacts/groups（capability）+ 6 个 List* 协议类型。`wechat-client.ts` 加 listContacts() 调 `GET /api/v1/bot/contacts`（已有的 listGroups 复用）。`wechat-channel.ts` 注册 list_contacts / list_groups RPC handler，client 原生字段（username/nickname/chatroomName/name）映射到协议字段（platform_user_id/display_name/platform_session_id/group_name），分页 camelCase → snake_case 翻译。capability 上报 true。22 个测试。
+- **crabot-channel-feishu**：同形扩展。`feishu-client.ts` 加 listContacts() 调 `contact.v3.user.list`；飞书错误码 99991672 / 99991663（通讯录读取权限缺失）翻译为 `RpcError('PERMISSION_DENIED', ..., { missing_scope: 'contact:user.base:readonly' })`，其他错误透传。`feishu-channel.ts` 注册 list_contacts / list_groups handler；handler 层 self-filter（飞书 contact API 不支持 keyword）+ case-insensitive；分页近似 has_more=true → total_pages=2（避免 N+1 误导下游）。86 个测试。
+- **crabot-channel-telegram**：bot api 不支持列群/列联系人，capability 上报 false。crab-messaging 在路由前看 capability 直接返回 `CHANNEL_LIST_*_NOT_SUPPORTED` 错误码，agent 看到 hint 自然 fallback 到 list_sessions。
+- **crabot-agent crab-messaging.ts**：抽出 `buildMessagingTools(deps, sandboxPathMappingsRef?)` 纯函数返回 8 个工具数组（lookup_friend / list_contacts / list_groups / list_sessions / send_private_message / send_message / get_history / get_message），让工具可单测。`createCrabMessagingServer` 改用循环 register。list_contacts / list_groups 改路由到 channelPort + 用新 list_contacts/list_groups RPC（不再调 admin.list_sessions）。三个 list 工具统一通过 `annotatePagination` 给返回叠加 has_more / is_truncated / default_page_size_applied / next_page 显式字段，避免 LLM 把单页结果当全集；通过 `translateChannelError` 把 RpcCallError 翻成结构化输出（`CHANNEL_LIST_*_NOT_SUPPORTED` 带 hint，`PERMISSION_DENIED` 透传 missing_scope）。新建 pagination-annotator / error-translator 两个独立模块。新增 6 个 crab-messaging-list 集成测试，全 agent 803 测试。
+- **prompt-manager**：worker prompt 加"找群/找联系人优先顺序"段（lookup_friend → list_groups/list_contacts → list_sessions）+ 分页可见性提示（has_more=true 时不要把单页当全集）。
+- **commits**：13 个 commit 全程 TDD（spec → plan → 4 个 phase 顺序推进 + 各 phase code review fix）。
+
+**端到端验证（待 master 自跑）**：
+
+1. `./dev.sh stop && ./dev.sh` 重启加载新代码
+2. wechat：`@crabot 用 list_groups 在 wechat-棉花糖 上找包含 'Claude' 的群` → 看 trace 中只调一次 list_groups 直接命中、不再先失败再 fallback
+3. wechat：`@crabot 用 list_contacts 在 wechat-棉花糖 列联系人` → 返回带 has_more / next_page / default_page_size_applied 的分页元信息
+4. telegram：`@crabot 用 list_groups 在 telegram-fufu 找群` → 收到 `error_code: CHANNEL_LIST_GROUPS_NOT_SUPPORTED` + hint 引导改用 list_sessions
+5. feishu：list_groups / list_contacts 看是否能正常返回；如果应用没拿通讯录 scope 应收到 `PERMISSION_DENIED` + missing_scope='contact:user.base:readonly'
+6. 下一轮（2026-05-09 08:00）GitHub 早报调度：trace 应无 iter=fail+iter=retry 模式
+
+## 上一里程碑（2026-05-07 — CLI 权限统一进 Friend + Session 模板）
 
 把 crabot CLI 的权限闸从硬编码 `isMasterPrivate` 单 bit 升级为按发起人解析 effective permissions（friend ∪ session 并集）+ schedule add 内容 LLM 审核。master 在群聊享完整 CLI 权限；群友在被升级到 `group_scheduler` 模板的群里可创建受审核的简单定时任务。plan：`docs/superpowers/plans/2026-05-06-cli-permission-friend-session-union.md`。
 
