@@ -155,7 +155,7 @@ describe('WechatClient.listContacts', () => {
       ])
       expect(result.pagination.total).toBe(2)
     } finally {
-      server.close()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
     }
   })
 
@@ -169,7 +169,7 @@ describe('WechatClient.listContacts', () => {
       await client.listContacts()
       expect(recorded[0].url).toBe('/api/v1/bot/contacts')
     } finally {
-      server.close()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
     }
   })
 })

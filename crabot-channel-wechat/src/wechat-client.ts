@@ -164,6 +164,10 @@ export class WechatClient {
    *
    * 调 wechat-connector GET /api/v1/bot/contacts。返回结构与 listGroups 类似，
    * 不 catch 错误，由上层决定。
+   *
+   * 注意：返回字段是 connector 原生命名（username/nickname/remark/avatar_url），
+   * 不是协议层 ContactItem（platform_user_id/display_name/...）。channel 层 RPC handler
+   * 负责把两者对应起来。
    */
   async listContacts(params: {
     keyword?: string
@@ -218,6 +222,9 @@ export class WechatClient {
    *
    * 与 getContact/getGroup/getGroupMembers 不同，本方法不 catch 错误：
    * 分页循环应在网络失败时整体退出而不是跳过某一页，交由调用方决定。
+   *
+   * 注意：返回字段是 connector 原生命名（chatroomName/name），不是协议层 GroupItem
+   * （platform_session_id/group_name）。channel 层 RPC handler 负责把两者对应起来。
    */
   async listGroups(params: {
     keyword?: string
