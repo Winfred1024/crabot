@@ -133,3 +133,68 @@ describe('FeishuClient.downloadResource', () => {
     expect(buf.toString()).toBe('hello')
   })
 })
+
+import { RpcError } from 'crabot-shared'
+
+describe('FeishuClient.listContacts', () => {
+  it('调 contact.v3.user.list 并把字段映射到协议', async () => {
+    const fakeApi = {
+      contact: {
+        v3: {
+          user: {
+            list: vi.fn().mockResolvedValue({
+              code: 0,
+              data: {
+                items: [
+                  { open_id: 'ou_1', name: '张三', avatar: { avatar_72: 'https://x/72' } },
+                  { open_id: 'ou_2', name: 'Lily' },
+                ],
+                page_token: 'next_xyz',
+                has_more: true,
+              },
+            }),
+          },
+        },
+      },
+    }
+    const client = new FeishuClient({ app_id: 'a', app_secret: 's', domain: 'feishu' })
+    ;(client as unknown as { client: typeof fakeApi }).client = fakeApi as never
+
+    const result = await client.listContacts({ search: '张', page_size: 20 })
+    expect(fakeApi.contact.v3.user.list).toHaveBeenCalledWith(
+      expect.objectContaining({
+        params: expect.objectContaining({ page_size: 20 }),
+      }),
+    )
+    expect(result.items).toEqual([
+      { open_id: 'ou_1', name: '张三', avatar_url: 'https://x/72' },
+      { open_id: 'ou_2', name: 'Lily' },
+    ])
+    expect(result.has_more).toBe(true)
+    expect(result.page_token).toBe('next_xyz')
+  })
+
+  it('SDK 返回 99991672 时抛 RpcError(PERMISSION_DENIED) 携带 missing_scope', async () => {
+    const fakeApi = {
+      contact: {
+        v3: {
+          user: {
+            list: vi.fn().mockRejectedValue({ code: 99991672, msg: '应用未开通通讯录权限' }),
+          },
+        },
+      },
+    }
+    const client = new FeishuClient({ app_id: 'a', app_secret: 's', domain: 'feishu' })
+    ;(client as unknown as { client: typeof fakeApi }).client = fakeApi as never
+
+    let caught: unknown
+    try {
+      await client.listContacts({})
+    } catch (e) {
+      caught = e
+    }
+    expect(caught).toBeInstanceOf(RpcError)
+    expect((caught as RpcError).code).toBe('PERMISSION_DENIED')
+    expect((caught as RpcError).details?.missing_scope).toBe('contact:user.base:readonly')
+  })
+})

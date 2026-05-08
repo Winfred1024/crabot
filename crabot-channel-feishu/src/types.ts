@@ -115,6 +115,10 @@ export interface ChannelCapabilities {
   max_file_size: number | null
   supports_file_path: boolean
   allowed_file_paths: string[]
+  /** 是否支持 list_contacts */
+  supports_list_contacts: boolean
+  /** 是否支持 list_groups */
+  supports_list_groups: boolean
   extensions?: ChannelExtensionTool[]
 }
 
@@ -308,4 +312,47 @@ export interface FeishuChannelConfig {
   only_respond_to_mentions: boolean
   /** bot 发文本时是否按 Markdown 渲染（启用时改用 interactive 卡片 + markdown 元素）。默认 auto */
   markdown_format: MarkdownFormat
+}
+
+export interface ListContactsParams {
+  search?: string
+  pagination?: PaginationParams
+}
+
+export interface ContactItem {
+  platform_user_id: string
+  display_name: string
+  remark?: string
+  avatar_url?: string
+}
+
+export interface ListContactsResult {
+  items: ContactItem[]
+  pagination: {
+    page: number
+    page_size: number
+    total_items: number
+    total_pages: number
+  }
+}
+
+export interface ListGroupsParams {
+  search?: string
+  pagination?: PaginationParams
+}
+
+export interface GroupItem {
+  platform_session_id: string
+  group_name: string
+  member_count?: number
+}
+
+export interface ListGroupsResult {
+  items: GroupItem[]
+  pagination: {
+    page: number
+    page_size: number
+    total_items: number
+    total_pages: number
+  }
 }

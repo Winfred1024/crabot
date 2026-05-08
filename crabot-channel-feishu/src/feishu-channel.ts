@@ -55,6 +55,12 @@ import type {
   SyncSessionsParams,
   SyncSessionsResult,
   DeleteSessionResult,
+  ListContactsParams,
+  ListContactsResult,
+  ListGroupsParams,
+  ListGroupsResult,
+  ContactItem,
+  GroupItem,
 } from './types.js'
 
 const MAX_FILE_SIZE = 30 * 1024 * 1024 // 30MB（飞书附件上限）
@@ -430,6 +436,8 @@ export class FeishuChannel extends ModuleBase {
     this.registerMethod('get_platform_user_info', this.handleGetPlatformUserInfo.bind(this))
     this.registerMethod('sync_sessions', this.handleSyncSessions.bind(this))
     this.registerMethod('delete_session', this.handleDeleteSession.bind(this))
+    this.registerMethod('list_contacts', this.handleListContacts.bind(this))
+    this.registerMethod('list_groups', this.handleListGroups.bind(this))
     this.registerMethod('get_config', this.handleGetConfig.bind(this))
     this.registerMethod('update_config', this.handleUpdateConfig.bind(this))
   }
@@ -611,6 +619,8 @@ export class FeishuChannel extends ModuleBase {
       max_file_size: MAX_FILE_SIZE,
       supports_file_path: true,
       allowed_file_paths: this.allowedFilePaths(),
+      supports_list_contacts: true,
+      supports_list_groups: true,
       extensions: [],
     }
   }
@@ -716,6 +726,55 @@ export class FeishuChannel extends ModuleBase {
         throwError('NOT_FOUND', err.message)
       }
       throw err
+    }
+  }
+
+  private async handleListContacts(params: ListContactsParams): Promise<ListContactsResult> {
+    const pageSize = params.pagination?.page_size ?? 50
+    const raw = await this.client.listContacts({ page_size: pageSize })
+
+    const filtered = params.search
+      ? raw.items.filter((it) => it.name.includes(params.search!))
+      : raw.items
+
+    const items = filtered.map((it): ContactItem => ({
+      platform_user_id: it.open_id,
+      display_name: it.name,
+      ...(it.avatar_url ? { avatar_url: it.avatar_url } : {}),
+    }))
+
+    return {
+      items,
+      pagination: {
+        page: 1,
+        page_size: pageSize,
+        total_items: items.length,
+        total_pages: raw.has_more ? items.length + 1 : 1,
+      },
+    }
+  }
+
+  private async handleListGroups(params: ListGroupsParams): Promise<ListGroupsResult> {
+    const pageSize = params.pagination?.page_size ?? 50
+    const raw = await this.client.listChats({ page_size: pageSize })
+
+    const filtered = params.search
+      ? raw.items.filter((it) => it.name.includes(params.search!))
+      : raw.items
+
+    const items = filtered.map((it): GroupItem => ({
+      platform_session_id: it.chat_id,
+      group_name: it.name,
+    }))
+
+    return {
+      items,
+      pagination: {
+        page: 1,
+        page_size: pageSize,
+        total_items: items.length,
+        total_pages: raw.has_more ? items.length + 1 : 1,
+      },
     }
   }
 

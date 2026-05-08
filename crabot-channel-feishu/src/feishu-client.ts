@@ -12,6 +12,7 @@
 
 import * as lark from '@larksuiteoapi/node-sdk'
 import { Readable } from 'node:stream'
+import { RpcError } from 'crabot-shared'
 import type { FeishuDomain } from './types.js'
 
 export interface SendReceive {
@@ -93,6 +94,47 @@ export class FeishuClient {
       })),
       page_token: resp.data.page_token,
       has_more: !!resp.data.has_more,
+    }
+  }
+
+  async listContacts(params: {
+    search?: string
+    page_token?: string
+    page_size?: number
+  }): Promise<{
+    items: Array<{ open_id: string; name: string; avatar_url?: string }>
+    page_token?: string
+    has_more: boolean
+  }> {
+    try {
+      const resp = await this.client.contact.v3.user.list({
+        params: {
+          page_size: params.page_size ?? 50,
+          page_token: params.page_token,
+        },
+      })
+      const data = resp.data ?? {}
+      const items = (data.items ?? []).map((it) => ({
+        open_id: it.open_id ?? '',
+        name: it.name,
+        ...(it.avatar?.avatar_72 ? { avatar_url: it.avatar.avatar_72 } : {}),
+      }))
+      return {
+        items,
+        page_token: data.page_token,
+        has_more: data.has_more ?? false,
+      }
+    } catch (err: unknown) {
+      // 飞书 SDK 错误码：99991672 = 应用未开通通讯录权限；99991663 = 通讯录读取权限未授予
+      const code = (err as { code?: number }).code
+      if (code === 99991672 || code === 99991663) {
+        throw new RpcError(
+          'PERMISSION_DENIED',
+          (err as { msg?: string }).msg ?? '飞书应用缺少通讯录读取权限',
+          { missing_scope: 'contact:user.base:readonly' },
+        )
+      }
+      throw err
     }
   }
 
