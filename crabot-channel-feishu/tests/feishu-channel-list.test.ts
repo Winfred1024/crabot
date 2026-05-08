@@ -98,6 +98,34 @@ describe('FeishuChannel list_groups handler', () => {
 
     expect(result.items).toHaveLength(2)
   })
+
+  it('has_more=true 时 total_pages=2（cursor 分页近似）', async () => {
+    const channel2 = new FeishuChannel({
+      module_id: 'feishu-test-2',
+      module_type: 'channel',
+      version: '0.0.1',
+      protocol_version: '0.1.0',
+      port: 0,
+      data_dir: fs.mkdtempSync(path.join(os.tmpdir(), 'feishu-list-2-')),
+      feishu: {
+        app_id: 'a',
+        app_secret: 's',
+        domain: 'feishu',
+        only_respond_to_mentions: true,
+        markdown_format: 'auto',
+      },
+    })
+    const listChatsMock = vi.fn().mockResolvedValue({
+      items: [{ chat_id: 'oc_1', name: '群1' }],
+      has_more: true,
+    })
+    ;(channel2 as unknown as { client: { listChats: typeof listChatsMock } }).client = { listChats: listChatsMock } as never
+
+    const result = await (channel2 as unknown as { handleListGroups(p: unknown): Promise<{ pagination: { total_pages: number } }> })
+      .handleListGroups({})
+
+    expect(result.pagination.total_pages).toBe(2)
+  })
 })
 
 // ── list_contacts ────────────────────────────────────────────────────────────
@@ -137,6 +165,34 @@ describe('FeishuChannel list_contacts handler', () => {
     }
     expect(caught).toBeInstanceOf(RpcError)
     expect((caught as RpcError).code).toBe('PERMISSION_DENIED')
+  })
+
+  it('has_more=true 时 total_pages=2', async () => {
+    const channel2 = new FeishuChannel({
+      module_id: 'feishu-test-3',
+      module_type: 'channel',
+      version: '0.0.1',
+      protocol_version: '0.1.0',
+      port: 0,
+      data_dir: fs.mkdtempSync(path.join(os.tmpdir(), 'feishu-list-3-')),
+      feishu: {
+        app_id: 'a',
+        app_secret: 's',
+        domain: 'feishu',
+        only_respond_to_mentions: true,
+        markdown_format: 'auto',
+      },
+    })
+    const listContactsMock = vi.fn().mockResolvedValue({
+      items: [{ open_id: 'ou_1', name: '人1' }],
+      has_more: true,
+    })
+    ;(channel2 as unknown as { client: { listContacts: typeof listContactsMock } }).client = { listContacts: listContactsMock } as never
+
+    const result = await (channel2 as unknown as { handleListContacts(p: unknown): Promise<{ pagination: { total_pages: number } }> })
+      .handleListContacts({})
+
+    expect(result.pagination.total_pages).toBe(2)
   })
 })
 

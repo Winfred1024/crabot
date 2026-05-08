@@ -98,7 +98,6 @@ export class FeishuClient {
   }
 
   async listContacts(params: {
-    search?: string
     page_token?: string
     page_size?: number
   }): Promise<{

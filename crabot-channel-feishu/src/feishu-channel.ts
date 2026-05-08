@@ -734,7 +734,7 @@ export class FeishuChannel extends ModuleBase {
     const raw = await this.client.listContacts({ page_size: pageSize })
 
     const filtered = params.search
-      ? raw.items.filter((it) => it.name.includes(params.search!))
+      ? raw.items.filter((it) => it.name.toLowerCase().includes(params.search!.toLowerCase()))
       : raw.items
 
     const items = filtered.map((it): ContactItem => ({
@@ -749,7 +749,7 @@ export class FeishuChannel extends ModuleBase {
         page: 1,
         page_size: pageSize,
         total_items: items.length,
-        total_pages: raw.has_more ? items.length + 1 : 1,
+        total_pages: raw.has_more ? 2 : 1,
       },
     }
   }
@@ -759,7 +759,7 @@ export class FeishuChannel extends ModuleBase {
     const raw = await this.client.listChats({ page_size: pageSize })
 
     const filtered = params.search
-      ? raw.items.filter((it) => it.name.includes(params.search!))
+      ? raw.items.filter((it) => it.name.toLowerCase().includes(params.search!.toLowerCase()))
       : raw.items
 
     const items = filtered.map((it): GroupItem => ({
@@ -773,7 +773,7 @@ export class FeishuChannel extends ModuleBase {
         page: 1,
         page_size: pageSize,
         total_items: items.length,
-        total_pages: raw.has_more ? items.length + 1 : 1,
+        total_pages: raw.has_more ? 2 : 1,
       },
     }
   }

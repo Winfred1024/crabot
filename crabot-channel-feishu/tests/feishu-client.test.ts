@@ -5,6 +5,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest'
+import { RpcError } from 'crabot-shared'
 
 // 必须在 import FeishuClient 之前 mock 整个 lark SDK
 vi.mock('@larksuiteoapi/node-sdk', () => {
@@ -133,8 +134,6 @@ describe('FeishuClient.downloadResource', () => {
     expect(buf.toString()).toBe('hello')
   })
 })
-
-import { RpcError } from 'crabot-shared'
 
 describe('FeishuClient.listContacts', () => {
   it('调 contact.v3.user.list 并把字段映射到协议', async () => {
