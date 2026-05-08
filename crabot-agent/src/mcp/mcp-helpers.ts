@@ -14,7 +14,7 @@ export { McpServer }
 /**
  * Create a standard McpServer instance.
  *
- * Callers register tools directly via `server.tool(name, desc, schema, handler)`.
+ * Callers register tools directly via `server.registerTool(name, { description, inputSchema }, handler)`.
  */
 export function createMcpServer(
   config: { name: string; version: string },

@@ -721,7 +721,7 @@ export function createCrabMessagingServer(
 
   const tools = buildMessagingTools(deps, sandboxPathMappingsRef)
   for (const t of tools) {
-    server.tool(t.name, t.description, t.schema, t.handler as never)
+    server.registerTool(t.name, { description: t.description, inputSchema: t.schema }, t.handler as never)
   }
 
   return server

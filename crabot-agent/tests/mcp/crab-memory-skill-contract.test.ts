@@ -7,7 +7,7 @@
  * "tool not found"，自学习闭环空转。
  *
  * 此测试静态对账两侧：
- *   - 左：crab-memory.ts 里 server.tool('NAME', ...) 注册集合
+ *   - 左：crab-memory.ts 里 server.registerTool('NAME', ...) 注册集合
  *   - 右：crabot-admin/builtins/skills/<*>/SKILL.md 里 mcp__crab-memory__NAME 引用集合
  * 任何 SKILL 引用的 tool 不在注册集合里 → 直接 fail。
  */
@@ -21,7 +21,7 @@ const SKILLS_DIR = path.join(REPO_ROOT, 'crabot-admin', 'builtins', 'skills')
 
 function extractRegisteredToolNames(): Set<string> {
   const src = fs.readFileSync(CRAB_MEMORY_TS, 'utf-8')
-  const matches = src.matchAll(/server\.tool\(\s*['"]([a-z_][a-z0-9_]*)['"]/g)
+  const matches = src.matchAll(/server\.registerTool\(\s*['"]([a-z_][a-z0-9_]*)['"]/g)
   return new Set(Array.from(matches, (m) => m[1]))
 }
 
