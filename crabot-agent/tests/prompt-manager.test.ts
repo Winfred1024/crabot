@@ -422,3 +422,34 @@ describe('Worker prompt — Phase 2 任务结束 JSON 输出契约', () => {
     expect(worker).toMatch(/召回|短期记忆/)
   })
 })
+
+describe('Worker prompt — Phase 3 历史回溯硬约束', () => {
+  it('Worker prompt 含独立的"历史回溯"小节标题', () => {
+    expect(worker).toMatch(/历史回溯|回溯历史事件/)
+  })
+
+  it('约束工具使用顺序：未知 ID → 先 search_short_term', () => {
+    expect(worker).toMatch(/未知.*task_id|未知.*ID/)
+    expect(worker).toContain('search_short_term')
+  })
+
+  it('明确禁止 search_traces 关键词探路', () => {
+    expect(worker).toMatch(/绝不允许|禁止/)
+    expect(worker).toContain('search_traces')
+  })
+
+  it('明确禁止 get_history 翻 channel 历史定位事件', () => {
+    expect(worker).toContain('get_history')
+  })
+
+  it('给出基于意图的判断条件而非关键词清单（反 specification gaming）', () => {
+    // 必须有意图/语义性触发词
+    expect(worker).toMatch(/意图|哪一次|上一次|回溯/)
+    // 不允许 prompt 写"任务描述含 '记不记得 / 复盘 / 为什么' 时..."这种关键词触发
+    expect(worker).not.toMatch(/任务描述含['"]记不记得['"]/)
+  })
+
+  it('明确未命中时退化路径：search_traces 取详情 → ask_human', () => {
+    expect(worker).toMatch(/ask_human|找不到/)
+  })
+})

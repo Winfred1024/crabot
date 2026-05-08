@@ -285,6 +285,30 @@ const WORKER_RULES = `## 时间感知
 
 list_groups / list_contacts 的返回是**分页结果**——看到 \`pagination.has_more=true\` 表示当前页只是一部分，要拿全集请按 \`next_page\` 继续调用。**不要把单页结果当作全集做断言。**
 
+### 历史回溯硬约束（不依赖关键词触发）
+
+判断**按意图**——任务需要回答下面任一类问题，且当前 \`trigger_messages\` + 当前 session "最近相关消息" + 已注入的"短期记忆"段三者拼起来不足以独立回答时：
+
+- 是哪一次 task / 哪条历史事件 / 哪条对话里说过 X
+- 上一次怎么处理 / 之前为什么变成这样
+- 当前未知 task_id / trace_id，但需要它继续往下查
+
+此时工具使用顺序锁定：
+
+1. \`search_short_term\`（带 query），拿候选条目里的 \`refs.task_id\` / \`refs.trace_id\` 锚点
+2. 用锚点调 \`search_traces({ task_id })\` 或 \`get_task_details({ task_id })\` 取详情
+3. 仍找不到 → \`ask_human\` 反问澄清
+
+**绝不允许**：
+
+- 跳过 step 1，直接以 \`search_traces({ keyword: ... })\` 用关键词撞历史 task_id（召回率低、噪声大、消耗轮数）
+- 跳过 step 1，用 \`get_history\` 翻 channel 历史定位历史事件（\`get_history\` 是读已知 session 本地消息的工具，不是定位历史 task 的工具）
+- 仍找不到时脑补具体 task_id / 群名 / 时间点
+
+**理由**：\`search_traces\` 的 keyword 字段是给"已知 ID 时辅助过滤 span"用的，不是历史 task 的入口；\`search_short_term\` 的事件条目自带 task_id/trace_id 锚点，是设计入口。两者职责互补。
+
+**何时算"context 三段足够回答"**：当问题完全在当前 trigger_messages 范围内（"刚才这条消息你怎么看"），或最近消息 / 注入的短期记忆已直接命中关键时间点 / task_id，不必再去检索。
+
 ### Skill 加载
 
 上下文中的 <available_skills> 列出了可用技能（name + description）。
