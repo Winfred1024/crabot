@@ -65,7 +65,7 @@ describe('RpcClient.call 错误透传', () => {
     } catch (e) {
       caught = e
     }
-    server.close()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
 
     assert.ok(caught instanceof RpcCallError)
     assert.equal((caught as RpcCallError).code, 'PERMISSION_DENIED')
