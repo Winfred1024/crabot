@@ -1,6 +1,5 @@
 """ShortTermStore FTS5 集成测试。"""
 import asyncio
-import json
 from datetime import datetime, timezone
 
 import pytest
