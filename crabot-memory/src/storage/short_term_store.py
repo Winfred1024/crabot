@@ -72,6 +72,47 @@ class ShortTermStore:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_st_event_time ON short_term_memory (event_time DESC)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_st_visibility ON short_term_memory (visibility)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_st_compressed ON short_term_memory (compressed)")
+        cur.execute(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS short_term_fts USING fts5(
+                content,
+                topic,
+                keywords,
+                content='short_term_memory',
+                content_rowid='rowid',
+                tokenize='unicode61 remove_diacritics 2'
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS short_term_ai
+            AFTER INSERT ON short_term_memory BEGIN
+                INSERT INTO short_term_fts(rowid, content, topic, keywords)
+                VALUES (new.rowid, new.content, COALESCE(new.topic, ''), new.keywords);
+            END
+            """
+        )
+        cur.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS short_term_ad
+            AFTER DELETE ON short_term_memory BEGIN
+                INSERT INTO short_term_fts(short_term_fts, rowid, content, topic, keywords)
+                VALUES ('delete', old.rowid, old.content, COALESCE(old.topic, ''), old.keywords);
+            END
+            """
+        )
+        cur.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS short_term_au
+            AFTER UPDATE ON short_term_memory BEGIN
+                INSERT INTO short_term_fts(short_term_fts, rowid, content, topic, keywords)
+                VALUES ('delete', old.rowid, old.content, COALESCE(old.topic, ''), old.keywords);
+                INSERT INTO short_term_fts(rowid, content, topic, keywords)
+                VALUES (new.rowid, new.content, COALESCE(new.topic, ''), new.keywords);
+            END
+            """
+        )
         self._conn.commit()
 
     # ---- 写入 ----
