@@ -28,6 +28,12 @@ import type {
   GetHistoryParams,
   GetMessageParams,
   SessionType,
+  ListContactsParams,
+  ListContactsResult,
+  ListGroupsParams,
+  ListGroupsResult,
+  ContactItem,
+  GroupItem,
 } from './types.js'
 
 export interface WechatChannelInitConfig {
@@ -392,6 +398,8 @@ export class WechatChannel extends ModuleBase {
     this.registerMethod('send_message', this.handleSendMessage.bind(this))
     this.registerMethod('get_capabilities', this.handleGetCapabilities.bind(this))
     this.registerMethod('get_sessions', this.handleGetSessions.bind(this))
+    this.registerMethod('list_contacts', this.handleListContacts.bind(this))
+    this.registerMethod('list_groups', this.handleListGroups.bind(this))
     this.registerMethod('get_session', this.handleGetSession.bind(this))
     this.registerMethod('find_or_create_private_session', this.handleFindOrCreatePrivateSession.bind(this))
     this.registerMethod('get_history', this.handleGetHistory.bind(this))
@@ -463,6 +471,57 @@ export class WechatChannel extends ModuleBase {
         page_size: pageSize,
         total_items: sessions.length,
         total_pages: Math.ceil(sessions.length / pageSize),
+      },
+    }
+  }
+
+  private async handleListContacts(params: ListContactsParams): Promise<ListContactsResult> {
+    const page = params.pagination?.page ?? 1
+    const pageSize = params.pagination?.page_size ?? 50
+    const raw = await this.client.listContacts({
+      keyword: params.search,
+      page,
+      pageSize,
+    })
+
+    return {
+      items: raw.items.map((it): ContactItem => {
+        const out: ContactItem = {
+          platform_user_id: it.username,
+          display_name: it.nickname,
+        }
+        if (it.remark) out.remark = it.remark
+        if (it.avatar_url) out.avatar_url = it.avatar_url
+        return out
+      }),
+      pagination: {
+        page: raw.pagination.page,
+        page_size: raw.pagination.pageSize,
+        total_items: raw.pagination.total,
+        total_pages: raw.pagination.totalPages,
+      },
+    }
+  }
+
+  private async handleListGroups(params: ListGroupsParams): Promise<ListGroupsResult> {
+    const page = params.pagination?.page ?? 1
+    const pageSize = params.pagination?.page_size ?? 50
+    const raw = await this.client.listGroups({
+      keyword: params.search,
+      page,
+      pageSize,
+    })
+
+    return {
+      items: raw.items.map((it): GroupItem => ({
+        platform_session_id: it.chatroomName,
+        group_name: it.name,
+      })),
+      pagination: {
+        page: raw.pagination.page,
+        page_size: raw.pagination.pageSize,
+        total_items: raw.pagination.total,
+        total_pages: raw.pagination.totalPages,
       },
     }
   }
