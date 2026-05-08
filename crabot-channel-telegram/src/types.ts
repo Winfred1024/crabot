@@ -213,6 +213,10 @@ export interface ChannelCapabilities {
   max_file_size: number | null
   supports_file_path: boolean
   allowed_file_paths: string[]
+  /** 是否支持 list_contacts；telegram bot api 不支持 */
+  supports_list_contacts: boolean
+  /** 是否支持 list_groups；telegram bot api 不支持 */
+  supports_list_groups: boolean
 }
 
 export interface SendMessageParams {
