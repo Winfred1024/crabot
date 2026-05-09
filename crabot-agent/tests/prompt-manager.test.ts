@@ -402,10 +402,12 @@ describe('Worker prompt — Phase 2 任务结束 JSON 输出契约', () => {
     expect(worker).toContain('```json')
   })
 
-  it('明确要求空亮点必须用空数组、不许编造', () => {
-    // 措辞示例："无过程亮点 → process_highlights: []，不许编造"
+  it('明确要求空亮点必须用空数组', () => {
+    // 措辞示例："无过程亮点 → process_highlights: []。普通顺利的任务通常 highlights = []"
+    // 不再用"不许编造"等强 evaluative 词——空数组本身已经是硬约束，
+    // 反向措辞会被模型反刍到 reply 里造成"我不能包装结果"等 meta talk。
     expect(worker).toMatch(/process_highlights:\s*\[\]/)
-    expect(worker).toMatch(/不许编造|不要编造/)
+    expect(worker).toContain('普通顺利的任务通常 highlights = []')
   })
 
   it('明确 JSON 块必须是回复的最后一段', () => {
