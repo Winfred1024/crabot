@@ -7425,8 +7425,6 @@ export class AdminModule extends ModuleBase {
     const scene = parseSceneKey(key)
     const body = await this.readJsonBody<{
       label?: string
-      abstract?: string
-      overview?: string
       content?: string
       source_memory_ids?: string[]
     }>(req)
@@ -7436,7 +7434,7 @@ export class AdminModule extends ModuleBase {
     // 先取现有画像
     const getResult = await this.rpcClient.call<
       { scene: SceneIdentity },
-      { profile: { scene: SceneIdentity; label: string; abstract: string; overview: string; content: string; created_at: string; updated_at: string; last_declared_at?: string | null; source_memory_ids?: string[] | null } | null }
+      { profile: { scene: SceneIdentity; label: string; content: string; created_at: string; updated_at: string; last_declared_at?: string | null; source_memory_ids?: string[] | null } | null }
     >(port, 'get_scene_profile', { scene }, this.config.moduleId)
 
     const now = new Date().toISOString()
@@ -7444,14 +7442,6 @@ export class AdminModule extends ModuleBase {
     const nextLabel = normalizeSceneProfileTextField(
       body.label,
       existing?.label ?? defaultSceneProfileLabel(scene),
-    )
-    const nextAbstract = normalizeSceneProfileTextField(
-      body.abstract,
-      existing?.abstract ?? '',
-    )
-    const nextOverview = normalizeSceneProfileTextField(
-      body.overview,
-      existing?.overview ?? '',
     )
     const nextContent = body.content === undefined
       ? (existing?.content ?? '')
@@ -7466,8 +7456,6 @@ export class AdminModule extends ModuleBase {
     const upsertParams = {
       scene,
       label: nextLabel,
-      abstract: nextAbstract,
-      overview: nextOverview,
       content: nextContent,
       source_memory_ids: body.source_memory_ids ?? existing?.source_memory_ids ?? undefined,
       created_at: existing?.created_at ?? now,

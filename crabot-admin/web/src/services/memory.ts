@@ -12,8 +12,6 @@ export type SceneIdentity =
 export interface SceneProfile {
   scene: SceneIdentity
   label: string
-  abstract: string
-  overview: string
   content: string
   source_memory_ids?: string[] | null
   created_at: string
@@ -205,8 +203,6 @@ export const sceneProfileService = {
     key: string,
     body: {
       label?: string
-      abstract?: string
-      overview?: string
       content?: string
       source_memory_ids?: string[]
     },

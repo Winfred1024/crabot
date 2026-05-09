@@ -512,7 +512,7 @@ export function createCrabMemoryServer(
   server.registerTool(
     'get_scene_profile',
     {
-      description: '取场景画像（friend / group_session / global）的当前文档（L0 abstract + L1 overview + L2 content）。',
+      description: '取场景画像（friend / group_session / global）的当前描述文本。',
       inputSchema: {
         scene: sceneSchema,
         only_public: z.boolean().optional(),
@@ -524,13 +524,11 @@ export function createCrabMemoryServer(
   server.registerTool(
     'upsert_scene_profile',
     {
-      description: '写入或覆盖场景画像。content 必填，传入完整正文；abstract / overview 不传时由 LLM 自动生成。反思流程通常先 get_scene_profile 拉现状，再让 LLM 综合新证据生成新 content，最后调本接口覆盖。',
+      description: '写入或覆盖场景画像。content 必填，是描述该场景稳定规则与信息的一段文本（markdown 也可）。反思流程通常先 get_scene_profile 拉现状，再让 LLM 综合新证据生成新 content，最后调本接口覆盖。',
       inputSchema: {
         scene: sceneSchema,
         label: z.string().describe('画像标签（建议用 friend:<id> 或 group:<channel>:<session> 形式）'),
-        content: z.string().describe('完整正文 markdown'),
-        abstract: z.string().optional().describe('L0 摘要；不传由 LLM 生成'),
-        overview: z.string().optional().describe('L1 概览；不传由 LLM 生成'),
+        content: z.string().describe('场景画像正文（一段描述文本）'),
         source_memory_ids: z.array(z.string()).optional()
           .describe('来源记忆 ID 列表（追溯用）'),
       },

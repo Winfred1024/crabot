@@ -28,10 +28,7 @@ class SceneProfileStore:
           channel_id             TEXT,
           session_id             TEXT,
           label                  TEXT NOT NULL,
-          abstract               TEXT,
-          overview               TEXT,
           content                TEXT,
-          sections_json          TEXT,
           source_memory_ids_json TEXT,
           created_at             TEXT NOT NULL,
           updated_at             TEXT NOT NULL,
@@ -48,13 +45,13 @@ class SceneProfileStore:
         self.conn.commit()
 
     def _migrate_schema(self) -> None:
+        # 老库可能缺 content 列；abstract/overview/sections_json 保留为遗留列，不再读写。
         columns = {
             row["name"]
             for row in self.conn.execute("PRAGMA table_info(scene_profiles)").fetchall()
         }
-        for column in ("abstract", "overview", "content", "sections_json"):
-            if column not in columns:
-                self.conn.execute(f"ALTER TABLE scene_profiles ADD COLUMN {column} TEXT")
+        if "content" not in columns:
+            self.conn.execute("ALTER TABLE scene_profiles ADD COLUMN content TEXT")
 
     # ---------- public API ----------
 
@@ -79,8 +76,8 @@ class SceneProfileStore:
         offset: int = 0,
     ) -> List[SceneProfile]:
         sql = (
-            "SELECT scene_type, friend_id, channel_id, session_id, label, abstract, overview, content, "
-            "sections_json, source_memory_ids_json, created_at, updated_at, last_declared_at FROM scene_profiles"
+            "SELECT scene_type, friend_id, channel_id, session_id, label, content, "
+            "source_memory_ids_json, created_at, updated_at, last_declared_at FROM scene_profiles"
         )
         params: list = []
         if scene_type:
@@ -93,7 +90,9 @@ class SceneProfileStore:
 
     def list_by_memory_id(self, memory_id: str) -> List[SceneProfile]:
         rows = self.conn.execute(
-            "SELECT scene_type, friend_id, channel_id, session_id, label, abstract, overview, content, sections_json, source_memory_ids_json, created_at, updated_at, last_declared_at FROM scene_profiles WHERE source_memory_ids_json LIKE ? ORDER BY updated_at DESC",
+            "SELECT scene_type, friend_id, channel_id, session_id, label, content, "
+            "source_memory_ids_json, created_at, updated_at, last_declared_at "
+            "FROM scene_profiles WHERE source_memory_ids_json LIKE ? ORDER BY updated_at DESC",
             (f'%\"{memory_id}\"%',),
         ).fetchall()
         return [self._row_to_profile(row) for row in rows]
@@ -116,19 +115,16 @@ class SceneProfileStore:
         self.conn.execute(
             """INSERT INTO scene_profiles
                (scene_type, friend_id, channel_id, session_id, label,
-                abstract, overview, content, sections_json, source_memory_ids_json,
+                content, source_memory_ids_json,
                 created_at, updated_at, last_declared_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 scene.type,
                 getattr(scene, "friend_id", None),
                 getattr(scene, "channel_id", None),
                 getattr(scene, "session_id", None),
                 profile.label,
-                profile.abstract,
-                profile.overview,
                 profile.content,
-                "[]",
                 json.dumps(profile.source_memory_ids) if profile.source_memory_ids else None,
                 profile.created_at,
                 profile.updated_at,
@@ -146,15 +142,12 @@ class SceneProfileStore:
         if next_source_ids is None:
             next_source_ids = existing.source_memory_ids
         self.conn.execute(
-            f"""UPDATE scene_profiles SET label = ?, abstract = ?, overview = ?, content = ?,
-                sections_json = ?, source_memory_ids_json = ?, updated_at = ?, last_declared_at = ?
+            f"""UPDATE scene_profiles SET label = ?, content = ?,
+                source_memory_ids_json = ?, updated_at = ?, last_declared_at = ?
                 WHERE {where}""",
             [
                 profile.label,
-                profile.abstract,
-                profile.overview,
                 profile.content,
-                "[]",
                 json.dumps(next_source_ids) if next_source_ids else None,
                 profile.updated_at,
                 profile.last_declared_at,
@@ -164,8 +157,6 @@ class SceneProfileStore:
         return SceneProfile(
             scene=profile.scene,
             label=profile.label,
-            abstract=profile.abstract,
-            overview=profile.overview,
             content=profile.content,
             source_memory_ids=next_source_ids,
             created_at=created_at,
@@ -176,7 +167,7 @@ class SceneProfileStore:
     def _select_one(self, scene: SceneIdentity):
         where, params = self._where_for_scene(scene)
         row = self.conn.execute(
-            f"SELECT scene_type, friend_id, channel_id, session_id, label, abstract, overview, content, sections_json, "
+            f"SELECT scene_type, friend_id, channel_id, session_id, label, content, "
             f"source_memory_ids_json, created_at, updated_at, last_declared_at "
             f"FROM scene_profiles WHERE {where} LIMIT 1",
             params,
@@ -202,33 +193,14 @@ class SceneProfileStore:
         else:
             scene = SceneIdentityGlobal()
 
-        legacy_sections = json.loads(row["sections_json"]) if row["sections_json"] else []
-        content = row["content"] or _legacy_sections_to_content(legacy_sections)
-        abstract = row["abstract"] or content[:256]
-        overview = row["overview"] or content[:4000]
         src_json = row["source_memory_ids_json"]
         source_ids = json.loads(src_json) if src_json else None
         return SceneProfile(
             scene=scene,
             label=row["label"],
-            abstract=abstract,
-            overview=overview,
-            content=content,
+            content=row["content"] or "",
             source_memory_ids=source_ids,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             last_declared_at=row["last_declared_at"],
         )
-
-def _legacy_sections_to_content(sections: list[dict]) -> str:
-    lines = []
-    for section in sections:
-        topic = str(section.get("topic", "")).strip()
-        body = str(section.get("body", "")).strip()
-        if topic and body:
-            lines.append(f"{topic}: {body}")
-        elif topic:
-            lines.append(topic)
-        elif body:
-            lines.append(body)
-    return "\n".join(lines)

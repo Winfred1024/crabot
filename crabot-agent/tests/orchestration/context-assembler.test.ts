@@ -201,8 +201,6 @@ describe('ContextAssembler', () => {
     const groupProfile = {
       scene: { type: 'group_session', channel_id: 'admin-web', session_id: 'session-1' },
       label: '开发群',
-      abstract: '群画像',
-      overview: '只处理当前群上下文',
       content: '这里是当前群必须遵守的规则。',
       created_at: '2026-04-20T00:00:00Z',
       updated_at: '2026-04-20T00:00:00Z',
@@ -237,8 +235,6 @@ describe('ContextAssembler', () => {
 
     expect(ctx.scene_profile).toEqual({
       label: '开发群',
-      abstract: '群画像',
-      overview: '只处理当前群上下文',
       content: '这里是当前群必须遵守的规则。',
       source: {
         scene: { type: 'group_session', channel_id: 'admin-web', session_id: 'session-1' },
@@ -261,8 +257,6 @@ describe('ContextAssembler', () => {
     const friendProfile = {
       scene: { type: 'friend', friend_id: 'friend-1' },
       label: 'Test User',
-      abstract: '私聊画像',
-      overview: '仅当前私聊可见',
       content: '这里是当前私聊必须遵守的上下文。',
       created_at: '2026-04-20T00:00:00Z',
       updated_at: '2026-04-20T00:00:00Z',
@@ -296,8 +290,6 @@ describe('ContextAssembler', () => {
 
     expect(ctx.scene_profile).toEqual({
       label: 'Test User',
-      abstract: '私聊画像',
-      overview: '仅当前私聊可见',
       content: '这里是当前私聊必须遵守的上下文。',
       source: {
         scene: { type: 'friend', friend_id: 'friend-1' },

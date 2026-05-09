@@ -130,11 +130,11 @@ mcp__crab-memory__quick_capture({
 
 1. **列出活跃场景**：从最近 24h short-term 事件中抽取出现过的 `friend_id` 与 `{channel_id, session_id}` 对。
 2. **逐场景归纳**：
-   - `mcp__crab-memory__get_scene_profile({ scene })` 取现状（含 label / content / abstract / overview）
+   - `mcp__crab-memory__get_scene_profile({ scene })` 取现状（含 label / content）
    - 扫描该场景相关的 long-term 条目与 trace
    - 识别"核心稳定知识"：反复出现但未被画像覆盖的规则 / 用户反复纠正的偏好 / 与画像已有内容矛盾的新证据
-   - LLM 综合现状 + 新证据生成新版 content（保留仍成立的旧规则；用新证据替换被推翻的旧规则；追加新归纳；保持 markdown 章节结构）
-   - `mcp__crab-memory__upsert_scene_profile({ scene, label, content: <新版正文>, source_memory_ids: [...] })` 覆盖；abstract / overview 不传时后端自动用 LLM 重新生成
+   - LLM 综合现状 + 新证据生成新版 content（保留仍成立的旧规则；用新证据替换被推翻的旧规则；追加新归纳；保持一段连贯的描述）
+   - `mcp__crab-memory__upsert_scene_profile({ scene, label, content: <新版描述>, source_memory_ids: [...] })` 覆盖整条画像
 3. **清理无效**：整条画像被新证据完全推翻且无替代 → `mcp__crab-memory__delete_scene_profile({ scene })`。
 4. **黑名单合规检查**：扫描近 24h 新增 long-term 条目，命中黑名单（一次性快照、时效新闻、细碎 tip、已解决 bug 细节、中间猜测、偶尔一次表述）的 → `mcp__crab-memory__delete_memory` 回收。
 

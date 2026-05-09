@@ -965,8 +965,6 @@ export type SceneIdentity =
 export interface SceneProfile {
   scene: SceneIdentity
   label: string
-  abstract: string
-  overview: string
   content: string
   source_memory_ids?: string[]
   created_at: string
@@ -976,8 +974,6 @@ export interface SceneProfile {
 
 export interface RuntimeSceneProfile {
   label: string
-  abstract: string
-  overview: string
   content: string
   source: {
     scene: SceneIdentity

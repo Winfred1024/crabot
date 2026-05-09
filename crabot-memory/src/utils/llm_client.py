@@ -319,50 +319,6 @@ class LLMClient:
             return data
         return []
 
-    async def generate_l0_l1(self, content: str) -> Dict[str, str]:
-        """从 L2 content 生成 L0 abstract 和 L1 overview
-
-        三层各有独立定位（参考 OpenViking 分层设计）：
-        - L0 abstract: 单行索引摘要（<=256字符），用于向量搜索和快速筛选
-        - L1 overview: 结构化 Markdown 概览（<=4000字符），用于快速理解内容
-        - L2 content: 完整原文（不变）
-
-        无论 content 长短，L0/L1 都由 LLM 按角色生成，而非截取或压缩。
-        """
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You generate two different views of the given content. "
-                    "Each view has a distinct purpose — do NOT simply shorten or lengthen the original.\n\n"
-                    '1. "abstract": A single-sentence index line (max 256 chars). '
-                    "Purpose: vector search index and quick filtering. "
-                    "Format: plain text, one line, no markdown.\n\n"
-                    '2. "overview": A structured summary for quick comprehension (max 4000 chars). '
-                    "Purpose: let the reader understand the key points without reading the full content. "
-                    "Format: Markdown with headings/bullets as appropriate. "
-                    "Must be SHORTER than the original content. "
-                    "If the original is already very short, rephrase it structurally rather than padding.\n\n"
-                    "Return JSON with keys: abstract, overview"
-                ),
-            },
-            {"role": "user", "content": content},
-        ]
-        resp = await self.chat_completion(
-            messages,
-            temperature=0.1,
-            response_format=self._json_response_format,
-        )
-        data = extract_json(resp)
-        if isinstance(data, dict):
-            abstract = data.get("abstract", content[:256])
-            overview = data.get("overview", content[:4000])
-            return {
-                "abstract": abstract[:256],
-                "overview": overview[:4000],
-            }
-        return {"abstract": content[:256], "overview": content[:4000]}
-
     async def judge_dedup(
         self,
         new_content: str,

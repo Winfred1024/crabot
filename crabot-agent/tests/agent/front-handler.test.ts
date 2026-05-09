@@ -205,8 +205,6 @@ describe('FrontHandler', () => {
         ...makeContext(),
         scene_profile: {
           label: '项目群',
-          abstract: '群画像',
-          overview: '技术支持',
           content: '第一行规则\n\n- 第二行原文\n### 不应被重写',
           source: {
             scene: { type: 'group_session', channel_id: 'ch_1', session_id: 'session-1' },
@@ -236,8 +234,6 @@ describe('FrontHandler', () => {
         ...makeContext(),
         scene_profile: {
           label: '项目群',
-          abstract: '群画像',
-          overview: '技术支持',
           content: '进入本群后先做技术支持与问题排查。',
           source: {
             scene: { type: 'group_session', channel_id: 'ch_1', session_id: 'session-1' },
@@ -255,8 +251,6 @@ describe('FrontHandler', () => {
         ...makeContext(),
         scene_profile: {
           label: '空画像',
-          abstract: '空摘要',
-          overview: '空概览',
           content: '',
           source: {
             scene: { type: 'group_session', channel_id: 'ch_1', session_id: 'session-1' },

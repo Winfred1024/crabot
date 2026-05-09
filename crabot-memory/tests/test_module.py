@@ -6,8 +6,6 @@ import asyncio
 import shutil
 import tempfile
 from datetime import datetime
-from unittest.mock import AsyncMock
-
 from src.types import (
     WriteShortTermParams,
     MemorySource,
@@ -30,12 +28,6 @@ async def memory_module():
     async def _extract_keywords(text: str):
         return ["kw1", "kw2"] if text else []
 
-    async def _generate_l0_l1(content: str):
-        return {
-            "abstract": content[:256],
-            "overview": content[:4000],
-        }
-
     async def _judge_dedup(new_content: str, existing_content: str):
         action = "SKIP" if new_content == existing_content else "CREATE"
         return {"action": action, "reason": "same content" if action == "SKIP" else ""}
@@ -50,7 +42,6 @@ async def memory_module():
         return None
 
     module.llm_client.extract_keywords = _extract_keywords
-    module.llm_client.generate_l0_l1 = _generate_l0_l1
     module.llm_client.judge_dedup = _judge_dedup
     module.llm_client.merge_contents = _merge_contents
     module.llm_client.compress_short_term = _compress_short_term
@@ -320,8 +311,6 @@ async def test_upsert_and_get_scene_profile(memory_module):
         {"scene": {"type": "group_session", "channel_id": "c1", "session_id": "s1"}})
     assert got["profile"]["label"] == "开发组群"
     assert got["profile"]["content"] == "群职责: x"
-    assert "abstract" in got["profile"]
-    assert "overview" in got["profile"]
 
 
 @pytest.mark.asyncio
@@ -332,35 +321,18 @@ async def test_get_scene_profile_none(memory_module):
 
 
 @pytest.mark.asyncio
-async def test_upsert_scene_profile_generates_l0_l1_when_missing(memory_module, monkeypatch):
-    monkeypatch.setattr(
-        memory_module.llm_client,
-        "generate_l0_l1",
-        AsyncMock(return_value={"abstract": "自动摘要", "overview": "自动概览"}),
-    )
+async def test_upsert_scene_profile_drops_legacy_abstract_overview(memory_module):
+    """旧调用方仍可能传 abstract/overview；服务端应静默丢弃且不报错。"""
     result = await memory_module._upsert_scene_profile({
         "scene": {"type": "global"},
         "label": "global",
         "content": "只有正文",
+        "abstract": "旧字段",
+        "overview": "旧字段",
     })
-    assert result["profile"]["abstract"] == "自动摘要"
-    assert result["profile"]["overview"] == "自动概览"
     assert result["profile"]["content"] == "只有正文"
-    memory_module.llm_client.generate_l0_l1.assert_awaited_once_with("只有正文")
-
-
-@pytest.mark.asyncio
-async def test_upsert_scene_profile_requires_llm_config_for_generated_summaries(memory_module):
-    memory_module.config.llm.api_key = ""
-    memory_module.config.llm.base_url = ""
-    memory_module.config.llm.model = ""
-
-    with pytest.raises(ValueError, match="Memory module not configured"):
-        await memory_module._upsert_scene_profile({
-            "scene": {"type": "global"},
-            "label": "global",
-            "content": "只有正文",
-        })
+    assert "abstract" not in result["profile"]
+    assert "overview" not in result["profile"]
 
 
 @pytest.mark.asyncio
@@ -373,7 +345,7 @@ async def test_dispatch_rejects_patch_scene_profile(memory_module):
 async def test_list_scene_profiles(memory_module):
     await memory_module._upsert_scene_profile({
         "scene": {"type": "friend", "friend_id": "f1"}, "label": "张三",
-        "abstract": "张三摘要", "overview": "张三概览", "content": "张三内容",
+        "content": "张三内容",
         "created_at": "2026-04-17T00:00:00Z", "updated_at": "2026-04-17T00:00:00Z",
     })
     got = await memory_module._list_scene_profiles({"scene_type": "friend"})
@@ -387,8 +359,6 @@ async def test_upsert_scene_profile_preserves_created_at_on_update(memory_module
     first = await memory_module._upsert_scene_profile({
         "scene": scene,
         "label": "x",
-        "abstract": "x 摘要",
-        "overview": "x 概览",
         "content": "内容一",
         "created_at": "2026-04-17T00:00:00Z",
         "updated_at": "2026-04-17T00:00:00Z",
@@ -396,8 +366,6 @@ async def test_upsert_scene_profile_preserves_created_at_on_update(memory_module
     second = await memory_module._upsert_scene_profile({
         "scene": scene,
         "label": "x2",
-        "abstract": "x2 摘要",
-        "overview": "x2 概览",
         "content": "内容二",
         "updated_at": "2026-04-18T00:00:00Z",
     })
@@ -411,8 +379,6 @@ async def test_upsert_scene_profile_rejects_blank_content(memory_module):
         await memory_module._upsert_scene_profile({
             "scene": {"type": "friend", "friend_id": "f-blank"},
             "label": "blank",
-            "abstract": "摘要",
-            "overview": "概览",
             "content": "   ",
             "updated_at": "2026-04-18T00:00:00Z",
         })
@@ -422,7 +388,7 @@ async def test_upsert_scene_profile_rejects_blank_content(memory_module):
 async def test_delete_scene_profile(memory_module):
     scene = {"type": "friend", "friend_id": "f2"}
     await memory_module._upsert_scene_profile({
-        "scene": scene, "label": "x", "abstract": "x 摘要", "overview": "x 概览", "content": "x",
+        "scene": scene, "label": "x", "content": "x",
         "created_at": "2026-04-17T00:00:00Z", "updated_at": "2026-04-17T00:00:00Z",
     })
     out = await memory_module._delete_scene_profile({"scene": scene})
@@ -434,7 +400,6 @@ async def test_get_scene_profile_only_public_raises(memory_module):
     scene = {"type": "friend", "friend_id": "f3"}
     await memory_module._upsert_scene_profile({
         "scene": scene, "label": "x",
-        "abstract": "x 摘要", "overview": "x 概览",
         "content": "职务: p\n私密: s",
         "created_at": "2026-04-17T00:00:00Z", "updated_at": "2026-04-17T00:00:00Z",
     })

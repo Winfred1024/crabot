@@ -8,7 +8,7 @@ import { useToast } from '../../contexts/ToastContext'
 import { sceneProfileService, sceneToKey, type SceneProfile } from '../../services/memory'
 
 type FilterType = '' | 'friend' | 'group_session' | 'global'
-type GovernanceFilter = 'all' | 'missing-summary' | 'missing-overview' | 'missing-source' | 'recent-updated' | 'recent-declared'
+type GovernanceFilter = 'all' | 'missing-content' | 'missing-source' | 'recent-updated' | 'recent-declared'
 
 const SCENE_TYPE_LABELS: Record<string, string> = {
   friend: '好友',
@@ -29,8 +29,7 @@ function isRecent(value?: string | null): boolean {
 
 function buildGovernanceTags(profile: SceneProfile): string[] {
   const tags: string[] = []
-  if (!profile.abstract.trim()) tags.push('缺摘要')
-  if (!profile.overview.trim()) tags.push('缺概览')
+  if (!profile.content.trim()) tags.push('缺描述')
   if (!profile.source_memory_ids || profile.source_memory_ids.length === 0) tags.push('无来源')
   if (isRecent(profile.updated_at)) tags.push('最近更新')
   if (isRecent(profile.last_declared_at)) tags.push('最近声明')
@@ -39,10 +38,8 @@ function buildGovernanceTags(profile: SceneProfile): string[] {
 
 function matchesGovernanceFilter(profile: SceneProfile, filter: GovernanceFilter): boolean {
   switch (filter) {
-    case 'missing-summary':
-      return !profile.abstract.trim()
-    case 'missing-overview':
-      return !profile.overview.trim()
+    case 'missing-content':
+      return !profile.content.trim()
     case 'missing-source':
       return !profile.source_memory_ids || profile.source_memory_ids.length === 0
     case 'recent-updated':
@@ -141,8 +138,7 @@ export const SceneProfileList: React.FC = () => {
                 }}
               >
                 <option value="all">全部</option>
-                <option value="missing-summary">仅看缺摘要</option>
-                <option value="missing-overview">仅看缺概览</option>
+                <option value="missing-content">仅看缺描述</option>
                 <option value="missing-source">仅看无来源</option>
                 <option value="recent-updated">最近更新</option>
                 <option value="recent-declared">最近声明</option>
@@ -207,9 +203,13 @@ export const SceneProfileList: React.FC = () => {
                             marginBottom: '0.5rem',
                             whiteSpace: 'pre-wrap',
                             lineHeight: 1.5,
+                            display: '-webkit-box',
+                            WebkitLineClamp: 3,
+                            WebkitBoxOrient: 'vertical',
+                            overflow: 'hidden',
                           }}
                         >
-                          {profile.abstract || '暂无摘要'}
+                          {profile.content.trim() || '暂无描述'}
                         </div>
                         {tags.length > 0 && (
                           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.5rem' }}>

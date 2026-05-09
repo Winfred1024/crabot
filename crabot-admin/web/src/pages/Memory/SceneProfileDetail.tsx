@@ -41,23 +41,17 @@ type DetailMode = 'view' | 'edit'
 
 type SceneProfileDraft = {
   label: string
-  abstract: string
-  overview: string
   content: string
 }
 
 const EMPTY_DRAFT: SceneProfileDraft = {
   label: '',
-  abstract: '',
-  overview: '',
   content: '',
 }
 
 function toDraft(profile: SceneProfile): SceneProfileDraft {
   return {
     label: profile.label,
-    abstract: profile.abstract,
-    overview: profile.overview,
     content: profile.content,
   }
 }
@@ -94,8 +88,6 @@ export const SceneProfileDetail: React.FC = () => {
     return {
       scene,
       label: contextLabel || defaultSceneProfileLabel(scene),
-      abstract: '',
-      overview: '',
       content: '',
       source_memory_ids: [],
       created_at: now,
@@ -165,20 +157,11 @@ export const SceneProfileDetail: React.FC = () => {
   const handleSave = useCallback(async () => {
     const normalizedDraft: SceneProfileDraft = {
       label: draft.label.trim(),
-      abstract: draft.abstract.trim(),
-      overview: draft.overview.trim(),
       content: draft.content.trim(),
     }
 
-    if (!normalizedDraft.abstract) {
-      const message = '摘要（L0）不能为空'
-      setValidationError(message)
-      toast.error(message)
-      return
-    }
-
     if (!normalizedDraft.content) {
-      const message = '正文（L2）不能为空'
+      const message = '描述不能为空'
       setValidationError(message)
       toast.error(message)
       return
@@ -328,7 +311,7 @@ export const SceneProfileDetail: React.FC = () => {
             场景画像是 Agent 进入该场景前优先读取的稳定文档。
           </div>
           <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-            用 L0 摘要快速识别场景，用 L1 概览沉淀稳定规则，用 L2 正文保留完整约定。
+            用一段描述说明这个场景的身份、稳定规则与协作边界。
           </div>
         </div>
 
@@ -396,21 +379,6 @@ export const SceneProfileDetail: React.FC = () => {
 
       {mode === 'view' ? (
         <>
-          <Card>
-            <div style={{ display: 'grid', gap: '0.65rem' }}>
-              <div style={{ fontWeight: 600 }}>如何使用这份画像</div>
-              <div style={{ color: 'var(--text-secondary)' }}>
-                摘要（L0）适合写一句话身份提示，帮助你快速确认这是哪个场景。
-              </div>
-              <div style={{ color: 'var(--text-secondary)' }}>
-                概览（L1）适合写稳定规则、协作边界和长期偏好。
-              </div>
-              <div style={{ color: 'var(--text-secondary)' }}>
-                正文（L2）适合保留完整说明，不适合存放一次性聊天流水。
-              </div>
-            </div>
-          </Card>
-
           {profileExists ? (
             <Card title="当前内容">
               <div style={{ display: 'grid', gap: '1rem' }}>
@@ -419,16 +387,8 @@ export const SceneProfileDetail: React.FC = () => {
                   {renderDocumentValue(activeProfile.label, '暂无标签。')}
                 </div>
                 <div>
-                  <div style={{ fontWeight: 600, marginBottom: '0.35rem' }}>摘要（L0）</div>
-                  {renderDocumentValue(activeProfile.abstract, '暂无摘要。')}
-                </div>
-                <div>
-                  <div style={{ fontWeight: 600, marginBottom: '0.35rem' }}>概览（L1）</div>
-                  {renderDocumentValue(activeProfile.overview, '暂无概览。')}
-                </div>
-                <div>
-                  <div style={{ fontWeight: 600, marginBottom: '0.35rem' }}>正文（L2）</div>
-                  {renderDocumentValue(activeProfile.content, '暂无正文。')}
+                  <div style={{ fontWeight: 600, marginBottom: '0.35rem' }}>描述</div>
+                  {renderDocumentValue(activeProfile.content, '暂无描述。')}
                 </div>
               </div>
             </Card>
@@ -438,9 +398,7 @@ export const SceneProfileDetail: React.FC = () => {
                 <div style={{ color: 'var(--text-secondary)' }}>
                   当前还没有场景画像。只有当这个场景存在长期稳定规则、身份约束或协作边界时，才建议创建。
                 </div>
-                <div style={{ color: 'var(--text-secondary)' }}>先写一句摘要，说明这个场景的身份定位。</div>
-                <div style={{ color: 'var(--text-secondary)' }}>再写概览，整理进入场景后必须遵守的长期约定。</div>
-                <div style={{ color: 'var(--text-secondary)' }}>最后用正文补充完整说明和边界细节。</div>
+                <div style={{ color: 'var(--text-secondary)' }}>用一段描述说明这个场景的身份定位、稳定规则和协作边界。</div>
               </div>
             </Card>
           )}
@@ -464,7 +422,7 @@ export const SceneProfileDetail: React.FC = () => {
         <>
           <Card>
             <div style={{ color: 'var(--text-secondary)' }}>
-              你正在编辑会影响 Agent 进入该场景时读取的 L0/L1/L2 文档。
+              你正在编辑会影响 Agent 进入该场景时读取的描述文档。
             </div>
           </Card>
 
@@ -489,45 +447,16 @@ export const SceneProfileDetail: React.FC = () => {
           </div>
 
           <div style={{ marginBottom: '1.5rem' }}>
-            <label htmlFor="scene-profile-abstract" style={{ display: 'block', fontWeight: 500, marginBottom: '0.5rem', fontSize: '0.9rem' }}>
-              摘要（L0）
-            </label>
-            <input
-              id="scene-profile-abstract"
-              aria-label="摘要（L0）"
-              value={draft.abstract}
-              onChange={(event) => updateDraft('abstract', event.target.value)}
-              placeholder="一句话说明这个场景是谁、做什么"
-              style={inputStyle}
-            />
-          </div>
-
-          <div style={{ marginBottom: '1.5rem' }}>
-            <label htmlFor="scene-profile-overview" style={{ display: 'block', fontWeight: 500, marginBottom: '0.5rem', fontSize: '0.9rem' }}>
-              概览（L1）
-            </label>
-            <textarea
-              id="scene-profile-overview"
-              aria-label="概览（L1）"
-              value={draft.overview}
-              onChange={(event) => updateDraft('overview', event.target.value)}
-              placeholder="整理稳定规则、长期偏好和协作边界"
-              rows={5}
-              style={{ ...inputStyle, resize: 'vertical' }}
-            />
-          </div>
-
-          <div style={{ marginBottom: '1.5rem' }}>
             <label htmlFor="scene-profile-content" style={{ display: 'block', fontWeight: 500, marginBottom: '0.5rem', fontSize: '0.9rem' }}>
-              正文（L2）
+              描述
             </label>
             <textarea
               id="scene-profile-content"
-              aria-label="正文（L2）"
+              aria-label="描述"
               value={draft.content}
               onChange={(event) => updateDraft('content', event.target.value)}
-              placeholder="补充完整说明、行为边界和详细约定"
-              rows={10}
+              placeholder="用一段文字描述这个场景的身份、稳定规则和协作边界"
+              rows={12}
               style={{ ...inputStyle, resize: 'vertical' }}
             />
           </div>

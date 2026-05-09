@@ -166,8 +166,6 @@ describe('WorkerHandler', () => {
           ...makeContext(),
           scene_profile: {
             label: '项目群',
-            abstract: '群画像',
-            overview: '技术支持',
             content: '第一条规则\n\n第二条规则\n### 原文标题保留',
             source: {
               scene: { type: 'group_session', channel_id: 'channel_1', session_id: 'session-1' },
@@ -194,8 +192,6 @@ describe('WorkerHandler', () => {
           ...makeContext(),
           scene_profile: {
             label: '空画像',
-            abstract: '空摘要',
-            overview: '空概览',
             content: '',
             source: {
               scene: { type: 'group_session', channel_id: 'channel_1', session_id: 'session-1' },

@@ -1,6 +1,5 @@
 import os
 import tempfile
-import json
 import sqlite3
 
 import pytest
@@ -28,8 +27,6 @@ def _sample_group():
     return SceneProfile(
         scene=SceneIdentityGroup(channel_id="feishu", session_id="s1"),
         label="开发组群",
-        abstract="开发组群摘要",
-        overview="开发组群概览",
         content="x",
         created_at="2026-04-17T00:00:00Z",
         updated_at="2026-04-17T00:00:00Z",
@@ -65,7 +62,7 @@ def test_list(store):
     store.upsert(_sample_group())
     out = store.list(scene_type="group_session")
     assert len(out) == 1
-    assert out[0].abstract == "开发组群摘要"
+    assert out[0].content == "x"
 
 
 def test_delete(store):
@@ -79,8 +76,6 @@ def test_unique_constraint_global(store):
     g1 = SceneProfile(
         scene=SceneIdentityGlobal(),
         label="A",
-        abstract="A 摘要",
-        overview="A 概览",
         content="A",
         created_at="2026-04-17T00:00:00Z",
         updated_at="2026-04-17T00:00:00Z",
@@ -88,8 +83,6 @@ def test_unique_constraint_global(store):
     g2 = SceneProfile(
         scene=SceneIdentityGlobal(),
         label="B",
-        abstract="B 摘要",
-        overview="B 概览",
         content="B",
         created_at="2026-04-17T00:00:00Z",
         updated_at="2026-04-17T00:00:00Z",
@@ -99,37 +92,8 @@ def test_unique_constraint_global(store):
     assert len(store.list()) == 1 and store.list()[0].label == "B"
 
 
-def test_legacy_sections_json_is_converted_to_content(store):
-    store.conn.execute(
-        """
-        INSERT INTO scene_profiles
-        (scene_type, friend_id, channel_id, session_id, label, sections_json,
-         source_memory_ids_json, created_at, updated_at, last_declared_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            "group_session",
-            None,
-            "feishu",
-            "legacy-1",
-            "旧群画像",
-            json.dumps([
-                {"topic": "群职责", "body": "Crabot 开发", "visibility": "private"},
-                {"topic": "群规则", "body": "保持简洁", "visibility": "public"},
-            ], ensure_ascii=False),
-            None,
-            "2026-04-17T00:00:00Z",
-            "2026-04-17T00:00:00Z",
-            None,
-        ),
-    )
-    store.conn.commit()
-
-    got = store.get(SceneIdentityGroup(channel_id="feishu", session_id="legacy-1"))
-    assert got.content == "群职责: Crabot 开发\n群规则: 保持简洁"
-
-
-def test_old_schema_db_writes_scene_profile_without_rebuild(tmp_path):
+def test_old_schema_db_without_content_column_is_migrated(tmp_path):
+    """老库可能没有 content 列，确保 _migrate_schema 能补上后正常写入。"""
     db_path = tmp_path / "old_schema.db"
     conn = sqlite3.connect(db_path)
     conn.execute(
@@ -140,7 +104,6 @@ def test_old_schema_db_writes_scene_profile_without_rebuild(tmp_path):
           channel_id             TEXT,
           session_id             TEXT,
           label                  TEXT NOT NULL,
-          sections_json          TEXT NOT NULL,
           source_memory_ids_json TEXT,
           created_at             TEXT NOT NULL,
           updated_at             TEXT NOT NULL,
@@ -155,8 +118,6 @@ def test_old_schema_db_writes_scene_profile_without_rebuild(tmp_path):
     profile = SceneProfile(
         scene=SceneIdentityGroup(channel_id="feishu", session_id="write-1"),
         label="写入测试",
-        abstract="写入摘要",
-        overview="写入概览",
         content="正文内容",
         created_at="2026-04-17T00:00:00Z",
         updated_at="2026-04-17T00:00:00Z",
@@ -166,22 +127,13 @@ def test_old_schema_db_writes_scene_profile_without_rebuild(tmp_path):
     got = store.get(profile.scene)
     assert got is not None
     assert got.content == "正文内容"
-    row = store.conn.execute(
-        "SELECT sections_json FROM scene_profiles WHERE channel_id = ? AND session_id = ?",
-        ("feishu", "write-1"),
-    ).fetchone()
-    assert row["sections_json"] == "[]"
     store.close()
-
-
 
 
 def test_list_scene_profiles_by_memory_returns_referencing_profiles(store):
     profile = SceneProfile(
         scene=SceneIdentityFriend(friend_id="friend-1"),
         label="Alice",
-        abstract="工作搭子",
-        overview="稳定规则",
         content="完整说明",
         source_memory_ids=["mem-1"],
         created_at="2026-04-17T00:00:00Z",

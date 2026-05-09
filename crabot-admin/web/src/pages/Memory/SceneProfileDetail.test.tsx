@@ -68,13 +68,11 @@ describe('SceneProfileDetail', () => {
     })
   })
 
-  it('shows l0 l1 l2 document fields in view mode and saves edits without section ui', async () => {
+  it('shows the description in view mode and saves edits without section ui', async () => {
     getSceneProfile.mockResolvedValue({
       profile: {
         scene: { type: 'friend', friend_id: 'friend-1' },
         label: 'Alice',
-        abstract: '工作搭子',
-        overview: '处理工作沟通与需求同步。',
         content: '回复时先确认需求背景，再同步预计交付时间。',
         source_memory_ids: ['mem-1'],
         created_at: '2026-04-19T00:00:00.000Z',
@@ -86,9 +84,7 @@ describe('SceneProfileDetail', () => {
       profile: {
         scene: { type: 'friend', friend_id: 'friend-1' },
         label: 'Alice（新版）',
-        abstract: '升级后的摘要',
-        overview: '升级后的概览',
-        content: '升级后的正文',
+        content: '升级后的描述',
         source_memory_ids: ['mem-1'],
         created_at: '2026-04-19T00:00:00.000Z',
         updated_at: '2026-04-20T01:00:00.000Z',
@@ -99,39 +95,30 @@ describe('SceneProfileDetail', () => {
     renderSceneProfileDetail('/memory/scenes/friend%3Afriend-1?context_label=Alice')
 
     expect(await screen.findAllByText('Alice')).not.toHaveLength(0)
-    expect(screen.getByText('工作搭子')).toBeInTheDocument()
-    expect(screen.getByText('处理工作沟通与需求同步。')).toBeInTheDocument()
     expect(screen.getByText('回复时先确认需求背景，再同步预计交付时间。')).toBeInTheDocument()
     expect(screen.queryByText(/Section 数/u)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '新增分节' })).not.toBeInTheDocument()
-    expect(screen.queryByText(/`public` 可被该好友相关其他场景复用/u)).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '编辑画像' }))
 
     expect(screen.getByLabelText('标签（label）')).toHaveValue('Alice')
-    expect(screen.getByLabelText('摘要（L0）')).toHaveValue('工作搭子')
-    expect(screen.getByLabelText('概览（L1）')).toHaveValue('处理工作沟通与需求同步。')
-    expect(screen.getByLabelText('正文（L2）')).toHaveValue('回复时先确认需求背景，再同步预计交付时间。')
+    expect(screen.getByLabelText('描述')).toHaveValue('回复时先确认需求背景，再同步预计交付时间。')
     expect(screen.queryByText(/Sections（/u)).not.toBeInTheDocument()
     expect(screen.queryByPlaceholderText('分节主题')).not.toBeInTheDocument()
 
     fireEvent.change(screen.getByLabelText('标签（label）'), { target: { value: 'Alice（新版）' } })
-    fireEvent.change(screen.getByLabelText('摘要（L0）'), { target: { value: '升级后的摘要' } })
-    fireEvent.change(screen.getByLabelText('概览（L1）'), { target: { value: '升级后的概览' } })
-    fireEvent.change(screen.getByLabelText('正文（L2）'), { target: { value: '升级后的正文' } })
+    fireEvent.change(screen.getByLabelText('描述'), { target: { value: '升级后的描述' } })
     fireEvent.click(screen.getByRole('button', { name: '保存' }))
 
     await waitFor(() => {
       expect(patchSceneProfile).toHaveBeenCalledWith('friend:friend-1', {
         label: 'Alice（新版）',
-        abstract: '升级后的摘要',
-        overview: '升级后的概览',
-        content: '升级后的正文',
+        content: '升级后的描述',
       })
     })
   })
 
-  it('shows document inputs when creating a new profile and does not expose section controls', async () => {
+  it('shows description input when creating a new profile and does not expose section controls', async () => {
     getSceneProfile.mockResolvedValue({ profile: null })
 
     renderSceneProfileDetail('/memory/scenes/group%3Awechat-main%3Agroup-1?context_label=开发组群')
@@ -143,14 +130,12 @@ describe('SceneProfileDetail', () => {
     fireEvent.click(screen.getByRole('button', { name: '创建画像' }))
 
     expect(screen.getByLabelText('标签（label）')).toHaveValue('开发组群')
-    expect(screen.getByLabelText('摘要（L0）')).toHaveValue('')
-    expect(screen.getByLabelText('概览（L1）')).toHaveValue('')
-    expect(screen.getByLabelText('正文（L2）')).toHaveValue('')
+    expect(screen.getByLabelText('描述')).toHaveValue('')
     expect(screen.queryByText(/Sections（/u)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '新增分节' })).not.toBeInTheDocument()
   })
 
-  it('blocks save when l0 abstract is blank', async () => {
+  it('blocks save when description is blank', async () => {
     getSceneProfile.mockResolvedValue({ profile: null })
 
     renderSceneProfileDetail('/memory/scenes/group%3Awechat-main%3Agroup-2?context_label=空白测试群')
@@ -158,29 +143,11 @@ describe('SceneProfileDetail', () => {
     expect(await screen.findByText('空白测试群')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '创建画像' }))
-    fireEvent.change(screen.getByLabelText('摘要（L0）'), { target: { value: '   ' } })
-    fireEvent.change(screen.getByLabelText('正文（L2）'), { target: { value: '有效正文' } })
+    fireEvent.change(screen.getByLabelText('描述'), { target: { value: '   ' } })
     fireEvent.click(screen.getByRole('button', { name: '创建画像' }))
 
     expect(patchSceneProfile).not.toHaveBeenCalled()
-    expect(toastMock.error).toHaveBeenCalledWith('摘要（L0）不能为空')
-  })
-
-  it('blocks save when l2 content is blank', async () => {
-    getSceneProfile.mockResolvedValue({ profile: null })
-
-    renderSceneProfileDetail('/memory/scenes/group%3Awechat-main%3Agroup-2?context_label=空白测试群')
-
-    expect(await screen.findByText('空白测试群')).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: '创建画像' }))
-    fireEvent.change(screen.getByLabelText('摘要（L0）'), { target: { value: '  临时摘要  ' } })
-    fireEvent.change(screen.getByLabelText('概览（L1）'), { target: { value: '  临时概览  ' } })
-    fireEvent.change(screen.getByLabelText('正文（L2）'), { target: { value: '   ' } })
-    fireEvent.click(screen.getByRole('button', { name: '创建画像' }))
-
-    expect(patchSceneProfile).not.toHaveBeenCalled()
-    expect(toastMock.error).toHaveBeenCalledWith('正文（L2）不能为空')
+    expect(toastMock.error).toHaveBeenCalledWith('描述不能为空')
   })
 
   it('renders source memories as links when source ids exist', async () => {
@@ -188,8 +155,6 @@ describe('SceneProfileDetail', () => {
       profile: {
         scene: { type: 'friend', friend_id: 'friend-1' },
         label: 'Alice',
-        abstract: '工作搭子',
-        overview: '稳定规则',
         content: '完整说明',
         source_memory_ids: ['mem-1'],
         created_at: '2026-04-19T00:00:00.000Z',

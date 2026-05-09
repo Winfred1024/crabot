@@ -77,7 +77,6 @@ describe('Memory v1 cleanup (spec §11.5 + §15)', () => {
   })
 
   it('no L0/L1/L2 memory-tier vocabulary in skills', () => {
-    // Limit to skills + agent docs since SceneProfile fields like "overview" are legit
     const hits = runRg('\\b(L0|L1|L2)\\b[^a-zA-Z]', {
       extraGlobs: [
         // Only check skill markdowns + agent source TS

@@ -7,8 +7,6 @@ export function buildRuntimeSceneProfile(
 
   return {
     label: profile.label,
-    abstract: profile.abstract,
-    overview: profile.overview,
     content: profile.content,
     source: {
       scene: profile.scene,

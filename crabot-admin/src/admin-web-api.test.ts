@@ -336,8 +336,6 @@ describe('Admin Web API', () => {
           {
             label: 'Alice',
             scene: { type: 'friend', friend_id: 'friend-1' },
-            abstract: '工作搭子',
-            overview: '稳定规则',
             content: '完整说明',
             created_at: '2026-04-19T00:00:00.000Z',
             updated_at: '2026-04-20T00:00:00.000Z',
@@ -373,7 +371,7 @@ describe('Admin Web API', () => {
   })
 
   describe('PATCH /api/scene-profiles/:key', () => {
-    it('trims document fields and preserves existing abstract when blank values are submitted', async () => {
+    it('trims label/content and preserves existing label when blank value is submitted', async () => {
       const token = await loginAndGetToken()
 
       vi.spyOn(admin['rpcClient'], 'resolve').mockResolvedValue([
@@ -392,9 +390,7 @@ describe('Admin Web API', () => {
             profile: {
               scene: { type: 'friend', friend_id: 'friend-1' },
               label: 'Alice',
-              abstract: '现有摘要',
-              overview: '现有概览',
-              content: '现有正文',
+              content: '现有描述',
               source_memory_ids: ['mem-1'],
               created_at: '2026-04-19T00:00:00.000Z',
               updated_at: '2026-04-20T00:00:00.000Z',
@@ -406,9 +402,7 @@ describe('Admin Web API', () => {
           expect(params).toMatchObject({
             scene: { type: 'friend', friend_id: 'friend-1' },
             label: 'Alice 2',
-            abstract: '现有摘要',
-            overview: '新概览',
-            content: '新正文',
+            content: '新描述',
             source_memory_ids: ['mem-1'],
           })
           return { profile: params } as any
@@ -422,9 +416,7 @@ describe('Admin Web API', () => {
         'PATCH',
         {
           label: '  Alice 2  ',
-          abstract: '   ',
-          overview: '  新概览  ',
-          content: '  新正文  ',
+          content: '  新描述  ',
         },
         token
       )
@@ -459,8 +451,6 @@ describe('Admin Web API', () => {
         'PATCH',
         {
           label: 'global',
-          abstract: '   ',
-          overview: '   ',
           content: '   ',
         },
         token
@@ -490,9 +480,7 @@ describe('Admin Web API', () => {
             profile: {
               scene: { type: 'friend', friend_id: 'friend-2' },
               label: 'Bob',
-              abstract: '现有摘要',
-              overview: '现有概览',
-              content: '现有正文',
+              content: '现有描述',
               created_at: '2026-04-19T00:00:00.000Z',
               updated_at: '2026-04-20T00:00:00.000Z',
               last_declared_at: null,
