@@ -4,6 +4,7 @@ import { Button } from '../../components/Common/Button'
 import { StatusBadge } from '../../components/Common/StatusBadge'
 import { useToast } from '../../contexts/ToastContext'
 import type { ModelProvider } from '../../types'
+import { ProviderTestBadge, type ProviderTestState } from './ProviderTestBadge'
 
 interface ProviderDrawerDetailProps {
   provider: ModelProvider
@@ -21,9 +22,7 @@ export const ProviderDrawerDetail: React.FC<ProviderDrawerDetailProps> = ({
   const toast = useToast()
   const [refreshing, setRefreshing] = useState(false)
   const [togglingVision, setTogglingVision] = useState<string | null>(null)
-  const [modelTestResults, setModelTestResults] = useState<
-    Record<string, { status: 'pending' | 'success' | 'error'; latency_ms?: number; error?: string }>
-  >({})
+  const [modelTestResults, setModelTestResults] = useState<Record<string, ProviderTestState>>({})
 
   const handleRefreshModels = async () => {
     try {
@@ -164,7 +163,12 @@ export const ProviderDrawerDetail: React.FC<ProviderDrawerDetailProps> = ({
           <div className="model-table-header">
             <span className="model-table-col-id">模型 ID</span>
             <span className="model-table-col-type">类型</span>
-            <span className="model-table-col-test">测试</span>
+            <span
+              className="model-table-col-test"
+              title="首字测速：流式调用模型，记录从发请求到第一个 chunk 到达的时间（TTFT）"
+            >
+              首字
+            </span>
           </div>
           {provider.models.map(model => {
             const testResult = modelTestResults[model.model_id]
@@ -189,21 +193,20 @@ export const ProviderDrawerDetail: React.FC<ProviderDrawerDetailProps> = ({
                   )}
                 </span>
                 <span className="model-table-col-test">
-                  {testResult?.status === 'pending' ? (
-                    <span className="provider-test-result pending">测试中...</span>
-                  ) : testResult?.status === 'success' ? (
-                    <span className="provider-test-result success">✓ {testResult.latency_ms}ms</span>
-                  ) : testResult?.status === 'error' ? (
-                    <span className="provider-test-result error" title={testResult.error}>✗</span>
-                  ) : (
-                    <button
-                      className="btn btn-secondary"
-                      style={{ padding: '0.15rem 0.5rem', fontSize: '0.75rem' }}
-                      onClick={() => handleTestModel(model.model_id)}
-                    >
-                      测试
-                    </button>
-                  )}
+                  <ProviderTestBadge
+                    result={testResult}
+                    successTooltip="TTFT：从发请求到第一个 chunk 到达的耗时（含 reasoning 模型的思考时长）"
+                    idleButton={
+                      <button
+                        className="btn btn-secondary"
+                        style={{ padding: '0.15rem 0.5rem', fontSize: '0.75rem' }}
+                        onClick={() => handleTestModel(model.model_id)}
+                        title="流式调用模型，测首字到达时间"
+                      >
+                        首字测速
+                      </button>
+                    }
+                  />
                 </span>
               </div>
             )

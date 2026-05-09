@@ -12,6 +12,7 @@ import { GlobalModelConfigCard } from './GlobalModelConfigCard'
 import { ProviderDrawerDetail } from './ProviderDrawerDetail'
 import { ProviderDrawerEdit } from './ProviderDrawerEdit'
 import { ProviderDrawerCreate } from './ProviderDrawerCreate'
+import { ProviderTestBadge, type ProviderTestState } from './ProviderTestBadge'
 import { useToast } from '../../contexts/ToastContext'
 import type { GlobalModelConfig, ModelProvider, ProviderStatus } from '../../types'
 
@@ -43,9 +44,7 @@ export const ProviderManagement: React.FC = () => {
   const [deleteWarning, setDeleteWarning] = useState<{ title: string; items: string[]; note: string } | null>(null)
   const [deleting, setDeleting] = useState(false)
 
-  const [providerTestResults, setProviderTestResults] = useState<
-    Record<string, { status: 'pending' | 'success' | 'error'; latency_ms?: number; error?: string }>
-  >({})
+  const [providerTestResults, setProviderTestResults] = useState<Record<string, ProviderTestState>>({})
 
   const refreshGlobalConfig = useCallback(async () => {
     try {
@@ -313,21 +312,21 @@ export const ProviderManagement: React.FC = () => {
                             <span className="provider-card-models">
                               {provider.models.length} model{provider.models.length === 1 ? '' : 's'}
                             </span>
-                            {testResult?.status === 'pending' ? (
-                              <span className="provider-test-result pending">测试中...</span>
-                            ) : testResult?.status === 'success' ? (
-                              <span className="provider-test-result success">✓ {testResult.latency_ms}ms</span>
-                            ) : testResult?.status === 'error' ? (
-                              <span className="provider-test-result error">✗ {testResult.error}</span>
-                            ) : (
-                              <Button
-                                variant="secondary"
-                                style={{ padding: '0.2rem 0.6rem', fontSize: '0.75rem' }}
-                                onClick={e => handleTestProvider(e, provider.id)}
-                              >
-                                测试
-                              </Button>
-                            )}
+                            <ProviderTestBadge
+                              result={testResult}
+                              successTooltip="base_url 测速：访问列表端点（GET /models 等），仅测连通性 + 鉴权"
+                              showErrorText
+                              idleButton={
+                                <Button
+                                  variant="secondary"
+                                  style={{ padding: '0.2rem 0.6rem', fontSize: '0.75rem' }}
+                                  onClick={e => handleTestProvider(e, provider.id)}
+                                  title="访问 base_url 的列表端点，测端点连通性"
+                                >
+                                  base_url 测速
+                                </Button>
+                              }
+                            />
                           </div>
                         </div>
                         <div className="provider-card-meta">{provider.endpoint}</div>

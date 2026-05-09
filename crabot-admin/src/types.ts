@@ -1093,14 +1093,6 @@ export interface LLMConnectionInfo extends ModelConnectionInfo {
   supports_vision?: boolean
 }
 
-/**
- * 验证结果
- */
-export interface ValidationResult {
-  success: boolean
-  error?: string
-}
-
 // Model Provider API 参数类型
 
 export interface CreateModelProviderParams {

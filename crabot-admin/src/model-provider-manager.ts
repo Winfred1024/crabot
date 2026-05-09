@@ -15,14 +15,12 @@ import type {
   GlobalModelConfig,
   ModuleModelConfig,
   LLMConnectionInfo,
-  ValidationResult,
   CreateModelProviderParams,
   UpdateModelProviderParams,
   ImportFromVendorParams,
   ImportFromVendorResult,
   ResolveModelConfigParams,
   OAuthCredential,
-  ApiFormat,
   ModelType,
   ProxyConfig,
 } from './types.js'
@@ -239,104 +237,267 @@ export class ModelProviderManager {
   // Validation
   // ============================================================================
 
-  async validateProvider(id: string): Promise<ValidationResult> {
-    const provider = this.providers.get(id)
-    if (!provider) {
-      throw new Error('Provider not found')
-    }
-
-    try {
-      // 验证至少一个模型
-      if (provider.models.length === 0) {
-        return { success: false, error: 'No models configured' }
-      }
-
-      // 测试第一个模型的连接
-      const model = provider.models[0]
-      const result = await this.testLLMConnection(
-        provider.endpoint,
-        provider.api_key,
-        model.model_id,
-        provider.format
-      )
-      if (!result.success) {
-        return result
-      }
-
-      // 更新验证状态
-      provider.status = 'active'
-      provider.last_validated_at = generateTimestamp()
-      provider.validation_error = undefined
-      await this.saveProviders()
-
-      return { success: true }
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
-      provider.status = 'error'
-      provider.validation_error = errorMessage
-      await this.saveProviders()
-
-      return { success: false, error: errorMessage }
-    }
-  }
-
   async testProviderModel(id: string, modelId?: string): Promise<{ success: boolean; latency_ms: number; error?: string }> {
     const provider = this.providers.get(id)
     if (!provider) {
       throw new Error('Provider not found')
     }
 
-    let model: ModelInfo | undefined
     if (modelId) {
-      model = provider.models.find(m => m.model_id === modelId)
+      const model = provider.models.find(m => m.model_id === modelId)
       if (!model) {
         throw new Error(`Model "${modelId}" not found in provider "${provider.name}"`)
       }
-    } else {
-      model = provider.models[0]
-      if (!model) {
-        return { success: false, latency_ms: 0, error: 'No models configured' }
-      }
+      return this.measureFirstByteLatency(provider, model.model_id)
     }
 
-    // OAuth provider：检查 credential 是否存在且未过期
-    if (provider.auth_type === 'oauth') {
-      if (!provider.oauth_credential) {
-        return { success: false, latency_ms: 0, error: 'OAuth 未登录，请先完成 ChatGPT 登录' }
-      }
-      if (Date.now() > provider.oauth_credential.expires_at) {
-        return { success: false, latency_ms: 0, error: 'OAuth token 已过期，请重新登录' }
-      }
-      return { success: true, latency_ms: 0 }
+    return this.measureEndpointLatency(provider)
+  }
+
+  /**
+   * base_url 测速。成功/失败都落到 provider.status —— 列表端点不通 = 整个 provider 不可用，
+   * 这个判断对所有模型一致，可作为列表卡片的状态信号。
+   */
+  private async measureEndpointLatency(provider: ModelProvider): Promise<{ success: boolean; latency_ms: number; error?: string }> {
+    const authToken = await this.resolveAuthToken(provider)
+    if (typeof authToken !== 'string') {
+      return authToken
+    }
+
+    let url: string
+    let headers: Record<string, string>
+    try {
+      const built = await this.buildEndpointProbe(provider, authToken)
+      url = built.url
+      headers = built.headers
+    } catch (error) {
+      return { success: false, latency_ms: 0, error: error instanceof Error ? error.message : String(error) }
     }
 
     const startTime = Date.now()
     try {
-      const result: ValidationResult = await this.testLLMConnection(
-        provider.endpoint, provider.api_key, model.model_id, provider.format
-      )
+      const response = await fetch(url, { method: 'GET', headers })
       const latency_ms = Date.now() - startTime
 
-      if (result.success && !modelId) {
-        provider.status = 'active'
-        provider.last_validated_at = generateTimestamp()
-        provider.validation_error = undefined
+      if (!response.ok) {
+        const errBody = await response.text().catch(() => '')
+        const errMsg = `HTTP ${response.status}${errBody ? `: ${errBody.slice(0, 200)}` : ''}`
+        provider.status = 'error'
+        provider.validation_error = errMsg
         await this.saveProviders()
+        return { success: false, latency_ms, error: errMsg }
       }
 
-      return { success: result.success, latency_ms, error: result.error }
+      provider.status = 'active'
+      provider.last_validated_at = generateTimestamp()
+      provider.validation_error = undefined
+      await this.saveProviders()
+      return { success: true, latency_ms }
     } catch (error) {
       const latency_ms = Date.now() - startTime
-      const errorMessage = error instanceof Error ? error.message : String(error)
+      const errMsg = error instanceof Error ? error.message : String(error)
+      provider.status = 'error'
+      provider.validation_error = errMsg
+      await this.saveProviders()
+      return { success: false, latency_ms, error: errMsg }
+    }
+  }
 
-      if (!modelId) {
-        provider.status = 'error'
-        provider.validation_error = errorMessage
-        await this.saveProviders()
+  /**
+   * 首字测速（TTFT）。不写 provider.status —— 单个模型 4xx 不应该把整个 provider
+   * 标红（可能只是模型 ID 错或被下线）。是否影响 provider 可用性由 base_url 测速决定。
+   */
+  private async measureFirstByteLatency(
+    provider: ModelProvider,
+    modelId: string
+  ): Promise<{ success: boolean; latency_ms: number; error?: string }> {
+    const authToken = await this.resolveAuthToken(provider)
+    if (typeof authToken !== 'string') {
+      return authToken
+    }
+
+    let url: string
+    let headers: Record<string, string>
+    let body: string
+    if (provider.format === 'openai') {
+      url = `${provider.endpoint}/chat/completions`
+      headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` }
+      body = JSON.stringify({
+        model: modelId,
+        messages: [{ role: 'user', content: 'hi' }],
+        max_tokens: 1,
+        stream: true,
+      })
+    } else if (provider.format === 'anthropic') {
+      url = `${provider.endpoint}/v1/messages`
+      headers = {
+        'Content-Type': 'application/json',
+        'x-api-key': authToken,
+        'anthropic-version': '2023-06-01',
+      }
+      body = JSON.stringify({
+        model: modelId,
+        messages: [{ role: 'user', content: 'hi' }],
+        max_tokens: 1,
+        stream: true,
+      })
+    } else if (provider.format === 'gemini') {
+      url = `${provider.endpoint}/models/${modelId}:streamGenerateContent?alt=sse&key=${authToken}`
+      headers = { 'Content-Type': 'application/json' }
+      body = JSON.stringify({
+        contents: [{ parts: [{ text: 'hi' }] }],
+      })
+    } else if (provider.format === 'openai-responses') {
+      // Codex 后端（chatgpt.com/backend-api）协议契约：必填 reasoning + include + ChatGPT-Account-Id
+      const isCodexBackend = provider.endpoint.includes('chatgpt.com/backend-api')
+      url = `${provider.endpoint}/responses`
+      headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` }
+      if (isCodexBackend && provider.oauth_credential?.account_id) {
+        headers['ChatGPT-Account-Id'] = provider.oauth_credential.account_id
+      }
+      const requestBody: Record<string, unknown> = {
+        model: modelId,
+        instructions: '',
+        input: [{ type: 'message', role: 'user', content: 'hi' }],
+        tools: [],
+        tool_choice: 'auto',
+        parallel_tool_calls: false,
+        store: false,
+        stream: true,
+      }
+      if (isCodexBackend) {
+        requestBody.reasoning = { effort: 'medium', summary: 'auto' }
+        requestBody.include = ['reasoning.encrypted_content']
+      }
+      body = JSON.stringify(requestBody)
+    } else {
+      return { success: false, latency_ms: 0, error: `Unsupported format: ${provider.format}` }
+    }
+
+    const ac = new AbortController()
+    const startTime = Date.now()
+    try {
+      const response = await fetch(url, { method: 'POST', headers, body, signal: ac.signal })
+      if (!response.ok) {
+        const errBody = await response.text().catch(() => '')
+        return {
+          success: false,
+          latency_ms: Date.now() - startTime,
+          error: `HTTP ${response.status}${errBody ? `: ${errBody.slice(0, 200)}` : ''}`,
+        }
+      }
+      if (!response.body) {
+        return { success: false, latency_ms: Date.now() - startTime, error: 'No response body' }
       }
 
-      return { success: false, latency_ms, error: errorMessage }
+      const reader = response.body.getReader()
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) {
+          return {
+            success: false,
+            latency_ms: Date.now() - startTime,
+            error: 'Stream ended without any data',
+          }
+        }
+        if (value && value.length > 0) {
+          const ttft = Date.now() - startTime
+          ac.abort()
+          return { success: true, latency_ms: ttft }
+        }
+      }
+    } catch (error) {
+      return {
+        success: false,
+        latency_ms: Date.now() - startTime,
+        error: error instanceof Error ? error.message : String(error),
+      }
     }
+  }
+
+  /**
+   * 测速前置鉴权检查。OAuth 未登录时直接短路（让用户去登录），
+   * 否则交给 ensureFreshAuthToken（不会抛，刷新失败会 fallback 到旧 token）。
+   */
+  private async resolveAuthToken(
+    provider: ModelProvider
+  ): Promise<string | { success: false; latency_ms: 0; error: string }> {
+    if (provider.auth_type === 'oauth' && !provider.oauth_credential) {
+      return { success: false, latency_ms: 0, error: 'OAuth 未登录，请先完成 ChatGPT 登录' }
+    }
+    return this.ensureFreshAuthToken(provider)
+  }
+
+  /**
+   * 距离过期不足 60s 时触发 OAuth 刷新（in-flight 去重）。
+   * 刷新失败 fallback 到旧 token，让上游 401 自然暴露问题，避免测速链路把磁盘故障吞成"鉴权失败"。
+   */
+  private async ensureFreshAuthToken(provider: ModelProvider): Promise<string> {
+    if (provider.auth_type !== 'oauth' || !provider.oauth_credential) {
+      return provider.api_key
+    }
+
+    const credential = provider.oauth_credential
+    if (Date.now() <= credential.expires_at - 60_000) {
+      return credential.access_token
+    }
+
+    try {
+      let refreshPromise = this.refreshInFlight.get(provider.id)
+      if (!refreshPromise) {
+        refreshPromise = (async () => {
+          const { refreshOAuthToken } = await import('./oauth/openai-codex-oauth.js')
+          return refreshOAuthToken(credential.refresh_token)
+        })()
+        this.refreshInFlight.set(provider.id, refreshPromise)
+        refreshPromise.finally(() => this.refreshInFlight.delete(provider.id))
+      }
+      const refreshed = await refreshPromise
+      await this.setOAuthCredential(provider.id, {
+        access_token: refreshed.access_token,
+        refresh_token: refreshed.refresh_token,
+        expires_at: refreshed.expires_at,
+        account_id: refreshed.account_id,
+        email: refreshed.email,
+      })
+      return refreshed.access_token
+    } catch (err) {
+      console.error(`[ModelProviderManager] OAuth token refresh failed for ${provider.id}:`, err)
+      return credential.access_token
+    }
+  }
+
+  private async buildEndpointProbe(
+    provider: ModelProvider,
+    authToken: string
+  ): Promise<{ url: string; headers: Record<string, string> }> {
+    if (provider.format === 'openai') {
+      return {
+        url: `${provider.endpoint}/models`,
+        headers: { Authorization: `Bearer ${authToken}` },
+      }
+    }
+    if (provider.format === 'openai-responses') {
+      const { resolveCodexClientVersion } = await import('./oauth/codex-client-version.js')
+      const clientVersion = await resolveCodexClientVersion()
+      return {
+        url: `${provider.endpoint}/models?client_version=${encodeURIComponent(clientVersion)}`,
+        headers: { Authorization: `Bearer ${authToken}` },
+      }
+    }
+    if (provider.format === 'anthropic') {
+      return {
+        url: `${provider.endpoint}/v1/models`,
+        headers: { 'x-api-key': authToken, 'anthropic-version': '2023-06-01' },
+      }
+    }
+    if (provider.format === 'gemini') {
+      return {
+        url: `${provider.endpoint}/models?key=${authToken}`,
+        headers: {},
+      }
+    }
+    throw new Error(`Unsupported format: ${provider.format}`)
   }
 
   async refreshModels(id: string): Promise<{ models: ModelInfo[]; added: string[]; removed: string[] }> {
@@ -353,10 +514,7 @@ export class ModelProviderManager {
       throw new Error(`Unknown vendor: ${provider.preset_vendor}`)
     }
 
-    // OAuth provider 使用当前 access_token；apikey provider 使用配置的 api_key
-    const authToken = provider.auth_type === 'oauth'
-      ? provider.oauth_credential?.access_token ?? ''
-      : provider.api_key
+    const authToken = await this.ensureFreshAuthToken(provider)
 
     const freshModels = await this.fetchVendorModels(
       { ...vendor, endpoint: provider.endpoint },
@@ -397,83 +555,6 @@ export class ModelProviderManager {
     }
 
     return { references: refs }
-  }
-
-  private async testLLMConnection(
-    endpoint: string,
-    apiKey: string,
-    modelId: string,
-    format: ApiFormat
-  ): Promise<ValidationResult> {
-    try {
-      if (format === 'openai') {
-        const response = await this.httpRequest(`${endpoint}/chat/completions`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify({
-            model: modelId,
-            messages: [{ role: 'user', content: 'test' }],
-            max_tokens: 5,
-          }),
-        })
-
-        const data = JSON.parse(response)
-        if (data.choices?.[0]?.message) {
-          return { success: true }
-        }
-        return { success: false, error: 'Invalid response format' }
-      } else if (format === 'anthropic') {
-        const response = await this.httpRequest(`${endpoint}/v1/messages`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': apiKey,
-            'anthropic-version': '2023-06-01',
-          },
-          body: JSON.stringify({
-            model: modelId,
-            messages: [{ role: 'user', content: 'test' }],
-            max_tokens: 5,
-          }),
-        })
-
-        const data = JSON.parse(response)
-        if (data.content) {
-          return { success: true }
-        }
-        return { success: false, error: 'Invalid response format' }
-      } else if (format === 'gemini') {
-        const response = await this.httpRequest(
-          `${endpoint}/models/${modelId}:generateContent?key=${apiKey}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: 'test' }] }],
-            }),
-          }
-        )
-
-        const data = JSON.parse(response)
-        if (data.candidates) {
-          return { success: true }
-        }
-        return { success: false, error: 'Invalid response format' }
-      } else if (format === 'openai-responses') {
-        // OAuth providers: 跳过 LLM 连接测试（需要有效 OAuth token）
-        return { success: true }
-      }
-
-      return { success: false, error: `Unsupported format: ${format}` }
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : String(error),
-      }
-    }
   }
 
   // ============================================================================
@@ -600,38 +681,7 @@ export class ModelProviderManager {
       throw new Error(`Model not found: ${modelId} in provider ${providerId}`)
     }
 
-    // OAuth provider：使用 access_token，过期时自动刷新
-    let apikey = provider.api_key
-    if (provider.auth_type === 'oauth' && provider.oauth_credential) {
-      if (Date.now() > provider.oauth_credential.expires_at - 60_000) {
-        // Token 即将过期（<1分钟），去重刷新
-        try {
-          let refreshPromise = this.refreshInFlight.get(providerId)
-          if (!refreshPromise) {
-            refreshPromise = (async () => {
-              const { refreshOAuthToken } = await import('./oauth/openai-codex-oauth.js')
-              return refreshOAuthToken(provider.oauth_credential!.refresh_token)
-            })()
-            this.refreshInFlight.set(providerId, refreshPromise)
-            refreshPromise.finally(() => this.refreshInFlight.delete(providerId))
-          }
-          const refreshed = await refreshPromise
-          await this.setOAuthCredential(providerId, {
-            access_token: refreshed.access_token,
-            refresh_token: refreshed.refresh_token,
-            expires_at: refreshed.expires_at,
-            account_id: refreshed.account_id,
-            email: refreshed.email,
-          })
-          apikey = refreshed.access_token
-        } catch (err) {
-          console.error(`[ModelProviderManager] OAuth token refresh failed for ${providerId}:`, err)
-          apikey = provider.oauth_credential.access_token
-        }
-      } else {
-        apikey = provider.oauth_credential.access_token
-      }
-    }
+    const apikey = await this.ensureFreshAuthToken(provider)
 
     // 直连 Provider：返回 provider 原始连接信息
     // endpoint 存储不含 /v1 的 base URL，各 adapter 自行拼接路径
