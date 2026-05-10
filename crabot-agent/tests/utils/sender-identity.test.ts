@@ -61,10 +61,9 @@ describe('resolveSenderIdentity', () => {
     expect(resolveSenderIdentity({ msg, senderFriend: baseFriend })).toBe('master')
   })
 
-  it('私聊 + 不是 crab + 有 senderFriend 但匹配不上 → 兜底归 senderFriend', () => {
-    // 私聊场景里只有 friend 和 crab 两个角色——没匹配上意味着 friend_id 锚点缺失，按 friend 处理
-    const msg = makeMsg({ friend_id: undefined, platform_user_id: 'unknown' })
-    expect(resolveSenderIdentity({ msg, senderFriend: baseFriend })).toBe('master')
+  it('私聊 + sender 不匹配 senderFriend → assistant（私聊两方对话，非 senderFriend 即 crab）', () => {
+    const msg = makeMsg({ friend_id: undefined, platform_user_id: 'crab-bot-id' })
+    expect(resolveSenderIdentity({ msg, senderFriend: baseFriend })).toBe('assistant')
   })
 
   it('群聊 + 没匹配 senderFriend → stranger（保守）', () => {

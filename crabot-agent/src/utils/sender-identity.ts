@@ -9,12 +9,13 @@ export type SenderIdentity = 'master' | 'friend' | 'stranger' | 'assistant'
  *  1. `from_crab` 显式标记 / `crabDisplayName` 匹配 → assistant
  *  2. msg.sender 与 senderFriend 匹配（friend_id 命中 或 channel_identities 命中）
  *     → senderFriend.permission === 'master' 时为 master，否则 friend
- *  3. 私聊场景下未匹配上但有 senderFriend → 视作 senderFriend（历史消息常缺 friend_id）
+ *  3. 私聊场景下未匹配上 senderFriend → assistant（私聊只有两方，非 senderFriend 必是 crab）
  *  4. 其余：stranger
  *
  * 历史消息从 message-store 读出来通常**没有 friend_id**（store 只持久化
- * platform_user_id）。靠 channel_identities 反查 + 私聊单对话方兜底，
- * 才能让历史聊天里的 master/friend 不被误判成 stranger。
+ * platform_user_id）。靠 channel_identities 反查识别 senderFriend；
+ * 私聊场景下非 senderFriend 即 crab —— 这是私聊"两方对话"前提下的安全推理，
+ * 比依赖可能漂移的 crabDisplayName 更稳。
  */
 export function resolveSenderIdentity(args: {
   msg?: ChannelMessage
@@ -45,10 +46,8 @@ export function resolveSenderIdentity(args: {
     if (friendIdMatch || channelIdentityMatch) {
       return senderFriend.permission === 'master' ? 'master' : 'friend'
     }
-    // 私聊场景下只有 senderFriend 和 crab 两个角色；既然不是 crab，就归 senderFriend
-    if (!isGroup) {
-      return senderFriend.permission === 'master' ? 'master' : 'friend'
-    }
+    // 私聊场景下只有 senderFriend 和 crab 两个角色；非 senderFriend 必是 crab
+    if (!isGroup) return 'assistant'
   }
 
   return 'stranger'

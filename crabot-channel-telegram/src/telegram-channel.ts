@@ -318,7 +318,11 @@ export class TelegramChannel extends ModuleBase {
       id: generateId(),
       type: 'channel.message_received',
       source: this.config.moduleId,
-      payload: { channel_id: this.config.moduleId, message: channelMessage },
+      payload: {
+        channel_id: this.config.moduleId,
+        message: channelMessage,
+        ...(this.botUser ? { crab_display_name: formatTgUserName(this.botUser) } : {}),
+      },
       timestamp: generateTimestamp(),
     }
 
