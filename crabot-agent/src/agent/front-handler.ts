@@ -321,13 +321,16 @@ export function buildUserMessage(
     parts.push(`过去 ${recentHours} 小时本会话无消息。如需更早的本会话历史，调 \`get_history\` 工具。`)
   }
 
-  // ── 当前消息 ──
+  // ── 当前消息（XML 包裹）──
   if (isGroup) {
     parts.push(`\n## 当前群聊消息批次（共 ${messages.length} 条）`)
     parts.push(`- 是否 @你: ${hasMention ? '是' : '否'}`)
     for (const msg of messages) {
-      const mention = msg.features.is_mention_crab ? ' [@你]' : ''
-      parts.push(`- [${msg.sender.platform_display_name}]${mention}: ${formatMessageContent(msg)}`)
+      const identity = resolveSenderIdentity({
+        msg,
+        senderFriend: msg.sender.friend_id === context.sender_friend.id ? context.sender_friend : undefined,
+      })
+      parts.push(formatChannelMessageLine(msg, { timezone, now, maxLen: 2000, mentionMark: true, identity }))
     }
 
     if (hasMention) {
@@ -365,7 +368,11 @@ export function buildUserMessage(
   } else {
     parts.push('\n## 当前消息')
     for (const msg of messages) {
-      parts.push(`- ${msg.sender.platform_display_name}: ${formatMessageContent(msg)}`)
+      const identity = resolveSenderIdentity({
+        msg,
+        senderFriend: msg.sender.friend_id === context.sender_friend.id ? context.sender_friend : undefined,
+      })
+      parts.push(formatChannelMessageLine(msg, { timezone, now, maxLen: 2000, identity }))
     }
   }
 

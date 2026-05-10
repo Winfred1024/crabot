@@ -265,7 +265,10 @@ describe('buildUserMessage', () => {
     const result = buildUserMessage([msg], makeContext())
 
     expect(result).toContain('## 当前消息')
-    expect(result).toContain('TestUser: 你好')
+    expect(result).toContain('<message')
+    expect(result).toContain('from="TestUser"')
+    expect(result).toContain('你好')
+    expect(result).toContain('</message>')
     expect(result).not.toContain('当前群聊消息批次')
   })
 
@@ -294,7 +297,8 @@ describe('buildUserMessage', () => {
     const result = buildUserMessage([msg], makeContext())
 
     expect(result).toContain('是否 @你: 是')
-    expect(result).toContain('[@你]')
+    expect(result).toContain('mention="@you"')
+    expect(result).toContain('@Crabot 帮我查一下')
   })
 
   // -----------------------------------------------------------------------
@@ -582,5 +586,42 @@ describe('聊天历史段 XML 化（B1）', () => {
     const txt = textOf(buildUserMessage([makeMessage()], ctx, undefined, 'UTC'))
     // 检查消息内容被正确注入
     expect(txt).toContain('hello')
+  })
+})
+
+// ===========================================================================
+// 当前消息段 XML 化（A.7）
+// ===========================================================================
+
+describe('当前消息段 XML 化（A.7）', () => {
+  it('私聊当前消息用 <message> tag', () => {
+    const m = makeMessage({ sender: 'FuFu', text: '好，继续' })
+    m.sender.friend_id = 'fid-master'
+    const ctx = makeContext({
+      sender_friend: { id: 'fid-master', display_name: 'FuFu', permission: 'master',
+        channel_identities: [], created_at: '', updated_at: '' },
+    })
+    const txt = textOf(buildUserMessage([m], ctx, undefined, 'UTC'))
+    expect(txt).toContain('## 当前消息')
+    expect(txt).toMatch(/<message[^>]*from="FuFu"[^>]*identity="master"[^>]*>[^]*好，继续[^]*<\/message>/)
+  })
+
+  it('群聊批次每条按 <message> 列出，含 mention attribute', () => {
+    const a = makeMessage({ sender: 'Alice' })
+    a.session = { session_id: 'g', channel_id: 'tg', type: 'group' }
+    a.sender.friend_id = undefined
+    const b = makeMessage({ sender: 'Master' })
+    b.session = { session_id: 'g', channel_id: 'tg', type: 'group' }
+    b.sender.friend_id = 'fid-master'
+    b.features = { is_mention_crab: true }
+    const ctx = makeContext({
+      sender_friend: { id: 'fid-master', display_name: 'Master', permission: 'master',
+        channel_identities: [], created_at: '', updated_at: '' },
+    })
+    const txt = textOf(buildUserMessage([a, b], ctx, undefined, 'UTC'))
+    expect(txt).toContain('## 当前群聊消息批次')
+    expect(txt).toContain('identity="stranger"')
+    expect(txt).toContain('identity="master"')
+    expect(txt).toContain('mention="@you"')
   })
 })
