@@ -762,26 +762,20 @@ export class UnifiedAgent extends ModuleBase {
             },
           })
 
-          if (decision.type === 'direct_reply') {
-            const emotion = (decision as any).emotion as string | undefined
-            if (emotion && emotion !== 'neutral') {
-              this.memoryWriter.writeUserSignal({
-                friend_name: friend.display_name,
-                friend_id: sender.friend_id,
-                channel_id: session.channel_id,
-                session_id: session.session_id,
-                message_brief: messageBrief,
-                emotion: emotion as 'unhappy' | 'frustrated' | 'angry' | 'dismissive',
-                visibility: memPerms.write_visibility,
-                scopes: memPerms.write_scopes,
-              }).then(() => this.traceStore.endSpan(trace.trace_id, memSpan.span_id, 'completed'))
-                .catch(() => this.traceStore.endSpan(trace.trace_id, memSpan.span_id, 'failed'))
-            } else {
-              // L0: 无情绪触发 → 不写短期记忆
-              this.traceStore.endSpan(trace.trace_id, memSpan.span_id, 'completed')
-            }
+          if (decision.type === 'direct_reply' && decision.emotion && decision.emotion !== 'neutral') {
+            this.memoryWriter.writeUserSignal({
+              friend_name: friend.display_name,
+              friend_id: sender.friend_id,
+              channel_id: session.channel_id,
+              session_id: session.session_id,
+              message_brief: messageBrief,
+              emotion: decision.emotion,
+              visibility: memPerms.write_visibility,
+              scopes: memPerms.write_scopes,
+            }).then(() => this.traceStore.endSpan(trace.trace_id, memSpan.span_id, 'completed'))
+              .catch(() => this.traceStore.endSpan(trace.trace_id, memSpan.span_id, 'failed'))
           } else {
-            // create_task / supplement_task / silent → 不写 triage 类记忆（spec §6.1.2 砍掉）
+            // L0（无情绪）/ create_task / supplement_task / silent → 不写 triage 类记忆（spec §6.1）
             this.traceStore.endSpan(trace.trace_id, memSpan.span_id, 'completed')
           }
         }

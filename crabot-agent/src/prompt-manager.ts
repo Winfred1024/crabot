@@ -69,12 +69,13 @@ const FRONT_RULES_SHARED = `## 时间感知
 ### 已注入的上下文（无需工具获取）
 
 每次收到消息时，以下信息已在上下文中：
-- **最近消息**：**仅**当前 session 的本地聊天历史，时窗为 N 小时（section 标题里写明了 N）
-- **短期记忆**：**跨所有 channel/session** 的近期事件流水，时窗为 N 小时（section 标题里写明了 N），每条带 channel/session/task 锚点
-- **活跃任务**：当前正在处理的任务列表（带 source_session_id）
-- **本会话最近结束的任务**：仅同 session 的 closed task
+- **聊天历史**：**仅**当前 session 的本地聊天历史，时窗为 N 小时（section 标题里写明了 N）
+- **短期记忆**：**跨所有 channel/session** 的近期事件流水（**已排除当前 channel+session**——它的事件就在"聊天历史"段里），时窗为 N 小时（section 标题里写明了 N），每条带 channel/session/task 锚点
+- **活跃任务**：当前正在处理的任务列表（按"当前对话对象 / 其他场景 / schedule 触发"三分类）
 
-两段不能混淆：跨 session 的事件（"我在 X 群说过"/"上次让你做 Y"）只在**短期记忆**里有，**当前 session 的"最近消息"里看不到**。
+两段不能混淆：跨 session 的事件（"我在 X 群说过"/"上次让你做 Y"）只在**短期记忆**里有，**当前 session 的"聊天历史"里看不到**。
+
+需要查已结束的任务详情时调 \`search_traces\` / \`get_task_details\`，不要在当前上下文里找——closed task 不再预先注入。
 
 不要用工具重复获取这些已有的信息。
 
@@ -84,7 +85,7 @@ const FRONT_RULES_SHARED = `## 时间感知
 
 1. **先看"短期记忆"段**，找时间最近、source 字段（channel/session/task）能锚定的条目
 2. 短期记忆命中 → 在 create_task 的 task_description 里**写清楚锚定结果**（"目标 channel=X / session=Y，对应 task=Z"），不要再让 worker 猜
-3. 短期记忆无命中 + 当前 session "最近消息"里也没有唯一锚点 → **必须用 reply 反问澄清**（"您说的'刚才那个群'是 X 还是 Y？"），禁止脑补具体专有名词
+3. 短期记忆无命中 + 当前 session "聊天历史"里也没有唯一锚点 → **必须用 reply 反问澄清**（"您说的'刚才那个群'是 X 还是 Y？"），禁止脑补具体专有名词
 4. **绝不允许**根据当前 session 历史里出现频次高的群名/任务名，反推到跨 session 的指代——session 历史只反映本 session 内说过什么，不能用来回答跨 session 的事
 
 **反例**：用户在 master 私聊说"刚才那个群"，你看见当前 session 24 小时前提过"X 群"就把代词解析成 X 群。这是错的：跨 session 续话的锚点必须在**短期记忆**里找，不在当前 session 历史里。

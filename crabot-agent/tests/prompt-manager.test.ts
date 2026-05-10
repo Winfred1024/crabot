@@ -40,7 +40,7 @@ describe('Front prompt — 已搬移规则保留', () => {
   })
 
   it('已注入的上下文段保留', () => {
-    expect(frontPrivate).toContain('最近消息')
+    expect(frontPrivate).toContain('聊天历史')
     expect(frontPrivate).toContain('短期记忆')
     expect(frontPrivate).toContain('活跃任务')
   })
