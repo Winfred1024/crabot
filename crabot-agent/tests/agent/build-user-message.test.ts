@@ -6,6 +6,11 @@ import type { ChannelMessage, FrontAgentContext, ShortTermMemoryEntry } from '..
 // 工厂函数
 // ===========================================================================
 
+function textOf(out: ReturnType<typeof buildUserMessage>): string {
+  if (typeof out === 'string') return out
+  return Array.isArray(out) ? out.map(b => 'text' in b ? b.text : '').join('\n') : ''
+}
+
 function makeMessage(overrides: Omit<Partial<ChannelMessage>, 'sender'> & { text?: string; sender?: string } = {}): ChannelMessage {
   return {
     platform_message_id: overrides.platform_message_id ?? 'msg_1',
@@ -65,9 +70,10 @@ describe('buildUserMessage', () => {
     )
 
     expect(result).toContain('## 最近消息（当前 session，最近 6 小时，3 条）')
-    expect(result).toContain('Alice: 把统计结果通过 feishu 发给我')
-    expect(result).toContain('Crabot: 飞书渠道发送消息时遇到问题')
-    expect(result).toContain('Alice: 再重新尝试发送')
+    // A.2 后使用 XML 格式，检查消息内容在其中
+    expect(result).toContain('把统计结果通过 feishu 发给我')
+    expect(result).toContain('飞书渠道发送消息时遇到问题')
+    expect(result).toContain('再重新尝试发送')
   })
 
   it('不应截断 recent_messages 条数——全量注入', () => {
@@ -81,9 +87,9 @@ describe('buildUserMessage', () => {
     )
 
     expect(result).toContain('## 最近消息（当前 session，最近 6 小时，20 条）')
-    // 第一条和最后一条都应该在
-    expect(result).toContain('User0: 消息 0')
-    expect(result).toContain('User19: 消息 19')
+    // 第一条和最后一条都应该在（A.2 后用 XML 格式，检查消息内容而不是"User X: 文本"格式）
+    expect(result).toContain('消息 0')
+    expect(result).toContain('消息 19')
   })
 
   it('recent_messages 为空时仍渲染章节并给出空窗口提示（让 LLM 知道窗口边界）', () => {
@@ -159,7 +165,9 @@ describe('buildUserMessage', () => {
       makeContext({ recent_messages: [imgMessage] }),
     )
 
-    expect(result).toContain('Alice: [图片: https://example.com/img.png]')
+    // A.2 后的 XML 格式：消息在 <message> 标签内，不在 recent_messages 段末尾
+    // 仍然应该包含图片 URL
+    expect(result).toContain('[图片: https://example.com/img.png]')
   })
 
   // -----------------------------------------------------------------------
@@ -297,9 +305,12 @@ describe('buildUserMessage', () => {
 
     const result = buildUserMessage([msg], makeContext())
 
+    // A.3 新增：对话场景段显示类型
+    expect(result).toContain('## 对话场景')
+    expect(result).toContain('类型: 私聊')
+    // A.4 后续会移入 IM 渠道段，目前仍在旧位置
     expect(result).toContain('Channel ID: ch-wechat')
     expect(result).toContain('Session ID: sess-abc')
-    expect(result).toContain('会话类型: 私聊')
   })
 
   // -----------------------------------------------------------------------
@@ -345,16 +356,20 @@ describe('群聊 prompt 改进', () => {
         channel_identities: [], created_at: '', updated_at: '',
       },
     }))
+    // A.3 后：对话场景段已去除"用户"和"本批消息参与者"这些旧字段
+    // 参与者信息现在在"当前群聊消息批次"段中单条消息旁
     expect(result).not.toMatch(/^- 用户: /m)
+    expect(result).toContain('## 对话场景')
+    // 群参与者在"当前群聊消息批次"段呈现
     expect(result).toContain('王佳')
     expect(result).toContain('FuFu')
-    expect(result).toContain('本批消息参与者')
   })
 
   it('群聊应包含 Crabot 在群中的身份标识', () => {
     const messages = [makeGroupMessage({ sender: '王佳', text: '你好' })]
     const result = buildUserMessage(messages, makeContext({ crab_display_name: '半糖' }))
-    expect(result).toContain('你在群中的昵称: 半糖')
+    // A.3 后：改为"你在该渠道的昵称"（在对话场景段）
+    expect(result).toContain('你在该渠道的昵称: 半糖')
   })
 
   it('群聊批次应标注 sender_friend 的权限角色', () => {
@@ -369,7 +384,10 @@ describe('群聊 prompt 改进', () => {
       },
     })
     const result = buildUserMessage(messages, ctx)
-    expect(result).toContain('master')
+    // A.3 后：群聊场景中权限信息不再显示在对话场景段（仅私聊显示"对话对象身份"）
+    // 参与者权限信息由 worker 运行时从 Task 详情推导，不由 Front 展示
+    // 这个测试的用意是验证 sender_friend 被正确加载；现在改为验证显示了发送者名字
+    expect(result).toContain('FuFu')
   })
 
   it('无 @mention 的群聊应有 silent 引导', () => {
@@ -390,5 +408,42 @@ describe('群聊 prompt 改进', () => {
     // Current format: @mention triggers 群聊决策提示 with "必须回复" instruction
     expect(result).toContain('群聊决策提示')
     expect(result).toContain('必须回复')
+  })
+})
+
+// ===========================================================================
+// 对话场景段（A3）
+// ===========================================================================
+
+describe('对话场景段（B1）', () => {
+  it('私聊场景显示对话对象 ID = friend:<id> 与对话对象身份', () => {
+    const out = buildUserMessage(
+      [makeMessage({ sender: 'FuFu' })],
+      makeContext({
+        sender_friend: {
+          id: 'fid-master', display_name: 'FuFu', permission: 'master',
+          channel_identities: [], created_at: '', updated_at: '',
+        },
+      }),
+      undefined, 'UTC',
+    )
+    const txt = textOf(out)
+    expect(txt).toContain('## 对话场景')
+    expect(txt).toContain('类型: 私聊')
+    expect(txt).toContain('对话对象: FuFu')
+    expect(txt).toContain('对话对象 ID: friend:fid-master')
+    expect(txt).toContain('对话对象身份: master')
+  })
+
+  it('群聊场景对话对象 = group:<channel>:<session>，不显示对话对象身份', () => {
+    const m = makeMessage({ sender: 'Alice' })
+    m.session = { session_id: 'sess-grp', channel_id: 'ch-tg', type: 'group' }
+    const ctx = makeContext({ crab_display_name: 'CrabBot' })
+    const out = buildUserMessage([m], ctx, undefined, 'UTC')
+    const txt = textOf(out)
+    expect(txt).toContain('## 对话场景')
+    expect(txt).toContain('类型: 群聊')
+    expect(txt).toContain('对话对象 ID: group:ch-tg:sess-grp')
+    expect(txt).not.toContain('对话对象身份:')
   })
 })

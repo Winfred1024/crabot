@@ -176,22 +176,23 @@ export function buildUserMessage(
     parts.push('')
   }
 
-  // ── 上下文信息 ──
-  parts.push('## 上下文信息')
-
+  // ── 对话场景 ──
+  parts.push('## 对话场景')
   if (isGroup) {
-    const senderNames = [...new Set(messages.map(m => m.sender.platform_display_name))]
-    parts.push(`- 会话类型: 群聊`)
-    parts.push(`- 本批消息参与者: ${senderNames.join(', ')}`)
+    const session = messages[0].session
+    parts.push(`- 类型: 群聊`)
+    parts.push(`- 对话对象: ${session.session_id}`)
+    parts.push(`- 对话对象 ID: group:${session.channel_id}:${session.session_id}`)
     if (context.crab_display_name) {
-      parts.push(`- 你在群中的昵称: ${context.crab_display_name}`)
+      parts.push(`- 你在该渠道的昵称: ${context.crab_display_name}`)
     }
-    parts.push(`- 已知熟人: ${context.sender_friend.display_name} (${context.sender_friend.permission})`)
   } else {
-    parts.push(`- 用户: ${context.sender_friend.display_name}`)
-    parts.push(`- 会话类型: 私聊`)
+    const f = context.sender_friend
+    parts.push(`- 类型: 私聊`)
+    parts.push(`- 对话对象: ${f.display_name}`)
+    parts.push(`- 对话对象 ID: friend:${f.id}`)
+    parts.push(`- 对话对象身份: ${f.permission}`)
   }
-  parts.push(`- 活跃任务数: ${context.active_tasks.length}`)
 
   // ── 活跃任务列表 ──
   if (context.active_tasks.length > 0) {
