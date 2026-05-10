@@ -273,6 +273,22 @@ export class TelegramChannel extends ModuleBase {
     const content = await this.convertMessageContent(message)
     const isMentionCrab = this.detectBotMention(message)
 
+    // 引用回复：把被引用消息以 quote prefix 形式 inline 进当前 text，
+    // agent 端无需额外 schema 即可看到引用上下文（spec §4.4 设计简化方案）
+    const replyTo = message.reply_to_message
+    if (replyTo) {
+      const quotedSender = replyTo.from
+        ? replyTo.from.first_name + (replyTo.from.last_name ? ` ${replyTo.from.last_name}` : '')
+        : '?'
+      const quotedTime = new Date(replyTo.date * 1000)
+        .toISOString()
+        .slice(11, 16) // HH:MM
+      const quotedText = replyTo.text ?? replyTo.caption ?? '[非文本消息]'
+      const quotePrefix = `> [引用 ${quotedSender} ${quotedTime}] ${quotedText}\n\n`
+      const baseText = content.text ?? ''
+      content.text = quotePrefix + baseText
+    }
+
     const channelMessage: ChannelMessage = {
       platform_message_id: String(message.message_id),
       session: {
@@ -287,6 +303,7 @@ export class TelegramChannel extends ModuleBase {
       content,
       features: {
         is_mention_crab: isMentionCrab,
+        ...(replyTo ? { reply_to_message_id: String(replyTo.message_id) } : {}),
       },
       platform_timestamp: new Date(message.date * 1000).toISOString(),
     }

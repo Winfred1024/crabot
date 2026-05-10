@@ -81,6 +81,8 @@ export interface TgMessage {
   location?: { latitude: number; longitude: number }
   new_chat_members?: TgUser[]
   left_chat_member?: TgUser
+  /** 用户在客户端引用/回复某条消息时附带的原消息（Bot API 标准字段） */
+  reply_to_message?: TgMessage
 }
 
 export interface TgUpdate {
