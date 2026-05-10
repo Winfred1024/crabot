@@ -67,6 +67,7 @@ import { HookRegistry } from '../hooks/hook-registry.js'
 import type { ContentReviewer } from '../hooks/types.js'
 import { reviewCliContent } from './cli-content-reviewer.js'
 import { PromptManager, formatChannelMessageLine, formatShortTermMemoryLine } from '../prompt-manager.js'
+import { resolveSenderIdentity } from '../utils/sender-identity.js'
 import { formatNow, formatChannelMessageTime, resolveTimezone, formatRuntimeMs } from '../utils/time.js'
 import { getInstanceSkillsDir } from '../core/data-paths.js'
 import { TodoStore } from './worker-todo-store.js'
@@ -1269,7 +1270,8 @@ export class WorkerHandler {
     parts.push(`\n## 最近相关消息（当前 session，最近 ${recentHours} 小时，${context.recent_messages?.length ?? 0} 条）`)
     if (context.recent_messages && context.recent_messages.length > 0) {
       for (const m of context.recent_messages) {
-        parts.push(formatChannelMessageLine(m, { timezone, now, maxLen: 500 }))
+        const identity = resolveSenderIdentity({ msg: m })
+        parts.push(formatChannelMessageLine(m, { timezone, now, maxLen: 500, identity }))
       }
     } else {
       parts.push(`过去 ${recentHours} 小时本会话无消息。如需更早的本会话历史，调 \`get_history\` 工具。`)

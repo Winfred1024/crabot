@@ -21,6 +21,7 @@ import type {
   TraceCallback,
 } from '../types.js'
 import { formatNow, formatTaskCreatedAt } from '../utils/time.js'
+import { resolveSenderIdentity } from '../utils/sender-identity.js'
 import { formatChannelMessageLine, formatShortTermMemoryLine } from '../prompt-manager.js'
 
 export type UserMessageContent = string | ContentBlock[]
@@ -283,7 +284,9 @@ export function buildUserMessage(
     for (let i = 0; i < total; i++) {
       const distFromEnd = total - 1 - i
       const maxLen = distFromEnd < 3 ? 2000 : distFromEnd < 10 ? 600 : 300
-      parts.push(formatChannelMessageLine(context.recent_messages[i], { timezone, now, maxLen }))
+      const msg = context.recent_messages[i]
+      const identity = resolveSenderIdentity({ msg })
+      parts.push(formatChannelMessageLine(msg, { timezone, now, maxLen, identity }))
     }
   } else {
     parts.push(`过去 ${recentHours} 小时本会话无消息。如需更早的本会话历史，调 \`get_history\` 工具。`)

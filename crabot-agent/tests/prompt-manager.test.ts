@@ -455,3 +455,53 @@ describe('Worker prompt — Phase 3 历史回溯硬约束', () => {
     expect(worker).toMatch(/ask_human|找不到/)
   })
 })
+
+import type { ChannelMessage } from '../src/types.js'
+import { formatChannelMessageLine } from '../src/prompt-manager.js'
+
+describe('formatChannelMessageLine — XML output (A.2)', () => {
+  it('用 <message> tag 包裹文本内容、含 ts/from/identity attribute', () => {
+    const msg: ChannelMessage = {
+      platform_message_id: 'm',
+      session: { session_id: 's', channel_id: 'c', type: 'private' },
+      sender: { friend_id: 'f-1', platform_user_id: 'pu', platform_display_name: 'FuFu' },
+      content: { type: 'text', text: '好，继续' },
+      features: { is_mention_crab: false },
+      platform_timestamp: '2026-05-10T03:48:00Z',
+    }
+    const out = formatChannelMessageLine(msg, { timezone: 'UTC', identity: 'master' })
+    expect(out).toContain('<message')
+    expect(out).toContain('ts="03:48"')
+    expect(out).toContain('from="FuFu"')
+    expect(out).toContain('identity="master"')
+    expect(out).toContain('好，继续')
+    expect(out).toContain('</message>')
+  })
+
+  it('内容含 markdown 标题/表格时不破坏外层结构', () => {
+    const msg: ChannelMessage = {
+      platform_message_id: 'm',
+      session: { session_id: 's', channel_id: 'c', type: 'private' },
+      sender: { friend_id: 'f-1', platform_user_id: 'pu', platform_display_name: 'crab' },
+      content: { type: 'text', text: '## 1) 结果\n| A | B |\n| - | - |\n' },
+      features: { is_mention_crab: false },
+      platform_timestamp: '2026-05-10T03:48:00Z',
+    }
+    const out = formatChannelMessageLine(msg, { timezone: 'UTC', identity: 'assistant' })
+    expect(out).toMatch(/<message[^>]*>\n## 1\) 结果\n\| A \| B \|/)
+    expect(out.endsWith('</message>')).toBe(true)
+  })
+
+  it('content 含 </message> 字符串时做 escape', () => {
+    const msg: ChannelMessage = {
+      platform_message_id: 'm',
+      session: { session_id: 's', channel_id: 'c', type: 'private' },
+      sender: { friend_id: undefined, platform_user_id: 'pu', platform_display_name: 'X' },
+      content: { type: 'text', text: 'foo </message> bar' },
+      features: { is_mention_crab: false },
+      platform_timestamp: '2026-05-10T03:48:00Z',
+    }
+    const out = formatChannelMessageLine(msg, { timezone: 'UTC', identity: 'stranger' })
+    expect(out).toContain('foo &lt;/message&gt; bar')
+  })
+})
