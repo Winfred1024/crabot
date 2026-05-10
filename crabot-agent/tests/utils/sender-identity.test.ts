@@ -4,30 +4,80 @@ import type { ChannelMessage, Friend } from '../../src/types.js'
 
 const baseFriend: Friend = {
   id: 'f-1', display_name: 'Master', permission: 'master',
-  channel_identities: [], created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
+  channel_identities: [
+    { channel_id: 'c', platform_user_id: 'pu', platform_display_name: 'Master' },
+  ],
+  created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
 }
 
-function makeMsg(overrides: Partial<{ friend_id: string | undefined; from_crab: boolean }> = {}): ChannelMessage {
+function makeMsg(overrides: Partial<{
+  friend_id: string | undefined
+  platform_user_id: string
+  platform_display_name: string
+  channel_id: string
+  type: 'private' | 'group'
+}> = {}): ChannelMessage {
   return {
-    platform_message_id: 'm', session: { session_id: 's', channel_id: 'c', type: 'private' },
-    sender: { friend_id: overrides.friend_id, platform_user_id: 'pu', platform_display_name: 'X' },
-    content: { type: 'text', text: 'hi' }, features: { is_mention_crab: false },
+    platform_message_id: 'm',
+    session: {
+      session_id: 's',
+      channel_id: overrides.channel_id ?? 'c',
+      type: overrides.type ?? 'private',
+    },
+    sender: {
+      friend_id: overrides.friend_id,
+      platform_user_id: overrides.platform_user_id ?? 'pu',
+      platform_display_name: overrides.platform_display_name ?? 'X',
+    },
+    content: { type: 'text', text: 'hi' },
+    features: { is_mention_crab: false },
     platform_timestamp: '2026-05-10T00:00:00Z',
   }
 }
 
 describe('resolveSenderIdentity', () => {
-  it('crab 自己的回复 → assistant', () => {
+  it('crab 自己的回复（from_crab 显式）→ assistant', () => {
     expect(resolveSenderIdentity({ from_crab: true })).toBe('assistant')
   })
-  it('master friend → master', () => {
-    expect(resolveSenderIdentity({ msg: makeMsg({ friend_id: 'f-1' }), senderFriend: baseFriend })).toBe('master')
+
+  it('crabDisplayName 匹配 → assistant', () => {
+    const msg = makeMsg({ platform_display_name: 'CrabBot' })
+    expect(resolveSenderIdentity({ msg, crabDisplayName: 'CrabBot' })).toBe('assistant')
   })
-  it('normal friend → friend', () => {
+
+  it('friend_id 命中 master → master', () => {
+    const msg = makeMsg({ friend_id: 'f-1' })
+    expect(resolveSenderIdentity({ msg, senderFriend: baseFriend })).toBe('master')
+  })
+
+  it('friend_id 命中 normal friend → friend', () => {
     const f: Friend = { ...baseFriend, permission: 'normal' }
-    expect(resolveSenderIdentity({ msg: makeMsg({ friend_id: 'f-1' }), senderFriend: f })).toBe('friend')
+    const msg = makeMsg({ friend_id: 'f-1' })
+    expect(resolveSenderIdentity({ msg, senderFriend: f })).toBe('friend')
   })
-  it('未注册 friend_id（群里陌生人）→ stranger', () => {
+
+  it('historical msg 缺 friend_id 但 platform_user_id+channel 匹配 channel_identities → master', () => {
+    const msg = makeMsg({ friend_id: undefined, platform_user_id: 'pu', channel_id: 'c' })
+    expect(resolveSenderIdentity({ msg, senderFriend: baseFriend })).toBe('master')
+  })
+
+  it('私聊 + 不是 crab + 有 senderFriend 但匹配不上 → 兜底归 senderFriend', () => {
+    // 私聊场景里只有 friend 和 crab 两个角色——没匹配上意味着 friend_id 锚点缺失，按 friend 处理
+    const msg = makeMsg({ friend_id: undefined, platform_user_id: 'unknown' })
+    expect(resolveSenderIdentity({ msg, senderFriend: baseFriend })).toBe('master')
+  })
+
+  it('群聊 + 没匹配 senderFriend → stranger（保守）', () => {
+    const msg = makeMsg({ friend_id: undefined, platform_user_id: 'unknown', type: 'group' })
+    expect(resolveSenderIdentity({ msg, senderFriend: baseFriend, isGroup: true })).toBe('stranger')
+  })
+
+  it('群聊 + sender 匹配 senderFriend.channel_identities → master', () => {
+    const msg = makeMsg({ friend_id: undefined, platform_user_id: 'pu', channel_id: 'c', type: 'group' })
+    expect(resolveSenderIdentity({ msg, senderFriend: baseFriend, isGroup: true })).toBe('master')
+  })
+
+  it('未注册 friend_id 且无 senderFriend → stranger', () => {
     expect(resolveSenderIdentity({ msg: makeMsg({ friend_id: undefined }) })).toBe('stranger')
   })
 })

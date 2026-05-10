@@ -301,8 +301,9 @@ export function buildUserMessage(
       const msg = context.recent_messages[i]
       const identity = resolveSenderIdentity({
         msg,
-        senderFriend: msg.sender.friend_id === context.sender_friend.id ? context.sender_friend : undefined,
-        from_crab: msg.sender.platform_display_name === context.crab_display_name,
+        senderFriend: context.sender_friend,
+        crabDisplayName: context.crab_display_name,
+        isGroup,
       })
       parts.push(formatChannelMessageLine(msg, { timezone, now, maxLen, identity }))
     }
@@ -317,7 +318,9 @@ export function buildUserMessage(
     for (const msg of messages) {
       const identity = resolveSenderIdentity({
         msg,
-        senderFriend: msg.sender.friend_id === context.sender_friend.id ? context.sender_friend : undefined,
+        senderFriend: context.sender_friend,
+        crabDisplayName: context.crab_display_name,
+        isGroup: true,
       })
       parts.push(formatChannelMessageLine(msg, { timezone, now, maxLen: 2000, mentionMark: true, identity }))
     }
@@ -359,7 +362,9 @@ export function buildUserMessage(
     for (const msg of messages) {
       const identity = resolveSenderIdentity({
         msg,
-        senderFriend: msg.sender.friend_id === context.sender_friend.id ? context.sender_friend : undefined,
+        senderFriend: context.sender_friend,
+        crabDisplayName: context.crab_display_name,
+        isGroup: false,
       })
       parts.push(formatChannelMessageLine(msg, { timezone, now, maxLen: 2000, identity }))
     }
