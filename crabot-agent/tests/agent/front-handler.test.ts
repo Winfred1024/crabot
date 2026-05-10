@@ -221,8 +221,8 @@ describe('FrontHandler', () => {
       })
 
       const callArgs = mockRunFrontLoop.mock.calls[0][0]
-      expect(callArgs.userMessage).toContain('## 场景画像（项目群）')
-      expect(callArgs.userMessage).toContain('以下内容是当前场景必须加载并遵守的上下文：')
+      expect(callArgs.userMessage).toContain('## 场景画像')
+      expect(callArgs.userMessage).toContain('<scene_profile label="项目群">')
       expect(callArgs.userMessage).toContain('第一行规则\n\n- 第二行原文\n### 不应被重写')
       expect(callArgs.userMessage).not.toContain('### 群职责')
     })
@@ -259,8 +259,8 @@ describe('FrontHandler', () => {
       }, undefined, 'Asia/Shanghai')
 
       expect(typeof message).toBe('string')
-      expect(message).toContain('## 场景画像（空画像）')
-      expect(message).toContain('以下内容是当前场景必须加载并遵守的上下文：')
+      expect(message).toContain('## 场景画像')
+      expect(message).toContain('<scene_profile label="空画像">')
     })
   })
 

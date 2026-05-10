@@ -176,8 +176,8 @@ describe('WorkerHandler', () => {
 
       expect(mockRunEngine).toHaveBeenCalledTimes(1)
       const callArgs = mockRunEngine.mock.calls[0][0]
-      expect(callArgs.prompt).toContain('## 场景画像（项目群）')
-      expect(callArgs.prompt).toContain('以下内容是当前场景必须加载并遵守的上下文：')
+      expect(callArgs.prompt).toContain('## 场景画像')
+      expect(callArgs.prompt).toContain('<scene_profile label="项目群">')
       expect(callArgs.prompt).toContain('第一条规则\n\n第二条规则\n### 原文标题保留')
       expect(callArgs.prompt).not.toContain('### 群职责')
     })
@@ -202,8 +202,8 @@ describe('WorkerHandler', () => {
 
       expect(mockRunEngine).toHaveBeenCalledTimes(1)
       const callArgs = mockRunEngine.mock.calls[0][0]
-      expect(callArgs.prompt).toContain('## 场景画像（空画像）')
-      expect(callArgs.prompt).toContain('以下内容是当前场景必须加载并遵守的上下文：')
+      expect(callArgs.prompt).toContain('## 场景画像')
+      expect(callArgs.prompt).toContain('<scene_profile label="空画像">')
     })
   })
 

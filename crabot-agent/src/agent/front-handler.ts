@@ -169,10 +169,11 @@ export function buildUserMessage(
   parts.push('')
 
   if (context.scene_profile) {
-    parts.push(`## 场景画像（${context.scene_profile.label}）`)
-    parts.push('以下内容是当前场景必须加载并遵守的上下文：')
-    parts.push('')
-    parts.push(context.scene_profile.content)
+    const escaped = context.scene_profile.content.replace(/<\/scene_profile>/g, '&lt;/scene_profile&gt;')
+    parts.push('## 场景画像')
+    parts.push(`<scene_profile label="${context.scene_profile.label}">`)
+    parts.push(escaped)
+    parts.push('</scene_profile>')
     parts.push('')
   }
 
