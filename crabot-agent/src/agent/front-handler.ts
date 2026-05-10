@@ -11,7 +11,6 @@ import { ToolExecutor, type ToolExecutorDeps } from './tool-executor.js'
 import { runFrontLoop } from './front-loop.js'
 import { mcpServerToToolDefinitions } from './mcp-tool-bridge.js'
 import { resolveImageBlocks } from './media-resolver.js'
-import { formatMessageContent } from './media-resolver.js'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type {
   ChannelMessage,
