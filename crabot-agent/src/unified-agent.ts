@@ -762,21 +762,28 @@ export class UnifiedAgent extends ModuleBase {
             },
           })
 
-          this.memoryWriter.writeTriageDecision({
-            friend_name: friend.display_name,
-            friend_id: sender.friend_id,
-            channel_id: session.channel_id,
-            session_id: session.session_id,
-            message_brief: messageBrief,
-            decision: decision.type as 'direct_reply' | 'create_task' | 'supplement_task',
-            task_id: 'task_id' in decision ? (decision as { task_id: string }).task_id : undefined,
-            visibility: memPerms.write_visibility,
-            scopes: memPerms.write_scopes,
-          }).then(() => {
+          if (decision.type === 'direct_reply') {
+            const emotion = (decision as any).emotion as string | undefined
+            if (emotion && emotion !== 'neutral') {
+              this.memoryWriter.writeUserSignal({
+                friend_name: friend.display_name,
+                friend_id: sender.friend_id,
+                channel_id: session.channel_id,
+                session_id: session.session_id,
+                message_brief: messageBrief,
+                emotion: emotion as 'unhappy' | 'frustrated' | 'angry' | 'dismissive',
+                visibility: memPerms.write_visibility,
+                scopes: memPerms.write_scopes,
+              }).then(() => this.traceStore.endSpan(trace.trace_id, memSpan.span_id, 'completed'))
+                .catch(() => this.traceStore.endSpan(trace.trace_id, memSpan.span_id, 'failed'))
+            } else {
+              // L0: 无情绪触发 → 不写短期记忆
+              this.traceStore.endSpan(trace.trace_id, memSpan.span_id, 'completed')
+            }
+          } else {
+            // create_task / supplement_task / silent → 不写 triage 类记忆（spec §6.1.2 砍掉）
             this.traceStore.endSpan(trace.trace_id, memSpan.span_id, 'completed')
-          }).catch(() => {
-            this.traceStore.endSpan(trace.trace_id, memSpan.span_id, 'failed')
-          })
+          }
         }
       }
 
@@ -1705,21 +1712,28 @@ export class UnifiedAgent extends ModuleBase {
             },
           })
 
-          this.memoryWriter.writeTriageDecision({
-            friend_name: 'Master',
-            friend_id: message.sender.friend_id ?? 'master',
-            channel_id: 'admin-web',
-            session_id: sessionId,
-            message_brief: messageBrief,
-            decision: decision.type as 'direct_reply' | 'create_task' | 'supplement_task',
-            task_id: 'task_id' in decision ? (decision as { task_id: string }).task_id : undefined,
-            visibility: masterMemPerms.write_visibility,
-            scopes: masterMemPerms.write_scopes,
-          }).then(() => {
+          if (decision.type === 'direct_reply') {
+            const emotion = (decision as any).emotion as string | undefined
+            if (emotion && emotion !== 'neutral') {
+              this.memoryWriter.writeUserSignal({
+                friend_name: 'Master',
+                friend_id: message.sender.friend_id ?? 'master',
+                channel_id: 'admin-web',
+                session_id: sessionId,
+                message_brief: messageBrief,
+                emotion: emotion as 'unhappy' | 'frustrated' | 'angry' | 'dismissive',
+                visibility: masterMemPerms.write_visibility,
+                scopes: masterMemPerms.write_scopes,
+              }).then(() => this.traceStore.endSpan(trace.trace_id, memSpan.span_id, 'completed'))
+                .catch(() => this.traceStore.endSpan(trace.trace_id, memSpan.span_id, 'failed'))
+            } else {
+              // L0: 无情绪触发 → 不写短期记忆
+              this.traceStore.endSpan(trace.trace_id, memSpan.span_id, 'completed')
+            }
+          } else {
+            // create_task / supplement_task / silent → 不写 triage 类记忆（spec §6.1.2 砍掉）
             this.traceStore.endSpan(trace.trace_id, memSpan.span_id, 'completed')
-          }).catch(() => {
-            this.traceStore.endSpan(trace.trace_id, memSpan.span_id, 'failed')
-          })
+          }
         }
       }
 

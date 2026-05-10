@@ -56,6 +56,14 @@ export const REPLY_TOOL: ToolDefinition = {
         description: '发给用户的最终完整回答。这是最终内容，不要写"让我查一下"等暗示后续动作的话。',
       },
       user_attitude: USER_ATTITUDE_FIELD_FULL,
+      emotion: {
+        type: 'string' as const,
+        enum: ['neutral', 'unhappy', 'frustrated', 'angry', 'dismissive'] as const,
+        description:
+          '【可选】用户当前消息表达的情绪。' +
+          'neutral=无明显情绪（默认）；unhappy=轻微不满；frustrated=明显挫败；angry=愤怒；dismissive=轻蔑放弃。' +
+          '仅在情绪明显时填——frustrated/angry/dismissive 会触发短期记忆写入用户情绪信号。',
+      },
     },
     required: ['text'],
   },
