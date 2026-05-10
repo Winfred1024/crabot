@@ -300,17 +300,21 @@ export function buildUserMessage(
     parts.push(`过去 ${shortTermHours} 小时内无相关短期记忆。如需更早的事件流水，可在 create_task 的 description 里说明，让 worker 调 \`crab-memory.search_short_term\` 查。`)
   }
 
-  // ── 最近消息（仅当前 session，时窗内全量） ──
+  // ── 聊天历史（仅当前 session，时窗内全量；XML tag 包裹避免 markdown 嵌套污染）──
   // 越靠近当前消息越重要，给更大的字符预算，保留完整的行动 offer / 决策上下文。
   // 注意：本段只反映当前 session 的本地历史，回答跨 session 指代必须看上方"短期记忆"段。
-  parts.push(`\n## 最近消息（当前 session，最近 ${recentHours} 小时，${context.recent_messages.length} 条）`)
+  parts.push(`\n## 聊天历史（当前 session，最近 ${recentHours} 小时，${context.recent_messages.length} 条）`)
   if (context.recent_messages.length > 0) {
     const total = context.recent_messages.length
     for (let i = 0; i < total; i++) {
       const distFromEnd = total - 1 - i
       const maxLen = distFromEnd < 3 ? 2000 : distFromEnd < 10 ? 600 : 300
       const msg = context.recent_messages[i]
-      const identity = resolveSenderIdentity({ msg })
+      const identity = resolveSenderIdentity({
+        msg,
+        senderFriend: msg.sender.friend_id === context.sender_friend.id ? context.sender_friend : undefined,
+        from_crab: msg.sender.platform_display_name === context.crab_display_name,
+      })
       parts.push(formatChannelMessageLine(msg, { timezone, now, maxLen, identity }))
     }
   } else {

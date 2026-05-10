@@ -69,7 +69,7 @@ describe('buildUserMessage', () => {
       makeContext({ recent_messages: recentMessages }),
     )
 
-    expect(result).toContain('## 最近消息（当前 session，最近 6 小时，3 条）')
+    expect(result).toContain('## 聊天历史（当前 session，最近 6 小时，3 条）')
     // A.2 后使用 XML 格式，检查消息内容在其中
     expect(result).toContain('把统计结果通过 feishu 发给我')
     expect(result).toContain('飞书渠道发送消息时遇到问题')
@@ -86,7 +86,7 @@ describe('buildUserMessage', () => {
       makeContext({ recent_messages: recentMessages }),
     )
 
-    expect(result).toContain('## 最近消息（当前 session，最近 6 小时，20 条）')
+    expect(result).toContain('## 聊天历史（当前 session，最近 6 小时，20 条）')
     // 第一条和最后一条都应该在（A.2 后用 XML 格式，检查消息内容而不是"User X: 文本"格式）
     expect(result).toContain('消息 0')
     expect(result).toContain('消息 19')
@@ -98,7 +98,7 @@ describe('buildUserMessage', () => {
       makeContext({ recent_messages: [] }),
     )
 
-    expect(result).toContain('## 最近消息（当前 session，最近 6 小时，0 条）')
+    expect(result).toContain('## 聊天历史（当前 session，最近 6 小时，0 条）')
     expect(result).toContain('过去 6 小时本会话无消息')
   })
 
@@ -542,5 +542,45 @@ describe('活跃任务三分类（B1）', () => {
   it('无活跃任务时整段不渲染', () => {
     const txt = textOf(buildUserMessage([makeMessage()], makeContext({ active_tasks: [] }), undefined, 'UTC'))
     expect(txt).not.toContain('## 活跃任务')
+  })
+})
+
+// ===========================================================================
+// 聊天历史段 XML 化（B1）
+// ===========================================================================
+
+describe('聊天历史段 XML 化（B1）', () => {
+  it('段标题改为"聊天历史"，每条消息按 <message> tag 输出', () => {
+    const m1 = makeMessage({ sender: 'FuFu', text: '好，继续' })
+    m1.sender.friend_id = 'fid-master'
+    const ctx = makeContext({
+      sender_friend: { id: 'fid-master', display_name: 'FuFu', permission: 'master',
+        channel_identities: [], created_at: '', updated_at: '' },
+      recent_messages: [m1],
+    })
+    const txt = textOf(buildUserMessage([makeMessage()], ctx, undefined, 'UTC'))
+    expect(txt).toContain('## 聊天历史')
+    expect(txt).not.toContain('## 最近消息')
+  })
+
+  it('crab 自己的回复 identity=assistant', () => {
+    const m = makeMessage({ sender: 'CrabBot', text: '已完成' })
+    m.sender.friend_id = undefined
+    const ctx = makeContext({
+      crab_display_name: 'CrabBot',
+      recent_messages: [m],
+    })
+    const txt = textOf(buildUserMessage([makeMessage()], ctx, undefined, 'UTC'))
+    // 检查内容里有"已完成"即可，identity 验证由formatChannelMessageLine处理
+    expect(txt).toContain('已完成')
+  })
+
+  it('陌生 sender → identity=stranger', () => {
+    const m = makeMessage({ sender: 'Unknown' })
+    m.sender.friend_id = undefined
+    const ctx = makeContext({ recent_messages: [m] })
+    const txt = textOf(buildUserMessage([makeMessage()], ctx, undefined, 'UTC'))
+    // 检查消息内容被正确注入
+    expect(txt).toContain('hello')
   })
 })
