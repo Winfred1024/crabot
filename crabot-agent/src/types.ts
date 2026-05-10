@@ -502,11 +502,15 @@ export interface ToolHistoryEntry {
 export type UserAttitude = 'strong_pass' | 'pass' | 'fail' | 'strong_fail'
 export type UserAttitudeNegOnly = 'fail' | 'strong_fail'
 
+export type UserEmotion = 'neutral' | 'unhappy' | 'frustrated' | 'angry' | 'dismissive'
+
 export interface DirectReplyDecision {
   type: 'direct_reply'
   reply: MessageContent
   /** 用户对 prev finished task 的态度（可选，求准策略下 Front 不确定时不填） */
   user_attitude?: UserAttitude
+  /** 用户当前消息表达的情绪（可选）；frustrated/angry/dismissive 触发 L1 短期记忆写入 */
+  emotion?: UserEmotion
 }
 
 export interface CreateTaskDecision {

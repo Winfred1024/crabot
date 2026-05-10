@@ -234,6 +234,13 @@ function parseUserAttitude(
   return allowed.has(raw) ? (raw as 'strong_pass' | 'pass' | 'fail' | 'strong_fail') : undefined
 }
 
+const VALID_EMOTIONS = new Set(['neutral', 'unhappy', 'frustrated', 'angry', 'dismissive'])
+
+function parseEmotion(raw: unknown): 'neutral' | 'unhappy' | 'frustrated' | 'angry' | 'dismissive' | undefined {
+  if (typeof raw !== 'string') return undefined
+  return VALID_EMOTIONS.has(raw) ? (raw as 'neutral' | 'unhappy' | 'frustrated' | 'angry' | 'dismissive') : undefined
+}
+
 /**
  * 将决策工具调用解析为 MessageDecision
  */
@@ -241,10 +248,12 @@ function parseDecisionTool(toolName: DecisionToolName, input: Record<string, unk
   switch (toolName) {
     case 'reply': {
       const attitude = parseUserAttitude(input.user_attitude, VALID_ATTITUDES_FULL)
+      const emotion = parseEmotion(input.emotion)
       return {
         type: 'direct_reply',
         reply: { type: 'text', text: (input.text as string) ?? '' },
         ...(attitude ? { user_attitude: attitude } : {}),
+        ...(emotion ? { emotion } : {}),
       }
     }
 
