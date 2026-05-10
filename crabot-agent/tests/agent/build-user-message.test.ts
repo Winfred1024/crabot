@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { buildUserMessage } from '../../src/agent/front-handler.js'
-import type { ChannelMessage, FrontAgentContext, ShortTermMemoryEntry } from '../../src/types.js'
+import type { ChannelMessage, FrontAgentContext, Friend, ShortTermMemoryEntry, TaskSummary } from '../../src/types.js'
 
 // ===========================================================================
 // 工厂函数
@@ -238,7 +238,9 @@ describe('buildUserMessage', () => {
       status: 'executing',
       task_type: 'user_request',
       priority: 'normal',
+      // 匹配当前 session（sess-1）和 channel（ch-wechat），落入「当前对话对象的任务」段
       source_session_id: 'sess-1',
+      source_channel_id: 'ch-wechat',
       latest_progress: '正在查找飞书渠道...',
     }]
 
@@ -247,8 +249,9 @@ describe('buildUserMessage', () => {
       makeContext({ active_tasks: tasks }),
     )
 
-    expect(result).toContain('## 活跃任务列表')
-    expect(result).toContain('[task-1] "发送统计报告到飞书" (status: executing, 来源session: sess-1)')
+    expect(result).toContain('## 活跃任务')
+    expect(result).toContain('### 当前对话对象的任务')
+    expect(result).toContain('[task-1] "发送统计报告到飞书" (status: executing)')
     expect(result).toContain('最近进度（事后摘要）: 正在查找飞书渠道...')
   })
 
@@ -480,5 +483,64 @@ describe('IM 渠道段（A4）', () => {
     // crab 昵称只能出现在 IM 渠道段，不能在 对话场景段重复
     const matches = txt.match(/你在该渠道的昵称: CrabBot/g)
     expect(matches?.length).toBe(1)
+  })
+})
+
+// ===========================================================================
+// 活跃任务三分类（A.5）
+// ===========================================================================
+
+describe('活跃任务三分类（B1）', () => {
+  function makeTask(overrides: Partial<TaskSummary>): TaskSummary {
+    return {
+      task_id: overrides.task_id ?? 't-1',
+      title: overrides.title ?? 'Test',
+      status: 'executing',
+      priority: 'normal',
+      ...overrides,
+    } as TaskSummary
+  }
+
+  it('master 视角：分三段（当前对话对象/其他场景/schedule）', () => {
+    const m = makeMessage()
+    m.session = { session_id: 'sess-A', channel_id: 'ch-1', type: 'private' }
+    const ctx = makeContext({
+      active_tasks: [
+        makeTask({ task_id: 't-cur', title: '当前对话任务', source_session_id: 'sess-A', source_channel_id: 'ch-1' }),
+        makeTask({ task_id: 't-other', title: '其他场景任务', source_session_id: 'sess-B', source_channel_id: 'ch-1' }),
+        makeTask({ task_id: 't-sched', title: '巡检', trigger_type: 'scheduled' }),
+      ],
+    })
+    const txt = textOf(buildUserMessage([m], ctx, undefined, 'UTC'))
+    expect(txt).toMatch(/### 当前对话对象的任务[^]*t-cur/)
+    expect(txt).toMatch(/### 其他对话场景的任务[^]*t-other/)
+    expect(txt).toMatch(/### schedule 触发任务[^]*t-sched/)
+    expect(txt).toContain('[定时/巡检任务，禁止 supplement]')
+  })
+
+  it('非 master 视角：仅显示当前对话对象的任务', () => {
+    const m = makeMessage()
+    m.session = { session_id: 'sess-A', channel_id: 'ch-1', type: 'private' }
+    const normalFriend: Friend = {
+      id: 'normal-1', display_name: 'Normal', permission: 'normal',
+      channel_identities: [], created_at: '', updated_at: '',
+    }
+    const ctx = makeContext({
+      sender_friend: normalFriend,
+      active_tasks: [
+        makeTask({ task_id: 't-cur', source_session_id: 'sess-A', source_channel_id: 'ch-1' }),
+        makeTask({ task_id: 't-other', source_session_id: 'sess-B', source_channel_id: 'ch-1' }),
+        makeTask({ task_id: 't-sched', trigger_type: 'scheduled' }),
+      ],
+    })
+    const txt = textOf(buildUserMessage([m], ctx, undefined, 'UTC'))
+    expect(txt).toContain('t-cur')
+    expect(txt).not.toContain('t-other')
+    expect(txt).not.toContain('t-sched')
+  })
+
+  it('无活跃任务时整段不渲染', () => {
+    const txt = textOf(buildUserMessage([makeMessage()], makeContext({ active_tasks: [] }), undefined, 'UTC'))
+    expect(txt).not.toContain('## 活跃任务')
   })
 })

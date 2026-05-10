@@ -18,6 +18,7 @@ import type {
   FrontAgentContext,
   HandleMessageParams,
   HandleMessageResult,
+  TaskSummary,
   TraceCallback,
 } from '../types.js'
 import { formatNow, formatTaskCreatedAt } from '../utils/time.js'
@@ -202,51 +203,73 @@ export function buildUserMessage(
     }
   }
 
-  // ── 活跃任务列表 ──
+  // ── 活跃任务（三分类 + master 权限过滤）──
   if (context.active_tasks.length > 0) {
-    parts.push('\n## 活跃任务列表')
-    for (const task of context.active_tasks) {
-      const sessionInfo = task.source_session_id ? `, 来源session: ${task.source_session_id}` : ''
-      // 定时/巡检任务用显式标签让 LLM 一眼分辨，禁止对其 supplement
-      const kindTag = task.trigger_type === 'scheduled' ? ' [定时/巡检任务，禁止 supplement]' : ''
-      parts.push(`- [${task.task_id}] "${task.title}" (status: ${task.status}${sessionInfo})${kindTag}`)
-      if (task.latest_progress) {
-        parts.push(`  最近进度（事后摘要）: ${task.latest_progress}`)
-      }
-      if (task.plan_summary) {
-        parts.push(`  计划摘要: ${task.plan_summary}`)
-      }
-      // 飞行中任务：注入实时执行快照（避免用户问"现在在干什么"时只能拿事后摘要回答）
-      const live = task.live
+    const currentChannel = messages[0]?.session.channel_id
+    const currentSession = messages[0]?.session.session_id
+    const isMaster = context.sender_friend.permission === 'master'
+
+    const currentTasks: TaskSummary[] = []
+    const otherTasks: TaskSummary[] = []
+    const scheduledTasks: TaskSummary[] = []
+
+    for (const t of context.active_tasks) {
+      if (t.trigger_type === 'scheduled') scheduledTasks.push(t)
+      else if (t.source_session_id === currentSession && t.source_channel_id === currentChannel) currentTasks.push(t)
+      else otherTasks.push(t)
+    }
+
+    const renderTask = (t: TaskSummary, includeSource: boolean = false): string[] => {
+      const lines: string[] = []
+      const tag = t.trigger_type === 'scheduled' ? ' [定时/巡检任务，禁止 supplement]' : ''
+      const src = includeSource && t.source_channel_id ? ` [来源: ${t.source_channel_id}:${t.source_session_id}]` : ''
+      lines.push(`- [${t.task_id}] "${t.title}" (status: ${t.status})${tag}${src}`)
+      if (t.latest_progress) lines.push(`  最近进度（事后摘要）: ${t.latest_progress}`)
+      const live = t.live
       if (live) {
-        parts.push(`  创建于 ${formatTaskCreatedAt(live.started_at, timezone, now)} / 第 ${live.current_turn} 轮`)
+        lines.push(`  创建于 ${formatTaskCreatedAt(live.started_at, timezone, now)} / 第 ${live.current_turn} 轮`)
         if (live.last_assistant_text) {
-          const t = live.last_assistant_text.trim()
-          if (t.length > 0) parts.push(`  上轮模型说: ${t.slice(0, 200)}${t.length > 200 ? '…' : ''}`)
+          const tt = live.last_assistant_text.trim()
+          if (tt.length > 0) lines.push(`  上轮模型说: ${tt.slice(0, 200)}${tt.length > 200 ? '…' : ''}`)
         }
         if (live.active_tools.length > 0) {
           for (const at of live.active_tools) {
-            const dur = formatElapsed(Date.now() - at.started_at)
-            parts.push(`  正在跑工具: ${at.name}（已 ${dur}）— ${at.input_summary}`)
+            lines.push(`  正在跑工具: ${at.name}（已 ${formatElapsed(Date.now() - at.started_at)}）— ${at.input_summary}`)
           }
         }
         if (live.recent_completed.length > 0) {
-          const tail = live.recent_completed.slice(-3).map(c =>
-            `${c.name}${c.is_error ? '(失败)' : ''}`
-          ).join(' / ')
-          parts.push(`  最近完成: ${tail}`)
+          const tail = live.recent_completed.slice(-3).map(c => `${c.name}${c.is_error ? '(失败)' : ''}`).join(' / ')
+          lines.push(`  最近完成: ${tail}`)
         }
         if (live.llm_retry) {
           const r = live.llm_retry
           const elapsed = formatElapsed(Date.now() - r.since)
-          parts.push(`  ⚠️ LLM 调用 retry 中: ${r.attempt}/${r.max_attempts} (${r.source})，已 ${elapsed}，原因: ${r.last_error}`)
+          lines.push(`  ⚠️ LLM 调用 retry 中: ${r.attempt}/${r.max_attempts} (${r.source})，已 ${elapsed}，原因: ${r.last_error}`)
         }
       }
+      return lines
     }
-    parts.push('\n当用户询问任务进度时，请根据上述任务列表（特别是"正在跑工具"和"上轮模型说"）具体说明当前在做什么，不要笼统说"还在执行"。')
-    parts.push('当用户消息可能是对某个任务的纠偏/补充时，使用 supplement_task 决策。')
-    parts.push('纠偏判断优先匹配来源 session 与当前 session 相同的任务。')
-    parts.push('**带 [定时/巡检任务，禁止 supplement] 标签的任务一律不可作为 supplement 目标**：用户的新需求即使主题相关，也必须 create_task，不要 supplement 到定时任务上覆盖它本职。')
+
+    parts.push('\n## 活跃任务')
+
+    if (currentTasks.length > 0) {
+      parts.push(`\n### 当前对话对象的任务（${currentTasks.length} 条）`)
+      for (const t of currentTasks) parts.push(...renderTask(t))
+    }
+
+    if (isMaster && otherTasks.length > 0) {
+      parts.push(`\n### 其他对话场景的任务（${otherTasks.length} 条）`)
+      for (const t of otherTasks) parts.push(...renderTask(t, true))
+    }
+
+    if (isMaster && scheduledTasks.length > 0) {
+      parts.push(`\n### schedule 触发任务（${scheduledTasks.length} 条）`)
+      for (const t of scheduledTasks) parts.push(...renderTask(t))
+    }
+
+    parts.push('\n当用户消息可能是对某个任务的纠偏/补充时，使用 supplement_task 决策。')
+    parts.push('纠偏判断优先匹配「当前对话对象的任务」段。')
+    parts.push('**带 [定时/巡检任务，禁止 supplement] 标签的任务一律不可作为 supplement 目标**：用户的新需求即使主题相关，也必须 create_task。')
   }
 
   // ── 最近结束的任务（用于"继续之前那个 ..."类提问的指代解析）──
