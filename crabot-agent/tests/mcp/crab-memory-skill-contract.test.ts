@@ -25,6 +25,20 @@ function extractRegisteredToolNames(): Set<string> {
   return new Set(Array.from(matches, (m) => m[1]))
 }
 
+function extractToolDescription(toolName: string): string {
+  const src = fs.readFileSync(CRAB_MEMORY_TS, 'utf-8')
+  // Locate the registerTool call for this tool, then grab 2000 chars after "description:" keyword.
+  // This handles multi-line string concatenation correctly.
+  const toolStart = src.search(
+    new RegExp(`server\\.registerTool\\(\\s*['"]${toolName}['"]`),
+  )
+  if (toolStart === -1) return ''
+  const descStart = src.indexOf('description:', toolStart)
+  if (descStart === -1) return ''
+  // Return 2000 chars of source starting from "description:" — callers do toContain checks.
+  return src.slice(descStart, descStart + 2000)
+}
+
 function extractSkillReferences(): Map<string, Set<string>> {
   const refsBySkill = new Map<string, Set<string>>()
   if (!fs.existsSync(SKILLS_DIR)) return refsBySkill
@@ -65,5 +79,21 @@ describe('crab-memory MCP server ↔ SKILL.md 引用契约', () => {
       `SKILL 引用了未在 crab-memory.ts 注册的工具，跑起来必 "tool not found":\n  ` +
         violations.join('\n  '),
     ).toEqual([])
+  })
+})
+
+describe('crab-memory.set_scene_profile（合并版 E.1）', () => {
+  it('工具列表中含 set_scene_profile，不含 set_scene_anchor / upsert_scene_profile', () => {
+    const toolNames = extractRegisteredToolNames()
+    expect(toolNames).toContain('set_scene_profile')
+    expect(toolNames).not.toContain('set_scene_anchor')
+    expect(toolNames).not.toContain('upsert_scene_profile')
+  })
+
+  it('description 强调"覆盖式写入"/"已在你 prompt 顶部"/"store_memory"边界', () => {
+    const desc = extractToolDescription('set_scene_profile')
+    expect(desc).toContain('覆盖')
+    expect(desc).toContain('已在你 prompt 顶部')
+    expect(desc).toContain('store_memory')
   })
 })

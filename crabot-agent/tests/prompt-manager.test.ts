@@ -47,7 +47,7 @@ describe('Front prompt — 已搬移规则保留', () => {
 
   it('记忆路由保留', () => {
     expect(frontPrivate).toContain('store_memory')
-    expect(frontPrivate).toContain('set_scene_anchor')
+    expect(frontPrivate).toContain('set_scene_profile')
   })
 
   it('user_attitude 4 档判定保留', () => {
@@ -114,8 +114,8 @@ describe('Worker prompt — 已搬移规则保留', () => {
     expect(worker).toContain('强制要求')
   })
 
-  it('记忆存储 set_scene_anchor 保留', () => {
-    expect(worker).toContain('set_scene_anchor')
+  it('记忆存储 set_scene_profile 保留', () => {
+    expect(worker).toContain('set_scene_profile')
     expect(worker).toContain('身份类稳定信息')
   })
 
