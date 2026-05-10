@@ -42,6 +42,8 @@ interface MemoryFetchParams {
   minVisibility?: 'private' | 'internal' | 'public'
   accessibleScopes?: string[]
   sessionType?: 'private' | 'group'
+  excludeChannelId?: string
+  excludeSessionId?: string
 }
 
 type FetchShortTermMemoryParams = MemoryFetchParams
@@ -134,6 +136,8 @@ export class ContextAssembler {
         minVisibility: memoryPermissions.read_min_visibility,
         accessibleScopes: memoryPermissions.read_accessible_scopes,
         sessionType,
+        excludeChannelId: params.channel_id,
+        excludeSessionId: params.session_id,
       })),
       this.withSubSpan(traceCtx, 'fetch_active_tasks', () => this.fetchActiveTasks()),
       this.withSubSpan(traceCtx, 'fetch_recently_closed_tasks', () => this.fetchRecentlyClosedTasks(params.channel_id, params.session_id, 5)),
@@ -345,7 +349,7 @@ export class ContextAssembler {
   }
 
   private async fetchShortTermMemory(params: FetchShortTermMemoryParams): Promise<ShortTermMemoryEntry[]> {
-    const { friendId, windowHours, maxCap, minVisibility = 'public', accessibleScopes, sessionType = 'private' } = params
+    const { friendId, windowHours, maxCap, minVisibility = 'public', accessibleScopes, sessionType = 'private', excludeChannelId, excludeSessionId } = params
 
     // 私聊需要 friendId 做个人记忆过滤；群聊靠 scope 隔离，不需要 friendId
     if (sessionType === 'private' && !friendId) return []
@@ -384,7 +388,16 @@ export class ContextAssembler {
         },
         this.moduleId
       )
-      return result.results
+      const results = result.results
+
+      // 可选的客户端过滤：排除 source.channel_id 和 source.session_id 都匹配给定值的条目
+      // 仅 Front 路径应用此过滤（Worker 路径不应过滤，保留所有当前 channel+session 的事件以供分析）
+      if (excludeChannelId && excludeSessionId) {
+        return results.filter(r =>
+          !(r.source?.channel_id === excludeChannelId && r.source?.session_id === excludeSessionId)
+        )
+      }
+      return results
     } catch {
       return []
     }
