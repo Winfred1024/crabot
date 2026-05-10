@@ -183,15 +183,23 @@ export function buildUserMessage(
     parts.push(`- 类型: 群聊`)
     parts.push(`- 对话对象: ${session.session_id}`)
     parts.push(`- 对话对象 ID: group:${session.channel_id}:${session.session_id}`)
-    if (context.crab_display_name) {
-      parts.push(`- 你在该渠道的昵称: ${context.crab_display_name}`)
-    }
   } else {
     const f = context.sender_friend
     parts.push(`- 类型: 私聊`)
     parts.push(`- 对话对象: ${f.display_name}`)
     parts.push(`- 对话对象 ID: friend:${f.id}`)
     parts.push(`- 对话对象身份: ${f.permission}`)
+  }
+
+  // ── IM 渠道 ──
+  if (messages.length > 0) {
+    const session = messages[0].session
+    parts.push('\n## IM 渠道')
+    parts.push(`- channel: ${session.channel_id}`)
+    parts.push(`- session: ${session.session_id}`)
+    if (context.crab_display_name) {
+      parts.push(`- 你在该渠道的昵称: ${context.crab_display_name}`)
+    }
   }
 
   // ── 活跃任务列表 ──
@@ -251,13 +259,6 @@ export function buildUserMessage(
       }
     }
     parts.push('\n如果用户提到"继续之前的"/"上次那个"/"接着之前的 ..."等指代过去任务的说法，从上面这个列表里挑出对应的 task_id，然后通过 create_task 决策开新任务，在新任务描述里包含 task_id，让 worker 用 get_task_details 工具拉详情、决定下一步。')
-  }
-
-  // ── Channel/Session 元信息 ──
-  if (messages.length > 0) {
-    const session = messages[0].session
-    parts.push(`- 当前 Channel ID: ${session.channel_id}`)
-    parts.push(`- 当前 Session ID: ${session.session_id}`)
   }
 
   const shortTermHours = context.time_windows.short_term_memory_window_hours

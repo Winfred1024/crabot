@@ -308,9 +308,10 @@ describe('buildUserMessage', () => {
     // A.3 新增：对话场景段显示类型
     expect(result).toContain('## 对话场景')
     expect(result).toContain('类型: 私聊')
-    // A.4 后续会移入 IM 渠道段，目前仍在旧位置
-    expect(result).toContain('Channel ID: ch-wechat')
-    expect(result).toContain('Session ID: sess-abc')
+    // A.4 后续会移入 IM 渠道段
+    expect(result).toContain('## IM 渠道')
+    expect(result).toContain('- channel: ch-wechat')
+    expect(result).toContain('- session: sess-abc')
   })
 
   // -----------------------------------------------------------------------
@@ -368,7 +369,7 @@ describe('群聊 prompt 改进', () => {
   it('群聊应包含 Crabot 在群中的身份标识', () => {
     const messages = [makeGroupMessage({ sender: '王佳', text: '你好' })]
     const result = buildUserMessage(messages, makeContext({ crab_display_name: '半糖' }))
-    // A.3 后：改为"你在该渠道的昵称"（在对话场景段）
+    // A.4 后：改为"你在该渠道的昵称"（在 IM 渠道段）
     expect(result).toContain('你在该渠道的昵称: 半糖')
   })
 
@@ -445,5 +446,39 @@ describe('对话场景段（B1）', () => {
     expect(txt).toContain('类型: 群聊')
     expect(txt).toContain('对话对象 ID: group:ch-tg:sess-grp')
     expect(txt).not.toContain('对话对象身份:')
+  })
+})
+
+// ===========================================================================
+// IM 渠道段（A4）
+// ===========================================================================
+
+describe('IM 渠道段（A4）', () => {
+  it('独立段显示 channel/session/crab 在该渠道昵称', () => {
+    const m = makeMessage()
+    m.session = { session_id: 'sess-1', channel_id: 'tg-001', type: 'private' }
+    const out = buildUserMessage([m], makeContext({ crab_display_name: 'CrabBot' }), undefined, 'UTC')
+    const txt = textOf(out)
+    expect(txt).toContain('## IM 渠道')
+    expect(txt).toContain('- channel: tg-001')
+    expect(txt).toContain('- session: sess-1')
+    expect(txt).toContain('- 你在该渠道的昵称: CrabBot')
+  })
+
+  it('crab 昵称缺省时该行省略', () => {
+    const out = buildUserMessage([makeMessage()], makeContext({}), undefined, 'UTC')
+    const txt = textOf(out)
+    expect(txt).toContain('## IM 渠道')
+    expect(txt).not.toContain('- 你在该渠道的昵称:')
+  })
+
+  it('对话场景段不再包含 crab 昵称行（已挪到 IM 渠道段）', () => {
+    const m = makeMessage()
+    m.session = { session_id: 'sess-grp', channel_id: 'ch-tg', type: 'group' }
+    const out = buildUserMessage([m], makeContext({ crab_display_name: 'CrabBot' }), undefined, 'UTC')
+    const txt = textOf(out)
+    // crab 昵称只能出现在 IM 渠道段，不能在 对话场景段重复
+    const matches = txt.match(/你在该渠道的昵称: CrabBot/g)
+    expect(matches?.length).toBe(1)
   })
 })
