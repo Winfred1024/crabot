@@ -421,12 +421,6 @@ export interface FrontAgentContext {
   recent_messages: ChannelMessage[]
   short_term_memories: ShortTermMemoryEntry[]
   active_tasks: TaskSummary[]
-  /**
-   * 本 session 最近结束（completed / failed / aborted）的若干个任务，
-   * 让 LLM 在用户说"继续之前那个 ..."时能挑出 task_id，
-   * 然后用 get_task_details 工具拉详情、决定下一步。
-   */
-  recently_closed_tasks?: TaskSummary[]
   available_tools: ToolDeclaration[]
   /** 当前场景画像，由 Memory 模块直接返回并映射为运行时格式 */
   scene_profile?: RuntimeSceneProfile

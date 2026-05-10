@@ -197,7 +197,7 @@ export function createGetTaskDetailsTool(deps: GetTaskDetailsToolDeps): ToolDefi
     description:
       '已知 task_id 时查询任务的完整执行详情：元数据、计划、按时间顺序的工具调用流水、最终结果或停止原因。' +
       '用于回答"上次做到哪了"/"之前那个任务怎么样了"，或在"继续之前的任务"场景里判断下一步该做什么。' +
-      '【先决条件】调用前应已知 task_id——可从 active_tasks / recently_closed_tasks 上下文段挑，或先调 `search_short_term` 拿事件流水账里的 task_id 锚点。' +
+      '【先决条件】调用前应已知 task_id——可从 active_tasks 上下文段挑，或先调 `search_short_term` / `search_traces` 拿任务流水账里的 task_id 锚点。' +
       '不要用任意字符串猜 task_id；不存在的 task_id 会立即报错。' +
       '超长时会自动压缩。',
     inputSchema: {
@@ -205,7 +205,7 @@ export function createGetTaskDetailsTool(deps: GetTaskDetailsToolDeps): ToolDefi
       properties: {
         task_id: {
           type: 'string',
-          description: '要查询的任务 ID（可从 active_tasks / recently_closed_tasks 里挑）',
+          description: '要查询的任务 ID（可从 active_tasks 里挑，或用 search_short_term / search_traces 查到）',
         },
       },
       required: ['task_id'],

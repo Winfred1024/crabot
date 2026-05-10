@@ -271,17 +271,6 @@ export function buildUserMessage(
     parts.push('**带 [定时/巡检任务，禁止 supplement] 标签的任务一律不可作为 supplement 目标**：用户的新需求即使主题相关，也必须 create_task。')
   }
 
-  // ── 最近结束的任务（用于"继续之前那个 ..."类提问的指代解析）──
-  if (context.recently_closed_tasks && context.recently_closed_tasks.length > 0) {
-    parts.push('\n## 本会话最近结束的任务（已 completed / failed / aborted）')
-    for (const task of context.recently_closed_tasks) {
-      parts.push(`- [${task.task_id}] "${task.title}" (status: ${task.status}, 结束于: ${task.updated_at ?? '?'})`)
-      if (task.latest_progress) {
-        parts.push(`  最终结果: ${task.latest_progress}`)
-      }
-    }
-    parts.push('\n如果用户提到"继续之前的"/"上次那个"/"接着之前的 ..."等指代过去任务的说法，从上面这个列表里挑出对应的 task_id，然后通过 create_task 决策开新任务，在新任务描述里包含 task_id，让 worker 用 get_task_details 工具拉详情、决定下一步。')
-  }
 
   const shortTermHours = context.time_windows.short_term_memory_window_hours
   const recentHours = context.time_windows.recent_messages_window_hours
