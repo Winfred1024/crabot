@@ -53,7 +53,7 @@ export const REPLY_TOOL: ToolDefinition = {
     properties: {
       text: {
         type: 'string',
-        description: '发给用户的最终完整回答。这是最终内容，不要写"让我查一下"等暗示后续动作的话。',
+        description: '发给用户的最终完整回答。回复内容应该能让用户明确知道你回答完了或者你要明确向用户询问进一步的指示。不要让用户认为你是去工作了，所以用户等一会儿你会进行进一步的汇报。',
       },
       user_attitude: USER_ATTITUDE_FIELD_FULL,
       emotion: {
@@ -87,7 +87,7 @@ export const CREATE_TASK_TOOL: ToolDefinition = {
       },
       ack_text: {
         type: 'string',
-        description: '立即发给用户的确认文本。必须简短自然，让用户知道你已收到并开始处理，如"好的，我来对比一下这几个产品"、"收到，正在分析代码"。',
+        description: '立即发给用户的友好响应消息，用于表明你会进一步的完成人类的需求。让人类有明确的【等你完成需求后就会有进一步的汇报】的预期。',
       },
       user_attitude: {
         ...USER_ATTITUDE_FIELD_FULL,
@@ -121,7 +121,7 @@ export function supplementTaskTool(activeTaskIds: readonly string[]): ToolDefini
         },
         ack_text: {
           type: 'string',
-          description: '立即发给用户的确认文本，如"好的，我调整一下方向"',
+          description: '立即发给用户的友好响应消息，如"好的，我调整一下方向"/"稍等，我核实一下"。消息内容与目标任务的情况有一定的关联会更人类友好。',
         },
         user_attitude: USER_ATTITUDE_FIELD_NEG_ONLY,
       },
