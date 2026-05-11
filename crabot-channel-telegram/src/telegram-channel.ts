@@ -776,12 +776,14 @@ function formatTgUserName(user: { first_name: string; last_name?: string }): str
   return user.first_name + (user.last_name ? ` ${user.last_name}` : '')
 }
 
-/** 构造引用消息的 quote prefix：`> [引用 Sender HH:MM] text\n\n` */
+/** 构造引用消息的 quote prefix：`> [引用 Sender HH:MM msg_id=N] text\n\n`
+ *  msg_id 让 worker 能用 `mcp__crab-messaging__get_message` 直接拉原消息，
+ *  不需要靠时间窗+关键词猜锚点。 */
 function buildReplyQuotePrefix(replyTo: TgMessage): string {
   const sender = replyTo.from ? formatTgUserName(replyTo.from) : '?'
   const time = new Date(replyTo.date * 1000).toISOString().slice(11, 16) // HH:MM (UTC)
   const text = replyTo.text ?? replyTo.caption ?? '[非文本消息]'
-  return `> [引用 ${sender} ${time}] ${text}\n\n`
+  return `> [引用 ${sender} ${time} msg_id=${replyTo.message_id}] ${text}\n\n`
 }
 
 function storedMessageToProtocol(m: StoredMessage) {

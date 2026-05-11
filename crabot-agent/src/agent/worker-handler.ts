@@ -1226,6 +1226,11 @@ export class WorkerHandler {
         const time = msg.platform_timestamp ? formatChannelMessageTime(msg.platform_timestamp, timezone, now) : ''
         const stamp = time ? ` [${time}]` : ''
         parts.push(`\n### ${msg.sender.platform_display_name}${stamp}`)
+        // 当前消息携带引用锚点时显式列出，worker 可直接 mcp__crab-messaging__get_message 拉原消息
+        const refMsgId = msg.features.reply_to_message_id ?? msg.features.quote_message_id
+        if (refMsgId) {
+          parts.push(`引用消息 ID: ${refMsgId}（可用 \`mcp__crab-messaging__get_message\` 查完整原文与对应 task 详情）`)
+        }
         parts.push(formatMessageContent(msg))
       }
       if (task.task_description) {
