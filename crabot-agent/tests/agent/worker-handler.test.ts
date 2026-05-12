@@ -71,12 +71,13 @@ function makeEngineResult(overrides?: Partial<{
   finalText: string
   totalTurns: number
   error?: string
-}>): { outcome: 'completed' | 'failed' | 'max_turns' | 'aborted'; finalText: string; totalTurns: number; usage: { inputTokens: number; outputTokens: number }; error?: string } {
+}>): { outcome: 'completed' | 'failed' | 'max_turns' | 'aborted'; finalText: string; totalTurns: number; usage: { inputTokens: number; outputTokens: number }; error?: string; finalMessages: readonly never[] } {
   return {
     outcome: (overrides?.outcome ?? 'completed') as 'completed' | 'failed' | 'max_turns' | 'aborted',
     finalText: overrides?.finalText ?? 'Task completed successfully.',
     totalTurns: overrides?.totalTurns ?? 1,
     usage: { inputTokens: 100, outputTokens: 50 },
+    finalMessages: [],
     ...(overrides?.error ? { error: overrides.error } : {}),
   }
 }

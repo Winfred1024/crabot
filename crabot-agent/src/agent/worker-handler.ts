@@ -71,6 +71,7 @@ import { formatNow, formatChannelMessageTime, resolveTimezone, formatRuntimeMs }
 import { getInstanceSkillsDir } from '../core/data-paths.js'
 import { TodoStore } from './worker-todo-store.js'
 import { createTodoTool } from './worker-todo-tool.js'
+import { reflectStructuredOutcome } from '../orchestration/structured-outcome-reflector.js'
 
 import * as fs from 'fs'
 import * as path from 'path'
@@ -127,6 +128,8 @@ export interface WorkerDeps {
     tools: ReadonlyArray<ToolDefinition>,
     resolvedPerms?: ResolvedPermissions,
   ) => ToolPermissionConfig
+  /** 反思补轮注入接口（测试用）。生产路径走默认 reflectStructuredOutcome。 */
+  reflectFn?: typeof reflectStructuredOutcome
 }
 
 import type { LLMFormat } from '../engine/llm-adapter'
@@ -962,6 +965,9 @@ export class WorkerHandler {
         finalEngineResult = { ...engineResult, finalText: `执行失败 (${engineResult.totalTurns}轮后): ${engineResult.error}` }
       }
 
+      // 8.5 Finalize: update admin task status + run structured reflection
+      await this.finalizeTask(task.task_id, finalEngineResult)
+
       // 9. Map EngineResult → ExecuteTaskResult
       return this.mapEngineResult(task.task_id, finalEngineResult)
 
@@ -1006,6 +1012,90 @@ export class WorkerHandler {
     const modelId = this.sdkEnv.modelId
     return async ({ effectivePermissions, commandText }) =>
       reviewCliContent({ effectivePermissions, commandText, adapter, modelId })
+  }
+
+  /**
+   * Engine 主 loop 结束后的收尾。对用户面"任务结束"瞬间 = update_task_status('completed')
+   * 落盘那一刻；之后跑反思补轮（对 supplement 通道关闭）。
+   *
+   * 失败容忍：reflector 任一步抛错都不回滚 task 状态——用户视角下任务已完成，
+   * lesson 质量降级是可接受的二阶损失。
+   */
+  private async finalizeTask(
+    taskId: TaskId,
+    engineResult: EngineResult,
+  ): Promise<void> {
+    if (!this.deps?.getAdminPort) {
+      log(`finalize: getAdminPort missing, skipping admin patch + reflector`)
+      return
+    }
+    const adminPort = await this.deps.getAdminPort()
+    // 只有 outcome='completed' 才算"任务正常结束"，其他（failed/max_turns/aborted）均归入 'failed'。
+    const finalStatus = engineResult.outcome === 'completed' ? 'completed' : 'failed'
+    const finishedAt = new Date().toISOString()
+
+    // 1. 立即标 task 完成，关闭 supplement 通道
+    try {
+      await this.deps.rpcClient.call(
+        adminPort, 'update_task_status',
+        {
+          task_id: taskId,
+          status: finalStatus,
+          result: { outcome: finalStatus, finished_at: finishedAt },
+        },
+        this.deps.moduleId,
+      )
+    } catch (err) {
+      log(`finalize: update_task_status failed (continuing): ${err instanceof Error ? err.message : String(err)}`)
+    }
+
+    // 2. 排空 humanMessageQueue（finalize 阶段不再接受 supplement）
+    const humanQueue = this.humanQueues.get(taskId)
+    if (humanQueue) {
+      humanQueue.drainPending()
+      humanQueue.clearBarrier()
+    }
+
+    // 3. 跑反思补轮（失败/abort 任务不跑——没有有意义的 reflection 内容）
+    if (finalStatus === 'failed') return
+
+    // 3. 跑反思补轮；reflectFn 本身保证内部 retry + fallback 不抛错，
+    //    这里 try 兜的是 LLM 不可达 / adapter 异常等外层错误——此时构造 fallback 反思继续写入，
+    //    保证 task.result.outcome_brief 至少有 lastAssistantText 截断兜底，不留空。
+    let reflection: Awaited<ReturnType<typeof reflectStructuredOutcome>>
+    try {
+      const reflectFn = this.deps.reflectFn ?? reflectStructuredOutcome
+      reflection = await reflectFn({
+        messages: engineResult.finalMessages,
+        adapter: adapterFromSdkEnv(this.sdkEnv),
+        model: this.sdkEnv.modelId,
+        lastAssistantText: engineResult.finalText,
+      })
+      log(`finalize: reflection produced (retries=${reflection.retries}, fallback=${reflection.fellBackToLastText})`)
+    } catch (err) {
+      log(`finalize: reflectFn threw, using lastAssistantText fallback: ${err instanceof Error ? err.message : String(err)}`)
+      reflection = {
+        outcome_brief: engineResult.finalText.slice(0, 200),
+        process_highlights: [],
+        retries: 0,
+        fellBackToLastText: true,
+      }
+    }
+
+    // 4. 回填 outcome_brief / process_highlights —— reflectFn 失败时写 fallback 兜底
+    try {
+      await this.deps.rpcClient.call(
+        adminPort, 'update_task_outcome',
+        {
+          task_id: taskId,
+          outcome_brief: reflection.outcome_brief,
+          process_highlights: reflection.process_highlights,
+        },
+        this.deps.moduleId,
+      )
+    } catch (err) {
+      log(`finalize: update_task_outcome failed (continuing): ${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   /**

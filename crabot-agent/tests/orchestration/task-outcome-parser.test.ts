@@ -100,6 +100,30 @@ not valid json {
     expect(r.outcome_brief).toHaveLength(200)
   })
 
+  it('fence 外为空时 stripped_summary 退到 brief，避免用户面 0 chars', () => {
+    // 2026-05-12 b05db23a 事故：worker 把整段内容都塞进 fence、fence 外什么都没写。
+    // 修复前 stripped_summary = ''，dispatcher 把空串发给 telegram → "0 chars" 静默失败。
+    const summary = `\`\`\`json
+{
+  "outcome_brief": "完成 Crypto 信号增强三方向研究",
+  "process_highlights": ["RSI 增强行情分类极差 36.5pp"]
+}
+\`\`\``
+    const r = extractTaskOutcome(summary, 200)
+    expect(r.outcome_brief).toBe('完成 Crypto 信号增强三方向研究')
+    expect(r.process_highlights).toEqual(['RSI 增强行情分类极差 36.5pp'])
+    // 关键：stripped_summary 不再是空串，而是退到 brief
+    expect(r.stripped_summary).toBe('完成 Crypto 信号增强三方向研究')
+  })
+
+  it('fence 外只有空白时也走 brief 兜底', () => {
+    const summary = `\n\n   \n\`\`\`json
+{ "outcome_brief": "ok", "process_highlights": [] }
+\`\`\``
+    const r = extractTaskOutcome(summary, 200)
+    expect(r.stripped_summary).toBe('ok')
+  })
+
   it('summary 中夹带内联 ```json 块时只匹配末尾契约块', () => {
     const summary = `解释：返回值如 \`\`\`json
 {"a":1}

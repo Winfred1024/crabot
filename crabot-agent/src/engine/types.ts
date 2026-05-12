@@ -256,6 +256,7 @@ export interface EngineResult {
   readonly totalTurns: number
   readonly usage: { readonly inputTokens: number; readonly outputTokens: number }
   readonly error?: string
+  readonly finalMessages: ReadonlyArray<EngineMessage>
 }
 
 // --- Factory Functions ---

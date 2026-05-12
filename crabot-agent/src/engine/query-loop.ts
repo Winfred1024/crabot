@@ -86,7 +86,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
   for (let turn = 0; turn < maxTurns; turn++) {
     // Check abort before starting a turn
     if (abortSignal?.aborted) {
-      return buildResult('aborted', finalText, totalTurns, contextManager)
+      return buildResult('aborted', finalText, totalTurns, contextManager, messages)
     }
 
     // Check if context compaction is needed
@@ -129,10 +129,10 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
       llmCallMs = Date.now() - llmStartedAtMs
     } catch (error) {
       if (abortSignal?.aborted) {
-        return buildResult('aborted', finalText, totalTurns, contextManager)
+        return buildResult('aborted', finalText, totalTurns, contextManager, messages)
       }
       console.error('[query-loop] LLM call threw:', error)
-      return buildResult('failed', finalText, totalTurns, contextManager, formatError(error))
+      return buildResult('failed', finalText, totalTurns, contextManager, messages, formatError(error))
     }
 
     const processed = partitionResponseContent(response.content)
@@ -208,7 +208,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
         }
         // 配额耗尽：input 已被压过两次仍 max_tokens，再走 forced-summary 会让 input
         // 更大；此时只能诚实返回空 finalText。
-        return buildResult('completed', finalText, totalTurns, contextManager)
+        return buildResult('completed', finalText, totalTurns, contextManager, messages)
       }
 
       // 真静默 end_turn：早 return 路径不 fire onTurn，这里先补 fire 让 trace 看到这一轮。
@@ -224,7 +224,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
         continue
       }
 
-      return buildResult('completed', finalText, totalTurns, contextManager)
+      return buildResult('completed', finalText, totalTurns, contextManager, messages)
     }
 
     // ── Barrier check: wait for potential supplement before executing tools ──
@@ -233,7 +233,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
 
       // Check abort after waiting
       if (abortSignal?.aborted) {
-        return buildResult('aborted', finalText, totalTurns, contextManager)
+        return buildResult('aborted', finalText, totalTurns, contextManager, messages)
       }
 
       // If supplement arrived during wait, cancel tools and inject
@@ -370,7 +370,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
   }
 
   // Loop exhausted
-  return buildResult('max_turns', finalText, totalTurns, contextManager)
+  return buildResult('max_turns', finalText, totalTurns, contextManager, messages)
 }
 
 // --- Helpers ---
@@ -415,6 +415,7 @@ function buildResult(
   finalText: string,
   totalTurns: number,
   contextManager: ContextManager,
+  messages: readonly EngineMessage[],
   error?: string
 ): EngineResult {
   const usage = contextManager.getCumulativeUsage()
@@ -423,6 +424,9 @@ function buildResult(
     finalText,
     totalTurns,
     usage,
+    // 浅拷贝防共享：runEngine 退出后 messages 不再被改，但 buildResult 直接持有引用会让
+    // 未来的重构面临"我以为 EngineResult 是不可变的，结果上游 push 了一条消息"的隐患。
+    finalMessages: [...messages],
     ...(error !== undefined ? { error } : {}),
   }
 }
