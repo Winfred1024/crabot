@@ -82,27 +82,6 @@ describe('ProgressDigest flush behavior', () => {
     digest.dispose()
   })
 
-  it('ask_human tool call flushes immediately (interactive must be delivered now)', async () => {
-    const sendToUser = vi.fn().mockResolvedValue(undefined)
-    const config: ProgressDigestConfig = {
-      intervalMs: 1_800_000,
-      mode: 'extract',
-      isMasterPrivate: true,
-    }
-    const digest = new ProgressDigest(config, makeDeps(sendToUser))
-
-    digest.ingest(makeEvent({
-      assistantText: '需要确认',
-      toolCalls: [makeToolCall({ name: 'mcp__crabot-worker__ask_human' })],
-    }))
-
-    await vi.runOnlyPendingTimersAsync()
-    await Promise.resolve()
-    expect(sendToUser).toHaveBeenCalledTimes(1)
-
-    digest.dispose()
-  })
-
   it('interval timer fires after intervalMs and flushes accumulated buffer', async () => {
     const sendToUser = vi.fn().mockResolvedValue(undefined)
     const config: ProgressDigestConfig = {

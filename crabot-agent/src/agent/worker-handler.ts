@@ -13,7 +13,6 @@ import {
   runEngine,
   createAdapter,
   createUserMessage,
-  defineTool,
   getConfiguredBuiltinTools,
   ProgressDigest,
   filterToolsByPermission,
@@ -488,37 +487,7 @@ export class WorkerHandler {
       const buildToolsDynamic = (): ReadonlyArray<ToolDefinition> => {
         const tools: ToolDefinition[] = []
 
-        // 3a. ask_human built-in tool
-        tools.push(defineTool({
-          name: 'mcp__crabot-worker__ask_human',
-          description: '请求人类反馈或确认',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              question: { type: 'string', description: '向人类提出的问题' },
-              options: {
-                type: 'array',
-                items: { type: 'string' },
-                description: '可选的选项列表',
-              },
-            },
-            required: ['question'],
-          },
-          isReadOnly: false,
-          call: async (input) => {
-            taskState.status = 'waiting_for_human'
-            return {
-              output: JSON.stringify({
-                status: 'waiting',
-                message: '已向人类发送问题，等待响应...',
-                question: (input as { question: string }).question,
-              }),
-              isError: false,
-            }
-          },
-        }))
-
-        // 3b. crab-memory MCP server tools
+        // 3. crab-memory MCP server tools
         const memoryTaskCtx: MemoryTaskContext = {
           taskId: task.task_id,
           channelId: context.task_origin?.channel_id,

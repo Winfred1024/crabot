@@ -98,9 +98,6 @@ export class ProgressDigest {
     // respect the configured digest interval; flushing on every isError bypasses the
     // user-configured cadence (e.g. 1800s) and produces minute-by-minute digests.
     const isAskHuman = (tc: { name: string; input: Record<string, unknown> }): boolean => {
-      // 旧 ask_human built-in 工具（Task 9 会删，过渡期保留）
-      if (tc.name === 'mcp__crabot-worker__ask_human') return true
-      // send_message 工具 + intent='ask_human'
       if (tc.name === 'mcp__crab-messaging__send_message' || tc.name === 'send_message') {
         const input = tc.input as { intent?: string } | undefined
         return input?.intent === 'ask_human'
