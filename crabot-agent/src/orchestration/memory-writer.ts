@@ -14,17 +14,6 @@ interface MemoryWriteBase {
   scopes: string[]
 }
 
-export interface WriteTaskCreatedParams extends MemoryWriteBase {
-  task_id: string
-  task_title: string
-  friend_name: string
-  friend_id: string
-  channel_id: string
-  session_id: string
-  worker_id?: string
-  trace_id?: string
-}
-
 export interface WriteTaskFinishedParams extends MemoryWriteBase {
   task_id: string
   task_title: string
@@ -40,15 +29,16 @@ export interface WriteTaskFinishedParams extends MemoryWriteBase {
   trace_id?: string
 }
 
-export interface WriteTriageDecisionParams extends MemoryWriteBase {
+export interface WriteUserSignalParams extends MemoryWriteBase {
   friend_name: string
   friend_id: string
   channel_id: string
   session_id: string
-  /** 用户消息的简要概述（≤80字，调用方截取，不需要 LLM） */
+  /** 用户原话简要概述（≤80 字，调用方截取） */
   message_brief: string
-  decision: 'direct_reply' | 'create_task' | 'supplement_task'
-  task_id?: string
+  /** Front LLM 在 reply 工具里附带的 emotion；只有 frustrated/angry/dismissive 才会触发本写入 */
+  emotion: 'unhappy' | 'frustrated' | 'angry' | 'dismissive'
+  trace_id?: string
 }
 
 export interface QuickCaptureParams {
@@ -75,23 +65,6 @@ export class MemoryWriter {
     private moduleId: string,
     private getMemoryPort: () => number | Promise<number>
   ) {}
-
-  /** Task 创建事件 */
-  async writeTaskCreated(params: WriteTaskCreatedParams): Promise<void> {
-    const workerLabel = params.worker_id ? `，分配给 ${params.worker_id}` : ''
-    const content = `为 ${params.friend_name} 创建任务 ${params.task_id}：${params.task_title}${workerLabel}`
-
-    await this.write({
-      content,
-      source: { type: 'conversation' as const, channel_id: params.channel_id, session_id: params.session_id },
-      refs: { task_id: params.task_id, friend_id: params.friend_id, session_id: params.session_id, channel_id: params.channel_id, ...(params.trace_id ? { trace_id: params.trace_id } : {}) },
-      persons: [params.friend_name],
-      entities: [params.task_id],
-      topic: params.task_title,
-      visibility: params.visibility,
-      scopes: params.scopes,
-    })
-  }
 
   /** Task 完成/失败事件 */
   async writeTaskFinished(params: WriteTaskFinishedParams): Promise<void> {
@@ -125,23 +98,10 @@ export class MemoryWriter {
     })
   }
 
-  /** 分诊决策事件 */
-  async writeTriageDecision(params: WriteTriageDecisionParams): Promise<void> {
+  /** L1 写入：用户情绪信号（spec §6.1）；触发条件 = direct_reply 且 emotion 是负向 */
+  async writeUserSignal(params: WriteUserSignalParams): Promise<void> {
     const channelLabel = params.channel_id === 'admin-web' ? 'Admin 管理聊天' : `频道 ${params.channel_id}`
-    let content: string
-
-    switch (params.decision) {
-      case 'direct_reply':
-        content = `${params.friend_name} 在 ${channelLabel} 的消息（${params.message_brief}），直接回复`
-        break
-      case 'create_task':
-        content = `${params.friend_name} 在 ${channelLabel} 发来请求（${params.message_brief}），创建任务 ${params.task_id ?? ''}`
-        break
-      case 'supplement_task':
-        content = `${params.friend_name} 对任务 ${params.task_id ?? ''} 发来纠偏/补充（${params.message_brief}）`
-        break
-    }
-
+    const content = `${params.friend_name} 在 ${channelLabel} 表达 ${params.emotion} 情绪：${params.message_brief}`
     await this.write({
       content,
       source: { type: 'conversation' as const, channel_id: params.channel_id, session_id: params.session_id },
@@ -149,10 +109,10 @@ export class MemoryWriter {
         friend_id: params.friend_id,
         session_id: params.session_id,
         channel_id: params.channel_id,
-        ...(params.task_id ? { task_id: params.task_id } : {}),
+        ...(params.trace_id ? { trace_id: params.trace_id } : {}),
       },
       persons: [params.friend_name],
-      topic: params.message_brief,
+      topic: `user_signal:${params.emotion}`,
       visibility: params.visibility,
       scopes: params.scopes,
     })

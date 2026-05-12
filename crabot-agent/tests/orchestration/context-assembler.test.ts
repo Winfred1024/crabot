@@ -366,4 +366,143 @@ describe('ContextAssembler', () => {
     expect(ctx.recent_messages).toHaveLength(1)
     expect(ctx.recent_messages[0].platform_message_id).toBe('m3')
   })
+
+  describe('fetchShortTermMemory — channel+session 排除（B.1）', () => {
+    it('Front 上下文中过滤掉 source.channel_id + session_id 与当前一致的短期记忆条目', async () => {
+      const memoryResults = [
+        {
+          id: 'm1',
+          content: 'cur-session-event',
+          event_time: '2026-05-10T00:00:00Z',
+          keywords: [],
+          persons: [],
+          entities: [],
+          compressed: false,
+          visibility: 'public',
+          scopes: [],
+          created_at: '2026-05-10T00:00:00Z',
+          source: { type: 'triage', channel_id: 'tg-001', session_id: 'sess-A' },
+        },
+        {
+          id: 'm2',
+          content: 'other-session-event',
+          event_time: '2026-05-10T00:00:00Z',
+          keywords: [],
+          persons: [],
+          entities: [],
+          compressed: false,
+          visibility: 'public',
+          scopes: [],
+          created_at: '2026-05-10T00:00:00Z',
+          source: { type: 'triage', channel_id: 'tg-001', session_id: 'sess-B' },
+        },
+        {
+          id: 'm3',
+          content: 'other-channel-event',
+          event_time: '2026-05-10T00:00:00Z',
+          keywords: [],
+          persons: [],
+          entities: [],
+          compressed: false,
+          visibility: 'public',
+          scopes: [],
+          created_at: '2026-05-10T00:00:00Z',
+          source: { type: 'triage', channel_id: 'wx-001', session_id: 'sess-A' },
+        },
+      ]
+
+      const friend = {
+        id: 'friend-1',
+        display_name: 'Test User',
+        permission: 'master' as const,
+        channel_identities: [],
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      }
+
+      mockRpc.call.mockImplementation((_port, method) => {
+        if (method === 'get_chat_history') return Promise.resolve({ messages: [] })
+        if (method === 'search_short_term') return Promise.resolve({ results: memoryResults })
+        if (method === 'list_tasks') return Promise.resolve({ items: [] })
+        if (method === 'get_scene_profile') return Promise.resolve({ profile: null })
+        throw new Error(`unexpected call: ${String(method)}`)
+      })
+
+      const ctx = await assembler.assembleFrontContext(
+        {
+          channel_id: 'tg-001',
+          session_id: 'sess-A',
+          sender_id: 'user-1',
+          message: 'hello',
+          friend_id: 'friend-1',
+          session_type: 'private',
+        },
+        friend,
+        defaultMemoryPermissions,
+      )
+
+      // m1 应被过滤（channel_id=tg-001, session_id=sess-A 都匹配）
+      // m2 应保留（session_id 不匹配）
+      // m3 应保留（channel_id 不匹配）
+      expect(ctx.short_term_memories.map((m) => m.id)).toEqual(['m2', 'm3'])
+    })
+
+    it('Worker 上下文不应用 channel+session 排除', async () => {
+      const memoryResults = [
+        {
+          id: 'm1',
+          content: 'cur-session-event',
+          event_time: '2026-05-10T00:00:00Z',
+          keywords: [],
+          persons: [],
+          entities: [],
+          compressed: false,
+          visibility: 'public',
+          scopes: [],
+          created_at: '2026-05-10T00:00:00Z',
+          source: { type: 'triage', channel_id: 'tg-001', session_id: 'sess-A' },
+        },
+        {
+          id: 'm2',
+          content: 'other-session-event',
+          event_time: '2026-05-10T00:00:00Z',
+          keywords: [],
+          persons: [],
+          entities: [],
+          compressed: false,
+          visibility: 'public',
+          scopes: [],
+          created_at: '2026-05-10T00:00:00Z',
+          source: { type: 'triage', channel_id: 'tg-001', session_id: 'sess-B' },
+        },
+      ]
+
+      mockRpc.call.mockImplementation((_port, method) => {
+        if (method === 'get_chat_history') return Promise.resolve({ messages: [] })
+        if (method === 'search_short_term') return Promise.resolve({ results: memoryResults })
+        if (method === 'get_scene_profile') return Promise.resolve({ profile: null })
+        throw new Error(`unexpected call: ${String(method)}`)
+      })
+
+      mockRpc.resolve
+        .mockResolvedValueOnce([{ module_id: 'admin', port: 19100 }])
+        .mockResolvedValueOnce([{ module_id: 'memory', port: 19200 }])
+        .mockResolvedValueOnce([])
+
+      const ctx = await assembler.assembleWorkerContext(
+        {
+          channel_id: 'tg-001',
+          session_id: 'sess-A',
+          sender_id: 'user-1',
+          message: 'hello',
+          friend_id: 'friend-1',
+          session_type: 'private',
+        },
+        defaultMemoryPermissions,
+      )
+
+      // Worker 不应过滤，两条都应保留
+      expect(ctx.short_term_memories.map((m) => m.id)).toEqual(['m1', 'm2'])
+    })
+  })
 })

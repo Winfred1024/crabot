@@ -2,11 +2,11 @@
  * Crab-Memory MCP Server — Agent 长期记忆能力
  *
  * 两组工具：
- * - 简化工具组（Worker 普通对话用）：store_memory / search_memory / set_scene_anchor / get_memory_detail
+ * - 简化工具组（Worker 普通对话用）：store_memory / search_memory / set_scene_profile / get_memory_detail
  *   importance / brief 等字段自动推断，最少参数即可落盘
  * - 原生 RPC 工具组（反思 SKILL 用）：quick_capture / search_long_term / update_long_term /
  *   delete_memory / run_maintenance / get_memory_stats / get_evolution_mode / set_evolution_mode /
- *   get_scene_profile / upsert_scene_profile / list_recent / promote_to_rule
+ *   get_scene_profile / list_recent / promote_to_rule
  *   字段精细可控，工具名与 Memory RPC 一一对应
  *
  * @see crabot-docs/protocols/protocol-memory.md
@@ -219,83 +219,6 @@ export function createCrabMemoryServer(
           }
         },
       ),
-  server.registerTool(
-    'set_scene_anchor',
-    {
-      description: '把当前场景必须遵守的一段上下文写入场景画像。',
-      inputSchema: {
-        content: z.string().describe('完整场景正文'),
-      },
-    },
-    async (args) => {
-      try {
-        let scene:
-          | { type: 'group_session'; channel_id: string; session_id: string }
-          | { type: 'friend'; friend_id: string }
-          | null = null
-        if (ctx.sessionType === 'group' && ctx.channelId && ctx.sessionId) {
-          scene = { type: 'group_session', channel_id: ctx.channelId, session_id: ctx.sessionId }
-        } else if (ctx.sessionType === 'private' && ctx.senderFriendId) {
-          scene = { type: 'friend', friend_id: ctx.senderFriendId }
-        }
-        if (!scene) {
-          return {
-            content: [{ type: 'text' as const, text: JSON.stringify({
-              success: false,
-              error: '无法推断场景（缺少 friend_id 或 session_id）',
-            }) }],
-          }
-        }
-        const now = new Date().toISOString()
-        const memoryPort = await getMemoryPort()
-        const label = await resolveSceneAnchorLabel({
-          rpcClient,
-          memoryPort,
-          moduleId,
-          scene,
-        })
-        const result = await rpcClient.call<
-          {
-            scene: typeof scene
-            label: string
-            content: string
-            created_at: string
-            updated_at: string
-            last_declared_at: string
-          },
-          { profile: unknown }
-        >(
-          memoryPort,
-          'upsert_scene_profile',
-          {
-            scene,
-            label,
-            content: args.content,
-            created_at: now,
-            updated_at: now,
-            last_declared_at: now,
-          },
-          moduleId,
-        )
-
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify({
-            success: true,
-            profile: result.profile,
-          }) }],
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        console.error(`[${moduleId}] set_scene_anchor failed:`, message)
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify({
-            success: false,
-            error: message,
-          }) }],
-        }
-      }
-    },
-  )
   server.registerTool(
         'get_memory_detail',
         {
@@ -522,26 +445,83 @@ export function createCrabMemoryServer(
   )
 
   server.registerTool(
-    'upsert_scene_profile',
+    'set_scene_profile',
     {
-      description: '写入或覆盖场景画像。content 必填，是描述该场景稳定规则与信息的一段文本（markdown 也可）。反思流程通常先 get_scene_profile 拉现状，再让 LLM 综合新证据生成新 content，最后调本接口覆盖。',
+      description:
+        '写入或覆盖当前场景画像（friend 私聊或 group session）。' +
+        '【关键】这是覆盖式写入，不是 patch——当前场景画像已在你 prompt 顶部，覆盖前请基于现状合并。' +
+        '【场景判定】scene/label 不传时自动从当前 ctx 推断；明确写其他场景或 global 画像才传 scene。' +
+        '【边界】跨多个场景都适用的用户偏好不要写到本工具——走 store_memory。' +
+        '操作类指令（"修改 X 配置 / 调整 Y schedule"）不要写到本工具——走对应 admin/CLI 操作。',
       inputSchema: {
-        scene: sceneSchema,
-        label: z.string().describe('画像标签（建议用 friend:<id> 或 group:<channel>:<session> 形式）'),
-        content: z.string().describe('场景画像正文（一段描述文本）'),
+        scene: sceneSchema.optional(),
+        label: z.string().optional(),
+        content: z.string().describe('场景画像正文（覆盖式写入）'),
         source_memory_ids: z.array(z.string()).optional()
           .describe('来源记忆 ID 列表（追溯用）'),
       },
     },
     async (args) => {
-      const now = new Date().toISOString()
-      const params: Record<string, unknown> = {
-        ...args,
-        created_at: now,
-        updated_at: now,
-        last_declared_at: now,
+      try {
+        let scene:
+          | { type: 'friend'; friend_id: string }
+          | { type: 'group_session'; channel_id: string; session_id: string }
+          | { type: 'global' }
+          | undefined = args.scene
+
+        if (!scene) {
+          // 从 ctx 推断场景
+          if (ctx.sessionType === 'group' && ctx.channelId && ctx.sessionId) {
+            scene = { type: 'group_session', channel_id: ctx.channelId, session_id: ctx.sessionId }
+          } else if (ctx.sessionType === 'private' && ctx.senderFriendId) {
+            scene = { type: 'friend', friend_id: ctx.senderFriendId }
+          }
+          if (!scene) {
+            return {
+              content: [{ type: 'text' as const, text: JSON.stringify({
+                success: false,
+                error: '无法推断场景（缺少 friend_id 或 session_id），需显式传 scene',
+              }) }],
+            }
+          }
+        }
+
+        let label = args.label
+        if (!label) {
+          if (scene.type === 'global') {
+            label = 'global'
+          } else {
+            const memoryPort = await getMemoryPort()
+            label = await resolveSceneAnchorLabel({ rpcClient, memoryPort, moduleId, scene })
+          }
+        }
+
+        const now = new Date().toISOString()
+        const memoryPort = await getMemoryPort()
+        const result = await rpcClient.call<
+          Record<string, unknown>,
+          { profile: unknown }
+        >(
+          memoryPort,
+          'upsert_scene_profile',
+          {
+            scene, label, content: args.content,
+            ...(args.source_memory_ids ? { source_memory_ids: args.source_memory_ids } : {}),
+            created_at: now, updated_at: now, last_declared_at: now,
+          },
+          moduleId,
+        )
+
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ success: true, profile: result.profile }) }],
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        console.error(`[${moduleId}] set_scene_profile failed:`, message)
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ success: false, error: message }) }],
+        }
       }
-      return callRpc('upsert_scene_profile', params)
     },
   )
 

@@ -11,16 +11,17 @@ import { ToolExecutor, type ToolExecutorDeps } from './tool-executor.js'
 import { runFrontLoop } from './front-loop.js'
 import { mcpServerToToolDefinitions } from './mcp-tool-bridge.js'
 import { resolveImageBlocks } from './media-resolver.js'
-import { formatMessageContent } from './media-resolver.js'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type {
   ChannelMessage,
   FrontAgentContext,
   HandleMessageParams,
   HandleMessageResult,
+  TaskSummary,
   TraceCallback,
 } from '../types.js'
 import { formatNow, formatTaskCreatedAt } from '../utils/time.js'
+import { resolveSenderIdentity } from '../utils/sender-identity.js'
 import { formatChannelMessageLine, formatShortTermMemoryLine } from '../prompt-manager.js'
 
 export type UserMessageContent = string | ContentBlock[]
@@ -168,95 +169,109 @@ export function buildUserMessage(
   parts.push('')
 
   if (context.scene_profile) {
-    parts.push(`## 场景画像（${context.scene_profile.label}）`)
-    parts.push('以下内容是当前场景必须加载并遵守的上下文：')
-    parts.push('')
-    parts.push(context.scene_profile.content)
+    const escaped = context.scene_profile.content.replace(/<\/scene_profile>/g, '&lt;/scene_profile&gt;')
+    parts.push('## 场景画像')
+    parts.push(`<scene_profile label="${context.scene_profile.label}">`)
+    parts.push(escaped)
+    parts.push('</scene_profile>')
     parts.push('')
   }
 
-  // ── 上下文信息 ──
-  parts.push('## 上下文信息')
-
+  // ── 对话场景 ──
+  parts.push('## 对话场景')
   if (isGroup) {
-    const senderNames = [...new Set(messages.map(m => m.sender.platform_display_name))]
-    parts.push(`- 会话类型: 群聊`)
-    parts.push(`- 本批消息参与者: ${senderNames.join(', ')}`)
-    if (context.crab_display_name) {
-      parts.push(`- 你在群中的昵称: ${context.crab_display_name}`)
-    }
-    parts.push(`- 已知熟人: ${context.sender_friend.display_name} (${context.sender_friend.permission})`)
+    const session = messages[0].session
+    parts.push(`- 类型: 群聊`)
+    parts.push(`- 对话对象: ${session.session_id}`)
+    parts.push(`- 对话对象 ID: group:${session.channel_id}:${session.session_id}`)
   } else {
-    parts.push(`- 用户: ${context.sender_friend.display_name}`)
-    parts.push(`- 会话类型: 私聊`)
+    const f = context.sender_friend
+    parts.push(`- 类型: 私聊`)
+    parts.push(`- 对话对象: ${f.display_name}`)
+    parts.push(`- 对话对象 ID: friend:${f.id}`)
+    parts.push(`- 对话对象身份: ${f.permission}`)
   }
-  parts.push(`- 活跃任务数: ${context.active_tasks.length}`)
 
-  // ── 活跃任务列表 ──
+  // ── IM 渠道 ──
+  if (messages.length > 0) {
+    const session = messages[0].session
+    parts.push('\n## IM 渠道')
+    parts.push(`- channel: ${session.channel_id}`)
+    parts.push(`- session: ${session.session_id}`)
+    if (context.crab_display_name) {
+      parts.push(`- 你在该渠道的昵称: ${context.crab_display_name}`)
+    }
+  }
+
+  // ── 活跃任务（三分类 + master 权限过滤）──
   if (context.active_tasks.length > 0) {
-    parts.push('\n## 活跃任务列表')
-    for (const task of context.active_tasks) {
-      const sessionInfo = task.source_session_id ? `, 来源session: ${task.source_session_id}` : ''
-      // 定时/巡检任务用显式标签让 LLM 一眼分辨，禁止对其 supplement
-      const kindTag = task.trigger_type === 'scheduled' ? ' [定时/巡检任务，禁止 supplement]' : ''
-      parts.push(`- [${task.task_id}] "${task.title}" (status: ${task.status}${sessionInfo})${kindTag}`)
-      if (task.latest_progress) {
-        parts.push(`  最近进度（事后摘要）: ${task.latest_progress}`)
-      }
-      if (task.plan_summary) {
-        parts.push(`  计划摘要: ${task.plan_summary}`)
-      }
-      // 飞行中任务：注入实时执行快照（避免用户问"现在在干什么"时只能拿事后摘要回答）
-      const live = task.live
+    const currentChannel = messages[0]?.session.channel_id
+    const currentSession = messages[0]?.session.session_id
+    const isMaster = context.sender_friend.permission === 'master'
+
+    const currentTasks: TaskSummary[] = []
+    const otherTasks: TaskSummary[] = []
+    const scheduledTasks: TaskSummary[] = []
+
+    for (const t of context.active_tasks) {
+      if (t.trigger_type === 'scheduled') scheduledTasks.push(t)
+      else if (t.source_session_id === currentSession && t.source_channel_id === currentChannel) currentTasks.push(t)
+      else otherTasks.push(t)
+    }
+
+    const renderTask = (t: TaskSummary, includeSource: boolean = false): string[] => {
+      const lines: string[] = []
+      const tag = t.trigger_type === 'scheduled' ? ' [定时/巡检任务，禁止 supplement]' : ''
+      const src = includeSource && t.source_channel_id ? ` [来源: ${t.source_channel_id}:${t.source_session_id}]` : ''
+      lines.push(`- [${t.task_id}] "${t.title}" (status: ${t.status})${tag}${src}`)
+      if (t.latest_progress) lines.push(`  最近进度（事后摘要）: ${t.latest_progress}`)
+      const live = t.live
       if (live) {
-        parts.push(`  创建于 ${formatTaskCreatedAt(live.started_at, timezone, now)} / 第 ${live.current_turn} 轮`)
+        lines.push(`  创建于 ${formatTaskCreatedAt(live.started_at, timezone, now)} / 第 ${live.current_turn} 轮`)
         if (live.last_assistant_text) {
-          const t = live.last_assistant_text.trim()
-          if (t.length > 0) parts.push(`  上轮模型说: ${t.slice(0, 200)}${t.length > 200 ? '…' : ''}`)
+          const tt = live.last_assistant_text.trim()
+          if (tt.length > 0) lines.push(`  上轮模型说: ${tt.slice(0, 200)}${tt.length > 200 ? '…' : ''}`)
         }
         if (live.active_tools.length > 0) {
           for (const at of live.active_tools) {
-            const dur = formatElapsed(Date.now() - at.started_at)
-            parts.push(`  正在跑工具: ${at.name}（已 ${dur}）— ${at.input_summary}`)
+            lines.push(`  正在跑工具: ${at.name}（已 ${formatElapsed(Date.now() - at.started_at)}）— ${at.input_summary}`)
           }
         }
         if (live.recent_completed.length > 0) {
-          const tail = live.recent_completed.slice(-3).map(c =>
-            `${c.name}${c.is_error ? '(失败)' : ''}`
-          ).join(' / ')
-          parts.push(`  最近完成: ${tail}`)
+          const tail = live.recent_completed.slice(-3).map(c => `${c.name}${c.is_error ? '(失败)' : ''}`).join(' / ')
+          lines.push(`  最近完成: ${tail}`)
         }
         if (live.llm_retry) {
           const r = live.llm_retry
           const elapsed = formatElapsed(Date.now() - r.since)
-          parts.push(`  ⚠️ LLM 调用 retry 中: ${r.attempt}/${r.max_attempts} (${r.source})，已 ${elapsed}，原因: ${r.last_error}`)
+          lines.push(`  ⚠️ LLM 调用 retry 中: ${r.attempt}/${r.max_attempts} (${r.source})，已 ${elapsed}，原因: ${r.last_error}`)
         }
       }
+      return lines
     }
-    parts.push('\n当用户询问任务进度时，请根据上述任务列表（特别是"正在跑工具"和"上轮模型说"）具体说明当前在做什么，不要笼统说"还在执行"。')
-    parts.push('当用户消息可能是对某个任务的纠偏/补充时，使用 supplement_task 决策。')
-    parts.push('纠偏判断优先匹配来源 session 与当前 session 相同的任务。')
-    parts.push('**带 [定时/巡检任务，禁止 supplement] 标签的任务一律不可作为 supplement 目标**：用户的新需求即使主题相关，也必须 create_task，不要 supplement 到定时任务上覆盖它本职。')
+
+    parts.push('\n## 活跃任务')
+
+    if (currentTasks.length > 0) {
+      parts.push(`\n### 当前对话对象的任务（${currentTasks.length} 条）`)
+      for (const t of currentTasks) parts.push(...renderTask(t))
+    }
+
+    if (isMaster && otherTasks.length > 0) {
+      parts.push(`\n### 其他对话场景的任务（${otherTasks.length} 条）`)
+      for (const t of otherTasks) parts.push(...renderTask(t, true))
+    }
+
+    if (isMaster && scheduledTasks.length > 0) {
+      parts.push(`\n### schedule 触发任务（${scheduledTasks.length} 条）`)
+      for (const t of scheduledTasks) parts.push(...renderTask(t))
+    }
+
+    parts.push('\n当用户消息可能是对某个任务的纠偏/补充时，使用 supplement_task 决策。')
+    parts.push('纠偏判断优先匹配「当前对话对象的任务」段。')
+    parts.push('**带 [定时/巡检任务，禁止 supplement] 标签的任务一律不可作为 supplement 目标**：用户的新需求即使主题相关，也必须 create_task。')
   }
 
-  // ── 最近结束的任务（用于"继续之前那个 ..."类提问的指代解析）──
-  if (context.recently_closed_tasks && context.recently_closed_tasks.length > 0) {
-    parts.push('\n## 本会话最近结束的任务（已 completed / failed / aborted）')
-    for (const task of context.recently_closed_tasks) {
-      parts.push(`- [${task.task_id}] "${task.title}" (status: ${task.status}, 结束于: ${task.updated_at ?? '?'})`)
-      if (task.latest_progress) {
-        parts.push(`  最终结果: ${task.latest_progress}`)
-      }
-    }
-    parts.push('\n如果用户提到"继续之前的"/"上次那个"/"接着之前的 ..."等指代过去任务的说法，从上面这个列表里挑出对应的 task_id，然后通过 create_task 决策开新任务，在新任务描述里包含 task_id，让 worker 用 get_task_details 工具拉详情、决定下一步。')
-  }
-
-  // ── Channel/Session 元信息 ──
-  if (messages.length > 0) {
-    const session = messages[0].session
-    parts.push(`- 当前 Channel ID: ${session.channel_id}`)
-    parts.push(`- 当前 Session ID: ${session.session_id}`)
-  }
 
   const shortTermHours = context.time_windows.short_term_memory_window_hours
   const recentHours = context.time_windows.recent_messages_window_hours
@@ -274,28 +289,40 @@ export function buildUserMessage(
     parts.push(`过去 ${shortTermHours} 小时内无相关短期记忆。如需更早的事件流水，可在 create_task 的 description 里说明，让 worker 调 \`crab-memory.search_short_term\` 查。`)
   }
 
-  // ── 最近消息（仅当前 session，时窗内全量） ──
+  // ── 聊天历史（仅当前 session，时窗内全量；XML tag 包裹避免 markdown 嵌套污染）──
   // 越靠近当前消息越重要，给更大的字符预算，保留完整的行动 offer / 决策上下文。
   // 注意：本段只反映当前 session 的本地历史，回答跨 session 指代必须看上方"短期记忆"段。
-  parts.push(`\n## 最近消息（当前 session，最近 ${recentHours} 小时，${context.recent_messages.length} 条）`)
+  parts.push(`\n## 聊天历史（当前 session，最近 ${recentHours} 小时，${context.recent_messages.length} 条）`)
   if (context.recent_messages.length > 0) {
     const total = context.recent_messages.length
     for (let i = 0; i < total; i++) {
       const distFromEnd = total - 1 - i
       const maxLen = distFromEnd < 3 ? 2000 : distFromEnd < 10 ? 600 : 300
-      parts.push(formatChannelMessageLine(context.recent_messages[i], { timezone, now, maxLen }))
+      const msg = context.recent_messages[i]
+      const identity = resolveSenderIdentity({
+        msg,
+        senderFriend: context.sender_friend,
+        crabDisplayName: context.crab_display_name,
+        isGroup,
+      })
+      parts.push(formatChannelMessageLine(msg, { timezone, now, maxLen, identity }))
     }
   } else {
     parts.push(`过去 ${recentHours} 小时本会话无消息。如需更早的本会话历史，调 \`get_history\` 工具。`)
   }
 
-  // ── 当前消息 ──
+  // ── 当前消息（XML 包裹）──
   if (isGroup) {
     parts.push(`\n## 当前群聊消息批次（共 ${messages.length} 条）`)
     parts.push(`- 是否 @你: ${hasMention ? '是' : '否'}`)
     for (const msg of messages) {
-      const mention = msg.features.is_mention_crab ? ' [@你]' : ''
-      parts.push(`- [${msg.sender.platform_display_name}]${mention}: ${formatMessageContent(msg)}`)
+      const identity = resolveSenderIdentity({
+        msg,
+        senderFriend: context.sender_friend,
+        crabDisplayName: context.crab_display_name,
+        isGroup: true,
+      })
+      parts.push(formatChannelMessageLine(msg, { timezone, now, maxLen: 2000, mentionMark: true, identity }))
     }
 
     if (hasMention) {
@@ -333,7 +360,13 @@ export function buildUserMessage(
   } else {
     parts.push('\n## 当前消息')
     for (const msg of messages) {
-      parts.push(`- ${msg.sender.platform_display_name}: ${formatMessageContent(msg)}`)
+      const identity = resolveSenderIdentity({
+        msg,
+        senderFriend: context.sender_friend,
+        crabDisplayName: context.crab_display_name,
+        isGroup: false,
+      })
+      parts.push(formatChannelMessageLine(msg, { timezone, now, maxLen: 2000, identity }))
     }
   }
 

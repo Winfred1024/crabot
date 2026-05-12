@@ -250,8 +250,7 @@ export class TelegramChannel extends ModuleBase {
     const chatId = String(message.chat.id)
     const isGroup = message.chat.type === 'group' || message.chat.type === 'supergroup'
     const senderId = String(message.from.id)
-    const senderName = message.from.first_name +
-      (message.from.last_name ? ` ${message.from.last_name}` : '')
+    const senderName = formatTgUserName(message.from)
 
     const chatTitle = isGroup
       ? (message.chat.title ?? `Group ${chatId}`)
@@ -273,6 +272,16 @@ export class TelegramChannel extends ModuleBase {
     const content = await this.convertMessageContent(message)
     const isMentionCrab = this.detectBotMention(message)
 
+    // 引用回复：把被引用消息以 quote prefix 形式 inline 进当前 text，
+    // agent 端无需额外 schema 即可看到引用上下文（spec §4.4 设计简化方案）
+    const replyTo = message.reply_to_message
+    const enriched = replyTo
+      ? {
+          ...content,
+          text: buildReplyQuotePrefix(replyTo) + (content.text ?? ''),
+        }
+      : content
+
     const channelMessage: ChannelMessage = {
       platform_message_id: String(message.message_id),
       session: {
@@ -284,9 +293,10 @@ export class TelegramChannel extends ModuleBase {
         platform_user_id: senderId,
         platform_display_name: senderName,
       },
-      content,
+      content: enriched,
       features: {
         is_mention_crab: isMentionCrab,
+        ...(replyTo ? { reply_to_message_id: String(replyTo.message_id) } : {}),
       },
       platform_timestamp: new Date(message.date * 1000).toISOString(),
     }
@@ -308,7 +318,11 @@ export class TelegramChannel extends ModuleBase {
       id: generateId(),
       type: 'channel.message_received',
       source: this.config.moduleId,
-      payload: { channel_id: this.config.moduleId, message: channelMessage },
+      payload: {
+        channel_id: this.config.moduleId,
+        message: channelMessage,
+        ...(this.botUser ? { crab_display_name: formatTgUserName(this.botUser) } : {}),
+      },
       timestamp: generateTimestamp(),
     }
 
@@ -755,6 +769,21 @@ async function loadMediaSource(source: string): Promise<string | Buffer> {
   } catch {
     return source
   }
+}
+
+/** 把 Telegram 用户的 first_name/last_name 拼成展示名 */
+function formatTgUserName(user: { first_name: string; last_name?: string }): string {
+  return user.first_name + (user.last_name ? ` ${user.last_name}` : '')
+}
+
+/** 构造引用消息的 quote prefix：`> [引用 Sender HH:MM msg_id=N] text\n\n`
+ *  msg_id 让 worker 能用 `mcp__crab-messaging__get_message` 直接拉原消息，
+ *  不需要靠时间窗+关键词猜锚点。 */
+function buildReplyQuotePrefix(replyTo: TgMessage): string {
+  const sender = replyTo.from ? formatTgUserName(replyTo.from) : '?'
+  const time = new Date(replyTo.date * 1000).toISOString().slice(11, 16) // HH:MM (UTC)
+  const text = replyTo.text ?? replyTo.caption ?? '[非文本消息]'
+  return `> [引用 ${sender} ${time} msg_id=${replyTo.message_id}] ${text}\n\n`
 }
 
 function storedMessageToProtocol(m: StoredMessage) {

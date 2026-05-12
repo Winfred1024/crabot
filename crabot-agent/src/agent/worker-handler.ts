@@ -67,6 +67,7 @@ import { HookRegistry } from '../hooks/hook-registry.js'
 import type { ContentReviewer } from '../hooks/types.js'
 import { reviewCliContent } from './cli-content-reviewer.js'
 import { PromptManager, formatChannelMessageLine, formatShortTermMemoryLine } from '../prompt-manager.js'
+import { resolveSenderIdentity } from '../utils/sender-identity.js'
 import { formatNow, formatChannelMessageTime, resolveTimezone, formatRuntimeMs } from '../utils/time.js'
 import { getInstanceSkillsDir } from '../core/data-paths.js'
 import { TodoStore } from './worker-todo-store.js'
@@ -1205,10 +1206,11 @@ export class WorkerHandler {
     parts.push('')
 
     if (context.scene_profile) {
-      parts.push(`## 场景画像（${context.scene_profile.label}）`)
-      parts.push('以下内容是当前场景必须加载并遵守的上下文：')
-      parts.push('')
-      parts.push(context.scene_profile.content)
+      const escaped = context.scene_profile.content.replace(/<\/scene_profile>/g, '&lt;/scene_profile&gt;')
+      parts.push('## 场景画像')
+      parts.push(`<scene_profile label="${context.scene_profile.label}">`)
+      parts.push(escaped)
+      parts.push('</scene_profile>')
       parts.push('')
     }
     parts.push('## 任务信息')
@@ -1224,6 +1226,11 @@ export class WorkerHandler {
         const time = msg.platform_timestamp ? formatChannelMessageTime(msg.platform_timestamp, timezone, now) : ''
         const stamp = time ? ` [${time}]` : ''
         parts.push(`\n### ${msg.sender.platform_display_name}${stamp}`)
+        // 当前消息携带引用锚点时显式列出，worker 可直接 mcp__crab-messaging__get_message 拉原消息
+        const refMsgId = msg.features.reply_to_message_id ?? msg.features.quote_message_id
+        if (refMsgId) {
+          parts.push(`引用消息 ID: ${refMsgId}（可用 \`mcp__crab-messaging__get_message\` 查完整原文与对应 task 详情）`)
+        }
         parts.push(formatMessageContent(msg))
       }
       if (task.task_description) {
@@ -1269,7 +1276,8 @@ export class WorkerHandler {
     parts.push(`\n## 最近相关消息（当前 session，最近 ${recentHours} 小时，${context.recent_messages?.length ?? 0} 条）`)
     if (context.recent_messages && context.recent_messages.length > 0) {
       for (const m of context.recent_messages) {
-        parts.push(formatChannelMessageLine(m, { timezone, now, maxLen: 500 }))
+        const identity = resolveSenderIdentity({ msg: m })
+        parts.push(formatChannelMessageLine(m, { timezone, now, maxLen: 500, identity }))
       }
     } else {
       parts.push(`过去 ${recentHours} 小时本会话无消息。如需更早的本会话历史，调 \`get_history\` 工具。`)

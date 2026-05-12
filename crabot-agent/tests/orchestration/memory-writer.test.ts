@@ -119,6 +119,39 @@ describe('MemoryWriter phase 3 helpers', () => {
   })
 })
 
+describe('MemoryWriter — D.1 删除 + D.2 新写入路径', () => {
+  it('writeTaskCreated 方法已删除', () => {
+    const w: any = new MemoryWriter({} as any, 'test', async () => 1234)
+    expect(typeof w.writeTaskCreated).toBe('undefined')
+  })
+  it('writeTriageDecision 方法已删除', () => {
+    const w: any = new MemoryWriter({} as any, 'test', async () => 1234)
+    expect(typeof w.writeTriageDecision).toBe('undefined')
+  })
+  it('writeUserSignal 写入 channel/session/friend refs + emotion topic', async () => {
+    const calls: any[] = []
+    const fakeRpc = { call: async (...a: any[]) => { calls.push(a); return {} } }
+    const w = new MemoryWriter(fakeRpc as any, 'crabot-agent', async () => 1234)
+    await w.writeUserSignal({
+      friend_name: 'FuFu', friend_id: 'f-1',
+      channel_id: 'tg-001', session_id: 'sess-A',
+      message_brief: '这版不对，重做',
+      emotion: 'frustrated',
+      visibility: 'private', scopes: [],
+    })
+    expect(calls).toHaveLength(1)
+    expect(calls[0][1]).toBe('write_short_term')
+    const payload = calls[0][2]
+    expect(payload.content).toContain('FuFu')
+    expect(payload.content).toContain('frustrated')
+    expect(payload.content).toContain('这版不对，重做')
+    expect(payload.refs.friend_id).toBe('f-1')
+    expect(payload.refs.channel_id).toBe('tg-001')
+    expect(payload.refs.session_id).toBe('sess-A')
+    expect(payload.topic).toBe('user_signal:frustrated')
+  })
+})
+
 describe('writeTaskFinished — Phase 2 structured content', () => {
   it('content 为 brief 一行（无亮点时不带过程亮点段）', async () => {
     const calls: any[] = []

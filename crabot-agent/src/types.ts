@@ -421,12 +421,6 @@ export interface FrontAgentContext {
   recent_messages: ChannelMessage[]
   short_term_memories: ShortTermMemoryEntry[]
   active_tasks: TaskSummary[]
-  /**
-   * 本 session 最近结束（completed / failed / aborted）的若干个任务，
-   * 让 LLM 在用户说"继续之前那个 ..."时能挑出 task_id，
-   * 然后用 get_task_details 工具拉详情、决定下一步。
-   */
-  recently_closed_tasks?: TaskSummary[]
   available_tools: ToolDeclaration[]
   /** 当前场景画像，由 Memory 模块直接返回并映射为运行时格式 */
   scene_profile?: RuntimeSceneProfile
@@ -508,11 +502,15 @@ export interface ToolHistoryEntry {
 export type UserAttitude = 'strong_pass' | 'pass' | 'fail' | 'strong_fail'
 export type UserAttitudeNegOnly = 'fail' | 'strong_fail'
 
+export type UserEmotion = 'neutral' | 'unhappy' | 'frustrated' | 'angry' | 'dismissive'
+
 export interface DirectReplyDecision {
   type: 'direct_reply'
   reply: MessageContent
   /** 用户对 prev finished task 的态度（可选，求准策略下 Front 不确定时不填） */
   user_attitude?: UserAttitude
+  /** 用户当前消息表达的情绪（可选）；frustrated/angry/dismissive 触发 L1 短期记忆写入 */
+  emotion?: UserEmotion
 }
 
 export interface CreateTaskDecision {
