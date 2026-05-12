@@ -409,6 +409,7 @@ export class AdminModule extends ModuleBase {
     this.registerMethod('get_task', this.handleGetTask.bind(this))
     this.registerMethod('list_tasks', this.handleListTasks.bind(this))
     this.registerMethod('update_task_status', this.handleUpdateTaskStatus.bind(this))
+    this.registerMethod('update_task_outcome', this.handleUpdateTaskOutcome.bind(this))
     this.registerMethod('assign_worker', this.handleAssignWorker.bind(this))
     this.registerMethod('update_plan', this.handleUpdatePlan.bind(this))
     this.registerMethod('append_message', this.handleAppendMessage.bind(this))
@@ -3715,6 +3716,29 @@ export class AdminModule extends ModuleBase {
       new_status: params.status,
     })
 
+    return { task }
+  }
+
+  private async handleUpdateTaskOutcome(params: {
+    task_id: TaskId
+    outcome_brief?: string
+    process_highlights?: string[]
+  }): Promise<{ task: Task }> {
+    const task = this.tasks.get(params.task_id)
+    if (!task) {
+      throw new Error(AdminErrorCode.TASK_NOT_FOUND)
+    }
+    if (!task.result) {
+      // task.result 应在 update_task_status('completed') 时已写入；防御性兜底
+      task.result = { outcome: 'completed', finished_at: generateTimestamp() }
+    }
+    task.result = {
+      ...task.result,
+      ...(params.outcome_brief !== undefined ? { outcome_brief: params.outcome_brief } : {}),
+      ...(params.process_highlights !== undefined ? { process_highlights: params.process_highlights } : {}),
+    }
+    task.updated_at = generateTimestamp()
+    this.tasks.set(task.id, task)
     return { task }
   }
 
