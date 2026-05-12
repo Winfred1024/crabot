@@ -455,6 +455,32 @@ describe('normalizeMessagesForOpenAI', () => {
     })
   })
 
+  it('replays assistant raw_reasoning blocks as top-level reasoning_content (DeepSeek thinking-mode contract)', () => {
+    const msg = createAssistantMessage(
+      [
+        { type: 'raw_reasoning', data: { reasoning_content: 'step 1. ' } },
+        { type: 'raw_reasoning', data: { reasoning_content: 'step 2.' } },
+        { type: 'text', text: 'final answer' },
+      ],
+      'end_turn'
+    )
+    const result = normalizeMessagesForOpenAI([msg]) as Array<Record<string, unknown>>
+
+    expect(result).toHaveLength(1)
+    expect(result[0]).toEqual({
+      role: 'assistant',
+      content: 'final answer',
+      reasoning_content: 'step 1. step 2.',
+    })
+  })
+
+  it('omits reasoning_content field when assistant has no raw_reasoning blocks', () => {
+    const msg = createAssistantMessage([{ type: 'text', text: 'hi' }], 'end_turn')
+    const result = normalizeMessagesForOpenAI([msg]) as Array<Record<string, unknown>>
+
+    expect(result[0]).not.toHaveProperty('reasoning_content')
+  })
+
   it('should convert a tool result to OpenAI tool message', () => {
     const msg = createToolResultMessage('tc_1', 'Found 5 results', false)
     const result = normalizeMessagesForOpenAI([msg])

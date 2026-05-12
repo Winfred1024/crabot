@@ -28,6 +28,8 @@ export interface ForkEngineParams {
   readonly tools: ReadonlyArray<ToolDefinition>
   /** Max turns for sub-agent (default: 20, lower than parent) */
   readonly maxTurns?: number
+  /** Per-call max output tokens；缺省时让 adapter 走默认行为 */
+  readonly maxTokens?: number
   /** Optional: parent context to share (recent messages summary) */
   readonly parentContext?: string
   /** Abort signal (linked to parent) */
@@ -81,6 +83,7 @@ export async function forkEngine(params: ForkEngineParams): Promise<ForkEngineRe
       tools: [...params.tools],
       model: params.model,
       maxTurns: params.maxTurns ?? DEFAULT_SUB_AGENT_MAX_TURNS,
+      ...(params.maxTokens !== undefined ? { maxTokens: params.maxTokens } : {}),
       abortSignal: params.abortSignal,
       onTurn: params.onTurn,
       supportsVision: params.supportsVision,
@@ -144,6 +147,8 @@ export interface SubAgentToolConfig {
   /** Tools available to the sub-agent */
   readonly subTools: ReadonlyArray<ToolDefinition>
   readonly maxTurns?: number
+  /** Per-call max output tokens；缺省时让 adapter 走默认行为 */
+  readonly maxTokens?: number
   readonly supportsVision?: boolean
   readonly parentHumanQueue?: HumanMessageQueue
   readonly traceConfig?: SubAgentTraceConfig
@@ -205,6 +210,7 @@ export function createSubAgentTool(config: SubAgentToolConfig): ToolDefinition {
             tools: config.subTools,
             systemPrompt: config.systemPrompt,
             model: config.model,
+            ...(config.maxTokens !== undefined ? { maxTokens: config.maxTokens } : {}),
             adapter: config.adapter,
             owner: config.bgContext.owner,
             spawned_by_task_id: config.bgContext.spawned_by_task_id,
@@ -322,6 +328,7 @@ export function createSubAgentTool(config: SubAgentToolConfig): ToolDefinition {
           systemPrompt: config.systemPrompt,
           tools: config.subTools,
           maxTurns: config.maxTurns,
+          ...(config.maxTokens !== undefined ? { maxTokens: config.maxTokens } : {}),
           parentContext: input.context !== undefined ? String(input.context) : undefined,
           abortSignal: callContext.abortSignal,
           onTurn: subTraceCallback,

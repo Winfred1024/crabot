@@ -35,6 +35,8 @@ interface OpenAIAssistantMessage {
   readonly role: 'assistant'
   readonly content: string | null
   readonly tool_calls?: OpenAIToolCall[]
+  // DeepSeek thinking mode 扩展字段；tool-use loop 中必须原样回传，其它 OpenAI 兼容 endpoint 忽略
+  readonly reasoning_content?: string
 }
 
 interface OpenAIToolMessage {
@@ -84,11 +86,19 @@ export function normalizeMessagesForOpenAI(messages: ReadonlyArray<EngineMessage
         }
       })
 
+      // DeepSeek thinking mode 契约：tool-use loop 中 assistant 消息必须把 reasoning_content
+      // 原样回传，否则 400。其它 OpenAI 兼容 endpoint 会把这个字段当 unknown 字段忽略。
+      const reasoningContent = msg.content
+        .filter((b): b is { type: 'raw_reasoning'; data: Record<string, unknown> } => b.type === 'raw_reasoning')
+        .map((b) => (typeof b.data.reasoning_content === 'string' ? b.data.reasoning_content : ''))
+        .join('')
+
       result.push({
         role: 'assistant',
         content: textContent || null,
         ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
-      })
+        ...(reasoningContent ? { reasoning_content: reasoningContent } : {}),
+      } as OpenAIAssistantMessage)
       continue
     }
 
@@ -171,7 +181,7 @@ export class OpenAIAdapter implements LLMAdapter {
 
     const body: Record<string, unknown> = {
       model: params.model,
-      max_tokens: params.maxTokens ?? 4096,
+      ...(params.maxTokens !== undefined ? { max_tokens: params.maxTokens } : {}),
       messages: [{ role: 'system', content: params.systemPrompt }, ...messages],
       stream: false,
     }
@@ -182,7 +192,7 @@ export class OpenAIAdapter implements LLMAdapter {
     const data = await withRetry(
       'openai-adapter',
       async () => {
-        const response = await fetch(`${this.config.endpoint}/v1/chat/completions`, {
+        const response = await fetch(`${this.config.endpoint}/chat/completions`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -200,6 +210,7 @@ export class OpenAIAdapter implements LLMAdapter {
           choices?: Array<{
             message?: {
               content?: string | null
+              reasoning_content?: string | null
               tool_calls?: Array<{
                 id: string
                 function?: { name?: string; arguments?: string }
@@ -220,6 +231,10 @@ export class OpenAIAdapter implements LLMAdapter {
     const msg = choice?.message
     const content: ContentBlock[] = []
 
+    // DeepSeek thinking mode：reasoning_content 必须放在 text 之前（buildAssistantContent 依赖此顺序）
+    if (msg?.reasoning_content) {
+      content.push({ type: 'raw_reasoning', data: { reasoning_content: msg.reasoning_content } })
+    }
     if (msg?.content) {
       content.push({ type: 'text', text: msg.content })
     }
@@ -251,7 +266,7 @@ export class OpenAIAdapter implements LLMAdapter {
 
     const body: Record<string, unknown> = {
       model: params.model,
-      max_tokens: params.maxTokens ?? 4096,
+      ...(params.maxTokens !== undefined ? { max_tokens: params.maxTokens } : {}),
       messages: [{ role: 'system', content: params.systemPrompt }, ...messages],
       stream: true,
       stream_options: { include_usage: true },
@@ -261,7 +276,7 @@ export class OpenAIAdapter implements LLMAdapter {
       body.tools = tools
     }
 
-    const response = await fetch(`${this.config.endpoint}/v1/chat/completions`, {
+    const response = await fetch(`${this.config.endpoint}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -302,6 +317,7 @@ export class OpenAIAdapter implements LLMAdapter {
       const choices = data.choices as Array<{
         delta?: {
           content?: string | null
+          reasoning_content?: string | null
           tool_calls?: Array<{
             index: number
             id?: string
@@ -316,6 +332,12 @@ export class OpenAIAdapter implements LLMAdapter {
         const delta = choice.delta
 
         if (delta) {
+          // DeepSeek thinking mode：reasoning_content fragment 先发，保证 reasoning → text → tool_use
+          // 的顺序（query-loop.buildAssistantContent 依赖 raw_reasoning 在前）
+          if (delta.reasoning_content) {
+            yield { type: 'raw_reasoning', data: { reasoning_content: delta.reasoning_content } }
+          }
+
           if (delta.content) {
             yield { type: 'text_delta', text: delta.content }
           }

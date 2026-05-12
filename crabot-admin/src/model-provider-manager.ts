@@ -684,7 +684,8 @@ export class ModelProviderManager {
     const apikey = await this.ensureFreshAuthToken(provider)
 
     // 直连 Provider：返回 provider 原始连接信息
-    // endpoint 存储不含 /v1 的 base URL，各 adapter 自行拼接路径
+    // endpoint 存储完整 base URL（含版本前缀，如 OpenAI 的 /v1、智谱的 /api/paas/v4、
+    // DeepSeek 则无版本前缀），adapter 只在其后拼具体 path（如 /chat/completions）
     const base = {
       endpoint: provider.endpoint,
       apikey,
