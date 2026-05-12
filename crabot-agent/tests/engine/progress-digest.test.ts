@@ -125,4 +125,51 @@ describe('ProgressDigest flush behavior', () => {
 
     digest.dispose()
   })
+
+  it('send_message with intent=ask_human flushes immediately', async () => {
+    const sendToUser = vi.fn().mockResolvedValue(undefined)
+    const config: ProgressDigestConfig = {
+      intervalMs: 1_800_000,
+      mode: 'extract',
+      isMasterPrivate: true,
+    }
+    const digest = new ProgressDigest(config, makeDeps(sendToUser))
+
+    digest.ingest(makeEvent({
+      assistantText: '请确认',
+      toolCalls: [makeToolCall({
+        name: 'mcp__crab-messaging__send_message',
+        input: { content: '你要 A 还是 B?', intent: 'ask_human' },
+      })],
+    }))
+
+    await vi.runOnlyPendingTimersAsync()
+    await Promise.resolve()
+    expect(sendToUser).toHaveBeenCalledTimes(1)
+
+    digest.dispose()
+  })
+
+  it('send_message with intent=normal does NOT flush immediately', async () => {
+    const sendToUser = vi.fn().mockResolvedValue(undefined)
+    const config: ProgressDigestConfig = {
+      intervalMs: 1_800_000,
+      mode: 'extract',
+      isMasterPrivate: true,
+    }
+    const digest = new ProgressDigest(config, makeDeps(sendToUser))
+
+    digest.ingest(makeEvent({
+      assistantText: 'ack',
+      toolCalls: [makeToolCall({
+        name: 'mcp__crab-messaging__send_message',
+        input: { content: 'ack', intent: 'normal' },
+      })],
+    }))
+
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(sendToUser).not.toHaveBeenCalled()
+
+    digest.dispose()
+  })
 })
