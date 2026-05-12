@@ -23,7 +23,6 @@ import type {
 import type { WorkerHandler } from '../agent/worker-handler.js'
 import { ContextAssembler } from './context-assembler.js'
 import { MemoryWriter } from './memory-writer.js'
-import { extractTaskOutcome } from './task-outcome-parser.js'
 
 /** Extended TraceStore interface with updateTrace support (not in base TraceStoreInterface) */
 interface TraceStoreWithUpdate {
@@ -375,59 +374,17 @@ export class DecisionDispatcher {
           context: workerContext,
         }
 
-        const result: ExecuteTaskResult & { trace_id?: string } = this.executeTaskFn
-          ? await this.executeTaskFn({ ...taskPayload, related_task_id: relatedTaskId })
-          : await this.workerHandler!.executeTask(taskPayload)
-
-        // 更新 Admin 任务状态（跨模块 RPC）
-        const finalStatus = result.outcome === 'completed' ? 'completed' : 'failed'
-        await this.rpcClient.call(
-          adminPort,
-          'update_task_status',
-          {
-            task_id: task.id,
-            status: finalStatus,
-            result: {
-              outcome: result.outcome,
-              summary: result.summary,
-              final_reply: result.final_reply,
-              finished_at: new Date().toISOString(),
-            },
-            ...(finalStatus === 'failed' && { error: result.summary }),
-          },
-          this.moduleId
-        ).catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err)
-          console.error(`[DecisionDispatcher] Failed to update task status: ${msg}`)
-        })
-
-        const outcome = extractTaskOutcome(result.summary, 200)
-        this.finalizeTaskMemory({
-          taskId: task.id,
-          taskTitle: task.title,
-          outcome: result.outcome,
-          outcomeBrief: outcome.outcome_brief,
-          processHighlights: outcome.process_highlights,
-          detailContent: outcome.stripped_summary,
-          friendName: params.senderFriend?.display_name ?? 'Unknown',
-          friendId: params.messages[params.messages.length - 1]?.sender?.friend_id ?? '',
-          channelId: params.channel_id,
-          sessionId: params.session_id,
-          visibility: params.memoryPermissions.write_visibility,
-          scopes: params.memoryPermissions.write_scopes,
-          traceId: result.trace_id,
-        })
-
-        // worker 的 final_reply.text 与 result.summary 同源（worker-handler 1054-1058），
-        // 复用 outcome.stripped_summary 避免再 parse 一次。
-        if (result.final_reply?.text) {
-          await this.sendReplyToUser(outcome.stripped_summary, params)
+        // worker handler 内部已完成：update_task_status + update_task_outcome + send_message + 记忆写入
+        if (this.executeTaskFn) {
+          await this.executeTaskFn({ ...taskPayload, related_task_id: relatedTaskId })
+        } else {
+          await this.workerHandler!.executeTask(taskPayload)
         }
       } catch (error) {
+        // worker handler 自身崩溃（throw）——兜底：标失败 + 通知用户 + 写失败记忆
         const msg = error instanceof Error ? error.message : String(error)
         console.error(`[DecisionDispatcher] Background task ${task.id} failed: ${msg}`)
 
-        // 更新任务为失败
         try {
           await this.rpcClient.call(
             adminPort,
@@ -439,14 +396,12 @@ export class DecisionDispatcher {
 
         await this.sendReplyToUser('任务处理失败，请稍后重试', params).catch(() => {})
 
-        // 失败路径 msg 是 error.message 纯文本，无 JSON 契约块。
         this.finalizeTaskMemory({
           taskId: task.id,
           taskTitle: task.title,
           outcome: 'failed',
           outcomeBrief: msg.slice(0, 200),
           processHighlights: [],
-          detailContent: msg,
           friendName: params.senderFriend?.display_name ?? 'Unknown',
           friendId: params.messages[params.messages.length - 1]?.sender?.friend_id ?? '',
           channelId: params.channel_id,
@@ -538,53 +493,17 @@ export class DecisionDispatcher {
           context: workerContext,
         }
 
-        const result: ExecuteTaskResult & { trace_id?: string } = this.executeTaskFn
-          ? await this.executeTaskFn({ ...taskPayload, related_task_id: task.id })
-          : await this.workerHandler!.executeTask(taskPayload)
-
-        // 更新 Admin 任务状态
-        const finalStatus = result.outcome === 'completed' ? 'completed' : 'failed'
-        await this.rpcClient.call(
-          adminPort,
-          'update_task_status',
-          {
-            task_id: task.id,
-            status: finalStatus,
-            result: {
-              outcome: result.outcome,
-              summary: result.summary,
-              final_reply: result.final_reply,
-              finished_at: new Date().toISOString(),
-            },
-            ...(finalStatus === 'failed' && { error: result.summary }),
-          },
-          this.moduleId
-        ).catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err)
-          console.error(`[DecisionDispatcher] Failed to update scheduled task status: ${msg}`)
-        })
-
-        const outcome = extractTaskOutcome(result.summary, 200)
-        this.finalizeTaskMemory({
-          taskId: task.id,
-          taskTitle: task.title,
-          outcome: result.outcome,
-          outcomeBrief: outcome.outcome_brief,
-          processHighlights: outcome.process_highlights,
-          detailContent: outcome.stripped_summary,
-          friendName: 'system',
-          friendId: '',
-          channelId: '',
-          sessionId: '',
-          visibility: 'internal',
-          scopes: [],
-          traceId: result.trace_id,
-        })
+        // worker handler 内部已完成：update_task_status + update_task_outcome + 记忆写入
+        if (this.executeTaskFn) {
+          await this.executeTaskFn({ ...taskPayload, related_task_id: task.id })
+        } else {
+          await this.workerHandler!.executeTask(taskPayload)
+        }
       } catch (error) {
+        // worker handler 自身崩溃（throw）——兜底：标失败 + 写失败记忆
         const msg = error instanceof Error ? error.message : String(error)
         console.error(`[DecisionDispatcher] Background scheduled task ${task.id} failed: ${msg}`)
 
-        // 更新任务为失败
         try {
           await this.rpcClient.call(
             adminPort,
@@ -594,14 +513,12 @@ export class DecisionDispatcher {
           )
         } catch { /* best effort */ }
 
-        // 失败路径 msg 是 error.message 纯文本，无 JSON 契约块。
         this.finalizeTaskMemory({
           taskId: task.id,
           taskTitle: task.title,
           outcome: 'failed',
           outcomeBrief: msg.slice(0, 200),
           processHighlights: [],
-          detailContent: msg,
           friendName: 'system',
           friendId: '',
           channelId: '',
@@ -618,11 +535,9 @@ export class DecisionDispatcher {
   }
 
   /**
-   * task_finished 事件的双写：短期记忆 brief + 亮点（writeTaskFinished）
-   * + 长期记忆 case 候选（quickCapture）。两者均 fire-and-forget。
+   * worker handler 自身崩溃时的失败记忆兜底写入（短期 + 长期）。两者均 fire-and-forget。
    *
-   * `detailContent` 是 quickCapture 写入 long-term inbox 的 lesson 正文；成功路径传
-   * stripped_summary（避免 JSON 契约块进 lesson），失败路径传 error.message。
+   * 成功路径的记忆已由 worker-handler.finalizeMemoryWrite 内部写入，dispatcher 不再重复。
    */
   private finalizeTaskMemory(args: {
     taskId: string
@@ -630,7 +545,6 @@ export class DecisionDispatcher {
     outcome: 'completed' | 'failed'
     outcomeBrief: string
     processHighlights: readonly string[]
-    detailContent: string
     friendName: string
     friendId: string
     channelId: string
@@ -640,7 +554,7 @@ export class DecisionDispatcher {
     traceId?: string
   }): void {
     const {
-      taskId, taskTitle, outcome, outcomeBrief, processHighlights, detailContent,
+      taskId, taskTitle, outcome, outcomeBrief, processHighlights,
       friendName, friendId, channelId, sessionId, visibility, scopes, traceId,
     } = args
 
@@ -664,7 +578,7 @@ export class DecisionDispatcher {
     this.memoryWriter.quickCapture({
       type: 'lesson',
       brief: briefSrc,
-      content: `任务 ${taskId}（${taskTitle}）${outcomeLabel}：${detailContent}`,
+      content: `任务 ${taskId}（${taskTitle}）${outcomeLabel}：${outcomeBrief}`,
       source_ref: { type: 'conversation', task_id: taskId, channel_id: channelId, session_id: sessionId },
       entities: [],
       tags: [`task_outcome:${outcome}`],

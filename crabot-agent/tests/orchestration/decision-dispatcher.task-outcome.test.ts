@@ -2,32 +2,25 @@ import { describe, it, expect, vi } from 'vitest'
 import { DecisionDispatcher } from '../../src/orchestration/decision-dispatcher.js'
 
 /**
- * Phase 2: dispatcher 把 worker summary 末尾的 ```json``` 块解析为
- * outcome_brief / process_highlights 写入短期记忆，sendReplyToUser 时把契约块剥掉。
+ * Task 10 后的新架构验证：
  *
- * 关键不变量：
- *   1. memoryWriter.writeTaskFinished 收到 outcome_brief / process_highlights（来自 JSON 块），
- *      不再有 summary 字段
- *   2. admin update_task_status 仍然收到原始 summary（含 JSON 块；系统层证据）
- *   3. sendReplyToUser 收到的文本不含 ```json``` fence
+ * 成功路径由 worker-handler 内部完成：
+ *   - update_task_status / update_task_outcome → worker-handler.finalizeTask
+ *   - send_message（用户回复）→ worker 主动调 send_message tool
+ *   - writeTaskFinished / quickCapture → worker-handler.finalizeMemoryWrite
+ *   dispatcher 不再重复这些操作。
+ *
+ * 崩溃兜底路径（worker-handler 自身 throw）：
+ *   - dispatcher 仍调 update_task_status(failed) + sendReplyToUser + finalizeTaskMemory
  */
 
 const ADMIN_PORT = 19001
 const CHANNEL_PORT = 19010
 
-const SUMMARY_WITH_JSON = `已修复 /fav 500 接口，根因是 vod_ids 未校验。
-
-\`\`\`json
-{
-  "outcome_brief": "已修复 /fav 500，根因 vod_ids 未校验",
-  "process_highlights": [
-    "用 grep 定位到 FavHandler",
-    "缺 vod_ids 校验导致 nil deref"
-  ]
-}
-\`\`\``
-
-function makeDispatcher(opts: { resultSummary: string; finalReplyText: string }) {
+function makeDispatcher(opts: {
+  /** undefined = 成功（不 throw）；string = worker throw 该 message */
+  workerError?: string
+}) {
   const memoryWriter = {
     reportTaskFeedback: vi.fn(async () => undefined),
     listRecentLessons: vi.fn(async () => []),
@@ -53,12 +46,16 @@ function makeDispatcher(opts: { resultSummary: string; finalReplyText: string })
     assembleWorkerContext: vi.fn(async () => ({})),
   } as any
 
-  const executeTaskFn = vi.fn(async () => ({
-    task_id: 't_smoke_001',
-    outcome: 'completed' as const,
-    summary: opts.resultSummary,
-    final_reply: { type: 'text' as const, text: opts.finalReplyText },
-  }))
+  const executeTaskFn = vi.fn(async () => {
+    if (opts.workerError) {
+      throw new Error(opts.workerError)
+    }
+    // 成功：返回简化结构（Task 10 后 ExecuteTaskResult 无 summary / final_reply）
+    return {
+      task_id: 't_smoke_001',
+      outcome: 'completed' as const,
+    }
+  })
 
   const dispatcher = new DecisionDispatcher(
     rpcClient,
@@ -79,12 +76,24 @@ function makeDispatcher(opts: { resultSummary: string; finalReplyText: string })
   return { dispatcher, rpcClient, rpcCalls, memoryWriter, executeTaskFn }
 }
 
-describe('DecisionDispatcher - worker summary JSON 块解析', () => {
-  it('把 JSON 块解析为 outcome_brief / process_highlights 写入 writeTaskFinished', async () => {
-    const { dispatcher, memoryWriter } = makeDispatcher({
-      resultSummary: SUMMARY_WITH_JSON,
-      finalReplyText: SUMMARY_WITH_JSON,
-    })
+const BASE_PARAMS = {
+  channel_id: 'telegram-001',
+  session_id: 'sess-x',
+  messages: [{
+    platform_message_id: 'm1',
+    session: { channel_id: 'telegram-001', session_id: 'sess-x', type: 'group' as const },
+    sender: { friend_id: 'f_wu', platform_user_id: 'u1', platform_display_name: 'Mr.Wu' },
+    content: { type: 'text' as const, text: 'go' },
+    features: { is_mention_crab: true },
+    platform_timestamp: new Date().toISOString(),
+  }],
+  senderFriend: { id: 'f_wu', display_name: 'Mr.Wu' } as any,
+  memoryPermissions: { write_visibility: 'internal', write_scopes: [] } as any,
+}
+
+describe('DecisionDispatcher - Task 10 重构后行为', () => {
+  it('成功路径：dispatcher 不再调 update_task_status(completed)，不发 send_message 给用户', async () => {
+    const { dispatcher, rpcCalls } = makeDispatcher({})
 
     await dispatcher.dispatch(
       {
@@ -93,117 +102,85 @@ describe('DecisionDispatcher - worker summary JSON 块解析', () => {
         task_description: '修复',
         immediate_reply: { type: 'text', text: '收到' },
       },
-      {
-        channel_id: 'telegram-001',
-        session_id: 'sess-x',
-        messages: [{
-          platform_message_id: 'm1',
-          session: { channel_id: 'telegram-001', session_id: 'sess-x', type: 'group' as const },
-          sender: { friend_id: 'f_wu', platform_user_id: 'u1', platform_display_name: 'Mr.Wu' },
-          content: { type: 'text' as const, text: '修一下 /fav' },
-          features: { is_mention_crab: true },
-          platform_timestamp: new Date().toISOString(),
-        }],
-        senderFriend: { id: 'f_wu', display_name: 'Mr.Wu' } as any,
-        memoryPermissions: { write_visibility: 'internal', write_scopes: [] } as any,
-      },
-    )
-
-    // 等待后台任务跑完
-    await new Promise(r => setTimeout(r, 30))
-
-    expect(memoryWriter.writeTaskFinished).toHaveBeenCalledTimes(1)
-    const args = memoryWriter.writeTaskFinished.mock.calls[0][0]
-    expect(args.outcome_brief).toBe('已修复 /fav 500，根因 vod_ids 未校验')
-    expect(args.process_highlights).toEqual([
-      '用 grep 定位到 FavHandler',
-      '缺 vod_ids 校验导致 nil deref',
-    ])
-    // 已经移除 summary 字段
-    expect(args).not.toHaveProperty('summary')
-  })
-
-  it('admin update_task_status 仍收到原始 summary（系统层证据，含 JSON 块）', async () => {
-    const { dispatcher, rpcCalls } = makeDispatcher({
-      resultSummary: SUMMARY_WITH_JSON,
-      finalReplyText: '',
-    })
-
-    await dispatcher.dispatch(
-      {
-        type: 'create_task',
-        task_title: 'T',
-        task_description: 'D',
-        immediate_reply: { type: 'text', text: '' },
-      },
-      {
-        channel_id: 'telegram-001',
-        session_id: 'sess-x',
-        messages: [{
-          platform_message_id: 'm1',
-          session: { channel_id: 'telegram-001', session_id: 'sess-x', type: 'group' as const },
-          sender: { friend_id: 'f_wu', platform_user_id: 'u1', platform_display_name: 'Mr.Wu' },
-          content: { type: 'text' as const, text: 'go' },
-          features: { is_mention_crab: true },
-          platform_timestamp: new Date().toISOString(),
-        }],
-        senderFriend: { id: 'f_wu', display_name: 'Mr.Wu' } as any,
-        memoryPermissions: { write_visibility: 'internal', write_scopes: [] } as any,
-      },
+      BASE_PARAMS,
     )
 
     await new Promise(r => setTimeout(r, 30))
 
-    // 找 status=completed 那一发 update_task_status
-    const finalUpdate = rpcCalls.find(
-      c => c.method === 'update_task_status' && c.params?.status === 'completed',
-    )
-    expect(finalUpdate).toBeDefined()
-    expect(finalUpdate!.params.result.summary).toBe(SUMMARY_WITH_JSON)
-    expect(finalUpdate!.params.result.summary).toContain('```json')
-  })
+    // planning/executing 状态推进还在（不在成功路径删除范围内）
+    const statusCalls = rpcCalls.filter(c => c.method === 'update_task_status')
+    const planningCall = statusCalls.find(c => c.params?.status === 'planning')
+    const executingCall = statusCalls.find(c => c.params?.status === 'executing')
+    expect(planningCall).toBeDefined()
+    expect(executingCall).toBeDefined()
 
-  it('sendReplyToUser 收到的文本剥掉了 ```json``` 块', async () => {
-    const { dispatcher, rpcCalls } = makeDispatcher({
-      resultSummary: SUMMARY_WITH_JSON,
-      finalReplyText: SUMMARY_WITH_JSON,
-    })
+    // dispatcher 不再调 completed 状态更新（worker-handler 负责）
+    const completedCall = statusCalls.find(c => c.params?.status === 'completed')
+    expect(completedCall).toBeUndefined()
 
-    await dispatcher.dispatch(
-      {
-        type: 'create_task',
-        task_title: 'T',
-        task_description: 'D',
-        immediate_reply: { type: 'text', text: '' },
-      },
-      {
-        channel_id: 'telegram-001',
-        session_id: 'sess-x',
-        messages: [{
-          platform_message_id: 'm1',
-          session: { channel_id: 'telegram-001', session_id: 'sess-x', type: 'group' as const },
-          sender: { friend_id: 'f_wu', platform_user_id: 'u1', platform_display_name: 'Mr.Wu' },
-          content: { type: 'text' as const, text: 'go' },
-          features: { is_mention_crab: true },
-          platform_timestamp: new Date().toISOString(),
-        }],
-        senderFriend: { id: 'f_wu', display_name: 'Mr.Wu' } as any,
-        memoryPermissions: { write_visibility: 'internal', write_scopes: [] } as any,
-      },
-    )
-
-    await new Promise(r => setTimeout(r, 30))
-
-    // 任务最终回复（task_completed reply）— 注意第一发 send_message 是 ack，
-    // 任务结果要找最后一发 send_message
-    const replyCalls = rpcCalls.filter(
+    // dispatcher 不再主动发 task 完成回复（worker 主动调 send_message tool 发回复）；
+    // 只有 immediate_reply ack（一发）
+    const sendMessageCalls = rpcCalls.filter(
       c => c.method === 'send_message' && c.port === CHANNEL_PORT,
     )
-    expect(replyCalls.length).toBeGreaterThanOrEqual(1)
-    const finalReply = replyCalls[replyCalls.length - 1]
-    const text = finalReply.params.content.text
-    expect(text).not.toContain('```json')
-    expect(text).not.toContain('outcome_brief')
-    expect(text).toBe('已修复 /fav 500 接口，根因是 vod_ids 未校验。')
+    // 只有 immediate_reply ack，没有 task 完成回复（task 完成回复由 worker 发）
+    expect(sendMessageCalls.length).toBe(1) // 只有 ack
+    expect(sendMessageCalls[0].params.content.text).toBe('收到') // 只是 ack
+  })
+
+  it('成功路径：dispatcher 不再调 writeTaskFinished（worker-handler 负责）', async () => {
+    const { dispatcher, memoryWriter } = makeDispatcher({})
+
+    await dispatcher.dispatch(
+      {
+        type: 'create_task',
+        task_title: '修复任务',
+        task_description: '修',
+        immediate_reply: { type: 'text', text: '好的' },
+      },
+      BASE_PARAMS,
+    )
+
+    await new Promise(r => setTimeout(r, 30))
+
+    expect(memoryWriter.writeTaskFinished).not.toHaveBeenCalled()
+  })
+
+  it('崩溃兜底路径：worker throw 时 dispatcher 调 update_task_status(failed) + sendReplyToUser + writeTaskFinished', async () => {
+    const { dispatcher, rpcCalls, memoryWriter } = makeDispatcher({
+      workerError: 'worker 内部崩溃',
+    })
+
+    await dispatcher.dispatch(
+      {
+        type: 'create_task',
+        task_title: '修复任务',
+        task_description: '修',
+        immediate_reply: { type: 'text', text: '好的' },
+      },
+      BASE_PARAMS,
+    )
+
+    await new Promise(r => setTimeout(r, 30))
+
+    // 失败状态更新
+    const failedCall = rpcCalls.find(
+      c => c.method === 'update_task_status' && c.params?.status === 'failed',
+    )
+    expect(failedCall).toBeDefined()
+
+    // 兜底回复
+    const sendMessageCalls = rpcCalls.filter(
+      c => c.method === 'send_message' && c.port === CHANNEL_PORT,
+    )
+    expect(sendMessageCalls.length).toBeGreaterThanOrEqual(1)
+    const replyCall = sendMessageCalls[sendMessageCalls.length - 1]
+    expect(replyCall.params.content.text).toContain('失败')
+
+    // 失败记忆写入
+    expect(memoryWriter.writeTaskFinished).toHaveBeenCalledTimes(1)
+    const memArgs = memoryWriter.writeTaskFinished.mock.calls[0][0]
+    expect(memArgs.outcome).toBe('failed')
+    expect(memArgs.outcome_brief).toContain('worker 内部崩溃')
   })
 })

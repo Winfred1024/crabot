@@ -98,7 +98,8 @@ describe('WorkerHandler', () => {
 
       expect(result.task_id).toBe('task_1')
       expect(result.outcome).toBe('completed')
-      expect(result.summary).toContain('Task completed successfully')
+      // 成功路径不填 error；summary 字段已从 ExecuteTaskResult 移除
+      expect(result.error).toBeUndefined()
     })
 
     it('should handle execution failure', async () => {
@@ -144,7 +145,7 @@ describe('WorkerHandler', () => {
       const result = await handler.executeTask({ task: makeTask(), context: makeContext() })
 
       expect(result.outcome).toBe('failed')
-      expect(result.summary).toContain('取消')
+      expect(result.error).toContain('取消')
     })
 
     it('should handle engine exception', async () => {
@@ -154,7 +155,7 @@ describe('WorkerHandler', () => {
       const result = await handler.executeTask({ task: makeTask(), context: makeContext() })
 
       expect(result.outcome).toBe('failed')
-      expect(result.summary).toContain('Connection failed')
+      expect(result.error).toContain('Connection failed')
     })
 
     it('injects current scene content verbatim into the worker prompt', async () => {

@@ -664,11 +664,9 @@ export interface HandleMessageResult {
 export interface ExecuteTaskResult {
   task_id: TaskId
   outcome: 'completed' | 'failed'
-  /** 任务最终输出全文（含给用户的自然语言 + worker 末尾追加的 JSON 块原文）。
-   *  系统层作为 admin task result.summary 保留为完整证据；
-   *  short-term content / final reply 由 dispatcher 调 extractTaskOutcome 解析后构造。 */
-  summary: string
-  final_reply?: MessageContent
+  /** 失败时填错误描述；成功路径不填。worker 完成内容已通过 send_message 发出 +
+   *  通过 admin update_task_outcome 写入 task.result.outcome_brief，dispatcher 不再消费 */
+  error?: string
 }
 
 // ============================================================================

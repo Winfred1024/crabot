@@ -965,8 +965,8 @@ export class WorkerHandler {
         finalEngineResult = { ...engineResult, finalText: `执行失败 (${engineResult.totalTurns}轮后): ${engineResult.error}` }
       }
 
-      // 8.5 Finalize: update admin task status + run structured reflection
-      await this.finalizeTask(task.task_id, finalEngineResult)
+      // 8.5 Finalize: update admin task status + run structured reflection + memory write
+      await this.finalizeTask(task.task_id, finalEngineResult, context)
 
       // 9. Map EngineResult → ExecuteTaskResult
       return this.mapEngineResult(task.task_id, finalEngineResult)
@@ -975,13 +975,12 @@ export class WorkerHandler {
       const errorMessage = error instanceof Error ? error.message : String(error)
       log(`Worker error: ${errorMessage}`)
       if (taskState.abortController.signal.aborted) {
-        return { task_id: task.task_id, outcome: 'failed', summary: '任务被取消' }
+        return { task_id: task.task_id, outcome: 'failed', error: '任务被取消' }
       }
       return {
         task_id: task.task_id,
         outcome: 'failed',
-        summary: `执行失败: ${errorMessage}`,
-        final_reply: { type: 'text', text: `抱歉，执行任务时出现错误: ${errorMessage}` },
+        error: `执行失败: ${errorMessage}`,
       }
     } finally {
       digest?.dispose()
@@ -1016,14 +1015,15 @@ export class WorkerHandler {
 
   /**
    * Engine 主 loop 结束后的收尾。对用户面"任务结束"瞬间 = update_task_status('completed')
-   * 落盘那一刻；之后跑反思补轮（对 supplement 通道关闭）。
+   * 落盘那一刻；之后跑反思补轮（对 supplement 通道关闭）；最后写短期 + 长期记忆。
    *
-   * 失败容忍：reflector 任一步抛错都不回滚 task 状态——用户视角下任务已完成，
+   * 失败容忍：reflector / memory 任一步抛错都不回滚 task 状态——用户视角下任务已完成，
    * lesson 质量降级是可接受的二阶损失。
    */
   private async finalizeTask(
     taskId: TaskId,
     engineResult: EngineResult,
+    context: import('../types.js').WorkerAgentContext,
   ): Promise<void> {
     if (!this.deps?.getAdminPort) {
       log(`finalize: getAdminPort missing, skipping admin patch + reflector`)
@@ -1056,10 +1056,27 @@ export class WorkerHandler {
       humanQueue.clearBarrier()
     }
 
-    // 3. 跑反思补轮（失败/abort 任务不跑——没有有意义的 reflection 内容）
-    if (finalStatus === 'failed') return
+    // 3. 失败路径：跳过反思补轮（无意义），仍写 admin outcome_brief（用 engine.error 当兜底）+ 失败记忆
+    if (finalStatus === 'failed') {
+      const failureBrief = (engineResult.error ?? engineResult.finalText ?? '任务失败').slice(0, 200)
+      try {
+        await this.deps.rpcClient.call(
+          adminPort, 'update_task_outcome',
+          { task_id: taskId, outcome_brief: failureBrief, process_highlights: [] },
+          this.deps.moduleId,
+        )
+      } catch (err) {
+        log(`finalize(failed): update_task_outcome failed (continuing): ${err instanceof Error ? err.message : String(err)}`)
+      }
+      this.finalizeMemoryWrite(taskId, {
+        outcome: 'failed',
+        outcome_brief: failureBrief,
+        process_highlights: [],
+      }, context)
+      return
+    }
 
-    // 3. 跑反思补轮；reflectFn 本身保证内部 retry + fallback 不抛错，
+    // 4. completed 路径：跑反思补轮；reflectFn 内部 retry + fallback 不抛错，
     //    这里 try 兜的是 LLM 不可达 / adapter 异常等外层错误——此时构造 fallback 反思继续写入，
     //    保证 task.result.outcome_brief 至少有 lastAssistantText 截断兜底，不留空。
     let reflection: Awaited<ReturnType<typeof reflectStructuredOutcome>>
@@ -1082,7 +1099,7 @@ export class WorkerHandler {
       }
     }
 
-    // 4. 回填 outcome_brief / process_highlights —— reflectFn 失败时写 fallback 兜底
+    // 5. 回填 outcome_brief / process_highlights —— reflectFn 失败时写 fallback 兜底
     try {
       await this.deps.rpcClient.call(
         adminPort, 'update_task_outcome',
@@ -1096,32 +1113,92 @@ export class WorkerHandler {
     } catch (err) {
       log(`finalize: update_task_outcome failed (continuing): ${err instanceof Error ? err.message : String(err)}`)
     }
+
+    // 6. 写短期 + 长期记忆（fire-and-forget；任意一步失败不影响 task 状态）
+    this.finalizeMemoryWrite(taskId, {
+      outcome: 'completed',
+      outcome_brief: reflection.outcome_brief,
+      process_highlights: reflection.process_highlights,
+    }, context)
+  }
+
+  /**
+   * 任务结束（成功 / 失败）后写短期记忆 + 长期记忆候选。
+   * - completed：reflection 来自 reflectFn 的真实总结
+   * - failed：reflection 来自 engine.error 截断兜底
+   * 两个写入均 fire-and-forget：失败只打日志，不影响 task 状态。
+   */
+  private finalizeMemoryWrite(
+    taskId: TaskId,
+    reflection: {
+      outcome: 'completed' | 'failed'
+      outcome_brief: string
+      process_highlights: readonly string[]
+    },
+    context: import('../types.js').WorkerAgentContext,
+  ): void {
+    if (!this.memoryWriter) return
+
+    const taskOrigin = context.task_origin
+    const channelId = taskOrigin?.channel_id ?? ''
+    const sessionId = taskOrigin?.session_id ?? ''
+    const friendName = context.sender_friend?.display_name ?? 'system'
+    const friendId = context.sender_friend?.id ?? ''
+    const visibility = context.memory_permissions?.write_visibility ?? 'internal'
+    const scopes = context.memory_permissions?.write_scopes ?? []
+
+    const taskTitle = this.activeTasks.get(taskId)?.title ?? taskId
+    const outcomeLabel = reflection.outcome === 'completed' ? '完成' : '失败'
+
+    this.memoryWriter.writeTaskFinished({
+      task_id: taskId,
+      task_title: taskTitle,
+      outcome: reflection.outcome,
+      outcome_brief: reflection.outcome_brief,
+      process_highlights: [...reflection.process_highlights],
+      friend_name: friendName,
+      friend_id: friendId,
+      channel_id: channelId,
+      session_id: sessionId,
+      visibility,
+      scopes,
+    }).catch((err) => {
+      log(`finalizeMemoryWrite: writeTaskFinished failed: ${err instanceof Error ? err.message : String(err)}`)
+    })
+
+    this.memoryWriter.quickCapture({
+      type: 'lesson',
+      brief: `${taskTitle} → ${reflection.outcome_brief}`.slice(0, 80),
+      content: `任务 ${taskId}（${taskTitle}）${outcomeLabel}：${reflection.outcome_brief}`,
+      source_ref: { type: 'conversation', task_id: taskId, channel_id: channelId, session_id: sessionId },
+      entities: [],
+      tags: [`task_outcome:${reflection.outcome}`],
+      importance_factors: {
+        proximity: 0.6,
+        surprisal: reflection.outcome === 'failed' ? 0.8 : 0.4,
+        entity_priority: 0.5,
+        unambiguity: 0.6,
+      },
+    }).catch(() => undefined)
   }
 
   /**
    * Map EngineResult to ExecuteTaskResult.
    *
-   * 当 finalText 为空（模型坚持沉默 end_turn）：summary 用诚实占位、final_reply
-   * 留空让 channel 不发假托汇报。用户追问时由 Front 走 create_task 让 worker
-   * 用 get_task_details 拉 trace 自己再汇报。
+   * 任务完成内容已由 worker 通过 send_message 主动发出，且 outcome_brief / process_highlights
+   * 已写入 admin（update_task_outcome）。dispatcher 不再需要 summary / final_reply。
    */
   private mapEngineResult(
     taskId: TaskId,
     result: EngineResult,
   ): ExecuteTaskResult {
     if (result.outcome === 'aborted') {
-      return { task_id: taskId, outcome: 'failed', summary: '任务被取消' }
+      return { task_id: taskId, outcome: 'failed', error: '任务被取消' }
     }
-
-    const isError = result.outcome === 'failed'
-    const hasFinalText = !!result.finalText
-
-    return {
-      task_id: taskId,
-      outcome: isError ? 'failed' : 'completed',
-      summary: hasFinalText ? result.finalText : '任务已结束，模型未生成最终汇报',
-      ...(hasFinalText ? { final_reply: { type: 'text', text: result.finalText } } : {}),
+    if (result.outcome === 'failed' || result.outcome === 'max_turns') {
+      return { task_id: taskId, outcome: 'failed', error: result.error ?? 'unknown' }
     }
+    return { task_id: taskId, outcome: 'completed' }
   }
 
   deliverHumanResponse(taskId: TaskId, messages: ChannelMessage[]): void {
