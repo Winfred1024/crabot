@@ -608,12 +608,16 @@ export interface TaskPlan {
 export interface TaskResult {
   /** 任务结局 */
   outcome: 'completed' | 'failed'
-  /** 结果摘要（自然语言） */
-  summary: string
-  /** 最终回复内容 */
+  /** 结果摘要（自然语言）—— @deprecated 由 outcome_brief 替代，仅为向后兼容保留 */
+  summary?: string
+  /** 最终回复内容 —— @deprecated worker 现已主动 send_message，本字段不再写入 */
   final_reply?: { text: string }
   /** 完成/失败时间 */
   finished_at: string
+  /** 结构化反思：本次任务做了什么、是否顺利（≤200 字） */
+  outcome_brief?: string
+  /** 结构化反思：过程中的异常 / 兜底切换 / 关键决策（最多 3 条，每条 ≤80 字） */
+  process_highlights?: string[]
 }
 
 /** 任务消息 */
