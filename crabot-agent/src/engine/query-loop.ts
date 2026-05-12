@@ -166,6 +166,17 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
     finalText = processed.text
 
     if (stopReason !== 'tool_use') {
+      // end_turn 收口前最后一次 supplement check：防止 LLM end_turn 与 finalize 落盘之间
+      // 的微秒级窗口窃听不到 supplement。supplement 自然取代 forced summary——LLM 看到
+      // 用户消息会响应，不必再走 silent retry 路径。
+      if (options.humanMessageQueue?.hasPending) {
+        const supplements = options.humanMessageQueue.drainPending()
+        for (const content of supplements) {
+          messages.push(createUserMessage(content))
+        }
+        continue
+      }
+
       // --- Stop hook ---
       if (hooks) {
         const stopInput: HookInput = { event: 'Stop', workingDirectory }
