@@ -41,12 +41,14 @@ export interface FrontHandlerConfig {
 export interface FrontHandlerLlmConfig {
   readonly adapter: LLMAdapter
   readonly model: string
+  readonly supportsVision?: boolean
 }
 
 
 export class FrontHandler {
   private adapter: LLMAdapter
   private model: string
+  private supportsVision: boolean
   private toolExecutor: ToolExecutor
   private getSystemPrompt: (isGroup: boolean) => string
   private mcpConfigFactory: () => Record<string, McpServer>
@@ -59,6 +61,7 @@ export class FrontHandler {
   ) {
     this.adapter = llmConfig.adapter
     this.model = llmConfig.model
+    this.supportsVision = llmConfig.supportsVision === true
     this.toolExecutor = new ToolExecutor(toolExecutorDeps)
     this.getSystemPrompt = config.getSystemPrompt
     this.mcpConfigFactory = config.mcpConfigFactory
@@ -74,9 +77,15 @@ export class FrontHandler {
     const hasMention = messages.some(m => m.features.is_mention_crab)
     // silent 仅在群聊且未被 @ 时可用
     const allowSilent = isGroup && !hasMention
-    const imageBlocks = await resolveImageBlocks(messages)
+    // 仅当 Front 模型支持视觉时才把图片 base64 化注入 LLM；否则只在 prompt 里加文字提示，
+    // 让 Front 知道"用户发了图片但本模型读不了"，从而可以路由到 vision slot 处理。
+    const imageMessageCount = messages.filter((m) => m.content.type === 'image').length
+    const imageBlocks = this.supportsVision && imageMessageCount > 0
+      ? await resolveImageBlocks(messages)
+      : []
+    const unresolvedImageCount = !this.supportsVision ? imageMessageCount : 0
     const timezone = this.getTimezone()
-    const userMessage = buildUserMessage(messages, context, imageBlocks, timezone)
+    const userMessage = buildUserMessage(messages, context, imageBlocks, timezone, unresolvedImageCount)
     const rawUserText = messages.map(m => m.content.text ?? '').join('\n').trim()
 
     // 装配 messaging 工具（来自 crab-messaging MCP；与 Worker 同一份实现）
@@ -123,7 +132,13 @@ export class FrontHandler {
     }
   }
 
-  updateLlmConfig(config: { endpoint?: string; apikey?: string; accountId?: string; model?: string }): void {
+  updateLlmConfig(config: {
+    endpoint?: string
+    apikey?: string
+    accountId?: string
+    model?: string
+    supportsVision?: boolean
+  }): void {
     if (config.endpoint !== undefined || config.apikey !== undefined || config.accountId !== undefined) {
       this.adapter.updateConfig({
         ...(config.endpoint !== undefined ? { endpoint: config.endpoint } : {}),
@@ -133,6 +148,9 @@ export class FrontHandler {
     }
     if (config.model !== undefined) {
       this.model = config.model
+    }
+    if (config.supportsVision !== undefined) {
+      this.supportsVision = config.supportsVision
     }
   }
 }
@@ -159,6 +177,8 @@ export function buildUserMessage(
   context: FrontAgentContext,
   imageBlocks?: Array<{ type: 'image'; source: { type: 'base64' | 'url'; media_type: string; data: string } }>,
   timezone: string = 'UTC',
+  /** 用户发了图片但当前 Front 模型无视觉能力时的图片张数；>0 时会在 prompt 里加文字提示 */
+  unresolvedImageCount: number = 0,
 ): UserMessageContent {
   const parts: string[] = []
   const isGroup = messages[0]?.session?.type === 'group'
@@ -368,6 +388,11 @@ export function buildUserMessage(
       })
       parts.push(formatChannelMessageLine(msg, { timezone, now, maxLen: 2000, identity }))
     }
+  }
+
+  if (unresolvedImageCount > 0) {
+    parts.push('')
+    parts.push(`> 注意：用户附带了 ${unresolvedImageCount} 张图片，但当前 Front 模型不具备视觉能力，无法识别图片内容。如果用户的意图依赖图片，请 create_task 交给 Worker（Worker 可调用 vision sub-agent 解析），不要凭文字猜测图片内容。`)
   }
 
   parts.push('\n## 指令')

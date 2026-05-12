@@ -29,6 +29,8 @@ export interface SpawnPersistentAgentOpts {
   readonly tools: ReadonlyArray<ToolDefinition>
   readonly systemPrompt: string
   readonly model: string
+  /** Per-call max output tokens；缺省时让 adapter 走默认行为 */
+  readonly maxTokens?: number
   readonly adapter: LLMAdapter
   readonly owner: BgEntityOwner
   readonly spawned_by_task_id: string
@@ -102,6 +104,7 @@ export async function spawnPersistentAgent(opts: SpawnPersistentAgentOpts): Prom
           systemPrompt: opts.systemPrompt,
           tools: [...opts.tools],
           model: opts.model,
+          ...(opts.maxTokens !== undefined ? { maxTokens: opts.maxTokens } : {}),
           abortSignal: abortController.signal,
           onLiveProgress: (event) => {
             // Append event as a JSONL line; errors are silently swallowed so

@@ -4524,6 +4524,13 @@ export class AdminModule extends ModuleBase {
 
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify(provider))
+
+    // provider 连接信息可能变了：把全局默认的最新连接信息推给 memory，把整套 agent 配置重推一遍。
+    // 不判断本次改的是不是全局默认 provider —— agent model_config 可能引用任何 provider。
+    this.syncGlobalConfigToMemoryModules().catch((err: Error) => {
+      console.warn('[Admin] syncGlobalConfigToMemoryModules after provider update failed:', err.message)
+    })
+    this.triggerPushAfter('provider update')
   }
 
   private async handleDeleteProviderApi(_req: IncomingMessage, res: ServerResponse, id: string): Promise<void> {
@@ -4533,6 +4540,11 @@ export class AdminModule extends ModuleBase {
 
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ deleted: true }))
+
+    this.syncGlobalConfigToMemoryModules().catch((err: Error) => {
+      console.warn('[Admin] syncGlobalConfigToMemoryModules after provider delete failed:', err.message)
+    })
+    this.triggerPushAfter('provider delete')
   }
 
   private async handleImportFromVendorApi(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -4564,6 +4576,12 @@ export class AdminModule extends ModuleBase {
 
     res.writeHead(201, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify(result))
+
+    // vendor 导入完成（包含 OAuth credential / 模型列表刷新），下游 agent / memory 可能正等着用
+    this.syncGlobalConfigToMemoryModules().catch((err: Error) => {
+      console.warn('[Admin] syncGlobalConfigToMemoryModules after vendor import failed:', err.message)
+    })
+    this.triggerPushAfter('vendor import')
   }
 
   private async handleTestProviderApi(req: IncomingMessage, res: ServerResponse, id: string): Promise<void> {

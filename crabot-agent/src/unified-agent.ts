@@ -271,6 +271,7 @@ export class UnifiedAgent extends ModuleBase {
         const llmConfig: FrontHandlerLlmConfig = {
           adapter,
           model: frontModelConfig.model_id,
+          supportsVision: frontModelConfig.supports_vision === true,
         }
         this.frontHandler = new FrontHandler(llmConfig, this.buildToolExecutorDeps(), {
           getSystemPrompt: (isGroup) => this.promptManager.assembleFrontPrompt({
@@ -330,6 +331,7 @@ export class UnifiedAgent extends ModuleBase {
       modelId: connInfo.model_id,
       format: connInfo.format,
       supportsVision: connInfo.supports_vision,
+      ...(connInfo.max_tokens !== undefined ? { maxTokens: connInfo.max_tokens } : {}),
       env: {
         LLM_BASE_URL: connInfo.endpoint,
         LLM_API_KEY: connInfo.apikey || 'dummy-key',
@@ -2133,6 +2135,7 @@ export class UnifiedAgent extends ModuleBase {
             endpoint: frontConfig.endpoint,
             apikey: frontConfig.apikey,
             model: frontConfig.model_id,
+            supportsVision: frontConfig.supports_vision === true,
             ...(frontConfig.account_id ? { accountId: frontConfig.account_id } : {}),
           })
           console.log(`[${this.config.moduleId}] Front Agent LLM config updated`)
@@ -2146,6 +2149,7 @@ export class UnifiedAgent extends ModuleBase {
           const llmConfig: FrontHandlerLlmConfig = {
             adapter,
             model: frontConfig.model_id,
+            supportsVision: frontConfig.supports_vision === true,
           }
           this.frontHandler = new FrontHandler(llmConfig, this.buildToolExecutorDeps(), {
             getSystemPrompt: (isGroup) => this.promptManager.assembleFrontPrompt({

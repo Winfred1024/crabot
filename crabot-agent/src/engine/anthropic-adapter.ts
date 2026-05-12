@@ -18,6 +18,19 @@ import { isToolResultMessage, mergeConsecutiveUserMessages, wrapOnRetry, capTool
 import { isMaterialChunk } from './stream-processor.js'
 import type { EngineMessage, ToolDefinition, StreamChunk, ContentBlock } from './types.js'
 
+// --- Default max_tokens by model family ---
+// Anthropic SDK 强制要求 max_tokens；当上游（admin provider config）没配时，
+// 按模型家族选一个不会被 API 拒绝且能容纳 reasoning + 实际产出的值。
+// 用户可在 Admin Web 模型设置里覆盖。
+function defaultAnthropicMaxTokens(model: string): number {
+  const m = model.toLowerCase()
+  // claude-3 / claude-3-5 / claude-3-7 系列 API 上限多为 8192
+  if (m.includes('claude-3')) return 8192
+  // claude-4 / claude-opus-4 / claude-sonnet-4 / claude-haiku-4 起，上限 32K-64K
+  // 32K 是各档位都能接受的安全值（够 reasoning + 长响应）；想跑更长由用户在 admin 上调
+  return 32768
+}
+
 // --- Anthropic Message Normalization ---
 
 export function normalizeMessagesForAnthropic(messages: ReadonlyArray<EngineMessage>): MessageParam[] {
@@ -170,7 +183,7 @@ export class AnthropicAdapter implements LLMAdapter {
       () =>
         this.client.messages.create({
           model: params.model,
-          max_tokens: params.maxTokens ?? 4096,
+          max_tokens: params.maxTokens ?? defaultAnthropicMaxTokens(params.model),
           system: params.systemPrompt,
           messages,
           ...(tools.length > 0 ? { tools } : {}),
@@ -212,7 +225,7 @@ export class AnthropicAdapter implements LLMAdapter {
 
     const stream = this.client.messages.stream({
       model: params.model,
-      max_tokens: params.maxTokens ?? 4096,
+      max_tokens: params.maxTokens ?? defaultAnthropicMaxTokens(params.model),
       system: params.systemPrompt,
       messages,
       ...(tools.length > 0 ? { tools } : {}),

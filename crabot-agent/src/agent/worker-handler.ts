@@ -142,6 +142,8 @@ export interface SdkEnvConfig {
   modelId: string
   format: LLMFormat
   supportsVision?: boolean
+  /** Provider 配置的 max_output_tokens；未配置时 adapter 走各自的处理策略 */
+  maxTokens?: number
   env: Record<string, string>
 }
 
@@ -641,6 +643,7 @@ export class WorkerHandler {
             description: definition.toolDescription,
             adapter: adapterFromSdkEnv(subSdkEnv),
             model: subSdkEnv.modelId,
+            ...(subSdkEnv.maxTokens !== undefined ? { maxTokens: subSdkEnv.maxTokens } : {}),
             systemPrompt: definition.systemPrompt,
             subTools: baseTools,
             maxTurns: definition.maxTurns,
@@ -660,6 +663,7 @@ export class WorkerHandler {
           description: '将子任务委派给一个独立的执行者。执行者在独立上下文中运行，使用与你相同的模型和工具，只返回最终结果。适合：(1) 子任务的中间过程会污染你的上下文 (2) 子任务可以独立完成，不需要你的持续关注',
           adapter,
           model: this.sdkEnv.modelId,
+          ...(this.sdkEnv.maxTokens !== undefined ? { maxTokens: this.sdkEnv.maxTokens } : {}),
           systemPrompt: DELEGATE_TASK_SYSTEM_PROMPT,
           subTools: baseTools,
           maxTurns: 30,
@@ -835,6 +839,7 @@ export class WorkerHandler {
           systemPrompt: buildSystemPromptDynamic,
           tools: buildToolsDynamic,
           model: this.sdkEnv.modelId,
+          ...(this.sdkEnv.maxTokens !== undefined ? { maxTokens: this.sdkEnv.maxTokens } : {}),
           maxTurns: 2000,
           supportsVision: this.sdkEnv.supportsVision,
           permissionConfig: initialPermissionConfig,
