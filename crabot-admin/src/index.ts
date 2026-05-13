@@ -3728,9 +3728,10 @@ export class AdminModule extends ModuleBase {
     if (!task) {
       throw new Error(AdminErrorCode.TASK_NOT_FOUND)
     }
+    // task.result 必须存在：调用方应当先 update_task_status('completed'|'failed') 写入 outcome+finished_at，
+    // 再调本方法 patch outcome_brief/process_highlights。缺失说明调用顺序错了，宁可显式报错也不要静默假设 outcome。
     if (!task.result) {
-      // task.result 应在 update_task_status('completed') 时已写入；防御性兜底
-      task.result = { outcome: 'completed', finished_at: generateTimestamp() }
+      throw new Error('update_task_outcome called before task.result was initialized (caller must update_task_status first)')
     }
     task.result = {
       ...task.result,

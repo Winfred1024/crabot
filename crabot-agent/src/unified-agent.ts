@@ -1965,9 +1965,11 @@ export class UnifiedAgent extends ModuleBase {
 
     try {
       const result = await this.workerHandler.executeTask(taskParams, traceCallback, traceContext)
-      this.traceStore.endTrace(trace.trace_id, result.outcome === 'completed' ? 'completed' : 'failed', {
-        summary: result.error?.slice(0, 200) ?? (result.outcome === 'completed' ? '任务已完成' : '任务失败'),
-        error: result.outcome === 'failed' ? result.error : undefined,
+      const status = result.outcome === 'completed' ? 'completed' : 'failed'
+      const summary = result.error ? result.error.slice(0, 200) : (status === 'completed' ? '任务已完成' : '任务失败')
+      this.traceStore.endTrace(trace.trace_id, status, {
+        summary,
+        error: status === 'failed' ? result.error : undefined,
       })
       return { ...result, trace_id: trace.trace_id }
     } catch (error) {

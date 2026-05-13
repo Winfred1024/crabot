@@ -1034,51 +1034,27 @@ export class WorkerHandler {
     const finalStatus = engineResult.outcome === 'completed' ? 'completed' : 'failed'
     const finishedAt = new Date().toISOString()
 
-    // 1. 立即标 task 完成，关闭 supplement 通道
-    try {
-      await this.deps.rpcClient.call(
-        adminPort, 'update_task_status',
-        {
-          task_id: taskId,
-          status: finalStatus,
-          result: { outcome: finalStatus, finished_at: finishedAt },
-        },
-        this.deps.moduleId,
-      )
-    } catch (err) {
-      log(`finalize: update_task_status failed (continuing): ${err instanceof Error ? err.message : String(err)}`)
-    }
+    await this.bestEffortRpc(adminPort, 'update_task_status', {
+      task_id: taskId,
+      status: finalStatus,
+      result: { outcome: finalStatus, finished_at: finishedAt },
+    }, 'update_task_status')
 
-    // 2. 排空 humanMessageQueue（finalize 阶段不再接受 supplement）
     const humanQueue = this.humanQueues.get(taskId)
     if (humanQueue) {
       humanQueue.drainPending()
       humanQueue.clearBarrier()
     }
 
-    // 3. 失败路径：跳过反思补轮（无意义），仍写 admin outcome_brief（用 engine.error 当兜底）+ 失败记忆
+    // 失败路径：跳过反思补轮（LLM 已脱轨，再让它反思价值低且容易乱编），用 engine.error 当兜底 brief
     if (finalStatus === 'failed') {
       const failureBrief = (engineResult.error ?? engineResult.finalText ?? '任务失败').slice(0, 200)
-      try {
-        await this.deps.rpcClient.call(
-          adminPort, 'update_task_outcome',
-          { task_id: taskId, outcome_brief: failureBrief, process_highlights: [] },
-          this.deps.moduleId,
-        )
-      } catch (err) {
-        log(`finalize(failed): update_task_outcome failed (continuing): ${err instanceof Error ? err.message : String(err)}`)
-      }
-      this.finalizeMemoryWrite(taskId, {
-        outcome: 'failed',
-        outcome_brief: failureBrief,
-        process_highlights: [],
-      }, context)
+      await this.writeOutcome(taskId, adminPort, 'failed', failureBrief, [], context)
       return
     }
 
-    // 4. completed 路径：跑反思补轮；reflectFn 内部 retry + fallback 不抛错，
-    //    这里 try 兜的是 LLM 不可达 / adapter 异常等外层错误——此时构造 fallback 反思继续写入，
-    //    保证 task.result.outcome_brief 至少有 lastAssistantText 截断兜底，不留空。
+    // completed 路径：reflectFn 内部已有 retry + fallback 不抛错；这层 try 兜的是 LLM 不可达
+    // / adapter 异常等外层错误，构造 fallback 反思继续写入，保证 outcome_brief 不留空。
     let reflection: Awaited<ReturnType<typeof reflectStructuredOutcome>>
     try {
       const reflectFn = this.deps.reflectFn ?? reflectStructuredOutcome
@@ -1099,27 +1075,42 @@ export class WorkerHandler {
       }
     }
 
-    // 5. 回填 outcome_brief / process_highlights —— reflectFn 失败时写 fallback 兜底
-    try {
-      await this.deps.rpcClient.call(
-        adminPort, 'update_task_outcome',
-        {
-          task_id: taskId,
-          outcome_brief: reflection.outcome_brief,
-          process_highlights: reflection.process_highlights,
-        },
-        this.deps.moduleId,
-      )
-    } catch (err) {
-      log(`finalize: update_task_outcome failed (continuing): ${err instanceof Error ? err.message : String(err)}`)
-    }
+    await this.writeOutcome(taskId, adminPort, 'completed', reflection.outcome_brief, reflection.process_highlights, context)
+  }
 
-    // 6. 写短期 + 长期记忆（fire-and-forget；任意一步失败不影响 task 状态）
-    this.finalizeMemoryWrite(taskId, {
-      outcome: 'completed',
-      outcome_brief: reflection.outcome_brief,
-      process_highlights: reflection.process_highlights,
-    }, context)
+  /**
+   * 把 outcome_brief / process_highlights 同时落到 admin（update_task_outcome）和短期/长期记忆。
+   * RPC 失败 best-effort（log + 继续）；memory write 在 finalizeMemoryWrite 里也是 fire-and-forget。
+   */
+  private async writeOutcome(
+    taskId: TaskId,
+    adminPort: number,
+    outcome: 'completed' | 'failed',
+    outcomeBrief: string,
+    processHighlights: readonly string[],
+    context: import('../types.js').WorkerAgentContext,
+  ): Promise<void> {
+    await this.bestEffortRpc(adminPort, 'update_task_outcome', {
+      task_id: taskId,
+      outcome_brief: outcomeBrief,
+      process_highlights: processHighlights,
+    }, 'update_task_outcome')
+    this.finalizeMemoryWrite(taskId, { outcome, outcome_brief: outcomeBrief, process_highlights: processHighlights }, context)
+  }
+
+  /** finalize 阶段调 admin RPC 的 best-effort 包装：失败只 log 不抛，让后续步骤继续跑。 */
+  private async bestEffortRpc(
+    port: number,
+    method: string,
+    params: Record<string, unknown>,
+    label: string,
+  ): Promise<void> {
+    if (!this.deps) return
+    try {
+      await this.deps.rpcClient.call(port, method, params, this.deps.moduleId)
+    } catch (err) {
+      log(`finalize: ${label} failed (continuing): ${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   /**

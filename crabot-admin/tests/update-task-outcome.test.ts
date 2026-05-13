@@ -99,6 +99,18 @@ describe('handleUpdateTaskOutcome', () => {
     ).rejects.toThrow('TASK_NOT_FOUND')
   })
 
+  it('task.result 缺失时显式抛错（调用方应先 update_task_status 写入 outcome+finished_at）', async () => {
+    const task = makeTask({ result: undefined })
+    const admin = buildAdmin([task])
+
+    await expect(
+      (admin as any).handleUpdateTaskOutcome({
+        task_id: task.id,
+        outcome_brief: '没初始化',
+      })
+    ).rejects.toThrow(/result was not initialized|update_task_status first/)
+  })
+
   it('outcome_brief 缺失时只更新 process_highlights，其他字段不受影响', async () => {
     const originalResult: TaskResult = {
       outcome: 'completed',

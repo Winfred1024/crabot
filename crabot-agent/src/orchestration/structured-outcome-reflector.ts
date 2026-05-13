@@ -38,11 +38,9 @@ export interface ReflectResult {
   readonly fellBackToLastText: boolean
 }
 
-interface ParseAttempt {
-  readonly ok: boolean
-  readonly value?: { outcome_brief: string; process_highlights: string[] }
-  readonly error?: string
-}
+type ParseAttempt =
+  | { readonly ok: true; readonly value: { outcome_brief: string; process_highlights: string[] } }
+  | { readonly ok: false; readonly error: string }
 
 function parseAndValidate(text: string): ParseAttempt {
   const match = text.match(FENCE_RE)
@@ -96,7 +94,7 @@ export async function reflectStructuredOutcome(params: ReflectorParams): Promise
       .join('')
 
     const parsed = parseAndValidate(text)
-    if (parsed.ok && parsed.value) {
+    if (parsed.ok) {
       return {
         outcome_brief: parsed.value.outcome_brief,
         process_highlights: parsed.value.process_highlights,
@@ -108,7 +106,7 @@ export async function reflectStructuredOutcome(params: ReflectorParams): Promise
     if (attempt < maxRetries) {
       workingMessages.push(createAssistantMessage([{ type: 'text', text }], 'end_turn'))
       workingMessages.push(createUserMessage(
-        `${FIX_PROMPT_HEADER}${parsed.error ?? 'unknown'}\n请重新按 schema 输出 JSON。`
+        `${FIX_PROMPT_HEADER}${parsed.error}\n请重新按 schema 输出 JSON。`
       ))
     }
   }
