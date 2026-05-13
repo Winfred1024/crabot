@@ -151,16 +151,16 @@ describe('Worker prompt — 新增规则', () => {
     expect(worker).toContain('live check')
   })
 
-  it('完成判定 Evidence or Named Blocker（收尾段）', () => {
-    expect(worker).toContain('Evidence')
-    expect(worker).toContain('named blocker')
-    expect(worker).toContain('已完成')
-    expect(worker).toContain('已验证')
+  it('如实报告（收尾段）', () => {
+    expect(worker).toContain('如实报告')
+    expect(worker).toContain('对冲')
+    expect(worker).toContain('客观可重放')
   })
 
-  it('分层声明覆盖（收尾段）', () => {
-    expect(worker).toContain('已验')
-    expect(worker).toContain('未验')
+  it('Blocker 的优先路径（收尾段）', () => {
+    expect(worker).toContain('Blocker 的优先路径')
+    expect(worker).toContain('ask_human')
+    expect(worker).toContain('autonomous schedule')
   })
 
   it('收尾的克制反问（收尾段）', () => {
@@ -204,6 +204,12 @@ describe('Worker prompt — 删除项不应再出现', () => {
 
   it('不含原 6 步执行流程的"如需用户确认或反馈调用 ask_human"', () => {
     expect(worker).not.toContain('如需用户确认或反馈')
+  })
+
+  it('不含旧"已验/未验"模板（避免 specification gaming）', () => {
+    expect(worker).not.toContain('已验：')
+    expect(worker).not.toContain('未验：')
+    expect(worker).not.toContain('分层声明覆盖')
   })
 })
 
