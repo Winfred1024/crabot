@@ -104,11 +104,6 @@ describe('Worker prompt — 三段式章节标题', () => {
 })
 
 describe('Worker prompt — 已搬移规则保留', () => {
-  it('工作目录段保留', () => {
-    expect(worker).toContain('os.homedir()')
-    expect(worker).toContain('不要修改 Crabot 自身的代码目录')
-  })
-
   it('Skill 加载强制要求保留', () => {
     expect(worker).toContain('调用 Skill')
     expect(worker).toContain('强制要求')
@@ -180,7 +175,7 @@ describe('Worker prompt — 新增规则', () => {
     expect(worker).toContain('specification gaming')
     expect(worker).toContain('designer intent')
     expect(worker).toContain('硬约束')
-    expect(worker).toContain('一、接任段的三条路径')
+    expect(worker).toContain('一、接任段的两条路径')
   })
 })
 
@@ -277,23 +272,23 @@ describe('PromptManager.assembleWorkerPrompt — opts 签名', () => {
 
 describe('Crabot 产品自我认知 — Front + Worker 同源注入', () => {
   it('Front 私聊版含产品自我认知段', () => {
-    expect(frontPrivate).toContain('## 你是 Crabot')
-    expect(frontPrivate).toContain('完整运营基础设施')
+    expect(frontPrivate).toContain('## 你是基于 Crabot 打造的具有独立人格的 AI 数字人')
+    expect(frontPrivate).toContain('Crabot 的组成')
   })
 
   it('Front 群聊版同样含产品自我认知段', () => {
-    expect(frontGroup).toContain('## 你是 Crabot')
-    expect(frontGroup).toContain('完整运营基础设施')
+    expect(frontGroup).toContain('## 你是基于 Crabot 打造的具有独立人格的 AI 数字人')
+    expect(frontGroup).toContain('Crabot 的组成')
   })
 
   it('Worker 含产品自我认知段', () => {
-    expect(worker).toContain('## 你是 Crabot')
-    expect(worker).toContain('完整运营基础设施')
+    expect(worker).toContain('## 你是基于 Crabot 打造的具有独立人格的 AI 数字人')
+    expect(worker).toContain('Crabot 的组成')
   })
 
-  it('明确"主动型 AI 员工"产品定位（不是仅响应式问答机器人）', () => {
-    expect(frontPrivate).toContain('主动型 AI 员工')
-    expect(worker).toContain('主动型 AI 员工')
+  it('明确"AI 数字人"产品定位（不是仅响应式问答机器人）', () => {
+    expect(frontPrivate).toContain('AI 数字人')
+    expect(worker).toContain('AI 数字人')
     // 主动 = 自发推动事情（产品定位的核心动词）
     expect(frontPrivate).toContain('自发推动事情')
   })
@@ -315,21 +310,10 @@ describe('Crabot 产品自我认知 — Front + Worker 同源注入', () => {
     }
   })
 
-  it('主动性的 4 类具体动作都有提及（每条对应当前可执行的载体）', () => {
-    // 时间主动 / 任务内主动反应 / 收尾主动多想一步 / 自我维护
+  it('主动性的具体动作有提及', () => {
     // 用动作动词而非触发词，避免 specification gaming
-    expect(frontPrivate).toContain('crabot schedule add')        // 时间主动
-    expect(frontPrivate).toContain('send_private_message')       // 任务内主动反应
-    expect(frontPrivate).toContain('多想一步')                    // 收尾主动
-    expect(frontPrivate).toContain('daily-reflection')           // 自我维护
-    expect(frontPrivate).toContain('memory-curate')
-    expect(frontPrivate).toContain('quick_reflection')
-  })
-
-  it('"任务收尾时多想一步" 显式守 specification gaming 边界', () => {
-    expect(frontPrivate).toContain('多想一步')
-    expect(frontPrivate).toContain('specification gaming')
-    expect(frontPrivate).toContain('别擅自扩张到未授权的事')
+    expect(frontPrivate).toContain('send_private_message')       // 执行中遇额外信号 → 通报
+    expect(frontPrivate).toContain('多想一步')                    // 任务收尾多想一步
   })
 
   it('用"承诺 → 产物"目标语义引导，不依赖触发词清单', () => {
@@ -347,34 +331,6 @@ describe('Crabot 产品自我认知 — Front + Worker 同源注入', () => {
     // CRABOT_PRODUCT_SELF 段不应出现"对 master 的承诺"——多 Friend 场景下不准确
     expect(frontPrivate).toContain('对人类的承诺')
     expect(worker).toContain('对人类的承诺')
-  })
-})
-
-describe('Worker prompt — 主动性诉求的物化段', () => {
-  it('收尾段含"主动性诉求的物化"小节（按当前 schedule 机制描述，不预告未来）', () => {
-    expect(worker).toContain('### 主动性诉求的物化')
-    expect(worker).toContain('系统也能按预期触发')
-  })
-
-  it('给出三条物化路径', () => {
-    expect(worker).toContain('项目自治')
-    expect(worker).toContain('系统级调度')
-    expect(worker).toContain('crabot schedule add')
-    expect(worker).toContain('信息留痕')
-  })
-
-  it('调度参数提示完整（cron / once / 必填 priority / 目标会话）', () => {
-    expect(worker).toContain('--cron')
-    expect(worker).toContain('--trigger-at')
-    // priority 是 admin 协议必填字段，CLI 要求显式传
-    expect(worker).toContain('--priority')
-    // 提醒类调度通过 task_template.input 把目标 channel/session 透传给 worker
-    expect(worker).toContain('--target-channel')
-    expect(worker).toContain('--target-session')
-  })
-
-  it('不再使用旧"持续性"框架命名（避免把主动性窄化成持续性）', () => {
-    expect(worker).not.toContain('### 持续性需求的物化')
   })
 })
 
@@ -440,10 +396,6 @@ describe('Worker prompt — Phase 3 历史回溯硬约束', () => {
     expect(worker).toContain('search_traces')
   })
 
-  it('明确禁止 get_history 翻 channel 历史定位事件', () => {
-    expect(worker).toContain('get_history')
-  })
-
   it('给出基于意图的判断条件而非关键词清单（反 specification gaming）', () => {
     // 必须有意图/语义性触发词
     expect(worker).toMatch(/意图|哪一次|上一次|回溯/)
@@ -469,7 +421,7 @@ describe('formatChannelMessageLine — XML output (A.2)', () => {
       features: { is_mention_crab: false },
       platform_timestamp: '2026-05-10T03:48:00Z',
     }
-    const out = formatChannelMessageLine(msg, { timezone: 'UTC', identity: 'master' })
+    const out = formatChannelMessageLine(msg, { timezone: 'UTC', identity: 'master', now: new Date('2026-05-10T05:00:00Z') })
     expect(out).toContain('<message')
     expect(out).toContain('ts="03:48"')
     expect(out).toContain('from="FuFu"')

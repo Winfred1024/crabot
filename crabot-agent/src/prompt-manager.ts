@@ -345,7 +345,7 @@ list_groups / list_contacts 的返回是**分页结果**——看到 \`paginatio
 **时长分级**：
 - 1min - 1h：bg shell；spawn 后干别的事，等 push notification
 - 1h - 数天：bg shell；**仅 master 私聊场景**下 bg 跨 task / worker 重启都不被杀，由你显式 Kill 或进程自己 exit
-- 数天 - 几周：考虑物化为项目内 cron / daemon（见「主动性诉求的物化」段）
+- 数天 - 几周：考虑物化为项目内 cron / daemon
 
 **子任务委派**同款：\`delegate_task(prompt, run_in_background=true)\` → agent_id → 等 push notification 或用 \`Output(agent_id, block=true)\` 主动等。
 
