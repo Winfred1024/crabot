@@ -6,7 +6,8 @@
 
 import * as fs from 'fs'
 import * as path from 'path'
-import type { AgentTrace, AgentSpan, AgentSpanType, AgentSpanDetails } from '../types.js'
+import type { AgentTrace, AgentSpan, AgentSpanType, AgentSpanDetails, TokenUsage } from '../types.js'
+import { aggregateUsage } from './trace-usage.js'
 
 export interface SpanWithMeta {
   span_id: string
@@ -39,9 +40,12 @@ export interface TraceIndexEntry {
   trigger_task_type?: string
   started_at: string
   ended_at?: string
+  duration_ms?: number
   status: 'running' | 'completed' | 'failed'
   outcome_summary?: string
   span_count: number
+  /** 全 trace 的 token 用量汇总（持久化时聚合，rebuild 时按 spans 重算） */
+  total_usage?: TokenUsage
   file: string
   file_offset: number
 }
@@ -103,20 +107,7 @@ export class TraceStore {
     // Merge running traces from ring buffer not yet persisted
     for (const trace of this.traces.values()) {
       if (trace.status === 'running' && !results.some(e => e.trace_id === trace.trace_id)) {
-        results.push({
-          trace_id: trace.trace_id,
-          related_task_id: trace.related_task_id,
-          parent_trace_id: trace.parent_trace_id,
-          trigger_type: trace.trigger.type,
-          trigger_summary: trace.trigger.summary,
-          started_at: trace.started_at,
-          ended_at: trace.ended_at,
-          status: trace.status,
-          outcome_summary: trace.outcome?.summary,
-          span_count: trace.spans.length,
-          file: '',
-          file_offset: 0,
-        })
+        results.push(this.traceToIndexEntry(trace, '', 0))
       }
     }
 
@@ -255,6 +246,10 @@ export class TraceStore {
     trace.status = status
     if (outcome) {
       trace.outcome = outcome
+    }
+    const totalUsage = aggregateUsage(trace.spans)
+    if (totalUsage) {
+      trace.total_usage = totalUsage
     }
 
     this.persistTrace(trace)
@@ -459,6 +454,8 @@ export class TraceStore {
   }
 
   private traceToIndexEntry(trace: AgentTrace, file: string, fileOffset: number): TraceIndexEntry {
+    // total_usage 优先取持久化时计算的值（endTrace 已回填）；rebuild 时若缺失则按 spans 重算。
+    const totalUsage = trace.total_usage ?? aggregateUsage(trace.spans ?? [])
     return {
       trace_id: trace.trace_id,
       related_task_id: trace.related_task_id,
@@ -468,9 +465,11 @@ export class TraceStore {
       trigger_task_type: trace.trigger.task_type,
       started_at: trace.started_at,
       ended_at: trace.ended_at,
+      duration_ms: trace.duration_ms,
       status: trace.status,
       outcome_summary: trace.outcome?.summary,
       span_count: trace.spans?.length ?? 0,
+      ...(totalUsage ? { total_usage: totalUsage } : {}),
       file,
       file_offset: fileOffset,
     }

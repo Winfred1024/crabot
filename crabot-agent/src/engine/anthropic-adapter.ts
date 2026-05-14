@@ -16,7 +16,7 @@ import type { LLMAdapter, LLMAdapterConfig, LLMStreamParams, LLMCallResponse } f
 import { streamWithRetry, withRetry } from './retry-utils.js'
 import { isToolResultMessage, mergeConsecutiveUserMessages, wrapOnRetry, capToolResultForLLM } from './llm-adapter-types.js'
 import { isMaterialChunk } from './stream-processor.js'
-import type { EngineMessage, ToolDefinition, StreamChunk, ContentBlock } from './types.js'
+import type { EngineMessage, ToolDefinition, StreamChunk, ContentBlock, LLMTokenUsage } from './types.js'
 
 // --- Default max_tokens by model family ---
 // Anthropic SDK 强制要求 max_tokens；当上游（admin provider config）没配时，
@@ -212,10 +212,7 @@ export class AnthropicAdapter implements LLMAdapter {
     return {
       content,
       stopReason: response.stop_reason ?? null,
-      usage: {
-        inputTokens: response.usage.input_tokens,
-        outputTokens: response.usage.output_tokens,
-      },
+      usage: extractAnthropicUsage(response.usage),
     }
   }
 
@@ -283,10 +280,24 @@ export class AnthropicAdapter implements LLMAdapter {
     yield {
       type: 'message_end',
       stopReason: finalMessage.stop_reason ?? null,
-      usage: {
-        inputTokens: finalMessage.usage.input_tokens,
-        outputTokens: finalMessage.usage.output_tokens,
-      },
+      usage: extractAnthropicUsage(finalMessage.usage),
     }
+  }
+}
+
+/**
+ * Anthropic SDK Stable Usage 类型只暴露 input/output_tokens，
+ * 但 prompt caching 启用时 response payload 实际带 cache_creation_input_tokens
+ * 和 cache_read_input_tokens（Beta 类型已有，stable 没同步）。这里宽松读取。
+ */
+function extractAnthropicUsage(raw: { input_tokens: number; output_tokens: number }): LLMTokenUsage {
+  const extra = raw as { cache_creation_input_tokens?: number | null; cache_read_input_tokens?: number | null }
+  const cacheCreation = typeof extra.cache_creation_input_tokens === 'number' ? extra.cache_creation_input_tokens : undefined
+  const cacheRead = typeof extra.cache_read_input_tokens === 'number' ? extra.cache_read_input_tokens : undefined
+  return {
+    inputTokens: raw.input_tokens,
+    outputTokens: raw.output_tokens,
+    ...(cacheCreation !== undefined ? { cacheCreationTokens: cacheCreation } : {}),
+    ...(cacheRead !== undefined ? { cacheReadTokens: cacheRead } : {}),
   }
 }

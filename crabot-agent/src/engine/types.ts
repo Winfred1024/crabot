@@ -42,6 +42,19 @@ export interface RawReasoningBlock {
 
 export type ContentBlock = TextBlock | ImageBlock | ToolUseBlock | ToolResultBlock | RawReasoningBlock
 
+// --- Token Usage ---
+
+/**
+ * LLM 调用的 token 用量。adapter 透传，trace 持久化时聚合到 AgentTrace.total_usage。
+ * cache 字段对齐 Anthropic prompt caching；OpenAI cached_tokens 归到 cacheReadTokens。
+ */
+export interface LLMTokenUsage {
+  readonly inputTokens: number
+  readonly outputTokens: number
+  readonly cacheCreationTokens?: number
+  readonly cacheReadTokens?: number
+}
+
 // --- Messages ---
 
 export interface EngineUserMessage {
@@ -57,7 +70,7 @@ export interface EngineAssistantMessage {
   readonly content: ContentBlock[]
   readonly stopReason: 'end_turn' | 'tool_use' | 'max_tokens' | 'stop_sequence' | null
   readonly timestamp: number
-  readonly usage?: { readonly inputTokens: number; readonly outputTokens: number }
+  readonly usage?: LLMTokenUsage
 }
 
 export interface EngineToolResultMessage {
@@ -140,7 +153,7 @@ export type StreamChunk =
   | { readonly type: 'tool_use_end'; readonly id: string }
   | { readonly type: 'raw_reasoning'; readonly data: Record<string, unknown> }
   | { readonly type: 'message_start'; readonly messageId: string }
-  | { readonly type: 'message_end'; readonly stopReason: string | null; readonly usage?: { readonly inputTokens: number; readonly outputTokens: number } }
+  | { readonly type: 'message_end'; readonly stopReason: string | null; readonly usage?: LLMTokenUsage }
   | { readonly type: 'error'; readonly error: string }
 
 // --- Engine Options & Result ---
@@ -170,6 +183,8 @@ export interface EngineTurnEvent {
    * 单独标识"这一轮 user msg 是 engine 注入的强制汇报追问"。
    */
   readonly forcedSummaryAttempt?: number
+  /** 本轮 LLM 调用的 token 用量；adapter 透传，无则缺省 */
+  readonly usage?: LLMTokenUsage
 }
 
 /** 既可传静态值也可传 callback（每轮 resolve） */
@@ -254,7 +269,7 @@ export interface EngineResult {
   readonly outcome: 'completed' | 'failed' | 'max_turns' | 'aborted'
   readonly finalText: string
   readonly totalTurns: number
-  readonly usage: { readonly inputTokens: number; readonly outputTokens: number }
+  readonly usage: LLMTokenUsage
   readonly error?: string
   readonly finalMessages: ReadonlyArray<EngineMessage>
 }
@@ -273,7 +288,7 @@ export function createUserMessage(content: string | ContentBlock[]): EngineUserM
 export function createAssistantMessage(
   content: ContentBlock[],
   stopReason: EngineAssistantMessage['stopReason'],
-  usage?: { inputTokens: number; outputTokens: number }
+  usage?: LLMTokenUsage
 ): EngineAssistantMessage {
   return {
     id: randomUUID(),

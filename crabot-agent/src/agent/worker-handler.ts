@@ -69,6 +69,7 @@ import { PromptManager, formatChannelMessageLine, formatShortTermMemoryLine } fr
 import { resolveSenderIdentity } from '../utils/sender-identity.js'
 import { formatNow, formatChannelMessageTime, resolveTimezone, formatRuntimeMs } from '../utils/time.js'
 import { getInstanceSkillsDir } from '../core/data-paths.js'
+import { llmUsageToTrace } from '../core/trace-usage.js'
 import { TodoStore } from './worker-todo-store.js'
 import { createTodoTool } from './worker-todo-tool.js'
 import { reflectStructuredOutcome } from '../orchestration/structured-outcome-reflector.js'
@@ -927,6 +928,7 @@ export class WorkerHandler {
                   outputSummary: event.assistantText.slice(0, 200) || undefined,
                   toolCallsCount: event.toolCalls.length > 0 ? event.toolCalls.length : undefined,
                   ...(event.forcedSummaryAttempt !== undefined ? { forcedSummaryAttempt: event.forcedSummaryAttempt } : {}),
+                  ...(event.usage ? { usage: llmUsageToTrace(event.usage) } : {}),
                 },
                 llmEndedAtMs,
               )

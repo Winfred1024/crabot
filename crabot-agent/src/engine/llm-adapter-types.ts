@@ -18,6 +18,7 @@ import type {
   ToolDefinition,
   StreamChunk,
   ContentBlock,
+  LLMTokenUsage,
 } from './types.js'
 
 // --- Interfaces ---
@@ -75,7 +76,7 @@ export interface LLMAdapterConfig {
 export interface LLMCallResponse {
   readonly content: ContentBlock[]
   readonly stopReason: string | null
-  readonly usage?: { readonly inputTokens: number; readonly outputTokens: number }
+  readonly usage?: LLMTokenUsage
 }
 
 // --- Non-streaming convenience ---

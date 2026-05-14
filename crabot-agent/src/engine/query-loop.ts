@@ -200,7 +200,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
         if (maxTokensCompactRetryCount < MAX_MAX_TOKENS_COMPACT_RETRIES) {
           maxTokensCompactRetryCount++
           if (options.onTurn) {
-            options.onTurn(buildSilentTurnEvent(totalTurns, processed.text, stopReason, llmCallMs, llmStartedAtMs))
+            options.onTurn(buildSilentTurnEvent(totalTurns, processed.text, stopReason, llmCallMs, llmStartedAtMs, undefined, response.usage))
           }
           messages.pop()
           await compactInPlace(messages, contextManager, adapter, options)
@@ -216,7 +216,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
         silentEndTurnCount++
         if (options.onTurn) {
           options.onTurn(buildSilentTurnEvent(
-            totalTurns, processed.text, stopReason, llmCallMs, llmStartedAtMs, forcedSummaryAttempt,
+            totalTurns, processed.text, stopReason, llmCallMs, llmStartedAtMs, forcedSummaryAttempt, response.usage,
           ))
         }
         messages.push(createUserMessage(FORCED_SUMMARY_PROMPT))
@@ -267,6 +267,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
             llmCallMs,
             llmStartedAtMs,
             ...(forcedSummaryAttempt !== undefined ? { forcedSummaryAttempt } : {}),
+            ...(response.usage ? { usage: response.usage } : {}),
           }
           options.onTurn(turnEvent)
         }
@@ -326,6 +327,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
         llmCallMs,
         llmStartedAtMs,
         ...(forcedSummaryAttempt !== undefined ? { forcedSummaryAttempt } : {}),
+        ...(response.usage ? { usage: response.usage } : {}),
       }
       options.onTurn(turnEvent)
     }
@@ -398,6 +400,7 @@ function buildSilentTurnEvent(
   llmCallMs: number,
   llmStartedAtMs: number | undefined,
   forcedSummaryAttempt?: number,
+  usage?: import('./types.js').LLMTokenUsage,
 ): EngineTurnEvent {
   return {
     turnNumber,
@@ -407,6 +410,7 @@ function buildSilentTurnEvent(
     llmCallMs,
     ...(llmStartedAtMs !== undefined ? { llmStartedAtMs } : {}),
     ...(forcedSummaryAttempt !== undefined ? { forcedSummaryAttempt } : {}),
+    ...(usage ? { usage } : {}),
   }
 }
 

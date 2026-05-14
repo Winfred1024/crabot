@@ -825,6 +825,16 @@ export interface AgentLoopDetails {
   skills?: string[]
 }
 
+/** Token 用量；对齐 protocol-agent-v2.md §8.2 TokenUsage */
+export interface TokenUsage {
+  input_tokens: number
+  output_tokens: number
+  /** Anthropic prompt caching：写入缓存的 token 数 */
+  cache_creation_tokens?: number
+  /** 命中缓存读取的 token 数（OpenAI cached_tokens 也归此） */
+  cache_read_tokens?: number
+}
+
 export interface LlmCallDetails {
   iteration?: number
   attempt?: number
@@ -836,6 +846,7 @@ export interface LlmCallDetails {
   full_output?: string
   /** 1-indexed；存在表示本轮由"沉默 end_turn 追问"机制触发 */
   forced_summary_attempt?: number
+  usage?: TokenUsage
 }
 
 export interface ToolCallDetails {
@@ -930,6 +941,8 @@ export interface AgentTrace {
     summary: string
     error?: string
   }
+  /** trace 结束时由 trace-store 从所有 llm_call span 聚合得出 */
+  total_usage?: TokenUsage
 }
 
 export interface TraceCallback {
@@ -944,7 +957,7 @@ export interface TraceCallback {
   /** `startedAtMs`/`endedAtMs` back-date spans for post-hoc callers (e.g.
    * worker-handler's onTurn fires after the LLM call already completed). */
   onLlmCallStart(iteration: number, inputSummary: string, attempt?: number, startedAtMs?: number): string
-  onLlmCallEnd(spanId: string, result: { stopReason?: string; outputSummary?: string; toolCallsCount?: number; fullInput?: string; fullOutput?: string; error?: string; forcedSummaryAttempt?: number }, endedAtMs?: number): void
+  onLlmCallEnd(spanId: string, result: { stopReason?: string; outputSummary?: string; toolCallsCount?: number; fullInput?: string; fullOutput?: string; error?: string; forcedSummaryAttempt?: number; usage?: TokenUsage }, endedAtMs?: number): void
   onToolCallStart(toolName: string, inputSummary: string, startedAtMs?: number): string
   onToolCallEnd(spanId: string, outputSummary: string, error?: string, endedAtMs?: number): void
 }

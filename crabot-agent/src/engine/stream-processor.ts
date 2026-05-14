@@ -1,5 +1,5 @@
 import { jsonrepair } from 'jsonrepair'
-import type { StreamChunk, ToolUseBlock, RawReasoningBlock } from './types'
+import type { StreamChunk, ToolUseBlock, RawReasoningBlock, LLMTokenUsage } from './types'
 
 /**
  * 判断 chunk 是否对消费者可见。message_start 仅携带 messageId，
@@ -15,7 +15,7 @@ export interface ProcessedResponse {
   readonly toolUseBlocks: ReadonlyArray<ToolUseBlock>
   readonly reasoningBlocks: ReadonlyArray<RawReasoningBlock>
   readonly stopReason: string | null
-  readonly usage?: { readonly inputTokens: number; readonly outputTokens: number }
+  readonly usage?: LLMTokenUsage
 }
 
 interface ToolUseBuffer {
@@ -30,7 +30,7 @@ export class StreamProcessor {
   private reasoningBlocks: RawReasoningBlock[] = []
   private activeToolBuffers: Map<string, ToolUseBuffer> = new Map()
   private stopReason: string | null = null
-  private usage: { inputTokens: number; outputTokens: number } | undefined = undefined
+  private usage: LLMTokenUsage | undefined = undefined
 
   process(chunk: StreamChunk): void {
     switch (chunk.type) {

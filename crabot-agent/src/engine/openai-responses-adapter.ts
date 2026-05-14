@@ -6,7 +6,7 @@
 
 import type { LLMAdapter, LLMAdapterConfig, LLMStreamParams } from './llm-adapter-types.js'
 import { isToolResultMessage, extractText, buildImageUrl, readSSEEvents, wrapOnRetry, capToolResultForLLM } from './llm-adapter-types.js'
-import type { EngineMessage, ToolDefinition, StreamChunk, ContentBlock } from './types.js'
+import type { EngineMessage, ToolDefinition, StreamChunk, ContentBlock, LLMTokenUsage } from './types.js'
 import { HttpResponseError, streamWithRetry } from './retry-utils.js'
 import { isMaterialChunk } from './stream-processor.js'
 
@@ -285,7 +285,7 @@ export class OpenAIResponsesAdapter implements LLMAdapter {
         case 'response.completed': {
           const resp = parsed.response as {
             output?: Array<{ type?: string }>
-            usage?: { input_tokens?: number; output_tokens?: number }
+            usage?: ResponsesApiUsage
           } | undefined
 
           // Trust the stream: if a function_call item was emitted, the stop reason is tool_use.
@@ -293,12 +293,12 @@ export class OpenAIResponsesAdapter implements LLMAdapter {
           const hasToolCallsInOutput = resp?.output?.some(item => item.type === 'function_call') ?? false
           const hasToolCallsInStream = activeFunctionCalls.size > 0
           const hasToolCalls = hasToolCallsInOutput || hasToolCallsInStream
-          const usage = resp?.usage
+          const usage = extractResponsesApiUsage(resp?.usage)
 
           yield {
             type: 'message_end',
             stopReason: hasToolCalls ? 'tool_use' : 'end_turn',
-            ...(usage ? { usage: { inputTokens: usage.input_tokens ?? 0, outputTokens: usage.output_tokens ?? 0 } } : {}),
+            ...(usage ? { usage } : {}),
           }
           break
         }
@@ -307,11 +307,11 @@ export class OpenAIResponsesAdapter implements LLMAdapter {
           // 终态事件，响应被截断但 stream 正常结束。不处理这条会让 stopReason 落到
           // null，被上游 query-loop 误判为 silent end_turn，触发反向放大的重试链。
           const resp = parsed.response as {
-            usage?: { input_tokens?: number; output_tokens?: number }
+            usage?: ResponsesApiUsage
             incomplete_details?: { reason?: string }
           } | undefined
           const reason = resp?.incomplete_details?.reason
-          const usage = resp?.usage
+          const usage = extractResponsesApiUsage(resp?.usage)
 
           // content_filter 不可恢复（同输入必再被拦）；status=400 走 non-retryable。
           if (reason === 'content_filter') {
@@ -326,7 +326,7 @@ export class OpenAIResponsesAdapter implements LLMAdapter {
           yield {
             type: 'message_end',
             stopReason: 'max_tokens',
-            ...(usage ? { usage: { inputTokens: usage.input_tokens ?? 0, outputTokens: usage.output_tokens ?? 0 } } : {}),
+            ...(usage ? { usage } : {}),
           }
           break
         }
@@ -350,5 +350,28 @@ export class OpenAIResponsesAdapter implements LLMAdapter {
           break
       }
     }
+  }
+}
+
+interface ResponsesApiUsage {
+  input_tokens?: number
+  output_tokens?: number
+  /** 新版 Responses API 暴露的缓存命中字段 */
+  input_tokens_details?: { cached_tokens?: number }
+}
+
+/**
+ * Responses API 与 Chat Completions 同语义：input_tokens 含 cached。
+ * 拍成统一语义（Anthropic 风格）：inputTokens 仅记未命中部分。
+ */
+function extractResponsesApiUsage(raw: ResponsesApiUsage | undefined): LLMTokenUsage | undefined {
+  if (!raw) return undefined
+  const total = raw.input_tokens ?? 0
+  const cached = raw.input_tokens_details?.cached_tokens ?? 0
+  const uncached = Math.max(0, total - cached)
+  return {
+    inputTokens: uncached,
+    outputTokens: raw.output_tokens ?? 0,
+    ...(cached > 0 ? { cacheReadTokens: cached } : {}),
   }
 }

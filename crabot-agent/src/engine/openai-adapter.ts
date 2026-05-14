@@ -4,7 +4,7 @@
 
 import type { LLMAdapter, LLMAdapterConfig, LLMStreamParams, LLMCallResponse } from './llm-adapter-types.js'
 import { isToolResultMessage, extractText, buildImageUrl, readSSELines, mergeConsecutiveUserMessages, wrapOnRetry, capToolResultForLLM } from './llm-adapter-types.js'
-import type { EngineMessage, ToolDefinition, StreamChunk, ContentBlock } from './types.js'
+import type { EngineMessage, ToolDefinition, StreamChunk, ContentBlock, LLMTokenUsage } from './types.js'
 import { HttpResponseError, streamWithRetry, withRetry } from './retry-utils.js'
 import { isMaterialChunk, parseToolInput } from './stream-processor.js'
 
@@ -250,13 +250,17 @@ export class OpenAIAdapter implements LLMAdapter {
     }
 
     const stopReason = mapOpenAIFinishReason(choice?.finish_reason ?? null)
-    const usage = data.usage
+    const usage = extractOpenAIUsage(data.usage)
+    if (!usage) {
+      // 第三方 OpenAI 代理（mirror、sub2api 等）有时 stream:false 不回 usage——
+      // 让运维能从日志确认是上游问题，不是 trace 漏埋点
+      const dataKeys = data && typeof data === 'object' ? Object.keys(data as object).join(',') : 'non-object'
+      console.warn(`[openai-adapter] complete: response missing usage (model=${params.model}, endpoint=${this.config.endpoint}, top-level keys=[${dataKeys}])`)
+    }
     return {
       content,
       stopReason,
-      ...(usage
-        ? { usage: { inputTokens: usage.prompt_tokens ?? 0, outputTokens: usage.completion_tokens ?? 0 } }
-        : {}),
+      ...(usage ? { usage } : {}),
     }
   }
 
@@ -313,7 +317,7 @@ export class OpenAIAdapter implements LLMAdapter {
         yield { type: 'message_start', messageId: (data as { id?: string }).id ?? 'msg_openai' }
       }
 
-      const usage = data.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined
+      const usage = extractOpenAIUsage(data.usage)
       const choices = data.choices as Array<{
         delta?: {
           content?: string | null
@@ -366,7 +370,7 @@ export class OpenAIAdapter implements LLMAdapter {
           yield {
             type: 'message_end',
             stopReason,
-            ...(usage ? { usage: { inputTokens: usage.prompt_tokens ?? 0, outputTokens: usage.completion_tokens ?? 0 } } : {}),
+            ...(usage ? { usage } : {}),
           }
         }
       }
@@ -375,9 +379,38 @@ export class OpenAIAdapter implements LLMAdapter {
         yield {
           type: 'message_end',
           stopReason: null,
-          usage: { inputTokens: usage.prompt_tokens ?? 0, outputTokens: usage.completion_tokens ?? 0 },
+          usage,
         }
       }
     }
+  }
+}
+
+/**
+ * 从 OpenAI Chat Completions usage 提取 token。
+ *
+ * 语义对齐（关键）：OpenAI 原生 `prompt_tokens` 是"全量输入（含 cached）"，
+ * 而 Anthropic 原生 `input_tokens` 是"未命中缓存的输入"。这里把 OpenAI 拍成
+ * Anthropic 语义——`inputTokens = prompt_tokens - cached_tokens`，让全链路统一：
+ *   inputTokens         = 未命中缓存的输入（实际计费的 prompt 部分）
+ *   cacheReadTokens     = 命中缓存读取的部分（享受折扣价）
+ *   cacheCreationTokens = 写入缓存的部分（Anthropic 专属，OpenAI 缺省）
+ *   全量 prompt size    = inputTokens + cacheReadTokens + cacheCreationTokens
+ */
+function extractOpenAIUsage(raw: unknown): LLMTokenUsage | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const u = raw as {
+    prompt_tokens?: number
+    completion_tokens?: number
+    prompt_tokens_details?: { cached_tokens?: number }
+  }
+  if (typeof u.prompt_tokens !== 'number' && typeof u.completion_tokens !== 'number') return undefined
+  const promptTokens = u.prompt_tokens ?? 0
+  const cached = u.prompt_tokens_details?.cached_tokens ?? 0
+  const uncached = Math.max(0, promptTokens - cached)
+  return {
+    inputTokens: uncached,
+    outputTokens: u.completion_tokens ?? 0,
+    ...(cached > 0 ? { cacheReadTokens: cached } : {}),
   }
 }

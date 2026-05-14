@@ -32,6 +32,7 @@ import type {
 import { getAllFrontTools, DECISION_TOOL_NAMES, type DecisionToolName } from './front-tools.js'
 import { isMcpProxyToolName } from './mcp-tool-bridge.js'
 import { stampToolResult } from '../utils/time.js'
+import { llmUsageToTrace } from '../core/trace-usage.js'
 
 const FRONT_MAX_ROUNDS = 5
 
@@ -100,6 +101,7 @@ export async function runFrontLoop(params: FrontLoopParams): Promise<FrontLoopRe
           toolCallsCount: toolUseCount > 0 ? toolUseCount : undefined,
           fullInput: round === 0 ? (typeof userMessage === 'string' ? userMessage : '[multimodal message]') : undefined,
           fullOutput: textOutput || undefined,
+          ...(response.usage ? { usage: llmUsageToTrace(response.usage) } : {}),
         })
         llmSpanId = undefined
       }
