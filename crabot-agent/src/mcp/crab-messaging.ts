@@ -433,12 +433,40 @@ export function buildMessagingTools(
         const channel_id = args.channel_id as string
         const session_id = args.session_id as string
         const content = args.content as string
+        const intent = args.intent as 'normal' | 'ask_human' | undefined
         const content_type = args.content_type as 'text' | 'image' | 'file' | undefined
         const media_url = args.media_url as string | undefined
         const file_path = args.file_path as string | undefined
         const filename = args.filename as string | undefined
         const mentions = args.mentions as string[] | undefined
         const quote_message_id = args.quote_message_id as string | undefined
+
+        // === ask_human 分支：必须有 task context ===
+        if (intent === 'ask_human') {
+          const taskCtx = deps.getTaskContext?.()
+          if (!taskCtx) {
+            return wrapText({ error: 'ask_human 仅可在 worker 任务上下文内调用' })
+          }
+
+          // 1. 调 admin 切状态 + 写 pending_question（失败则不发消息，避免状态不一致）
+          try {
+            const adminPort = await getAdminPort()
+            await rpcClient.call<
+              { task_id: string; status: string; pending_question: string },
+              { task: unknown }
+            >(adminPort, 'update_task_status', {
+              task_id: taskCtx.taskId,
+              status: 'waiting_human',
+              pending_question: content.slice(0, 2000),
+            }, moduleId)
+          } catch (rpcErr) {
+            const msg = rpcErr instanceof Error ? rpcErr.message : String(rpcErr)
+            return wrapText({ error: `ask_human 切状态失败：${msg}` })
+          }
+
+          // 2. 设置 barrier（24h timeout，admin 调度器也会扫超时切 failed）
+          taskCtx.humanQueue.setBarrier(24 * 60 * 60 * 1000)
+        }
 
         try {
           const channelPort = await resolveChannelPort(channel_id)
