@@ -48,7 +48,7 @@ import { WorkerHandler, type SdkEnvConfig } from './agent/worker-handler.js'
 import type { ToolPermissionConfig, ToolDefinition as EngineToolDefinition } from './engine/types.js'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { McpConnector } from './agent/mcp-connector.js'
-import { createCrabMessagingServer, type PathMapping } from './mcp/crab-messaging.js'
+import { createCrabMessagingServer, type PathMapping, type TaskContext } from './mcp/crab-messaging.js'
 import { TraceStore } from './core/trace-store.js'
 import { getAgentTraceDir } from './core/data-paths.js'
 import { PromptManager } from './prompt-manager.js'
@@ -249,12 +249,13 @@ export class UnifiedAgent extends ModuleBase {
 
     // MCP config factory: creates fresh in-process McpServer instances per task
     // External MCP servers are managed by this.mcpConnector (connected in onStart)
-    const createMcpConfigs = (): Record<string, McpServer> => ({
+    const createMcpConfigs = (taskCtx?: TaskContext): Record<string, McpServer> => ({
       'crab-messaging': createCrabMessagingServer({
         rpcClient: this.rpcClient,
         moduleId: this.config.moduleId,
         getAdminPort: () => this.getAdminPort(),
         resolveChannelPort: (channelId) => this.getChannelPort(channelId),
+        ...(taskCtx ? { getTaskContext: () => taskCtx } : {}),
       }, this.sandboxPathMappingsRef),
     })
 
@@ -401,7 +402,7 @@ export class UnifiedAgent extends ModuleBase {
     workerSdkEnv: SdkEnvConfig,
     modelConfig: Record<string, LLMConnectionInfo>,
     workerPersonality: string | undefined,
-    createMcpConfigs: () => Record<string, McpServer>,
+    createMcpConfigs: (taskCtx?: TaskContext) => Record<string, McpServer>,
     builtinToolConfig?: BuiltinToolConfig,
     skills?: ReadonlyArray<SkillConfig>,
   ): WorkerHandler {
@@ -1154,6 +1155,25 @@ export class UnifiedAgent extends ModuleBase {
         output_summary: 'scheduled task, fallback to create_task',
       })
       return false
+    }
+
+    // Step 1.7: 若 task 处于 waiting_human（worker 在等人类答 ask_human），先调 admin
+    //           RPC 切回 executing 状态并清空 pending_question。注入 deliverHumanResponse
+    //           之前必须切，否则状态机不一致。
+    if (target?.status === 'waiting_human') {
+      try {
+        const adminPort = await this.getAdminPort()
+        await this.rpcClient.call(adminPort, 'update_task_status', {
+          task_id: decision.task_id,
+          status: 'executing',
+          pending_question: null,
+        }, this.config.moduleId)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error(`[handleLocalSupplement] failed to transition task ${decision.task_id} back to executing: ${msg}`)
+        // 不强行中止——deliverHumanResponse 会触发 humanQueue.push，barrier 也会 clear，
+        // worker 仍能恢复；状态不同步可通过 admin web 手工矫正
+      }
     }
 
     // Step 2: Task verified — send immediate reply
@@ -2117,12 +2137,13 @@ export class UnifiedAgent extends ModuleBase {
       this.buildPromptParts(this.agentConfig?.system_prompt, this.agentConfig?.skills)
 
     // MCP config factory: creates fresh in-process McpServer instances per task
-    const createMcpConfigs = (): Record<string, McpServer> => ({
+    const createMcpConfigs = (taskCtx?: TaskContext): Record<string, McpServer> => ({
       'crab-messaging': createCrabMessagingServer({
         rpcClient: this.rpcClient,
         moduleId: this.config.moduleId,
         getAdminPort: () => this.getAdminPort(),
         resolveChannelPort: (channelId) => this.getChannelPort(channelId),
+        ...(taskCtx ? { getTaskContext: () => taskCtx } : {}),
       }, this.sandboxPathMappingsRef),
     })
 

@@ -547,6 +547,27 @@ describe('活跃任务三分类（B1）', () => {
     const txt = textOf(buildUserMessage([makeMessage()], makeContext({ active_tasks: [] }), undefined, 'UTC'))
     expect(txt).not.toContain('## 活跃任务')
   })
+
+  it('waiting_human 任务渲染 pending_question 为引用块', () => {
+    const m = makeMessage()
+    m.session = { session_id: 'sess-A', channel_id: 'ch-1', type: 'private' }
+    const ctx = makeContext({
+      active_tasks: [
+        makeTask({
+          task_id: 't1',
+          title: '等待确认',
+          status: 'waiting_human',
+          pending_question: 'Q1\nQ2',
+          source_session_id: 'sess-A',
+          source_channel_id: 'ch-1',
+        }),
+      ],
+    })
+    const txt = textOf(buildUserMessage([m], ctx, undefined, 'UTC'))
+    expect(txt).toContain('正在等待人类回答的问题')
+    expect(txt).toContain('> Q1')
+    expect(txt).toContain('> Q2')
+  })
 })
 
 // ===========================================================================

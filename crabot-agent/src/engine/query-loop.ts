@@ -357,6 +357,19 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
     // Add tool results as a single batched message
     messages.push(createBatchToolResultMessage(processedResults))
 
+    // ── Post-tool barrier check ──
+    // 工具可能在执行中 setBarrier（如 send_message(intent='ask_human')）。
+    // 若 barrier 已设，等待人类回复后再进入下一轮 LLM；
+    // pending push 会自动 clearBarrier；wait 结束后 drain pending 注入为新 user message。
+    //
+    // 注意：这里不做 abort check——先让下方 drainPending 把 supplement 注入 messages，
+    // 再由下一轮 LLM call（callNonStreaming）响应 abortSignal。
+    // 这样即使 abort 和 supplement 同时到达，supplement 也不会被 abort 路径吞掉。
+    // （pre-tool barrier check 因为需要取消工具执行，必须先 check abort；这里无此需要。）
+    if (options.humanMessageQueue?.hasBarrier) {
+      await options.humanMessageQueue.waitBarrier(abortSignal)
+    }
+
     // Inject any pending human supplement messages
     if (options.humanMessageQueue) {
       const supplements = options.humanMessageQueue.drainPending()

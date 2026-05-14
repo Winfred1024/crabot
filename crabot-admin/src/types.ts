@@ -674,6 +674,18 @@ export interface Task {
   completed_at?: string
   /** 过期时间 */
   expires_at?: string
+  /**
+   * worker 在 status='waiting_human' 时记录"正在等人类回答什么"。
+   * 仅当 status=waiting_human 时有值；切回 executing 时由 handleUpdateTaskStatus 自动清空。
+   * 给 Front 注入 active_tasks 时用，作为 supplement 判断的事实参考。
+   */
+  pending_question?: string
+  /**
+   * 切到 status='waiting_human' 的时间戳。仅 status=waiting_human 时有值。
+   * 用于 admin 超时调度器判定 24h 兜底切 failed；切回 executing 或终态时清空。
+   * 区别于 updated_at——updated_at 会被任何字段改动重置，不可靠。
+   */
+  waiting_human_at?: string
 }
 
 // ============================================================================
@@ -827,6 +839,11 @@ export interface UpdateTaskStatusParams {
   status: TaskStatus
   error?: string
   result?: TaskResult
+  /**
+   * 仅在 status='waiting_human' 时有意义。worker 调 send_message(intent='ask_human') 时
+   * 通过该字段写入"正在等的问题"。切回 executing 时调用方传 null 显式清空（也可不传，handler 自动清）。
+   */
+  pending_question?: string | null
 }
 
 export interface UpdateTaskStatusResult {

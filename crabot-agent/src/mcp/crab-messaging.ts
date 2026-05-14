@@ -24,6 +24,17 @@ export interface CrabMessagingDeps {
   moduleId: string
   getAdminPort: () => Promise<number>
   resolveChannelPort: (channelId: string) => Promise<number>
+  /**
+   * 可选：返回当前调用 mcp 工具的 task 上下文。
+   * Worker 调用路径返回非空（含 taskId + humanQueue 引用），用于 send_message(intent='ask_human')。
+   * Front 调用路径返回 null（front 不能调 ask_human，工具内会拒绝）。
+   */
+  getTaskContext?: () => TaskContext | null
+}
+
+export interface TaskContext {
+  taskId: string
+  humanQueue: import('../engine/human-message-queue.js').HumanMessageQueue
 }
 
 // ============================================================================
@@ -89,6 +100,23 @@ async function withRetry<T>(
   }
   throw lastError
 }
+
+// ============================================================================
+// ask_human 相关常量
+// ============================================================================
+
+/**
+ * ask_human 的 pending_question 字段截断长度。
+ * admin 端 Task.pending_question 没有强制 schema 上限，这里截 2000 保 prompt 注入精简 + 防止过长污染 active_tasks 段。
+ */
+const ASK_HUMAN_PENDING_QUESTION_MAX_LEN = 2000
+
+/**
+ * ask_human 设置 barrier 的超时。
+ * 必须 >= admin WAITING_HUMAN_TIMEOUT_MS（24h），否则 barrier 先 timeout 但 admin 还没切 failed，worker 假醒空跑。
+ * 注：admin 端常量在 crabot-admin/src/index.ts AdminModule.WAITING_HUMAN_TIMEOUT_MS。
+ */
+const ASK_HUMAN_BARRIER_TIMEOUT_MS = 24 * 60 * 60 * 1000
 
 // ============================================================================
 // 工具类型定义
@@ -422,6 +450,7 @@ export function buildMessagingTools(
         const channel_id = args.channel_id as string
         const session_id = args.session_id as string
         const content = args.content as string
+        const intent = args.intent as 'normal' | 'ask_human' | undefined
         const content_type = args.content_type as 'text' | 'image' | 'file' | undefined
         const media_url = args.media_url as string | undefined
         const file_path = args.file_path as string | undefined
@@ -429,6 +458,17 @@ export function buildMessagingTools(
         const mentions = args.mentions as string[] | undefined
         const quote_message_id = args.quote_message_id as string | undefined
 
+        // === ask_human：先验证 task context 存在，再继续（不提前切状态） ===
+        if (intent === 'ask_human') {
+          const taskCtx = deps.getTaskContext?.()
+          if (!taskCtx) {
+            // 消息尚未发出，直接拒绝。ask_human 不该被 front 调用，这是 safeguard。
+            return wrapText({ error: 'ask_human 仅可在 worker 任务上下文内调用' })
+          }
+        }
+
+        // === Step 1: 先 send（高失败率操作先做；失败 → state 完全不变）===
+        let sendResult: { platform_message_id: string; sent_at: string }
         try {
           const channelPort = await resolveChannelPort(channel_id)
           if (!channelPort) {
@@ -505,7 +545,7 @@ export function buildMessagingTools(
           }
 
           // 带重试发送消息
-          const result = await withRetry(async () => {
+          sendResult = await withRetry(async () => {
             return rpcClient.call<
               {
                 session_id: string
@@ -527,12 +567,41 @@ export function buildMessagingTools(
               } : {}),
             }, moduleId)
           })
-
-          return wrapText(result)
         } catch (err) {
+          // send 失败 → state 完全不变（task 仍 executing，无 barrier）
           const msg = err instanceof Error ? err.message : String(err)
           return wrapText({ error: `发送失败: ${msg}` })
         }
+
+        // === Step 2 & 3: send 成功后处理 ask_human 后置逻辑 ===
+        if (intent === 'ask_human') {
+          // getTaskContext 在入口已校验过非 null，此处直接取
+          const taskCtx = deps.getTaskContext!()!
+
+          // Step 2: update_task_status（admin 同进程 RPC，几乎不会失败；
+          // 即使失败，消息已发，worker 看到 error 字段会自行处理，不会卡 barrier）
+          try {
+            const adminPort = await getAdminPort()
+            await rpcClient.call<
+              { task_id: string; status: string; pending_question: string },
+              { task: unknown }
+            >(adminPort, 'update_task_status', {
+              task_id: taskCtx.taskId,
+              status: 'waiting_human',
+              pending_question: content.slice(0, ASK_HUMAN_PENDING_QUESTION_MAX_LEN),
+            }, moduleId)
+          } catch (rpcErr) {
+            // admin RPC 失败：消息已发但状态没切。
+            // 返回含 ask_human_state_error 的结果，worker 看到 error 字段会自己处理，不设 barrier 防止卡死。
+            const msg = rpcErr instanceof Error ? rpcErr.message : String(rpcErr)
+            return wrapText({ ...sendResult, ask_human_state_error: `update_task_status 失败：${msg}` })
+          }
+
+          // Step 3: setBarrier（本地内存操作，从不失败）
+          taskCtx.humanQueue.setBarrier(ASK_HUMAN_BARRIER_TIMEOUT_MS)
+        }
+
+        return wrapText(sendResult)
       },
     },
 
