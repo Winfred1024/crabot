@@ -22,16 +22,6 @@ describe('MemoryWriter phase 3 helpers', () => {
     )
   })
 
-  it('fetchConfirmedSnapshot returns by_type', async () => {
-    const rpcCall = vi.fn().mockResolvedValue({
-      data: { snapshot_id: 'snap-1', generated_at: 'now', by_type: { fact: [], lesson: [], concept: [] } },
-    })
-    const writer = new MemoryWriter({ call: rpcCall } as any, 'agent-1', () => 18000)
-    const snap = await writer.fetchConfirmedSnapshot()
-    expect(snap?.snapshot_id).toBe('snap-1')
-    expect(snap?.by_type.fact).toEqual([])
-  })
-
   it('bumpLessonUseCount issues update_long_term style RPC', async () => {
     const rpcCall = vi.fn().mockResolvedValue({ data: { status: 'ok' } })
     const writer = new MemoryWriter({ call: rpcCall } as any, 'agent-1', () => 18000)

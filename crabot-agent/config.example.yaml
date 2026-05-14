@@ -22,7 +22,7 @@ orchestration:
   worker_recent_messages_max_cap: 50
   # Worker - 短期记忆时窗（小时）+ 硬上限
   worker_short_term_memory_window_hours: 12
-  worker_short_term_memory_max_cap: 30
+  worker_short_term_memory_max_cap: 10
   # Worker - 长期记忆数量限制
   worker_long_term_memory_limit: 10
   # Front Agent 队列最大长度

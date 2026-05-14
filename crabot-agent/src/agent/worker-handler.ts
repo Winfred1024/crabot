@@ -224,7 +224,6 @@ export class WorkerHandler {
   private skills: ReadonlyArray<SkillConfig>
   private readonly lspManager?: import('../lsp/lsp-manager').LSPManager
   private memoryWriter?: MemoryWriter
-  private confirmedSnapshotBlock: string = ''
   private readonly promptManager?: PromptManager
   private readonly subAgentHints: ReadonlyArray<{ readonly toolName: string; readonly workerHint: string }>
   private readonly getTimezone: () => string
@@ -302,25 +301,6 @@ export class WorkerHandler {
     if (this.gcIntervalHandle) {
       clearInterval(this.gcIntervalHandle)
       this.gcIntervalHandle = undefined
-    }
-  }
-
-  async loadConfirmedSnapshot(): Promise<void> {
-    if (!this.memoryWriter) return
-    try {
-      const snap = await this.memoryWriter.fetchConfirmedSnapshot()
-      if (!snap) return
-      const lines: string[] = [`## 你已知的长期事实 / 经验 / 概念（snapshot ${snap.snapshot_id}）`, '']
-      for (const type of ['fact', 'lesson', 'concept'] as const) {
-        const items = snap.by_type[type]
-        if (items.length === 0) continue
-        lines.push(`### ${type}`)
-        for (const it of items) lines.push(`- (${it.id}) ${it.brief}`)
-        lines.push('')
-      }
-      this.confirmedSnapshotBlock = lines.join('\n').trim()
-    } catch (error) {
-      console.error('[WorkerHandler] Failed to load confirmed snapshot:', error)
     }
   }
 
@@ -1336,9 +1316,6 @@ export class WorkerHandler {
         parts.push(`- ${m.sandbox_path} -> ${m.host_path} (${m.read_only ? '只读' : '读写'})`)
       }
     }
-    if (this.confirmedSnapshotBlock) {
-      parts.push('\n' + this.confirmedSnapshotBlock)
-    }
     return parts.join('\n')
   }
 
@@ -1414,8 +1391,10 @@ export class WorkerHandler {
     }
 
     parts.push('\n### 长期记忆')
-    parts.push('长期记忆**不预填**到上下文。当任务需要历史经验、过去做过的类似事、相关事实背景时，')
-    parts.push('主动调用 `crab-memory.search_long_term` 工具按主题精准查询，必要时再用 `crab-memory.get_memory` 取详情。')
+    parts.push('长期记忆（用户偏好 / 项目事实 / 历史教训 / 概念定义）**永不预填**到上下文。任何涉及')
+    parts.push('"用户的稳定偏好 / 之前做过的类似事 / 过往踩过的坑 / 项目背景事实"的判断，')
+    parts.push('都必须先调 `crab-memory.search_long_term`（传 query 按主题精准检索），必要时再用 `crab-memory.get_memory_detail` 取详情。')
+    parts.push('禁止凭印象或常识回答此类问题——上下文里没有相关记忆 ≠ 用户没有相关偏好。')
 
     // 最近消息（仅当前 session）：本 session 本地历史，回答跨 session 指代请看上方"短期记忆"
     parts.push(`\n## 最近相关消息（当前 session，最近 ${recentHours} 小时，${context.recent_messages?.length ?? 0} 条）`)

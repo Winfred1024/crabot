@@ -437,7 +437,6 @@ export class UnifiedAgent extends ModuleBase {
       promptManager: this.promptManager,
       subAgentHints,
     })
-    void handler.loadConfirmedSnapshot()
     return handler
   }
 

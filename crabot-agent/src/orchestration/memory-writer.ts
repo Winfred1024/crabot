@@ -52,13 +52,6 @@ export interface QuickCaptureParams {
   author?: string
 }
 
-export interface ConfirmedSnapshotEntry { id: string; brief: string; tags: string[] }
-export interface ConfirmedSnapshot {
-  snapshot_id: string
-  generated_at: string
-  by_type: { fact: ConfirmedSnapshotEntry[]; lesson: ConfirmedSnapshotEntry[]; concept: ConfirmedSnapshotEntry[] }
-}
-
 export class MemoryWriter {
   constructor(
     private rpcClient: RpcClient,
@@ -131,24 +124,6 @@ export class MemoryWriter {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       console.error(`[${this.moduleId}] Failed to quick_capture memory:`, message)
-    }
-  }
-
-  /** 获取已确认快照，失败时返回 null */
-  async fetchConfirmedSnapshot(): Promise<ConfirmedSnapshot | null> {
-    try {
-      const memoryPort = await this.getMemoryPort()
-      const result = await this.rpcClient.call<Record<string, unknown>, Record<string, unknown>>(
-        memoryPort,
-        'get_confirmed_snapshot',
-        {},
-        this.moduleId
-      )
-      return ((result?.['data'] ?? result) as unknown) as ConfirmedSnapshot
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      console.error(`[${this.moduleId}] Failed to fetch confirmed snapshot:`, message)
-      return null
     }
   }
 

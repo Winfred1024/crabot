@@ -487,7 +487,7 @@ orchestration:
   worker_recent_messages_window_hours: 4
   worker_recent_messages_max_cap: 50
   worker_short_term_memory_window_hours: 12
-  worker_short_term_memory_max_cap: 30
+  worker_short_term_memory_max_cap: 10
   worker_long_term_memory_limit: 30
 
   # 超时配置
