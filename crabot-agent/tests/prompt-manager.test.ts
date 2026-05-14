@@ -28,10 +28,10 @@ describe('Front prompt — 已搬移规则保留', () => {
     expect(frontPrivate).toContain('任务匹配某个 skill')
   })
 
-  it('伪终态规则保留', () => {
-    expect(frontPrivate).toContain('"让我..."')
-    expect(frontPrivate).toContain('"我来..."')
-    expect(frontPrivate).toContain('"稍等"')
+  it('reply 选用前的 3 类反模式 self-check 存在', () => {
+    expect(frontPrivate).toContain('Sycophancy ghost-promise')
+    expect(frontPrivate).toContain('Context hallucination')
+    expect(frontPrivate).toContain('Worker displacement')
   })
 
   it('supplement_task 使用条件保留', () => {
