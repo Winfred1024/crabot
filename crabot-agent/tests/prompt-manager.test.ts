@@ -168,7 +168,7 @@ describe('Worker prompt — 新增规则', () => {
     expect(worker).toContain('message_id')
     expect(worker).toContain('task_id')
     expect(worker).toContain('对用户是噪音')
-    expect(worker).toContain('不论 master、其他人或群聊')
+    expect(worker).toContain('不论人类、其他人或群聊')
   })
 
   it('不要绕过用户的硬约束（specification gaming）', () => {
