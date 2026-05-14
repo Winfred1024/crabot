@@ -1157,6 +1157,25 @@ export class UnifiedAgent extends ModuleBase {
       return false
     }
 
+    // Step 1.7: 若 task 处于 waiting_human（worker 在等人类答 ask_human），先调 admin
+    //           RPC 切回 executing 状态并清空 pending_question。注入 deliverHumanResponse
+    //           之前必须切，否则状态机不一致。
+    if (target?.status === 'waiting_human') {
+      try {
+        const adminPort = await this.getAdminPort()
+        await this.rpcClient.call(adminPort, 'update_task_status', {
+          task_id: decision.task_id,
+          status: 'executing',
+          pending_question: null,
+        }, this.config.moduleId)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error(`[handleLocalSupplement] failed to transition task ${decision.task_id} back to executing: ${msg}`)
+        // 不强行中止——deliverHumanResponse 会触发 humanQueue.push，barrier 也会 clear，
+        // worker 仍能恢复；状态不同步可通过 admin web 手工矫正
+      }
+    }
+
     // Step 2: Task verified — send immediate reply
     const replyText = decision.immediate_reply?.text
       || `收到，正在调整：${decision.supplement_content.slice(0, 60)}`
