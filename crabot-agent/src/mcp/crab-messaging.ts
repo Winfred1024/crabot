@@ -24,6 +24,17 @@ export interface CrabMessagingDeps {
   moduleId: string
   getAdminPort: () => Promise<number>
   resolveChannelPort: (channelId: string) => Promise<number>
+  /**
+   * 可选：返回当前调用 mcp 工具的 task 上下文。
+   * Worker 调用路径返回非空（含 taskId + humanQueue 引用），用于 send_message(intent='ask_human')。
+   * Front 调用路径返回 null（front 不能调 ask_human，工具内会拒绝）。
+   */
+  getTaskContext?: () => TaskContext | null
+}
+
+export interface TaskContext {
+  taskId: string
+  humanQueue: import('../engine/human-message-queue.js').HumanMessageQueue
 }
 
 // ============================================================================
