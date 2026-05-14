@@ -98,17 +98,18 @@ describe('handleUpdateTaskStatus pending_question', () => {
     expect(task.pending_question).toBeUndefined()
   })
 
-  it('显式传 pending_question: null 也清空', async () => {
+  it('显式传 pending_question: null 也清空（非 executing 终态）', async () => {
     // 先切到 waiting_human 写入 pending_question
     await (admin as any).handleUpdateTaskStatus({
       task_id: taskId,
       status: 'waiting_human',
       pending_question: 'q1',
     })
-    // 切回 executing 并显式传 null
+    // 切到 cancelled（非 executing）并显式传 null
+    // status !== 'executing'，所以只有 pending_question === null 这条分支生效
     const { task } = await (admin as any).handleUpdateTaskStatus({
       task_id: taskId,
-      status: 'executing',
+      status: 'cancelled',
       pending_question: null,
     })
     expect(task.pending_question).toBeUndefined()
