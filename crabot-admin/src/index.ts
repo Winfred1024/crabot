@@ -335,6 +335,11 @@ export class AdminModule extends ModuleBase {
   private readonly friendPermissionConfigsFilePath: string
   private readonly schedulesFilePath: string
 
+  // waiting_human 超时扫描器
+  private static readonly WAITING_HUMAN_TIMEOUT_MS = 24 * 60 * 60 * 1000  // 24h
+  private static readonly WAITING_HUMAN_SCAN_INTERVAL_MS = 5 * 60 * 1000  // 5min
+  private waitingHumanScanTimer?: NodeJS.Timeout
+
   // 数据加载完成前 saveData 必须拒绝，否则会用空内存覆盖磁盘真实数据
   private dataLoaded = false
 
@@ -608,9 +613,18 @@ export class AdminModule extends ModuleBase {
     await this.startWebServer()
 
     console.log(`[Admin] Web server started on port ${this.adminConfig.web_port}`)
+
+    // 启动 waiting_human 超时扫描器
+    this.waitingHumanScanTimer = setInterval(
+      () => { this.runWaitingHumanTimeoutScan().catch((err) => console.error('[Admin] waiting_human scan error:', err)) },
+      AdminModule.WAITING_HUMAN_SCAN_INTERVAL_MS,
+    )
   }
 
   protected override async onStop(): Promise<void> {
+    // 停止 waiting_human 超时扫描器
+    if (this.waitingHumanScanTimer) clearInterval(this.waitingHumanScanTimer)
+
     // 停止调度引擎
     this.scheduleEngine.stop()
 
@@ -3659,7 +3673,7 @@ export class AdminModule extends ModuleBase {
       pending: ['planning', 'cancelled'],
       planning: ['executing', 'failed', 'cancelled'],
       executing: ['waiting_human', 'completed', 'failed', 'cancelled'],
-      waiting_human: ['executing', 'cancelled'],
+      waiting_human: ['executing', 'cancelled', 'failed'],
       completed: [],
       failed: [],
       cancelled: [],
@@ -3689,6 +3703,13 @@ export class AdminModule extends ModuleBase {
       task.pending_question = params.pending_question ?? undefined
     } else if (params.status === 'executing' || params.pending_question === null) {
       task.pending_question = undefined
+    }
+
+    // waiting_human_at：进入 waiting_human 写时间戳，离开时清空
+    if (params.status === 'waiting_human') {
+      task.waiting_human_at = task.updated_at
+    } else {
+      task.waiting_human_at = undefined
     }
 
     if (params.error) {
@@ -3879,6 +3900,30 @@ export class AdminModule extends ModuleBase {
     }
 
     return stats
+  }
+
+  async runWaitingHumanTimeoutScan(): Promise<void> {
+    const now = Date.now()
+    const expiredTasks: Task[] = []
+    for (const task of this.tasks.values()) {
+      if (task.status !== 'waiting_human') continue
+      if (!task.waiting_human_at) continue  // 防御：若字段缺失跳过
+      const waitingAt = new Date(task.waiting_human_at).getTime()
+      if (now - waitingAt < AdminModule.WAITING_HUMAN_TIMEOUT_MS) continue
+      expiredTasks.push(task)
+    }
+
+    for (const task of expiredTasks) {
+      try {
+        await this.handleUpdateTaskStatus({
+          task_id: task.id,
+          status: 'failed',
+          error: '超时未收到人类回复（24h），任务自动失败',
+        })
+      } catch (err) {
+        console.error(`[Admin] Failed to timeout task ${task.id}:`, err)
+      }
+    }
   }
 
   private async handleCancelTask(params: CancelTaskParams): Promise<{ task: Task; cancelled: boolean }> {
