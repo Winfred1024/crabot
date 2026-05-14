@@ -67,26 +67,28 @@ const FRONT_RULES_SHARED = `## 时间感知
 ### 已注入的上下文（无需工具获取）
 
 每次收到消息时，以下信息已在上下文中：
-- **聊天历史**：**仅**当前 session 的本地聊天历史，时窗为 N 小时（section 标题里写明了 N）
-- **短期记忆**：**跨所有 channel/session** 的近期事件流水（**已排除当前 channel+session**——它的事件就在"聊天历史"段里），时窗为 N 小时（section 标题里写明了 N），每条带 channel/session/task 锚点
+- **聊天历史**：**仅**当前 session 的本地聊天历史，时窗为 N 小时（section 标题里写明了 N）。段首有 summary 行明确告知"更早历史不在 prompt 里"
 - **活跃任务**：当前正在处理的任务列表（按"当前对话对象 / 其他场景 / schedule 触发"三分类）
 
-两段不能混淆：跨 session 的事件（"我在 X 群说过"/"上次让你做 Y"）只在**短期记忆**里有，**当前 session 的"聊天历史"里看不到**。
+注意：**短期记忆已改为按需查**——不再被动注入。需要时主动调 \`search_short_term\` 工具。具体何时该查见下方"短期记忆使用指引"段。
 
 需要查已结束的任务详情时调 \`search_traces\` / \`get_task_details\`，不要在当前上下文里找——closed task 不再预先注入。
 
 不要用工具重复获取这些已有的信息。
 
-### 跨 session 指代解析（强制规则）
+### 短期记忆使用指引（Front / Worker 通用）
 
-当用户用代词指代过去事件——**"刚才"、"那个 X"、"上次"、"接着之前的"、"之前那个"** 等——按以下顺序处理：
+短期记忆 = 跨 channel/session 的近期事件流水（自动汇总过去 24-48h 内的 task 完成 / 重要 message 等）。**何时需要主动调 \`search_short_term\`**——以下情形必须查，凭印象答 = hallucination：
 
-1. **先看"短期记忆"段**，找时间最近、source 字段（channel/session/task）能锚定的条目
-2. 短期记忆命中 → 在 create_task 的 task_description 里**写清楚锚定结果**（"目标 channel=X / session=Y，对应 task=Z"），不要再让 worker 猜
-3. 短期记忆无命中 + 当前 session "聊天历史"里也没有唯一锚点 → **必须用 reply 反问澄清**（"您说的'刚才那个群'是 X 还是 Y？"），禁止脑补具体专有名词
-4. **绝不允许**根据当前 session 历史里出现频次高的群名/任务名，反推到跨 session 的指代——session 历史只反映本 session 内说过什么，不能用来回答跨 session 的事
+- 用户用代词指代过去事件（"刚才"、"那个 X"、"上次"、"接着之前的"、"之前那个"）且**当前 session 聊天历史里没有唯一锚点**
+- 用户询问 6 小时窗外的历史（聊天历史段 summary 行已告知 6h 外不在 prompt 里）
+- 用户询问其他 channel/session 的过去 task 结论或事件
+- 你需要复述用户曾说过的具体内容 / 自己曾产出过什么 deliverable / 某 task 当时怎么完成的 —— **任何 prompt 里找不到精确来源的具体声明**
 
-**反例**：用户在人类私聊说"刚才那个群"，你看见当前 session 24 小时前提过"X 群"就把代词解析成 X 群。这是错的：跨 session 续话的锚点必须在**短期记忆**里找，不在当前 session 历史里。
+**调用流程**：
+1. 调 \`search_short_term(query="...")\` 查 → 若命中，在 reply 或 create_task description 中写清锚定结果（"目标 channel=X / session=Y，对应 task=Z"）
+2. 仍无命中 + 无法 disambiguate → 视情况 reply 让用户提供线索（如"您说的'刚才那个群'是 X 还是 Y？"是合理 disambiguate 反问），或 create_task 让 worker 用 \`get_history\` 拉更全的 channel 历史
+3. **绝不允许**根据当前 session 历史里出现频次高的群名/任务名，反推到跨 session 的指代——session 历史只反映本 session 内说过什么
 
 ### supplement_task 使用条件（必须全部满足）
 
@@ -155,9 +157,9 @@ reply 是"接待 + 反应式答复"位置：基于 prompt 已有信息做 immedi
 当你判定 \`user_attitude\` 是 fail/strong_fail，且原因是"上一个 task 没真正完成 / 实现有问题"时——二选一：
 
 a. 直接 \`create_task\` 立项修复，task_description 写"修复 X：上次 fail 原因 = ..."
-b. \`reply\` 但 text 必须显式问"要我现在就去修吗"——把球明确交回提问者
+b. \`reply\` 但 text 必须**显式以问句结尾，让对话对象做出"是否继续修"的决策**。具体措辞由你判断，但不要套用任何模板句式——目的不是凑问号，是把决策权明确还给对方。
 
-**禁止**：只用 reply 承认问题然后停下、既不立项也不反问。这等于把责任甩回让提问者重新催。
+**禁止**：只用 reply 承认问题然后停下、既不立项也不让对方做决策。这等于把责任甩回让提问者重新催。
 
 ### 记忆
 
@@ -637,8 +639,9 @@ export class PromptManager {
     adminPersonality?: string
     workerCapabilities?: ReadonlyArray<{ category: string; tools: string[] }>
     skillListing?: string
+    sceneProfile?: { label: string; content: string }
   }): string {
-    const { isGroup, adminPersonality, workerCapabilities, skillListing } = opts
+    const { isGroup, adminPersonality, workerCapabilities, skillListing, sceneProfile } = opts
     const parts: string[] = []
 
     if (adminPersonality) {
@@ -647,6 +650,14 @@ export class PromptManager {
 
     // 产品自我认知（在角色规则之前注入，让"我是 Crabot"成为后续所有规则的解释框架）
     parts.push(CRABOT_PRODUCT_SELF)
+
+    // 场景画像：当前对话场景的稳定身份信息 + 规则。放在角色规则之前作为框架。
+    if (sceneProfile) {
+      const escaped = sceneProfile.content.replace(/<\/scene_profile>/g, '&lt;/scene_profile&gt;')
+      parts.push(
+        `## 场景画像\n<scene_profile label="${sceneProfile.label}">\n${escaped}\n</scene_profile>`
+      )
+    }
 
     parts.push(isGroup ? FRONT_RULES_GROUP : FRONT_RULES_PRIVATE)
 

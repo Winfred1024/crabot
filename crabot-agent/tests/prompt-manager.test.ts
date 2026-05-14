@@ -76,7 +76,7 @@ describe('Front prompt — 已搬移规则保留', () => {
 describe('Front prompt — 新增规则', () => {
   it('收到失败反馈时（决策段）', () => {
     expect(frontPrivate).toContain('收到失败反馈时')
-    expect(frontPrivate).toContain('要我现在就去修吗')
+    expect(frontPrivate).toContain('显式以问句结尾')  // 反问决策权但不给固定句式模板
     expect(frontPrivate).toContain('禁止')
   })
 

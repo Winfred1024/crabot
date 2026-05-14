@@ -20,14 +20,15 @@ import type {
   TaskSummary,
   TraceCallback,
 } from '../types.js'
-import { formatNow, formatTaskCreatedAt } from '../utils/time.js'
+import { formatChannelMessageTime, formatNow, formatTaskCreatedAt } from '../utils/time.js'
 import { resolveSenderIdentity } from '../utils/sender-identity.js'
-import { formatChannelMessageLine, formatShortTermMemoryLine } from '../prompt-manager.js'
+import { formatChannelMessageLine } from '../prompt-manager.js'
+import { createCrabMemoryServer, type MemoryTaskContext } from '../mcp/crab-memory.js'
 
 export type UserMessageContent = string | ContentBlock[]
 
 export interface FrontHandlerConfig {
-  getSystemPrompt: (isGroup: boolean) => string
+  getSystemPrompt: (isGroup: boolean, sceneProfile?: { label: string; content: string }) => string
   /**
    * 工厂返回 MCP server 实例集合（与 Worker 同款）。Front 启动每次 handleMessage 前调用，
    * 把这些 server 转成 ToolDefinition[] 拼到 Front 工具集中。messaging 工具在此注入，
@@ -50,7 +51,8 @@ export class FrontHandler {
   private model: string
   private supportsVision: boolean
   private toolExecutor: ToolExecutor
-  private getSystemPrompt: (isGroup: boolean) => string
+  private toolDeps: ToolExecutorDeps
+  private getSystemPrompt: (isGroup: boolean, sceneProfile?: { label: string; content: string }) => string
   private mcpConfigFactory: () => Record<string, McpServer>
   private getTimezone: () => string
 
@@ -63,6 +65,7 @@ export class FrontHandler {
     this.model = llmConfig.model
     this.supportsVision = llmConfig.supportsVision === true
     this.toolExecutor = new ToolExecutor(toolExecutorDeps)
+    this.toolDeps = toolExecutorDeps
     this.getSystemPrompt = config.getSystemPrompt
     this.mcpConfigFactory = config.mcpConfigFactory
     this.getTimezone = config.getTimezone
@@ -95,6 +98,27 @@ export class FrontHandler {
       messagingTools.push(...mcpServerToToolDefinitions(server, serverName))
     }
 
+    // 装配 crab-memory 工具（Front 也能查短期/长期记忆，按需调；2026-05-14 决策：Front 加查询工具试效果）
+    // ctx 用 minimal：无 taskId（Front 不是 task 上下文），visibility/scopes 给 conservative 默认
+    if (this.toolDeps.getMemoryPort) {
+      const sessionMsg = messages[0]
+      const memoryCtx: MemoryTaskContext = {
+        channelId: sessionMsg?.session.channel_id,
+        sessionId: sessionMsg?.session.session_id,
+        visibility: 'public',
+        scopes: [],
+        sourceType: 'conversation',
+        sessionType: sessionMsg?.session.type,
+        senderFriendId: context.sender_friend?.id,
+      }
+      const crabMemoryServer = createCrabMemoryServer({
+        rpcClient: this.toolDeps.rpcClient,
+        moduleId: this.toolDeps.moduleId,
+        getMemoryPort: this.toolDeps.getMemoryPort,
+      }, memoryCtx)
+      messagingTools.push(...mcpServerToToolDefinitions(crabMemoryServer, 'crab-memory'))
+    }
+
     try {
       // supplement_task 候选集只装"非 scheduled"任务的 ID。
       // 巡检/定时任务由调度引擎自主跑，用户即使主题相关也应走 create_task 开新任务，
@@ -106,7 +130,7 @@ export class FrontHandler {
         .map(t => t.task_id)
 
       const result = await runFrontLoop({
-        systemPrompt: this.getSystemPrompt(isGroup),
+        systemPrompt: this.getSystemPrompt(isGroup, context.scene_profile),
         userMessage,
         rawUserText,
         allowSilent,
@@ -188,14 +212,7 @@ export function buildUserMessage(
   parts.push(`当前时间: ${formatNow(timezone, now)}`)
   parts.push('')
 
-  if (context.scene_profile) {
-    const escaped = context.scene_profile.content.replace(/<\/scene_profile>/g, '&lt;/scene_profile&gt;')
-    parts.push('## 场景画像')
-    parts.push(`<scene_profile label="${context.scene_profile.label}">`)
-    parts.push(escaped)
-    parts.push('</scene_profile>')
-    parts.push('')
-  }
+  // 场景画像已移到 system prompt，user message 不再渲染。
 
   // ── 对话场景 ──
   parts.push('## 对话场景')
@@ -301,26 +318,23 @@ export function buildUserMessage(
   }
 
 
-  const shortTermHours = context.time_windows.short_term_memory_window_hours
   const recentHours = context.time_windows.recent_messages_window_hours
+  const recentSinceLabel = formatChannelMessageTime(
+    new Date(now.getTime() - recentHours * 3600 * 1000).toISOString(),
+    timezone,
+    now,
+  )
 
-  // ── 短期记忆（跨 channel/session 流水账，时窗内全量内容） ──
-  // 设计目的：解决跨 session 续话的指代漂移（"刚才那个群" / "上次那个" 指向另一 session 的事件）。
-  // recent_messages 只盖当前 session，跨 session 的锚点必须靠这一段提供。
-  parts.push(`\n## 短期记忆（跨所有 channel/session 的近期事件流水，最近 ${shortTermHours} 小时，${context.short_term_memories.length} 条）`)
-  if (context.short_term_memories.length > 0) {
-    parts.push('当用户用代词指代过去事件（"刚才那个 X"/"上次"/"接着之前的"）时，先看这里再做决策——条目带 channel/session/task 锚点，可直接 cite。')
-    for (const mem of context.short_term_memories) {
-      parts.push(formatShortTermMemoryLine(mem, { timezone, now, maxLen: 500 }))
-    }
-  } else {
-    parts.push(`过去 ${shortTermHours} 小时内无相关短期记忆。如需更早的事件流水，可在 create_task 的 description 里说明，让 worker 调 \`crab-memory.search_short_term\` 查。`)
-  }
+  // 短期记忆段已移除（改为按需查）：何时该搜由 system prompt 教学，工具是 search_short_term。
+  // 当前段保留对 short_term_memories 字段的兼容读取（如有数据则不渲染但不报错）；
+  // context-assembler 会在 fetch 阶段返回空数组。
 
   // ── 聊天历史（仅当前 session，时窗内全量；XML tag 包裹避免 markdown 嵌套污染）──
   // 越靠近当前消息越重要，给更大的字符预算，保留完整的行动 offer / 决策上下文。
-  // 注意：本段只反映当前 session 的本地历史，回答跨 session 指代必须看上方"短期记忆"段。
-  parts.push(`\n## 聊天历史（当前 session，最近 ${recentHours} 小时，${context.recent_messages.length} 条）`)
+  // 注意：本段只反映当前 session 的本地历史；超出此时窗的更早历史不在 prompt 里，
+  // 段首 summary 行显式告知，让 LLM 知道自己的盲区边界。
+  parts.push(`\n## 聊天历史（当前 session，最近 ${recentHours} 小时 = ${recentSinceLabel} 之后，${context.recent_messages.length} 条）`)
+  parts.push(`summary: ${recentSinceLabel} 之前的本会话历史不在此上下文里。若需要查看更早内容，必须 create_task 让 worker 调 \`get_history\` 拉取，不要凭印象答。`)
   if (context.recent_messages.length > 0) {
     const total = context.recent_messages.length
     for (let i = 0; i < total; i++) {
@@ -336,7 +350,7 @@ export function buildUserMessage(
       parts.push(formatChannelMessageLine(msg, { timezone, now, maxLen, identity }))
     }
   } else {
-    parts.push(`过去 ${recentHours} 小时本会话无消息。如需更早的本会话历史，调 \`get_history\` 工具。`)
+    parts.push(`此窗口（${recentSinceLabel} 之后）本会话无消息。`)
   }
 
   // ── 当前消息（XML 包裹）──

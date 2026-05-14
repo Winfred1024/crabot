@@ -69,7 +69,7 @@ describe('buildUserMessage', () => {
       makeContext({ recent_messages: recentMessages }),
     )
 
-    expect(result).toContain('## 聊天历史（当前 session，最近 6 小时，3 条）')
+    expect(result).toMatch(/## 聊天历史（当前 session，最近 6 小时.+3 条）/)
     // A.2 后使用 XML 格式，检查消息内容在其中
     expect(result).toContain('把统计结果通过 feishu 发给我')
     expect(result).toContain('飞书渠道发送消息时遇到问题')
@@ -86,7 +86,7 @@ describe('buildUserMessage', () => {
       makeContext({ recent_messages: recentMessages }),
     )
 
-    expect(result).toContain('## 聊天历史（当前 session，最近 6 小时，20 条）')
+    expect(result).toMatch(/## 聊天历史（当前 session，最近 6 小时.+20 条）/)
     // 第一条和最后一条都应该在（A.2 后用 XML 格式，检查消息内容而不是"User X: 文本"格式）
     expect(result).toContain('消息 0')
     expect(result).toContain('消息 19')
@@ -98,8 +98,8 @@ describe('buildUserMessage', () => {
       makeContext({ recent_messages: [] }),
     )
 
-    expect(result).toContain('## 聊天历史（当前 session，最近 6 小时，0 条）')
-    expect(result).toContain('过去 6 小时本会话无消息')
+    expect(result).toMatch(/## 聊天历史（当前 session，最近 6 小时.+0 条）/)
+    expect(result).toMatch(/此窗口.+本会话无消息/)
   })
 
   it('最近 3 条消息按 maxLen=2000 截断', () => {
@@ -192,39 +192,17 @@ describe('buildUserMessage', () => {
     }
   }
 
-  it('短期记忆按完整内容注入（带 channel/session/task 锚点 + 相对时间）', () => {
+  // 短期记忆段已移除（2026-05-14 改为按需查 by search_short_term 工具）。保留以下 negative 测试守住该不变量：
+  it('短期记忆段不应该再被渲染到 user message（已改按需查）', () => {
     const memories: ShortTermMemoryEntry[] = [
-      makeShortTerm({
-        id: 'mem-1',
-        content: '用户在 X 群让发统计报告',
-        source: { channel_id: 'ch-wechat', session_id: 'sess-X', type: 'task' },
-        refs: { task_id: 'task-A' },
-      }),
-      makeShortTerm({ id: 'mem-2', content: '发送失败了，飞书渠道有问题' }),
+      makeShortTerm({ id: 'mem-1', content: '不应出现的旧记忆内容' }),
     ]
-
     const result = buildUserMessage(
       [makeMessage({ text: 'hi' })],
       makeContext({ short_term_memories: memories }),
     )
-
-    // 新格式：section 标题带时窗 + 条数；条目带 source 锚点和正文
-    expect(result).toContain('## 短期记忆（跨所有 channel/session 的近期事件流水，最近 12 小时，2 条）')
-    expect(result).toContain('用户在 X 群让发统计报告')
-    expect(result).toContain('channel=ch-wechat')
-    expect(result).toContain('session=sess-X')
-    expect(result).toContain('task=task-A')
-    expect(result).toContain('发送失败了，飞书渠道有问题')
-  })
-
-  it('短期记忆为空时仍渲染章节并提示主动 search_short_term', () => {
-    const result = buildUserMessage(
-      [makeMessage({ text: 'hi' })],
-      makeContext({ short_term_memories: [] }),
-    )
-
-    expect(result).toContain('## 短期记忆（跨所有 channel/session 的近期事件流水，最近 12 小时，0 条）')
-    expect(result).toContain('过去 12 小时内无相关短期记忆')
+    expect(result).not.toContain('## 短期记忆')
+    expect(result).not.toContain('不应出现的旧记忆内容')
   })
 
   // -----------------------------------------------------------------------

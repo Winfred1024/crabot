@@ -275,8 +275,9 @@ export class UnifiedAgent extends ModuleBase {
           supportsVision: frontModelConfig.supports_vision === true,
         }
         this.frontHandler = new FrontHandler(llmConfig, this.buildToolExecutorDeps(), {
-          getSystemPrompt: (isGroup) => this.promptManager.assembleFrontPrompt({
+          getSystemPrompt: (isGroup, sceneProfile) => this.promptManager.assembleFrontPrompt({
             isGroup, adminPersonality: basePersonality, workerCapabilities: this.getWorkerCapabilitySummary(), skillListing: frontSkillListing,
+            ...(sceneProfile ? { sceneProfile } : {}),
           }),
           mcpConfigFactory: createMcpConfigs,
           getTimezone: () => resolveTimezone(this.agentConfig?.timezone),
@@ -2174,8 +2175,9 @@ export class UnifiedAgent extends ModuleBase {
             supportsVision: frontConfig.supports_vision === true,
           }
           this.frontHandler = new FrontHandler(llmConfig, this.buildToolExecutorDeps(), {
-            getSystemPrompt: (isGroup) => this.promptManager.assembleFrontPrompt({
+            getSystemPrompt: (isGroup, sceneProfile) => this.promptManager.assembleFrontPrompt({
               isGroup, adminPersonality: basePersonality, workerCapabilities: this.getWorkerCapabilitySummary(), skillListing: frontSkillListing,
+              ...(sceneProfile ? { sceneProfile } : {}),
             }),
             mcpConfigFactory: createMcpConfigs,
             getTimezone: () => resolveTimezone(this.agentConfig?.timezone),

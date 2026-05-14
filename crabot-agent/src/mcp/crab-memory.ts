@@ -28,7 +28,8 @@ export interface CrabMemoryDeps {
 
 /** 每次任务创建时传入的上下文，用于自动填充 source/visibility/scopes */
 export interface MemoryTaskContext {
-  taskId: string
+  /** Worker 调用时必传；Front 调用时可省（Front 不是 task 上下文） */
+  taskId?: string
   channelId?: string
   sessionId?: string
   visibility: 'private' | 'internal' | 'public'

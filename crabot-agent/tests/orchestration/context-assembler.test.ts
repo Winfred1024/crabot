@@ -158,15 +158,13 @@ describe('ContextAssembler', () => {
         platform_timestamp: recentTs(),
       },
     ]
-    const shortMem = [{ memory_id: 'mem1', content: 'fact', timestamp: '2026-01-01T00:00:00Z' }]
     // Raw admin API format (id, type — before mapping by fetchActiveTasks)
     const rawActiveTasks = [{ id: 't1', title: 'test', status: 'pending', priority: 'normal', source: {} }]
     const mappedActiveTasks = [{ task_id: 't1', title: 'test', status: 'pending', priority: 'normal', plan_summary: undefined, source_channel_id: undefined, source_session_id: undefined, latest_progress: undefined }]
 
-    // Call order: get_chat_history, search_short_term, list_tasks
+    // 2026-05-14：Front 短期记忆改按需查，assembleFrontContext 不再调 search_short_term。调用顺序剩 2 个：get_chat_history, list_tasks
     mockRpc.call
       .mockResolvedValueOnce({ messages })
-      .mockResolvedValueOnce({ results: shortMem })
       .mockResolvedValueOnce({ items: rawActiveTasks })
 
     const friend = {
@@ -192,7 +190,8 @@ describe('ContextAssembler', () => {
 
     expect(ctx.sender_friend).toEqual(friend)
     expect(ctx.recent_messages).toEqual(messages)
-    expect(ctx.short_term_memories).toEqual(shortMem)
+    // 2026-05-14：Front 短期记忆改按需查，assembleFrontContext 不再 fetch；始终返回空数组
+    expect(ctx.short_term_memories).toEqual([])
     expect(ctx.active_tasks).toEqual(mappedActiveTasks)
     expect(ctx.available_tools).toEqual([])
   })
@@ -441,10 +440,9 @@ describe('ContextAssembler', () => {
         defaultMemoryPermissions,
       )
 
-      // m1 应被过滤（channel_id=tg-001, session_id=sess-A 都匹配）
-      // m2 应保留（session_id 不匹配）
-      // m3 应保留（channel_id 不匹配）
-      expect(ctx.short_term_memories.map((m) => m.id)).toEqual(['m2', 'm3'])
+      // 2026-05-14：Front 短期记忆改按需查，assembleFrontContext 不再 fetch；始终为空
+      // 此 case 原本验证 channel+session 排除逻辑——现在该逻辑挪到 search_short_term 工具内的 ctx，由 worker/Front 调工具时按当前 channel/session 过滤
+      expect(ctx.short_term_memories).toEqual([])
     })
 
     it('Worker 上下文不应用 channel+session 排除', async () => {

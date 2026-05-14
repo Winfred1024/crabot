@@ -117,11 +117,12 @@ export class ContextAssembler {
   async assembleFrontContext(
     params: AssembleParams,
     friend: Friend | undefined,
-    memoryPermissions: MemoryPermissions,
+    _memoryPermissions: MemoryPermissions,
     traceCtx?: RpcTraceContext,
   ): Promise<FrontAgentContext> {
     const sessionType = params.session_type ?? 'private'
-    const [recentMessages, shortTermMemories, activeTasks, sceneProfile] = await Promise.all([
+    // 短期记忆改为按需查（Front/Worker 通过 search_short_term 工具自查），不再被动 fetch 拼 prompt
+    const [recentMessages, activeTasks, sceneProfile] = await Promise.all([
       this.withSubSpan(traceCtx, 'fetch_recent_messages', () => this.fetchRecentMessages(
         params.session_id,
         params.channel_id,
@@ -129,16 +130,6 @@ export class ContextAssembler {
         this.config.front_context_recent_messages_max_cap,
         sessionType
       )),
-      this.withSubSpan(traceCtx, 'fetch_short_term_memory', () => this.fetchShortTermMemory({
-        friendId: params.friend_id,
-        windowHours: this.config.front_context_short_term_memory_window_hours,
-        maxCap: this.config.front_context_short_term_memory_max_cap,
-        minVisibility: memoryPermissions.read_min_visibility,
-        accessibleScopes: memoryPermissions.read_accessible_scopes,
-        sessionType,
-        excludeChannelId: params.channel_id,
-        excludeSessionId: params.session_id,
-      })),
       this.withSubSpan(traceCtx, 'fetch_active_tasks', () => this.fetchActiveTasks()),
       this.withSubSpan(traceCtx, 'resolve_scene_profile', () => this.resolveSceneProfile(params.channel_id, params.session_id, sessionType, params.friend_id)),
     ])
@@ -153,7 +144,7 @@ export class ContextAssembler {
         updated_at: '',
       },
       recent_messages: recentMessages,
-      short_term_memories: shortTermMemories,
+      short_term_memories: [],
       active_tasks: activeTasks,
       crab_display_name: params.crab_display_name,
       available_tools: [],

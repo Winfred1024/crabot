@@ -195,7 +195,8 @@ describe('FrontHandler', () => {
       }
     })
 
-    it('injects scene profile content verbatim into the front prompt', async () => {
+    // 2026-05-14：场景画像已移到 system prompt，user message 不再渲染该段。
+    it('does NOT render scene profile in user message (moved to system prompt)', async () => {
       mockRunFrontLoop.mockResolvedValue({
         decision: { type: 'direct_reply', reply: { type: 'text', text: 'OK' } },
       })
@@ -205,7 +206,7 @@ describe('FrontHandler', () => {
         ...makeContext(),
         scene_profile: {
           label: '项目群',
-          content: '第一行规则\n\n- 第二行原文\n### 不应被重写',
+          content: '第一行规则\n\n- 第二行原文',
           source: {
             scene: { type: 'group_session', channel_id: 'ch_1', session_id: 'session-1' },
           },
@@ -221,15 +222,14 @@ describe('FrontHandler', () => {
       })
 
       const callArgs = mockRunFrontLoop.mock.calls[0][0]
-      expect(callArgs.userMessage).toContain('## 场景画像')
-      expect(callArgs.userMessage).toContain('<scene_profile label="项目群">')
-      expect(callArgs.userMessage).toContain('第一行规则\n\n- 第二行原文\n### 不应被重写')
-      expect(callArgs.userMessage).not.toContain('### 群职责')
+      expect(callArgs.userMessage).not.toContain('## 场景画像')
+      expect(callArgs.userMessage).not.toContain('<scene_profile')
+      // scene profile 已移到 system prompt——LLM 仍能看到，只是不在 user message 里
     })
   })
 
   describe('buildUserMessage', () => {
-    it('renders scene profile content without composing sections', () => {
+    it('does NOT render scene profile section (moved to system prompt)', () => {
       const message = buildUserMessage(makeMessages(), {
         ...makeContext(),
         scene_profile: {
@@ -242,25 +242,8 @@ describe('FrontHandler', () => {
       }, undefined, 'Asia/Shanghai')
 
       expect(typeof message).toBe('string')
-      expect(message).toContain('进入本群后先做技术支持与问题排查。')
-      expect(message).not.toContain('### ')
-    })
-
-    it('renders the scene profile block even when content is empty', () => {
-      const message = buildUserMessage(makeMessages(), {
-        ...makeContext(),
-        scene_profile: {
-          label: '空画像',
-          content: '',
-          source: {
-            scene: { type: 'group_session', channel_id: 'ch_1', session_id: 'session-1' },
-          },
-        },
-      }, undefined, 'Asia/Shanghai')
-
-      expect(typeof message).toBe('string')
-      expect(message).toContain('## 场景画像')
-      expect(message).toContain('<scene_profile label="空画像">')
+      expect(message).not.toContain('## 场景画像')
+      expect(message).not.toContain('进入本群后先做技术支持与问题排查。')
     })
   })
 
