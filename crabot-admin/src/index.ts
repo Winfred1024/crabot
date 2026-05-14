@@ -3681,6 +3681,16 @@ export class AdminModule extends ModuleBase {
       task.completed_at = task.updated_at
     }
 
+    // pending_question 处理：
+    // 1. status === 'waiting_human' 时写入（覆盖式）
+    // 2. status === 'executing' 时自动清空（resume 路径）
+    // 3. 显式传 null 也清空
+    if (params.status === 'waiting_human' && params.pending_question !== undefined) {
+      task.pending_question = params.pending_question ?? undefined
+    } else if (params.status === 'executing' || params.pending_question === null) {
+      task.pending_question = undefined
+    }
+
     if (params.error) {
       task.error = params.error
     }
