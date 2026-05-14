@@ -38,7 +38,7 @@ describe('query-loop: post-tool barrier check', () => {
       call: async () => {
         // 设 60s barrier，但测试会在 50ms 后 push 解除
         queue.setBarrier(60 * 1000)
-        return { content: 'asked', isError: false }
+        return { output: 'asked', isError: false }
       },
     }
 
@@ -80,7 +80,7 @@ describe('query-loop: post-tool barrier check', () => {
       isReadOnly: true,
       call: async () => {
         // 不设 barrier
-        return { content: 'done', isError: false }
+        return { output: 'done', isError: false }
       },
     }
 
