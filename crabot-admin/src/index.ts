@@ -3914,6 +3914,10 @@ export class AdminModule extends ModuleBase {
     }
 
     for (const task of expiredTasks) {
+      // TODO(Phase 2 §3.6)：当 Phase 2 实现 humanQueue 注入路径后，超时切 failed 时还应
+      // 推一条 system supplement 给 worker（"超时未收到人类回复，请基于已掌握信息收尾"），
+      // 让 worker 优雅收尾而不是冷启动 recovery。当前 Phase 1 只切状态，supplement 留待
+      // Phase 2 完成 handleLocalSupplement + humanQueue 链路后补。
       try {
         await this.handleUpdateTaskStatus({
           task_id: task.id,

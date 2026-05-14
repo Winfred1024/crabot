@@ -11,10 +11,12 @@ import type { Task } from '../src/types.js'
 
 const WAITING_HUMAN_TIMEOUT_MS = 24 * 60 * 60 * 1000  // 24h
 
+let taskIdCounter = 0
+
 function makeTask(overrides: Partial<Task> = {}): Task {
   const now = new Date().toISOString()
   return {
-    id: `task-to-${Date.now()}` as Task['id'],
+    id: `task-to-${++taskIdCounter}` as Task['id'],
     status: 'executing',
     priority: 'normal',
     title: '测试任务',
