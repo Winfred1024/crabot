@@ -317,6 +317,11 @@ export interface TaskSummary {
    */
   trigger_type?: 'manual' | 'scheduled' | 'auto' | 'event'
   updated_at?: string
+  /**
+   * 任务正在等待人类回答的问题（仅 status=waiting_human 时有值）。
+   * 由 worker 调 ask_human 工具写入，Front prompt 渲染时作为 supplement 判断的参考。
+   */
+  pending_question?: string
   /** 当前正在执行的实时快照（仅 status=executing 且 worker 在本进程时有值） */
   live?: LiveTaskSnapshot
 }

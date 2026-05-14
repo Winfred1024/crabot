@@ -422,6 +422,7 @@ export class ContextAssembler {
             }
             messages?: Array<{ content: string; timestamp: string }>
             updated_at?: string
+            pending_question?: string
           }>
         }
       >(
@@ -442,6 +443,7 @@ export class ContextAssembler {
         source_session_id: t.source.session_id,
         trigger_type: t.source.trigger_type,
         updated_at: t.updated_at,
+        pending_question: t.pending_question,
         // 飞行中状态：worker 同进程内存表，仅 status=executing 且本进程在跑时有值
         live: t.status === 'executing' ? this.getLiveSnapshot?.(t.id) : undefined,
       }))

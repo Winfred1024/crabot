@@ -246,6 +246,13 @@ export function buildUserMessage(
       lines.push(`- [${t.task_id}] "${t.title}" (status: ${t.status})${tag}${src}`)
       if (t.latest_progress) lines.push(`  最近进度（事后摘要）: ${t.latest_progress}`)
       const live = t.live
+      if (t.status === 'waiting_human' && t.pending_question) {
+        lines.push(`  正在等待人类回答的问题:`)
+        const qLines = t.pending_question.split('\n')
+        for (const ql of qLines) {
+          lines.push(`  > ${ql}`)
+        }
+      }
       if (live) {
         lines.push(`  创建于 ${formatTaskCreatedAt(live.started_at, timezone, now)} / 第 ${live.current_turn} 轮`)
         if (live.last_assistant_text) {
@@ -290,6 +297,7 @@ export function buildUserMessage(
     parts.push('\n当用户消息可能是对某个任务的纠偏/补充时，使用 supplement_task 决策。')
     parts.push('纠偏判断优先匹配「当前对话对象的任务」段。')
     parts.push('**带 [定时/巡检任务，禁止 supplement] 标签的任务一律不可作为 supplement 目标**：用户的新需求即使主题相关，也必须 create_task。')
+    parts.push('当某任务 status=\'waiting_human\' 时，它的 pending_question 字段记录了该任务正在等待人类回答的问题。处理新消息时把它作为事实参考——判断人类的新消息和这个 pending_question 是否相关。是否走 supplement_task 由你自己根据语义判断，不要默认假设新消息是回答 pending_question。')
   }
 
 
