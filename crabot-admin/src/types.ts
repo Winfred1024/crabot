@@ -680,6 +680,12 @@ export interface Task {
    * 给 Front 注入 active_tasks 时用，作为 supplement 判断的事实参考。
    */
   pending_question?: string
+  /**
+   * 切到 status='waiting_human' 的时间戳。仅 status=waiting_human 时有值。
+   * 用于 admin 超时调度器判定 24h 兜底切 failed；切回 executing 或终态时清空。
+   * 区别于 updated_at——updated_at 会被任何字段改动重置，不可靠。
+   */
+  waiting_human_at?: string
 }
 
 // ============================================================================
