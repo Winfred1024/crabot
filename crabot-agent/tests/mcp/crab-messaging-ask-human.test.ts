@@ -43,6 +43,9 @@ describe('send_message intent=ask_human', () => {
       status: 'waiting_human',
       pending_question: '你倾向 A、B 还是 C？',
     })
+
+    const sendCall = rpcCalls.find(c => c.method === 'send_message')
+    expect(sendCall).toBeDefined()  // ask_human 必须继续走原 send 逻辑，不能早 return
   })
 
   it('sets barrier on humanQueue after ask_human', async () => {
