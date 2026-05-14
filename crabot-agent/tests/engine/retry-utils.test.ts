@@ -155,6 +155,45 @@ describe('streamWithRetry', () => {
     expect(isRetryableError(err500)).toBe(false)
   })
 
+  it('extracts code from nested OpenAI-style error body {error:{code}}', async () => {
+    const err = new HttpResponseError(
+      400,
+      JSON.stringify({ error: { code: 'invalid_api_key', message: 'bad key' } }),
+      'openai-adapter',
+    )
+    expect(err.bodyCode).toBe('invalid_api_key')
+    expect(isRetryableError(err)).toBe(false)
+  })
+
+  it('treats DashScope data_inspection_failed (content moderation) as non-retryable', async () => {
+    // 阿里云百炼把内容审核拦截塞进 HTTP 400 + `{error:{code:"data_inspection_failed"}}`。
+    // 重试 10 次会原样重发被拦的输入 → 必须 fail-fast。
+    const err = new HttpResponseError(
+      400,
+      JSON.stringify({
+        error: {
+          code: 'data_inspection_failed',
+          param: null,
+          message: 'Input text data may contain inappropriate content.',
+          type: 'data_inspection_failed',
+        },
+        id: 'chatcmpl-test',
+      }),
+      'openai-adapter',
+    )
+    expect(err.bodyCode).toBe('data_inspection_failed')
+    expect(isRetryableError(err)).toBe(false)
+  })
+
+  it('falls back to top-level body code when error.code is absent', async () => {
+    const err = new HttpResponseError(
+      400,
+      JSON.stringify({ code: 'server_is_overloaded', message: 'overloaded' }),
+      'test',
+    )
+    expect(err.bodyCode).toBe('server_is_overloaded')
+  })
+
   it('treats HTTP 429 as retryable + backoff regardless of body', async () => {
     const err = new HttpResponseError(429, 'Too Many Requests', 'test')
     expect(isRetryableError(err)).toBe(true)

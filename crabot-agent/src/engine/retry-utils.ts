@@ -39,7 +39,9 @@ const NON_RETRYABLE_HTTP_STATUS = new Set([401, 403, 404, 405, 422])
 // body code 黑名单：上游把"客户端永久错误"塞进 HTTP 400 body 的特殊 code。
 // 这类错误重试也不会成功（同输入再发还是被拦），必须在状态码默认重试之前先短路。
 const NON_RETRYABLE_BODY_CODES = new Set([
-  'content_filter',           // 内容审查命中
+  'content_filter',           // 内容审查命中（OpenAI）
+  'data_inspection_failed',   // 内容审查命中（阿里云百炼 / DashScope）
+  'DataInspectionFailed',     // 同上，驼峰变体
   'invalid_prompt',           // prompt 结构不合法
   'invalid_request_error',    // 通用请求错（OpenAI 风格）
   'invalid_api_key',
@@ -67,12 +69,19 @@ export class HttpResponseError extends Error {
   }
 }
 
+// OpenAI 风格错误体把 code 放在 `error.code`（如 `{error:{code,message,type}}`）；
+// 仅少数上游用顶层 `code`。优先读嵌套，找不到再回退顶层，保证两种结构都能识别。
 function extractBodyCode(body: string): string | null {
   try {
     const obj = JSON.parse(body) as unknown
     if (obj && typeof obj === 'object') {
-      const code = (obj as { code?: unknown }).code
-      if (typeof code === 'string') return code
+      const err = (obj as { error?: unknown }).error
+      if (err && typeof err === 'object') {
+        const nestedCode = (err as { code?: unknown }).code
+        if (typeof nestedCode === 'string') return nestedCode
+      }
+      const topCode = (obj as { code?: unknown }).code
+      if (typeof topCode === 'string') return topCode
     }
   } catch { /* not JSON */ }
   return null

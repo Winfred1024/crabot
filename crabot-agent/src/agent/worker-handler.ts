@@ -1050,6 +1050,17 @@ export class WorkerHandler {
     if (finalStatus === 'failed') {
       const failureBrief = (engineResult.error ?? engineResult.finalText ?? '任务失败').slice(0, 200)
       await this.writeOutcome(taskId, adminPort, 'failed', failureBrief, [], context)
+      // 仅当 engine 主动抛错（区别 max_turns / aborted）且确有真人在会话里等，才把原样接口错回传 master。
+      // schedule / 内部任务（无 sender_friend）发到系统会话没人看，徒增噪音。
+      if (
+        engineResult.outcome === 'failed'
+        && engineResult.error
+        && context.task_origin
+        && context.sender_friend
+      ) {
+        const text = `大模型接口出错：${engineResult.error}`.slice(0, 1500)
+        await this.sendToUser(context.task_origin, text)
+      }
       return
     }
 
