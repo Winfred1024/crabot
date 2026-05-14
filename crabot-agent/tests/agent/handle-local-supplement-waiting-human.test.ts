@@ -20,18 +20,9 @@
  */
 
 import { describe, it, expect, vi } from 'vitest'
-import type { TaskSummary, SupplementTaskDecision } from '../../src/types.js'
+import type { TaskSummary } from '../../src/types.js'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
-
-function makeDecision(taskId: string): SupplementTaskDecision {
-  return {
-    type: 'supplement_task',
-    task_id: taskId,
-    supplement_content: '请帮我修改需求',
-    immediate_reply: { type: 'text', text: '收到' },
-  }
-}
 
 function makeTaskSummary(taskId: string, status: string): TaskSummary {
   return {
@@ -52,8 +43,9 @@ function makeTaskSummary(taskId: string, status: string): TaskSummary {
 async function simulateHandleLocalSupplement(opts: {
   taskId: string
   activeTasks: TaskSummary[]
-  rpcClient: { call: ReturnType<typeof vi.fn> }
-  deliverHumanResponse: ReturnType<typeof vi.fn>
+  // 用 any 收宽类型——测试 mock 不需要严格 Mock<args, ret> 推断
+  rpcClient: { call: any }
+  deliverHumanResponse: any
   getAdminPort: () => Promise<number>
   moduleId: string
 }): Promise<void> {
@@ -85,7 +77,8 @@ describe('handleLocalSupplement: waiting_human 状态恢复', () => {
   it('target 为 waiting_human 时：先调 update_task_status(executing) 再 deliverHumanResponse', async () => {
     const calls: string[] = []
     const rpcClient = {
-      call: vi.fn(async (_port: number, method: string, params: Record<string, unknown>) => {
+      call: vi.fn(async (..._args: unknown[]) => {
+        const method = _args[1] as string
         calls.push(method)
         return {}
       }),
