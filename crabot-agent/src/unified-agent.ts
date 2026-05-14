@@ -249,12 +249,13 @@ export class UnifiedAgent extends ModuleBase {
 
     // MCP config factory: creates fresh in-process McpServer instances per task
     // External MCP servers are managed by this.mcpConnector (connected in onStart)
-    const createMcpConfigs = (): Record<string, McpServer> => ({
+    const createMcpConfigs = (taskCtx?: import('./mcp/crab-messaging.js').TaskContext): Record<string, McpServer> => ({
       'crab-messaging': createCrabMessagingServer({
         rpcClient: this.rpcClient,
         moduleId: this.config.moduleId,
         getAdminPort: () => this.getAdminPort(),
         resolveChannelPort: (channelId) => this.getChannelPort(channelId),
+        ...(taskCtx ? { getTaskContext: () => taskCtx } : {}),
       }, this.sandboxPathMappingsRef),
     })
 
@@ -401,7 +402,7 @@ export class UnifiedAgent extends ModuleBase {
     workerSdkEnv: SdkEnvConfig,
     modelConfig: Record<string, LLMConnectionInfo>,
     workerPersonality: string | undefined,
-    createMcpConfigs: () => Record<string, McpServer>,
+    createMcpConfigs: (taskCtx?: import('./mcp/crab-messaging.js').TaskContext) => Record<string, McpServer>,
     builtinToolConfig?: BuiltinToolConfig,
     skills?: ReadonlyArray<SkillConfig>,
   ): WorkerHandler {
@@ -2117,12 +2118,13 @@ export class UnifiedAgent extends ModuleBase {
       this.buildPromptParts(this.agentConfig?.system_prompt, this.agentConfig?.skills)
 
     // MCP config factory: creates fresh in-process McpServer instances per task
-    const createMcpConfigs = (): Record<string, McpServer> => ({
+    const createMcpConfigs = (taskCtx?: import('./mcp/crab-messaging.js').TaskContext): Record<string, McpServer> => ({
       'crab-messaging': createCrabMessagingServer({
         rpcClient: this.rpcClient,
         moduleId: this.config.moduleId,
         getAdminPort: () => this.getAdminPort(),
         resolveChannelPort: (channelId) => this.getChannelPort(channelId),
+        ...(taskCtx ? { getTaskContext: () => taskCtx } : {}),
       }, this.sandboxPathMappingsRef),
     })
 

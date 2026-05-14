@@ -179,7 +179,7 @@ function computeSkillsHash(skills: ReadonlyArray<SkillConfig>): string {
 // ============================================================================
 
 export interface WorkerHandlerOptions {
-  mcpConfigFactory?: () => Record<string, McpServer>
+  mcpConfigFactory?: (taskCtx: import('../mcp/crab-messaging.js').TaskContext) => Record<string, McpServer>
   deps?: WorkerDeps
   builtinToolConfig?: BuiltinToolConfig
   mcpConnector?: McpConnector
@@ -214,7 +214,7 @@ export class WorkerHandler {
   private liveSnapshots: Map<TaskId, LiveTaskSnapshot> = new Map()
   /** recent_completed 保留的最大条数 */
   private static readonly RECENT_COMPLETED_LIMIT = 5
-  private mcpConfigFactory: (() => Record<string, McpServer>) | undefined
+  private mcpConfigFactory: ((taskCtx: import('../mcp/crab-messaging.js').TaskContext) => Record<string, McpServer>) | undefined
   private deps?: WorkerDeps
   private builtinToolConfig?: BuiltinToolConfig
   private mcpConnector?: McpConnector
@@ -492,7 +492,10 @@ export class WorkerHandler {
         }
 
         // 3c. External MCP server tools (crab-messaging, etc.)
-        const externalMcpServers = this.mcpConfigFactory?.() ?? {}
+        const externalMcpServers = this.mcpConfigFactory?.({
+          taskId: task.task_id,
+          humanQueue,
+        }) ?? {}
         for (const [serverName, server] of Object.entries(externalMcpServers)) {
           tools.push(...mcpServerToToolDefinitions(server, serverName))
         }
