@@ -674,6 +674,12 @@ export interface Task {
   completed_at?: string
   /** 过期时间 */
   expires_at?: string
+  /**
+   * worker 在 status='waiting_human' 时记录"正在等人类回答什么"。
+   * 仅当 status=waiting_human 时有值；切回 executing 时由 handleUpdateTaskStatus 自动清空。
+   * 给 Front 注入 active_tasks 时用，作为 supplement 判断的事实参考。
+   */
+  pending_question?: string
 }
 
 // ============================================================================
@@ -827,6 +833,11 @@ export interface UpdateTaskStatusParams {
   status: TaskStatus
   error?: string
   result?: TaskResult
+  /**
+   * 仅在 status='waiting_human' 时有意义。worker 调 send_message(intent='ask_human') 时
+   * 通过该字段写入"正在等的问题"。切回 executing 时调用方传 null 显式清空（也可不传，handler 自动清）。
+   */
+  pending_question?: string | null
 }
 
 export interface UpdateTaskStatusResult {
