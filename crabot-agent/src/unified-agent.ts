@@ -48,7 +48,7 @@ import { WorkerHandler, type SdkEnvConfig } from './agent/worker-handler.js'
 import type { ToolPermissionConfig, ToolDefinition as EngineToolDefinition } from './engine/types.js'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { McpConnector } from './agent/mcp-connector.js'
-import { createCrabMessagingServer, type PathMapping } from './mcp/crab-messaging.js'
+import { createCrabMessagingServer, type PathMapping, type TaskContext } from './mcp/crab-messaging.js'
 import { TraceStore } from './core/trace-store.js'
 import { getAgentTraceDir } from './core/data-paths.js'
 import { PromptManager } from './prompt-manager.js'
@@ -249,7 +249,7 @@ export class UnifiedAgent extends ModuleBase {
 
     // MCP config factory: creates fresh in-process McpServer instances per task
     // External MCP servers are managed by this.mcpConnector (connected in onStart)
-    const createMcpConfigs = (taskCtx?: import('./mcp/crab-messaging.js').TaskContext): Record<string, McpServer> => ({
+    const createMcpConfigs = (taskCtx?: TaskContext): Record<string, McpServer> => ({
       'crab-messaging': createCrabMessagingServer({
         rpcClient: this.rpcClient,
         moduleId: this.config.moduleId,
@@ -402,7 +402,7 @@ export class UnifiedAgent extends ModuleBase {
     workerSdkEnv: SdkEnvConfig,
     modelConfig: Record<string, LLMConnectionInfo>,
     workerPersonality: string | undefined,
-    createMcpConfigs: (taskCtx?: import('./mcp/crab-messaging.js').TaskContext) => Record<string, McpServer>,
+    createMcpConfigs: (taskCtx?: TaskContext) => Record<string, McpServer>,
     builtinToolConfig?: BuiltinToolConfig,
     skills?: ReadonlyArray<SkillConfig>,
   ): WorkerHandler {
@@ -2118,7 +2118,7 @@ export class UnifiedAgent extends ModuleBase {
       this.buildPromptParts(this.agentConfig?.system_prompt, this.agentConfig?.skills)
 
     // MCP config factory: creates fresh in-process McpServer instances per task
-    const createMcpConfigs = (taskCtx?: import('./mcp/crab-messaging.js').TaskContext): Record<string, McpServer> => ({
+    const createMcpConfigs = (taskCtx?: TaskContext): Record<string, McpServer> => ({
       'crab-messaging': createCrabMessagingServer({
         rpcClient: this.rpcClient,
         moduleId: this.config.moduleId,

@@ -22,6 +22,7 @@ import { TransientShellRegistry } from '../engine/bg-entities/bg-shell.js'
 import type { BgEntityOwner, BgEntityRecord, BgEntityStatus, BgEntityType } from '../engine/bg-entities/types.js'
 import type { BashBgContext } from '../engine/tools/index.js'
 import type { BgToolDeps } from '../engine/tools/index.js'
+import type { TaskContext } from '../mcp/crab-messaging.js'
 import type { BgEntityTraceContext } from '../engine/bg-entities/trace.js'
 import type {
   ToolDefinition,
@@ -179,7 +180,7 @@ function computeSkillsHash(skills: ReadonlyArray<SkillConfig>): string {
 // ============================================================================
 
 export interface WorkerHandlerOptions {
-  mcpConfigFactory?: (taskCtx: import('../mcp/crab-messaging.js').TaskContext) => Record<string, McpServer>
+  mcpConfigFactory?: (taskCtx: TaskContext) => Record<string, McpServer>
   deps?: WorkerDeps
   builtinToolConfig?: BuiltinToolConfig
   mcpConnector?: McpConnector
@@ -214,7 +215,7 @@ export class WorkerHandler {
   private liveSnapshots: Map<TaskId, LiveTaskSnapshot> = new Map()
   /** recent_completed 保留的最大条数 */
   private static readonly RECENT_COMPLETED_LIMIT = 5
-  private mcpConfigFactory: ((taskCtx: import('../mcp/crab-messaging.js').TaskContext) => Record<string, McpServer>) | undefined
+  private mcpConfigFactory: ((taskCtx: TaskContext) => Record<string, McpServer>) | undefined
   private deps?: WorkerDeps
   private builtinToolConfig?: BuiltinToolConfig
   private mcpConnector?: McpConnector
