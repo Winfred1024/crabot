@@ -41,8 +41,6 @@ import { ContextAssembler } from './orchestration/context-assembler.js'
 import { DecisionDispatcher } from './orchestration/decision-dispatcher.js'
 import { MemoryWriter } from './orchestration/memory-writer.js'
 import { AttentionScheduler, type AttentionConfig, type BufferedMessage } from './orchestration/attention-scheduler.js'
-import { createAdapter, type LLMFormat } from './engine/llm-adapter.js'
-import type { ToolExecutorDeps } from './agent/tool-executor.js'
 import { WorkerHandler, type SdkEnvConfig } from './agent/worker-handler.js'
 import type { ToolPermissionConfig, ToolDefinition as EngineToolDefinition } from './engine/types.js'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
@@ -113,8 +111,6 @@ export class UnifiedAgent extends ModuleBase {
   private digestSdkEnv?: SdkEnvConfig
   /** Worker sandbox 路径映射（每次 executeTask 时更新） */
   private sandboxPathMappingsRef: { current: PathMapping[] } = { current: [] }
-  /** 当前消息处理的记忆权限（Front tool 使用） */
-  private currentMemPerms?: MemoryPermissions
   /** 当前 session 的解析后权限（模板 + Session 覆盖） */
   private currentResolvedPerms?: ResolvedPermissions | null
 
@@ -241,8 +237,7 @@ export class UnifiedAgent extends ModuleBase {
 
     // MCP connections managed by mcpConnector in onStart()
 
-    const { basePersonality, workerPersonality } =
-      this.buildPromptParts(config.system_prompt, config.skills)
+    const { workerPersonality } = this.buildPromptParts(config.system_prompt)
 
     // MCP config factory: creates fresh in-process McpServer instances per task
     // External MCP servers are managed by this.mcpConnector (connected in onStart)
@@ -280,18 +275,6 @@ export class UnifiedAgent extends ModuleBase {
           (taskId) => this.workerHandler?.getLiveSnapshot(taskId)
         )
       }
-    }
-  }
-
-  private buildToolExecutorDeps(): ToolExecutorDeps {
-    return {
-      rpcClient: this.rpcClient,
-      moduleId: this.config.moduleId,
-      getAdminPort: () => this.getAdminPort(),
-      getActiveTasks: () => this.getActiveTasksList(),
-      getMemoryPort: () => this.getMemoryPort(),
-      memoryWriteVisibility: () => this.currentMemPerms?.write_visibility ?? 'public',
-      memoryWriteScopes: () => this.currentMemPerms?.write_scopes ?? [],
     }
   }
 
@@ -416,39 +399,12 @@ export class UnifiedAgent extends ModuleBase {
    * 构建 skill catalog XML（渐进式披露 Tier 1：name + description）
    * 输出格式遵循 Agent Skills 开源标准的 <available_skills> XML 格式。
    */
-  private static buildSkillXml(
-    skills: ReadonlyArray<{ id: string; name: string; description?: string }>
-  ): string {
-    return skills
-      .map((s) => {
-        const desc = s.description || s.name
-        return `<skill>\n<name>${s.name}</name>\n<description>${desc}</description>\n</skill>`
-      })
-      .join('\n')
-  }
-
-  private static buildSkillListing(
-    skills: ReadonlyArray<{ id: string; name: string; description?: string }> | undefined,
-    intro: string
-  ): string {
-    if (!skills || skills.length === 0) return ''
-    return `${intro}\n\n<available_skills>\n${UnifiedAgent.buildSkillXml(skills)}\n</available_skills>`
-  }
-
   private buildPromptParts(
-    systemPrompt?: string,
-    skills?: ReadonlyArray<{ id: string; name: string; description?: string }>
-  ): {
-    basePersonality?: string
-    /** 与 basePersonality 内容相同，仅命名上对应"传给 WorkerHandler 的 personality 字段"。 */
-    workerPersonality?: string
-  } {
-    const basePersonality = systemPrompt || undefined
+    systemPrompt?: string
+  ): { workerPersonality?: string } {
     // workerPersonality 仅承载 admin personality；skill listing 走独立通道，
     // 由 WorkerHandler 内部 buildSkillListingSnapshot 实时从 this.skills 拼装。
-    const workerPersonality = basePersonality
-
-    return { basePersonality, workerPersonality }
+    return { workerPersonality: systemPrompt || undefined }
   }
 
   /**
@@ -624,7 +580,6 @@ export class UnifiedAgent extends ModuleBase {
 
       // 8. 调用统一 loop
       const triggerArrivedAtMs = Date.now()
-      this.currentMemPerms = memPerms
       let result
       try {
         result = await this.workerHandler.handleTriggerMessage({
@@ -810,7 +765,6 @@ export class UnifiedAgent extends ModuleBase {
       const traceCallback = this.buildTraceCallback(trace.trace_id)
 
       // 调用统一 loop（群聊 isGroup=true）
-      this.currentMemPerms = memPerms
       const triggerArrivedAtMs = Date.now()
       let result
       try {
@@ -1204,21 +1158,6 @@ export class UnifiedAgent extends ModuleBase {
   /**
    * 从决策列表中提取 Agent 发出的第一条回复文本
    */
-  private extractReplyText(decisions: MessageDecision[]): string | undefined {
-    for (const decision of decisions) {
-      if (decision.type === 'direct_reply' && decision.reply.text) {
-        return decision.reply.text
-      }
-      if (decision.type === 'create_task' && decision.immediate_reply.text) {
-        return decision.immediate_reply.text
-      }
-      if (decision.type === 'supplement_task' && decision.immediate_reply?.text) {
-        return decision.immediate_reply.text
-      }
-    }
-    return undefined
-  }
-
   private setupBarriers(channelId: string, sessionId: string): string[] {
     if (!this.workerHandler) return []
     const taskIds = this.workerHandler.getActiveTasksByOrigin(channelId, sessionId)
@@ -1459,7 +1398,6 @@ export class UnifiedAgent extends ModuleBase {
         )
 
         // 调用统一 loop
-        this.currentMemPerms = channelMemPerms
         const triggerArrivedAtMs = Date.now()
         const result = await this.workerHandler.handleTriggerMessage({
           messages: mergedMessages,
@@ -1680,7 +1618,6 @@ export class UnifiedAgent extends ModuleBase {
       const traceCallback = this.buildTraceCallback(trace.trace_id)
 
       // 调用统一 loop
-      this.currentMemPerms = masterMemPerms
       const triggerArrivedAtMs = Date.now()
       let result
       try {
@@ -1746,7 +1683,6 @@ export class UnifiedAgent extends ModuleBase {
             const delivered = await this.handleLocalSupplementAdminChat(
               supplementDecision,
               sessionId,
-              trace.trace_id,
               callbackInfo,
               context.active_tasks ?? [],
             )
@@ -1836,7 +1772,6 @@ export class UnifiedAgent extends ModuleBase {
   private async handleLocalSupplementAdminChat(
     decision: import('./types.js').SupplementTaskDecision,
     sessionId: string,
-    traceId: string,
     callbackInfo: { source_module_id: string; request_id: string },
     activeTasks: ReadonlyArray<import('./types.js').TaskSummary>,
   ): Promise<boolean> {
@@ -2262,8 +2197,7 @@ export class UnifiedAgent extends ModuleBase {
     modelConfig: Record<string, LLMConnectionInfo>,
     options: { skipWorkerRebuild?: boolean } = {},
   ): Promise<void> {
-    const { basePersonality, workerPersonality } =
-      this.buildPromptParts(this.agentConfig?.system_prompt, this.agentConfig?.skills)
+    const { workerPersonality } = this.buildPromptParts(this.agentConfig?.system_prompt)
 
     // MCP config factory: creates fresh in-process McpServer instances per task
     const createMcpConfigs = (taskCtx?: TaskContext): Record<string, McpServer> => ({
@@ -2495,24 +2429,6 @@ export class UnifiedAgent extends ModuleBase {
    * not per-tool parameter docs.
    * Returns one entry per MCP server (category) with tool names listed.
    */
-  private getWorkerCapabilitySummary(): Array<{ category: string; tools: string[] }> {
-    const grouped = new Map<string, string[]>()
-    for (const t of this.mcpConnector.getAllTools()) {
-      // Delimiter is __ (double underscore); server names may contain single underscores
-      const m = t.name.match(/^mcp__(.+?)__(.+)$/)
-      const category = m ? m[1] : 'other'
-      const toolName = m ? m[2] : t.name
-      const list = grouped.get(category) ?? []
-      list.push(toolName)
-      grouped.set(category, list)
-    }
-    return Array.from(grouped.entries()).map(([category, tools]) => ({ category, tools }))
-  }
-
-  private getActiveTasksList(): Array<{ task_id: string; status: string; started_at: string; title?: string }> {
-    return this.workerHandler?.getActiveTasksForQuery() ?? []
-  }
-
   private async getAdminPort(): Promise<number> {
     if (this.adminPort === undefined) {
       const modules = await this.rpcClient.resolve({ module_type: 'admin' }, this.config.moduleId)
