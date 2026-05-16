@@ -84,22 +84,22 @@ npm run test:coverage
 
 ## Feature flags
 
-### `CRABOT_USE_UNIFIED_LOOP`（Phase 3c+）
+### `CRABOT_USE_UNIFIED_LOOP`（Phase 3d 默认 ON）
 
 环境变量，控制是否启用统一 agent loop（合并 Front + Worker 的新架构）。
 
-- `CRABOT_USE_UNIFIED_LOOP=true` → 私聊路径走 `WorkerHandler.handleTriggerMessage`（exit tools + overdue + send_message 检测）
-- 未设置或其他值 → 走原 `FrontHandler.handleMessage` → `decisionDispatcher` 路径（默认）
+- **未设置 / 任意非 `"false"` 值** → 启用 unified loop（默认）：私聊路径走 `WorkerHandler.handleTriggerMessage`（exit tools + overdue + send_message 检测 + 完整 worker 工具栈）
+- `CRABOT_USE_UNIFIED_LOOP=false` → 退回老 `FrontHandler` 路径（**即将彻底删除**，仅作过渡兜底）
 
-**当前限制（Phase 3c）：**
-- 仅切换私聊路径；群聊仍走旧路径（Phase 3e 切换）
-- handleTriggerMessage 已接入 messaging tools 与 exit tools；**复杂任务所需的 bash / file / lsp / skill / sub-agent 等工具尚未接入**，复杂任务在 ON 模式下会失败（Phase 3d 接入完整工具集）
-- 启用后可端到端测试：简单 reply / supplement_task / 超期辅助提醒三条主路径
+**当前状态：**
+- 私聊路径已切换到 unified loop
+- 群聊路径仍走旧 FrontHandler（Phase 3e 后续切换）
+- 老 FrontHandler / front-loop / front-tools 即将删除
 
-本地测试：
+本地需要回退老路径测试时：
 
 ```bash
-CRABOT_USE_UNIFIED_LOOP=true ./dev.sh
+CRABOT_USE_UNIFIED_LOOP=false ./dev.sh
 ```
 
 ## 协议版本

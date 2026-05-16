@@ -660,8 +660,8 @@ export class UnifiedAgent extends ModuleBase {
 
       barrierTaskIds = this.setupBarriers(session.channel_id, session.session_id)
 
-      // Phase 3c feature flag: 用环境变量切换到新 unified loop
-      const useUnifiedLoop = process.env.CRABOT_USE_UNIFIED_LOOP === 'true'
+      // Phase 3d: unified loop 已默认启用——CRABOT_USE_UNIFIED_LOOP=false 可临时退回老路径（即将彻底删除）
+      const useUnifiedLoop = process.env.CRABOT_USE_UNIFIED_LOOP !== 'false'
 
       if (useUnifiedLoop) {
         await this.processDirectMessageUnified({
