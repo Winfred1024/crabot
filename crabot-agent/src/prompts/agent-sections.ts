@@ -102,3 +102,23 @@ export const WORKFLOW_PRIVATE = `## 工作流
   （outcome_brief + process_highlights，进长期记忆）。
   期限内完成的简单任务直接结束，不反思。
   supplement_task 早期退出不反思。`
+
+export const WORKFLOW_GROUP = `## 工作流
+
+[turn 0 · triage]
+  trigger message + 活跃任务列表已注入。三选一：
+
+  1. 与我无关 → stay_silent(reason) 退出
+       必须 stay_silent 的情形：
+         · 群成员之间互相讨论（即便话题是你擅长的）
+         · 群成员之间一问一答（明确双方，你不是其中之一）
+         · 系统通知 / 加群消息 / 分享链接
+         · 不确定是否在叫你
+       被 [@你] 标注、或上下文只有发送者和你、或你之前的消息被引用
+         → 禁止 stay_silent，必须走 2 或 3
+
+  2. 是某活跃任务的纠偏/补充 → supplement_task 退出（同私聊）
+
+  3. 与我相关且不是 supplement → 进入主工作流
+
+[主工作流 / 超期辅助 / 反思] —— 与私聊一致`

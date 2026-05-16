@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { CRABOT_BRAIN_IDENTITY, SYSTEM_DIALOGUE_BOUNDARY, WORKFLOW_PRIVATE } from '../../src/prompts/agent-sections.js'
+import { CRABOT_BRAIN_IDENTITY, SYSTEM_DIALOGUE_BOUNDARY, WORKFLOW_PRIVATE, WORKFLOW_GROUP } from '../../src/prompts/agent-sections.js'
 
 describe('#1 你是 Crabot 的大脑', () => {
   it('开头自我定位为"认知中枢"', () => {
@@ -84,5 +84,29 @@ describe('#3 工作流 · 私聊版', () => {
 
   it('不含 stay_silent 描述（私聊不渲染）', () => {
     expect(WORKFLOW_PRIVATE).not.toContain('stay_silent')
+  })
+})
+
+describe('#3 工作流 · 群聊版', () => {
+  it('含三选一 triage（stay_silent / supplement_task / 主流程）', () => {
+    expect(WORKFLOW_GROUP).toContain('stay_silent(reason)')
+    expect(WORKFLOW_GROUP).toContain('supplement_task')
+    expect(WORKFLOW_GROUP).toContain('与我相关且不是 supplement')
+  })
+
+  it('列出必须 stay_silent 的情形', () => {
+    expect(WORKFLOW_GROUP).toContain('群成员之间互相讨论')
+    expect(WORKFLOW_GROUP).toContain('群成员之间一问一答')
+    expect(WORKFLOW_GROUP).toContain('系统通知')
+    expect(WORKFLOW_GROUP).toContain('不确定是否在叫你')
+  })
+
+  it('明确被 @你 时禁止 stay_silent', () => {
+    expect(WORKFLOW_GROUP).toContain('被 [@你] 标注')
+    expect(WORKFLOW_GROUP).toContain('禁止 stay_silent')
+  })
+
+  it('主工作流/超期辅助/反思 段说明引用私聊版', () => {
+    expect(WORKFLOW_GROUP).toContain('与私聊一致')
   })
 })
