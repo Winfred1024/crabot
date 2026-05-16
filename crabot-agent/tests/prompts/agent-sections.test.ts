@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { CRABOT_BRAIN_IDENTITY, SYSTEM_DIALOGUE_BOUNDARY, WORKFLOW_PRIVATE, WORKFLOW_GROUP, SEND_MESSAGE_SPEC, END_TURN_SELF_CHECK, TIME_AWARENESS, INFO_QUERY_GUIDE, TOOL_USAGE, TASK_HARD_CONSTRAINTS } from '../../src/prompts/agent-sections.js'
+import { CRABOT_BRAIN_IDENTITY, SYSTEM_DIALOGUE_BOUNDARY, WORKFLOW_PRIVATE, WORKFLOW_GROUP, SEND_MESSAGE_SPEC, END_TURN_SELF_CHECK, TIME_AWARENESS, INFO_QUERY_GUIDE, TOOL_USAGE, TASK_HARD_CONSTRAINTS, MEMORY_STORE_GUIDE } from '../../src/prompts/agent-sections.js'
 
 describe('#1 你是 Crabot 的大脑', () => {
   it('开头自我定位为"认知中枢"', () => {
@@ -276,6 +276,37 @@ describe('#8 工具使用规范', () => {
     expect(TOOL_USAGE).toContain('1min - 1h')
     expect(TOOL_USAGE).toContain('1h - 数天')
     expect(TOOL_USAGE).toContain('数天 - 几周')
+  })
+})
+
+describe('#10 记忆存储指引', () => {
+  it('开篇明确"不确定时不记"', () => {
+    expect(MEMORY_STORE_GUIDE).toContain('## 记忆存储指引')
+    expect(MEMORY_STORE_GUIDE).toContain('宁可漏记也不要制造噪声')
+  })
+
+  it('含 set_scene_profile 适用范围', () => {
+    expect(MEMORY_STORE_GUIDE).toContain('set_scene_profile')
+    expect(MEMORY_STORE_GUIDE).toContain('身份类稳定信息')
+  })
+
+  it('明确不属于场景画像的内容', () => {
+    expect(MEMORY_STORE_GUIDE).toContain('操作类指令')
+    expect(MEMORY_STORE_GUIDE).toContain('跨多个场景都适用')
+  })
+
+  it('含 store_memory 白名单 + 类型 + importance', () => {
+    expect(MEMORY_STORE_GUIDE).toContain('store_memory')
+    expect(MEMORY_STORE_GUIDE).toContain('fact')
+    expect(MEMORY_STORE_GUIDE).toContain('lesson')
+    expect(MEMORY_STORE_GUIDE).toContain('concept')
+    expect(MEMORY_STORE_GUIDE).toContain('importance')
+  })
+
+  it('含 store_memory 黑名单 6 条', () => {
+    expect(MEMORY_STORE_GUIDE).toContain('一次性数据快照')
+    expect(MEMORY_STORE_GUIDE).toContain('时效性新闻')
+    expect(MEMORY_STORE_GUIDE).toContain('调试过程中未经确认的中间假设')
   })
 })
 
