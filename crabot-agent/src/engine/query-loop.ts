@@ -74,6 +74,9 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
   const engineStartedAtMs = overdueConfig?.startedAtMs ?? Date.now()
   let overdueInjected = false
 
+  // 早退工具：调用后 engine 立刻退出 loop
+  let exitToolCall: { name: string; input: Record<string, unknown> } | undefined = undefined
+
   function shouldInjectOverdue(): boolean {
     if (!overdueConfig || overdueInjected) return false
     return Date.now() - engineStartedAtMs > overdueConfig.timeoutMs
@@ -96,7 +99,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
   for (let turn = 0; turn < maxTurns; turn++) {
     // Check abort before starting a turn
     if (abortSignal?.aborted) {
-      return buildResult('aborted', finalText, totalTurns, contextManager, messages, overdueInjected)
+      return buildResult('aborted', finalText, totalTurns, contextManager, messages, overdueInjected, exitToolCall)
     }
 
     // Check if context compaction is needed
@@ -139,10 +142,10 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
       llmCallMs = Date.now() - llmStartedAtMs
     } catch (error) {
       if (abortSignal?.aborted) {
-        return buildResult('aborted', finalText, totalTurns, contextManager, messages, overdueInjected)
+        return buildResult('aborted', finalText, totalTurns, contextManager, messages, overdueInjected, exitToolCall)
       }
       console.error('[query-loop] LLM call threw:', error)
-      return buildResult('failed', finalText, totalTurns, contextManager, messages, overdueInjected, formatError(error))
+      return buildResult('failed', finalText, totalTurns, contextManager, messages, overdueInjected, exitToolCall, formatError(error))
     }
 
     const processed = partitionResponseContent(response.content)
@@ -231,7 +234,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
         }
         // 配额耗尽：input 已被压过两次仍 max_tokens，再走 forced-summary 会让 input
         // 更大；此时只能诚实返回空 finalText。
-        return buildResult('completed', finalText, totalTurns, contextManager, messages, overdueInjected)
+        return buildResult('completed', finalText, totalTurns, contextManager, messages, overdueInjected, exitToolCall)
       }
 
       // 真静默 end_turn：早 return 路径不 fire onTurn，这里先补 fire 让 trace 看到这一轮。
@@ -247,7 +250,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
         continue
       }
 
-      return buildResult('completed', finalText, totalTurns, contextManager, messages, overdueInjected)
+      return buildResult('completed', finalText, totalTurns, contextManager, messages, overdueInjected, exitToolCall)
     }
 
     // ── Barrier check: wait for potential supplement before executing tools ──
@@ -256,7 +259,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
 
       // Check abort after waiting
       if (abortSignal?.aborted) {
-        return buildResult('aborted', finalText, totalTurns, contextManager, messages, overdueInjected)
+        return buildResult('aborted', finalText, totalTurns, contextManager, messages, overdueInjected, exitToolCall)
       }
 
       // If supplement arrived during wait, cancel tools and inject
@@ -339,6 +342,40 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
         }
         continue
       }
+    }
+
+    // exitsLoop 检测：若任一 tool_use 是 exitsLoop 工具，直接退出 loop
+    // 不调用 call、不 push tool_result、不 fire normal onTurn
+    const exitBlock = processed.toolUseBlocks.find(b => {
+      const def = currentTools.find(t => t.name === b.name)
+      return def?.exitsLoop === true
+    })
+    if (exitBlock) {
+      exitToolCall = {
+        name: exitBlock.name,
+        input: exitBlock.input as Record<string, unknown>,
+      }
+      // Fire onTurn with this single tool call for trace recording
+      if (options.onTurn) {
+        const turnEvent: EngineTurnEvent = {
+          turnNumber: totalTurns,
+          assistantText: processed.text,
+          toolCalls: [{
+            id: exitBlock.id,
+            name: exitBlock.name,
+            input: exitBlock.input,
+            output: '[exit_tool]',
+            isError: false,
+          }],
+          stopReason,
+          llmCallMs,
+          llmStartedAtMs,
+          ...(forcedSummaryAttempt !== undefined ? { forcedSummaryAttempt } : {}),
+          ...(response.usage ? { usage: response.usage } : {}),
+        }
+        options.onTurn(turnEvent)
+      }
+      return buildResult('completed', finalText, totalTurns, contextManager, messages, overdueInjected, exitToolCall)
     }
 
     // Execute tools
@@ -458,7 +495,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
   }
 
   // Loop exhausted
-  return buildResult('max_turns', finalText, totalTurns, contextManager, messages, overdueInjected)
+  return buildResult('max_turns', finalText, totalTurns, contextManager, messages, overdueInjected, exitToolCall)
 }
 
 // --- Helpers ---
@@ -507,6 +544,7 @@ function buildResult(
   contextManager: ContextManager,
   messages: readonly EngineMessage[],
   overdueInjected: boolean,
+  exitToolCall: { name: string; input: Record<string, unknown> } | undefined,
   error?: string
 ): EngineResult {
   const usage = contextManager.getCumulativeUsage()
@@ -519,6 +557,7 @@ function buildResult(
     // 未来的重构面临"我以为 EngineResult 是不可变的，结果上游 push 了一条消息"的隐患。
     finalMessages: [...messages],
     overdueInjected,
+    ...(exitToolCall !== undefined ? { exitToolCall } : {}),
     ...(error !== undefined ? { error } : {}),
   }
 }
