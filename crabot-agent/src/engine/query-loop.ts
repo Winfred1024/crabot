@@ -300,6 +300,47 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
       // else: barrier cleared without supplement → proceed normally
     }
 
+    // turnZeroOnly 强制：在 turn 0 之后的轮次，turnZeroOnly 工具调用被拒绝
+    const isAfterTurnZero = totalTurns > 1  // totalTurns=1 表示刚处理完 turn 0 响应
+    if (isAfterTurnZero) {
+      const violatingResults = processed.toolUseBlocks
+        .filter(b => {
+          const def = currentTools.find(t => t.name === b.name)
+          return def?.turnZeroOnly === true
+        })
+        .map(b => ({
+          tool_use_id: b.id,
+          content: `[Tool '${b.name}' is only callable on turn 0; the trigger message has already been processed. If you need to early-exit, you cannot do so anymore—proceed with the task normally.]`,
+          is_error: true,
+        }))
+
+      if (violatingResults.length > 0) {
+        // 全转 error tool result，跳过 executeToolBatches；下一轮 LLM 重试
+        messages.push(createBatchToolResultMessage(violatingResults))
+        // fire onTurn for trace recording
+        if (options.onTurn) {
+          const turnEvent: EngineTurnEvent = {
+            turnNumber: totalTurns,
+            assistantText: processed.text,
+            toolCalls: processed.toolUseBlocks.map(b => ({
+              id: b.id,
+              name: b.name,
+              input: b.input,
+              output: violatingResults.find(r => r.tool_use_id === b.id)?.content ?? '',
+              isError: violatingResults.some(r => r.tool_use_id === b.id),
+            })),
+            stopReason,
+            llmCallMs,
+            llmStartedAtMs,
+            ...(forcedSummaryAttempt !== undefined ? { forcedSummaryAttempt } : {}),
+            ...(response.usage ? { usage: response.usage } : {}),
+          }
+          options.onTurn(turnEvent)
+        }
+        continue
+      }
+    }
+
     // Execute tools
     const batches = partitionToolCalls(processed.toolUseBlocks, currentTools)
     // Live progress: tools about to start
