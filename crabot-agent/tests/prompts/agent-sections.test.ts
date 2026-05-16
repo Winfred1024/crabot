@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { CRABOT_BRAIN_IDENTITY } from '../../src/prompts/agent-sections.js'
+import { CRABOT_BRAIN_IDENTITY, SYSTEM_DIALOGUE_BOUNDARY } from '../../src/prompts/agent-sections.js'
 
 describe('#1 你是 Crabot 的大脑', () => {
   it('开头自我定位为"认知中枢"', () => {
@@ -26,5 +26,29 @@ describe('#1 你是 Crabot 的大脑', () => {
 
   it('事实→证据 段含"缺证据就去补证据"指令', () => {
     expect(CRABOT_BRAIN_IDENTITY).toContain('缺证据就去补证据')
+  })
+})
+
+describe('#2 你和 Crabot 系统的对话边界', () => {
+  it('阐明只与系统对话', () => {
+    expect(SYSTEM_DIALOGUE_BOUNDARY).toContain('## 你和 Crabot 系统的对话边界')
+    expect(SYSTEM_DIALOGUE_BOUNDARY).toContain('只与 Crabot 系统对话')
+    expect(SYSTEM_DIALOGUE_BOUNDARY).toContain('传递者')
+  })
+
+  it('列出三种系统注入信号', () => {
+    expect(SYSTEM_DIALOGUE_BOUNDARY).toContain('超期辅助提醒')
+    expect(SYSTEM_DIALOGUE_BOUNDARY).toContain('任务结束反思要求')
+    expect(SYSTEM_DIALOGUE_BOUNDARY).toContain('bg entity 退出通知')
+  })
+
+  it('明确超期提醒不是完成信号', () => {
+    expect(SYSTEM_DIALOGUE_BOUNDARY).toContain('不是完成信号')
+    expect(SYSTEM_DIALOGUE_BOUNDARY).toContain('必须继续执行主工作流')
+  })
+
+  it('明确 assistant 回复给系统看', () => {
+    expect(SYSTEM_DIALOGUE_BOUNDARY).toContain('### assistant 回复 = 与系统对话')
+    expect(SYSTEM_DIALOGUE_BOUNDARY).toContain('唯一通道是 `send_message`')
   })
 })
