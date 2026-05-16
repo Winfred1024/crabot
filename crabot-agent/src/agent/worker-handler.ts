@@ -1065,10 +1065,115 @@ export class WorkerHandler {
     params: HandleTriggerMessageParams,
     traceCallback?: TraceCallback,
   ): Promise<HandleTriggerMessageResult> {
-    // TODO(Phase 3b Task 3): 实现完整 body
-    void params
-    void traceCallback
-    throw new Error('handleTriggerMessage: not yet implemented (Phase 3b Task 3)')
+    const {
+      messages,
+      activeTasks,
+      isGroup,
+      sceneProfile,
+      senderFriend,
+      triggerArrivedAtMs,
+      timeoutMs = 30_000,
+      overdueReminderEnabled = true,
+      memoryPermissions,
+      resolvedPermissions,
+      channelId,
+      sessionId,
+    } = params
+
+    // Phase 3b: 这些 param 暂存但部分尚未在 minimal scope 内使用，标 void 防 unused warning
+    void memoryPermissions
+    void channelId
+    void sessionId
+
+    const adapter = adapterFromSdkEnv(this.sdkEnv)
+    let sentMessage = false
+
+    // 通过 onTurn 检测 send_message / send_private_message 工具调用
+    const detectSendMessage = (toolCalls: ReadonlyArray<{ name: string; isError: boolean }>) => {
+      for (const tc of toolCalls) {
+        if ((tc.name === 'send_message' || tc.name === 'send_private_message') && !tc.isError) {
+          sentMessage = true
+          break
+        }
+      }
+    }
+
+    // 装配工具集：早退工具 + messaging tools
+    // Phase 3b: messaging tools 简化为空数组——Phase 3c 接入完整工具集
+    const activeTaskIds = activeTasks.map(t => t.task_id)
+    const exitTools = getAgentExitTools({ isGroup, activeTaskIds })
+    const messagingTools: ReadonlyArray<ToolDefinition> = []
+    const tools = [...exitTools, ...messagingTools]
+
+    // 构造 system prompt — 用新统一 prompt 装配函数
+    // this.promptManager 是 WorkerHandlerOptions 中注入的可选字段
+    const assembledSystemPrompt = this.promptManager
+      ? this.promptManager.assembleAgentPrompt({
+        isGroup,
+        adminPersonality: this.systemPrompt || undefined,
+        skillListing: this.buildSkillListingSnapshot(),
+        availableSubAgents: this.subAgentHints,
+        ...(sceneProfile ? { sceneProfile: { label: sceneProfile.label, content: sceneProfile.content } } : {}),
+      })
+      : this.systemPrompt
+
+    // 构造 user prompt（trigger messages 拼成单条 user message）
+    const userPromptText = messages
+      .map(m => m.content.type === 'text' ? (m.content.text ?? '') : '[非文本消息]')
+      .join('\n')
+
+    // overdueConfig
+    const overdueReminderText =
+      `已处理 ${Math.floor((Date.now() - triggerArrivedAtMs) / 1000)} 秒，建议先 send_message ` +
+      `友好告知人类正在处理 + 简要说明打算怎么干，发完继续执行。`
+    const overdueConfig = overdueReminderEnabled
+      ? {
+        timeoutMs,
+        startedAtMs: triggerArrivedAtMs,
+        onOverdue: () => sentMessage ? null : overdueReminderText,
+      }
+      : undefined
+
+    let engineResult: import('../engine/types.js').EngineResult
+    try {
+      engineResult = await runEngine({
+        prompt: userPromptText,
+        adapter,
+        options: {
+          tools,
+          systemPrompt: assembledSystemPrompt,
+          model: this.sdkEnv.modelId,
+          ...(this.sdkEnv.maxTokens !== undefined ? { maxTokens: this.sdkEnv.maxTokens } : {}),
+          senderIsMaster: senderFriend.permission === 'master',
+          resolvedPermissions,
+          ...(overdueConfig ? { overdueConfig } : {}),
+          onTurn: (event) => {
+            detectSendMessage(event.toolCalls)
+            // Phase 3b: traceCallback 调用省略——handleTriggerMessage 不建立 loopSpan，
+            // Phase 3c 接入完整 caller 时再对齐 executeTask 的 trace 写入模式。
+            void traceCallback
+          },
+        },
+      })
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error)
+      return {
+        outcome: 'failed' as const,
+        finalText: '',
+        sentMessage,
+        overdueInjected: false,
+        error: errMsg,
+      }
+    }
+
+    return {
+      outcome: engineResult.outcome,
+      finalText: engineResult.finalText,
+      ...(engineResult.exitToolCall ? { exitToolCall: engineResult.exitToolCall } : {}),
+      overdueInjected: engineResult.overdueInjected,
+      sentMessage,
+      ...(engineResult.error ? { error: engineResult.error } : {}),
+    }
   }
 
   /**
