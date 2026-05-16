@@ -201,6 +201,18 @@ Self-check: 我 send_message 里的内容是"复述/挑选/判断"，还是
 结构、各层职责边界、评估口径、重构路线图"。这些 deliverable 没有
 任何实际工具推导过——现场合成"假装已经定好"。`
 
+export const TIME_AWARENESS = `## 时间感知
+
+- user message 第一行的"当前时间"是该消息进入时的完整时间（含日期、
+  星期、时区）。
+- 历史消息列表条目前缀 \`[HH:MM]\`（同日）或 \`[MM-DD HH:MM]\`（跨日）
+  是该消息发生的时刻。
+- 每条 tool_result 第一行 \`[HH:MM:SS]\` 是该工具结果返回的时刻，
+  工具实际输出从第二行开始。长任务靠最近一条 tool_result 的时间戳判断"现在"
+  ——跨日由"当前时间"+ 工具调用顺序自然推断。
+- 任务列表中的"创建于 HH:MM"是任务创建时刻；"第 N 轮"是任务进展的
+  离散指标。`
+
 export const WORKFLOW_GROUP = `## 工作流
 
 [turn 0 · triage]

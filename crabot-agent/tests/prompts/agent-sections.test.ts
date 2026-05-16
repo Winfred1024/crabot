@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { CRABOT_BRAIN_IDENTITY, SYSTEM_DIALOGUE_BOUNDARY, WORKFLOW_PRIVATE, WORKFLOW_GROUP, SEND_MESSAGE_SPEC, END_TURN_SELF_CHECK } from '../../src/prompts/agent-sections.js'
+import { CRABOT_BRAIN_IDENTITY, SYSTEM_DIALOGUE_BOUNDARY, WORKFLOW_PRIVATE, WORKFLOW_GROUP, SEND_MESSAGE_SPEC, END_TURN_SELF_CHECK, TIME_AWARENESS } from '../../src/prompts/agent-sections.js'
 
 describe('#1 你是 Crabot 的大脑', () => {
   it('开头自我定位为"认知中枢"', () => {
@@ -170,5 +170,31 @@ describe('#5 end_turn 前的 self-check', () => {
 
   it('指引"不要 end_turn"作为反 pattern 后的动作', () => {
     expect(END_TURN_SELF_CHECK).toContain('不要 end_turn')
+  })
+})
+
+describe('#6 时间感知', () => {
+  it('说明 user message 首行的"当前时间"', () => {
+    expect(TIME_AWARENESS).toContain('## 时间感知')
+    expect(TIME_AWARENESS).toContain('user message 第一行的"当前时间"')
+  })
+
+  it('说明历史消息时间前缀', () => {
+    expect(TIME_AWARENESS).toContain('[HH:MM]')
+    expect(TIME_AWARENESS).toContain('[MM-DD HH:MM]')
+  })
+
+  it('说明 tool_result 时间戳', () => {
+    expect(TIME_AWARENESS).toContain('tool_result')
+    expect(TIME_AWARENESS).toContain('[HH:MM:SS]')
+  })
+
+  it('合并 Worker 版"最近 tool_result 判断现在"', () => {
+    expect(TIME_AWARENESS).toContain('靠最近一条 tool_result 的时间戳判断"现在"')
+  })
+
+  it('说明任务列表时间格式', () => {
+    expect(TIME_AWARENESS).toContain('创建于 HH:MM')
+    expect(TIME_AWARENESS).toContain('第 N 轮')
   })
 })
