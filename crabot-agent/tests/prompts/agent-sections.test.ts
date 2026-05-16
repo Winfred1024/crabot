@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { CRABOT_BRAIN_IDENTITY, SYSTEM_DIALOGUE_BOUNDARY, WORKFLOW_PRIVATE, WORKFLOW_GROUP, SEND_MESSAGE_SPEC, END_TURN_SELF_CHECK, TIME_AWARENESS, INFO_QUERY_GUIDE, TOOL_USAGE } from '../../src/prompts/agent-sections.js'
+import { CRABOT_BRAIN_IDENTITY, SYSTEM_DIALOGUE_BOUNDARY, WORKFLOW_PRIVATE, WORKFLOW_GROUP, SEND_MESSAGE_SPEC, END_TURN_SELF_CHECK, TIME_AWARENESS, INFO_QUERY_GUIDE, TOOL_USAGE, TASK_HARD_CONSTRAINTS } from '../../src/prompts/agent-sections.js'
 
 describe('#1 你是 Crabot 的大脑', () => {
   it('开头自我定位为"认知中枢"', () => {
@@ -276,5 +276,37 @@ describe('#8 工具使用规范', () => {
     expect(TOOL_USAGE).toContain('1min - 1h')
     expect(TOOL_USAGE).toContain('1h - 数天')
     expect(TOOL_USAGE).toContain('数天 - 几周')
+  })
+})
+
+describe('#9 任务推进硬约束', () => {
+  it('含探索/研究类任务的持续性 + 三种 anti-pattern', () => {
+    expect(TASK_HARD_CONSTRAINTS).toContain('探索')
+    expect(TASK_HARD_CONSTRAINTS).toContain('研究')
+    expect(TASK_HARD_CONSTRAINTS).toContain('同一假设的微调')
+    expect(TASK_HARD_CONSTRAINTS).toContain('凭先验驳回')
+    expect(TASK_HARD_CONSTRAINTS).toContain('返工以求确认')
+  })
+
+  it('含如实报告原则', () => {
+    expect(TASK_HARD_CONSTRAINTS).toContain('如实报告')
+    expect(TASK_HARD_CONSTRAINTS).toContain('不要 hedge')
+  })
+
+  it('含 Blocker 优先路径', () => {
+    expect(TASK_HARD_CONSTRAINTS).toContain('Blocker')
+    expect(TASK_HARD_CONSTRAINTS).toContain('ask_human')
+  })
+
+  it('含 specification gaming + 五分钟头脑风暴', () => {
+    expect(TASK_HARD_CONSTRAINTS).toContain('specification gaming')
+    expect(TASK_HARD_CONSTRAINTS).toContain('五分钟头脑风暴')
+    expect(TASK_HARD_CONSTRAINTS).toContain('DeepMind')
+  })
+
+  it('含禁止未尝试的后续方向', () => {
+    expect(TASK_HARD_CONSTRAINTS).toContain('禁止未尝试的后续方向')
+    expect(TASK_HARD_CONSTRAINTS).toContain('下一步可以试')
+    expect(TASK_HARD_CONSTRAINTS).toContain('未来工作')
   })
 })
