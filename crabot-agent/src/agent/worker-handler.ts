@@ -1048,6 +1048,30 @@ export class WorkerHandler {
   }
 
   /**
+   * 处理新到 trigger message——统一 loop 入口。
+   *
+   * 与 executeTask 的区别：
+   * - executeTask 处理 admin 已注册的 task（带 task_id）
+   * - handleTriggerMessage 处理新触发消息，可能早退（supplement/silent），可能自然结束
+   *
+   * Caller（unified-agent）根据 result.exitToolCall 自行 dispatch：
+   * - exitToolCall.name === 'supplement_task' → 路由 supplement_text 到目标 task
+   * - exitToolCall.name === 'stay_silent' → 忽略
+   * - undefined → loop 自然结束（agent 已通过 send_message 工具回复人类，或没回复）
+   *
+   * Spec: crabot-docs/superpowers/specs/2026-05-15-agent-unified-loop-redesign-design.md §2.1
+   */
+  async handleTriggerMessage(
+    params: HandleTriggerMessageParams,
+    traceCallback?: TraceCallback,
+  ): Promise<HandleTriggerMessageResult> {
+    // TODO(Phase 3b Task 3): 实现完整 body
+    void params
+    void traceCallback
+    throw new Error('handleTriggerMessage: not yet implemented (Phase 3b Task 3)')
+  }
+
+  /**
    * Engine 主 loop 结束后的收尾。对用户面"任务结束"瞬间 = update_task_status('completed')
    * 落盘那一刻；之后跑反思补轮（对 supplement 通道关闭）；最后写短期 + 长期记忆。
    *
