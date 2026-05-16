@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { CRABOT_BRAIN_IDENTITY, SYSTEM_DIALOGUE_BOUNDARY, WORKFLOW_PRIVATE, WORKFLOW_GROUP, SEND_MESSAGE_SPEC, END_TURN_SELF_CHECK, TIME_AWARENESS, INFO_QUERY_GUIDE } from '../../src/prompts/agent-sections.js'
+import { CRABOT_BRAIN_IDENTITY, SYSTEM_DIALOGUE_BOUNDARY, WORKFLOW_PRIVATE, WORKFLOW_GROUP, SEND_MESSAGE_SPEC, END_TURN_SELF_CHECK, TIME_AWARENESS, INFO_QUERY_GUIDE, TOOL_USAGE } from '../../src/prompts/agent-sections.js'
 
 describe('#1 你是 Crabot 的大脑', () => {
   it('开头自我定位为"认知中枢"', () => {
@@ -235,5 +235,46 @@ describe('#7 信息查询指引', () => {
   it('明确检索为空 ≠ 不存在', () => {
     expect(INFO_QUERY_GUIDE).toContain('检索返回空')
     expect(INFO_QUERY_GUIDE).toContain('不等于"不存在"')
+  })
+})
+
+describe('#8 工具使用规范', () => {
+  it('含找群/找联系人优先顺序', () => {
+    expect(TOOL_USAGE).toContain('lookup_friend')
+    expect(TOOL_USAGE).toContain('list_groups')
+    expect(TOOL_USAGE).toContain('list_sessions')
+  })
+
+  it('含 bg shell 使用规范 + Output 调用姿势', () => {
+    expect(TOOL_USAGE).toContain('run_in_background=true')
+    expect(TOOL_USAGE).toContain('push notification')
+    expect(TOOL_USAGE).toContain('block=true')
+  })
+
+  it('含工具失败诊断规则', () => {
+    expect(TOOL_USAGE).toContain('≥2 次同类失败')
+    expect(TOOL_USAGE).toContain('禁止第 3 次重跑相同参数')
+  })
+
+  it('含 Skill 加载强制要求', () => {
+    expect(TOOL_USAGE).toContain('必须')
+    expect(TOOL_USAGE).toContain('Skill("')
+  })
+
+  it('含能力盲区元认知三路径', () => {
+    expect(TOOL_USAGE).toContain('自助')
+    expect(TOOL_USAGE).toContain('求助')
+    expect(TOOL_USAGE).toContain('PERMISSION_DENIED')
+  })
+
+  it('含 Execution Bias 要点', () => {
+    expect(TOOL_USAGE).toContain('mutable facts')
+    expect(TOOL_USAGE).toContain('live check')
+  })
+
+  it('含 bg entity 时长分级', () => {
+    expect(TOOL_USAGE).toContain('1min - 1h')
+    expect(TOOL_USAGE).toContain('1h - 数天')
+    expect(TOOL_USAGE).toContain('数天 - 几周')
   })
 })
