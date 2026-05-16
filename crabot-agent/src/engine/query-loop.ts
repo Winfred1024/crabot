@@ -256,6 +256,16 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
       }
 
       // 真静默 end_turn：早 return 路径不 fire onTurn，这里先补 fire 让 trace 看到这一轮。
+      // 但 caller 可通过 suppressForcedSummary 回调表达"silent end_turn 是正常完成态"——
+      // 用于新 unified loop（交付走 send_message 工具、不写 finalText）。
+      if (isSilentText && options.suppressForcedSummary?.() === true) {
+        if (options.onTurn) {
+          options.onTurn(buildSilentTurnEvent(
+            totalTurns, processed.text, stopReason, llmCallMs, llmStartedAtMs, forcedSummaryAttempt, response.usage,
+          ))
+        }
+        return buildResult('completed', finalText, totalTurns, contextManager, messages, overdueInjected, exitToolCall)
+      }
       if (isSilentText && silentEndTurnCount < MAX_SILENT_END_TURN_RETRIES) {
         silentEndTurnCount++
         if (options.onTurn) {

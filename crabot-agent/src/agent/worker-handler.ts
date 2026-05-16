@@ -173,6 +173,9 @@ export interface RunWorkerLoopOptions {
   /** Called once per turn AFTER traceCallback wiring, with the toolCalls of that turn.
    *  Used by trigger flow to detect send_message. */
   readonly onAfterTurn?: (event: EngineTurnEvent) => void
+  /** 抑制 forced_summary 注入。详见 EngineOptions.suppressForcedSummary。
+   *  unified loop 传 `() => finalSent` 让 silent end_turn 视为完成。 */
+  readonly suppressForcedSummary?: () => boolean
 }
 
 export interface RunWorkerLoopResult {
@@ -974,6 +977,7 @@ export class WorkerHandler {
           ...(context.resolved_permissions ? { resolvedPermissions: context.resolved_permissions } : {}),
           contentReviewer: this.buildContentReviewer(),
           ...(opts?.overdueConfig ? { overdueConfig: opts.overdueConfig } : {}),
+          ...(opts?.suppressForcedSummary ? { suppressForcedSummary: opts.suppressForcedSummary } : {}),
           onSystemInjection: (event) => {
             // 系统注入（supplement / overdue / forced_summary / stop_hook）作为 trace 上的 tool-call 风格 span 暴露
             const label = `__system_${event.type}__`
@@ -1252,8 +1256,11 @@ export class WorkerHandler {
     // 2. Build trigger user prompt (worker-style, with channel/session/chat history)
     const triggerPrompt = this.buildTriggerUserPrompt(params)
 
-    // 3. Track sent_message + build overdue
+    // 3. Track sent_message + finalSent + build overdue
+    // sentMessage: 任一 send_message / send_private_message 调用都置 true（用于 overdue 跳过）
+    // finalSent: 显式 intent='final' 调用才置 true（用于 silent end_turn 视为完成）
     let sentMessage = false
+    let finalSent = false
     const overdueReminderText =
       `已处理超过 ${Math.floor(timeoutMs / 1000)} 秒，建议先 send_message ` +
       `友好告知人类正在处理 + 简要说明打算怎么干，发完继续执行。`
@@ -1276,6 +1283,7 @@ export class WorkerHandler {
         initialPrompt: triggerPrompt,
         extraTools: exitTools,
         ...(overdueConfig ? { overdueConfig } : {}),
+        suppressForcedSummary: () => finalSent,
         onAfterTurn: (event) => {
           for (const tc of event.toolCalls) {
             // MCP 工具名带 namespace 前缀（mcp__crab-messaging__send_message）；
@@ -1283,7 +1291,11 @@ export class WorkerHandler {
             const bare = tc.name.replace(/^mcp__[^_]+__/, '')
             if ((bare === 'send_message' || bare === 'send_private_message') && !tc.isError) {
               sentMessage = true
-              break
+              // 显式 intent='final' → finalSent，silent end_turn 之后视为完成
+              const intent = (tc.input as { intent?: string } | undefined)?.intent
+              if (intent === 'final') {
+                finalSent = true
+              }
             }
           }
         },

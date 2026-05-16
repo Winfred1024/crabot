@@ -433,12 +433,12 @@ export function buildMessagingTools(
     // ================================================================
     {
       name: 'send_message',
-      description: '在指定 Channel 的指定 Session 中发送消息。支持文本、媒体 URL、本地文件路径。\n\nintent 参数说明：\n- "normal"（默认）：发完继续后续操作，不等回应。\n- "ask_human"：发出后阻塞等待人类回应，适合"你想要 A 还是 B"这类必须等回答才能继续的问题。滥用会让任务停摆，能自己决策的不要 ask。',
+      description: '在指定 Channel 的指定 Session 中发送消息。支持文本、媒体 URL、本地文件路径。\n\nintent 参数说明：\n- "normal"（默认）：普通消息（ack / 进度告知 / 中间结果），发完继续后续工作。\n- "final"：本任务的最终交付消息，发完即代表你的工作完成；之后 silent end_turn 视为正常结束。\n- "ask_human"：发出后阻塞等待人类回应，适合"你想要 A 还是 B"这类必须等回答才能继续的问题。滥用会让任务停摆，能自己决策的不要 ask。',
       schema: {
         channel_id: z.string().describe('Channel 模块实例 ID'),
         session_id: z.string().describe('目标 Session ID'),
         content: z.string().describe('消息内容（文本或描述）'),
-        intent: z.enum(['normal', 'ask_human']).optional().describe('意图：normal=单纯发消息（默认）；ask_human=发后阻塞等回应。能自己决策的不要 ask，会让任务停摆'),
+        intent: z.enum(['normal', 'final', 'ask_human']).optional().describe('意图：normal=普通消息（默认）；final=最终交付，发完代表任务完成；ask_human=发后阻塞等回应'),
         content_type: z.enum(['text', 'image', 'file']).optional().describe('消息类型，默认 text'),
         media_url: z.string().optional().describe('媒体 URL（网络地址，与 file_path 二选一）'),
         file_path: z.string().optional().describe('沙盒内本地文件路径（自动转换为主机路径）'),
@@ -450,7 +450,7 @@ export function buildMessagingTools(
         const channel_id = args.channel_id as string
         const session_id = args.session_id as string
         const content = args.content as string
-        const intent = args.intent as 'normal' | 'ask_human' | undefined
+        const intent = args.intent as 'normal' | 'final' | 'ask_human' | undefined
         const content_type = args.content_type as 'text' | 'image' | 'file' | undefined
         const media_url = args.media_url as string | undefined
         const file_path = args.file_path as string | undefined

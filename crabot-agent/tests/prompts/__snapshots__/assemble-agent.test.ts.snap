@@ -110,8 +110,20 @@ message 都来自系统（不是直接来自人类），系统会修改、调整
 
 - **给用户发回复必须用 \`send_message\` 工具**——不会自动回复，必须显式调用。完成任务的最终交付也是 \`send_message\`，发完直接 end_turn 即可
 - \`send_message\` 的 \`intent\` 参数：
-  - \`intent="normal"\`（默认）：发完继续后续工具调用 / 收尾，不等回应
+  - \`intent="normal"\`（默认）：普通消息——ack / 过程性告知 / 中间结果。发完继续后续工作
+  - \`intent="final"\`：**本任务的最终交付消息**。发完即代表你完成了任务，之后应直接 end_turn 退出 loop。引擎据此判断 silent end_turn 是正常完成
   - \`intent="ask_human"\`：发后阻塞等待人类回答。**只有真的需要等回答才能继续**才用——能自己决策的不要 ask
+
+### intent 选择原则
+
+| 场景 | intent |
+|---|---|
+| 收到请求后的简短确认（"好的，我去查一下..."） | normal |
+| 执行中的进度告知 / 阶段性发现 | normal |
+| 完成任务的最终回答 / 交付（之后无后续工作） | **final** |
+| 必须等人类回答才能继续的关键澄清 | ask_human |
+
+**避免错用**：发完最终交付后又 end_turn 但用了 \`intent="normal"\` → 引擎会以为你还有工作没做完、误触 forced_summary 机制再要你重说一次 → 用户收到重复消息。**最后那条消息一定用 \`intent="final"\`**。
 
 ### intent='ask_human' 的结构化书写要求
 
@@ -591,8 +603,20 @@ message 都来自系统（不是直接来自人类），系统会修改、调整
 
 - **给用户发回复必须用 \`send_message\` 工具**——不会自动回复，必须显式调用。完成任务的最终交付也是 \`send_message\`，发完直接 end_turn 即可
 - \`send_message\` 的 \`intent\` 参数：
-  - \`intent="normal"\`（默认）：发完继续后续工具调用 / 收尾，不等回应
+  - \`intent="normal"\`（默认）：普通消息——ack / 过程性告知 / 中间结果。发完继续后续工作
+  - \`intent="final"\`：**本任务的最终交付消息**。发完即代表你完成了任务，之后应直接 end_turn 退出 loop。引擎据此判断 silent end_turn 是正常完成
   - \`intent="ask_human"\`：发后阻塞等待人类回答。**只有真的需要等回答才能继续**才用——能自己决策的不要 ask
+
+### intent 选择原则
+
+| 场景 | intent |
+|---|---|
+| 收到请求后的简短确认（"好的，我去查一下..."） | normal |
+| 执行中的进度告知 / 阶段性发现 | normal |
+| 完成任务的最终回答 / 交付（之后无后续工作） | **final** |
+| 必须等人类回答才能继续的关键澄清 | ask_human |
+
+**避免错用**：发完最终交付后又 end_turn 但用了 \`intent="normal"\` → 引擎会以为你还有工作没做完、误触 forced_summary 机制再要你重说一次 → 用户收到重复消息。**最后那条消息一定用 \`intent="final"\`**。
 
 ### intent='ask_human' 的结构化书写要求
 
@@ -1046,8 +1070,20 @@ message 都来自系统（不是直接来自人类），系统会修改、调整
 
 - **给用户发回复必须用 \`send_message\` 工具**——不会自动回复，必须显式调用。完成任务的最终交付也是 \`send_message\`，发完直接 end_turn 即可
 - \`send_message\` 的 \`intent\` 参数：
-  - \`intent="normal"\`（默认）：发完继续后续工具调用 / 收尾，不等回应
+  - \`intent="normal"\`（默认）：普通消息——ack / 过程性告知 / 中间结果。发完继续后续工作
+  - \`intent="final"\`：**本任务的最终交付消息**。发完即代表你完成了任务，之后应直接 end_turn 退出 loop。引擎据此判断 silent end_turn 是正常完成
   - \`intent="ask_human"\`：发后阻塞等待人类回答。**只有真的需要等回答才能继续**才用——能自己决策的不要 ask
+
+### intent 选择原则
+
+| 场景 | intent |
+|---|---|
+| 收到请求后的简短确认（"好的，我去查一下..."） | normal |
+| 执行中的进度告知 / 阶段性发现 | normal |
+| 完成任务的最终回答 / 交付（之后无后续工作） | **final** |
+| 必须等人类回答才能继续的关键澄清 | ask_human |
+
+**避免错用**：发完最终交付后又 end_turn 但用了 \`intent="normal"\` → 引擎会以为你还有工作没做完、误触 forced_summary 机制再要你重说一次 → 用户收到重复消息。**最后那条消息一定用 \`intent="final"\`**。
 
 ### intent='ask_human' 的结构化书写要求
 
