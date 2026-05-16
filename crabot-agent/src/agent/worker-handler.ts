@@ -1301,7 +1301,26 @@ export class WorkerHandler {
 
     const { engineResult } = loopResult
 
-    // 6. Build result
+    // 6. Phase 4 反思：仅当任务超期（身份转 worker）+ 自然 end_turn + 完成 时触发结构化反思
+    // 写入长期记忆。supplement_task / stay_silent 早退不反思，期限内完成的简单任务不反思。
+    // Spec §2.4
+    if (engineResult.overdueInjected
+        && engineResult.outcome === 'completed'
+        && !engineResult.exitToolCall) {
+      this.runOverdueReflection({
+        syntheticTaskId,
+        taskTitle: triggerSummary,
+        engineResult,
+        senderFriend,
+        memoryPermissions,
+        channelId,
+        sessionId,
+      }).catch((err) => {
+        log(`handleTriggerMessage: overdue reflection failed (continuing): ${err instanceof Error ? err.message : String(err)}`)
+      })
+    }
+
+    // 7. Build result
     return {
       outcome: engineResult.outcome,
       finalText: engineResult.finalText,
@@ -1310,6 +1329,90 @@ export class WorkerHandler {
       sentMessage,
       ...(engineResult.error ? { error: engineResult.error } : {}),
     }
+  }
+
+  /**
+   * Phase 4: 超期任务结束后的结构化反思 + 长期记忆写入。
+   *
+   * 与 finalizeTask 的区别：
+   * - 不调 admin RPC（trigger 任务没有 admin 注册的 task_id）
+   * - 不做 status patch（admin 不认这个任务）
+   * - 仅做 reflector + memory write
+   *
+   * 全程 best-effort：reflector 抛错就用 finalText 兜底；memory write 失败只 log。
+   * 调用方用 .catch 包裹，避免影响主流程返回。
+   */
+  private async runOverdueReflection(params: {
+    syntheticTaskId: string
+    taskTitle: string
+    engineResult: EngineResult
+    senderFriend: Friend
+    memoryPermissions: MemoryPermissions
+    channelId: string
+    sessionId: string
+  }): Promise<void> {
+    if (!this.memoryWriter) {
+      log(`overdue reflection: memoryWriter missing, skipping`)
+      return
+    }
+
+    const { syntheticTaskId, taskTitle, engineResult, senderFriend, memoryPermissions, channelId, sessionId } = params
+
+    let reflection: Awaited<ReturnType<typeof reflectStructuredOutcome>>
+    try {
+      const reflectFn = this.deps?.reflectFn ?? reflectStructuredOutcome
+      reflection = await reflectFn({
+        messages: engineResult.finalMessages,
+        adapter: adapterFromSdkEnv(this.sdkEnv),
+        model: this.sdkEnv.modelId,
+        lastAssistantText: engineResult.finalText,
+      })
+      log(`overdue reflection: produced (retries=${reflection.retries}, fallback=${reflection.fellBackToLastText})`)
+    } catch (err) {
+      log(`overdue reflection: reflectFn threw, using lastAssistantText fallback: ${err instanceof Error ? err.message : String(err)}`)
+      reflection = {
+        outcome_brief: engineResult.finalText.slice(0, 200),
+        process_highlights: [],
+        retries: 0,
+        fellBackToLastText: true,
+      }
+    }
+
+    const visibility = memoryPermissions.write_visibility ?? 'internal'
+    const scopes = memoryPermissions.write_scopes ?? []
+
+    this.memoryWriter.writeTaskFinished({
+      task_id: syntheticTaskId,
+      task_title: taskTitle,
+      outcome: 'completed',
+      outcome_brief: reflection.outcome_brief,
+      process_highlights: [...reflection.process_highlights],
+      friend_name: senderFriend.display_name,
+      friend_id: senderFriend.id,
+      channel_id: channelId,
+      session_id: sessionId,
+      visibility,
+      scopes,
+    }).catch((err) => {
+      log(`overdue reflection: writeTaskFinished failed: ${err instanceof Error ? err.message : String(err)}`)
+    })
+
+    this.memoryWriter.quickCapture({
+      type: 'lesson',
+      brief: `${taskTitle} → ${reflection.outcome_brief}`.slice(0, 80),
+      content: `任务 ${syntheticTaskId}（${taskTitle}）完成：${reflection.outcome_brief}`,
+      source_ref: { type: 'conversation', task_id: syntheticTaskId, channel_id: channelId, session_id: sessionId },
+      entities: [],
+      tags: ['task_outcome:completed', 'trigger_task'],
+      importance_factors: {
+        proximity: 0.6,
+        surprisal: 0.4,
+        entity_priority: 0.5,
+        unambiguity: 0.5,
+      },
+    }).catch((err) => {
+      log(`overdue reflection: quickCapture failed: ${err instanceof Error ? err.message : String(err)}`)
+    })
   }
 
   /**
