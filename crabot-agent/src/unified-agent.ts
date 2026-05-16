@@ -2411,9 +2411,13 @@ export class UnifiedAgent extends ModuleBase {
       },
 
       onToolCallStart(toolName: string, inputSummary: string, startedAtMs?: number): string {
+        // 优先挂到当前 LLM span 下（正常工具调用都发生在 LLM turn 内）；
+        // 若 LLM span 已结束（如 engine 主动注入的 __system_* 伪工具发生在两个 turn 之间），
+        // 降级挂到 loop span 下，保留时序可见性。
+        const parentSpanId = currentLlmSpanId ?? currentLoopSpanId
         const span = store.startSpan(traceId, {
           type: 'tool_call',
-          parent_span_id: currentLlmSpanId,
+          ...(parentSpanId !== undefined ? { parent_span_id: parentSpanId } : {}),
           details: { tool_name: toolName, input_summary: inputSummary },
           ...(startedAtMs !== undefined ? { started_at_ms: startedAtMs } : {}),
         })
