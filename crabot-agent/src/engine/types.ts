@@ -141,6 +141,22 @@ export interface ToolDefinition {
   readonly isReadOnly: boolean
   readonly permissionLevel?: ToolPermissionLevel
   readonly category?: ToolCategory
+  /**
+   * 仅 turn 0 可调用。在 turn ≥ 1 调用此工具时，引擎不真正执行 `call`，
+   * 而是返回 error 类工具结果（"Tool 'X' is only callable on turn 0..."），
+   * 让 LLM 看到拒绝信号并自行调整。
+   *
+   * 用于 supplement_task / stay_silent 这类 turn 0 triage 决策工具。
+   */
+  readonly turnZeroOnly?: boolean
+  /**
+   * 调用后引擎立刻退出 loop，把工具调用信息（name + input）写入 EngineResult.exitToolCall。
+   * 引擎不调用 `call` 函数（exit 工具本身无需执行），也不 push tool_result——
+   * 直接 buildResult('completed', ...) 返回。
+   *
+   * 用于 supplement_task / stay_silent 这类"调完就走"的早退工具。
+   */
+  readonly exitsLoop?: boolean
   readonly call: (input: Record<string, unknown>, context: ToolCallContext) => Promise<ToolCallResult>
 }
 
@@ -295,6 +311,11 @@ export interface EngineResult {
   readonly finalMessages: ReadonlyArray<EngineMessage>
   /** 本次 run 是否触发过超期注入。未配置 overdueConfig 或未超期时为 false。 */
   readonly overdueInjected: boolean
+  /**
+   * 早退工具（`exitsLoop=true` 的工具）被调用时填入工具 name + 原始 input。
+   * 未触发早退时为 undefined。
+   */
+  readonly exitToolCall?: { readonly name: string; readonly input: Record<string, unknown> }
 }
 
 // --- Factory Functions ---
