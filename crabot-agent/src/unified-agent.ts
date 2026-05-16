@@ -901,21 +901,33 @@ export class UnifiedAgent extends ModuleBase {
         // 群聊场景才会触发；私聊不应出现
         console.warn(`[${this.config.moduleId}] unexpected stay_silent in private chat: ${JSON.stringify(exitInput)}`)
       }
-    } else {
-      // loop 自然结束——agent 已通过 send_message 工具发消息（如果 sentMessage=true）
-      if (!result.sentMessage) {
-        console.warn(`[${this.config.moduleId}] unified loop ended without sending message; finalText="${result.finalText.slice(0, 50)}"`)
+    } else if (!result.sentMessage && result.finalText.trim() !== '') {
+      // loop 自然结束但 agent 没调 send_message——把 finalText 当作 fallback reply 发给用户
+      // 安全网：理想情况下 agent 应该用 send_message 工具；忘记调时不让用户看到空白
+      console.warn(`[${this.config.moduleId}] unified loop ended without send_message; dispatching finalText as fallback (length=${result.finalText.length})`)
+      try {
+        const channelPort = await this.getChannelPort(session.channel_id)
+        await this.rpcClient.call(channelPort, 'send_message', {
+          session_id: session.session_id,
+          content: { type: 'text', text: result.finalText },
+        }, this.config.moduleId)
+      } catch (err) {
+        console.error(`[${this.config.moduleId}] fallback dispatch failed:`, err)
       }
     }
+    // else (sentMessage=true OR finalText empty): loop 自然结束，agent 已通过工具发消息或确实无话可说
 
     this.releaseBarriers(barrierTaskIds, [])
 
+    const summaryLabel = result.exitToolCall
+      ? `exit:${result.exitToolCall.name}`
+      : result.sentMessage
+        ? 'sent_message'
+        : result.finalText.trim() !== ''
+          ? 'fallback_dispatch'
+          : 'silent_end'
     this.traceStore.endTrace(trace.trace_id, result.outcome === 'completed' ? 'completed' : 'failed', {
-      summary: result.exitToolCall
-        ? `exit:${result.exitToolCall.name}`
-        : result.sentMessage
-          ? 'sent_message'
-          : 'silent_end',
+      summary: summaryLabel,
     })
   }
 
