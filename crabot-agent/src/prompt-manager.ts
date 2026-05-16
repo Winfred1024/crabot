@@ -11,6 +11,10 @@ import type { ChannelMessage } from './types.js'
 import type { SenderIdentity } from './utils/sender-identity.js'
 import { formatChannelMessageTime, formatRelativeTime } from './utils/time.js'
 import { formatMessageContent } from './agent/media-resolver.js'
+import {
+  assembleAgentPrompt as assembleAgentPromptImpl,
+  type AssembleAgentPromptOptions,
+} from './prompts/assemble-agent.js'
 
 // ── Crabot 产品级自我认知（Front + Worker 共用） ──
 //
@@ -747,5 +751,17 @@ export class PromptManager {
     }
 
     return parts.join('\n\n')
+  }
+
+  /**
+   * 组装统一 Agent system prompt（替代未来的 Front/Worker 双 prompt）。
+   *
+   * Phase 1 阶段与旧 assembleFrontPrompt / assembleWorkerPrompt 并存，
+   * 不动调用方。装配顺序由 src/prompts/assemble-agent.ts 控制。
+   *
+   * Spec: crabot-docs/superpowers/specs/2026-05-15-agent-unified-loop-redesign-design.md
+   */
+  assembleAgentPrompt(opts: AssembleAgentPromptOptions): string {
+    return assembleAgentPromptImpl(opts)
   }
 }
