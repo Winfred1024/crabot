@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { CRABOT_BRAIN_IDENTITY, SYSTEM_DIALOGUE_BOUNDARY } from '../../src/prompts/agent-sections.js'
+import { CRABOT_BRAIN_IDENTITY, SYSTEM_DIALOGUE_BOUNDARY, WORKFLOW_PRIVATE } from '../../src/prompts/agent-sections.js'
 
 describe('#1 你是 Crabot 的大脑', () => {
   it('开头自我定位为"认知中枢"', () => {
@@ -50,5 +50,39 @@ describe('#2 你和 Crabot 系统的对话边界', () => {
   it('明确 assistant 回复给系统看', () => {
     expect(SYSTEM_DIALOGUE_BOUNDARY).toContain('### assistant 回复 = 与系统对话')
     expect(SYSTEM_DIALOGUE_BOUNDARY).toContain('唯一通道是 `send_message`')
+  })
+})
+
+describe('#3 工作流 · 私聊版', () => {
+  it('含 turn 0 triage + supplement_task 路径', () => {
+    expect(WORKFLOW_PRIVATE).toContain('[turn 0 · triage]')
+    expect(WORKFLOW_PRIVATE).toContain('supplement_task(target_task_id, supplement_text)')
+    expect(WORKFLOW_PRIVATE).toContain('triage 仅本轮（turn 0）有效')
+  })
+
+  it('含主工作流分支', () => {
+    expect(WORKFLOW_PRIVATE).toContain('能立即回答吗？')
+    expect(WORKFLOW_PRIVATE).toContain('规划 → 执行 → 核验')
+    expect(WORKFLOW_PRIVATE).toContain('send_message')
+  })
+
+  it('含超期辅助机制说明', () => {
+    expect(WORKFLOW_PRIVATE).toContain('[超期辅助')
+    expect(WORKFLOW_PRIVATE).toContain('默认 30s')
+    expect(WORKFLOW_PRIVATE).toContain('仅注入一次')
+  })
+
+  it('含复杂任务反思说明', () => {
+    expect(WORKFLOW_PRIVATE).toContain('身份已转 worker')
+    expect(WORKFLOW_PRIVATE).toContain('outcome_brief')
+    expect(WORKFLOW_PRIVATE).toContain('process_highlights')
+  })
+
+  it('明确 supplement_task 早期退出不反思', () => {
+    expect(WORKFLOW_PRIVATE).toContain('supplement_task 早期退出不反思')
+  })
+
+  it('不含 stay_silent 描述（私聊不渲染）', () => {
+    expect(WORKFLOW_PRIVATE).not.toContain('stay_silent')
   })
 })
