@@ -660,6 +660,26 @@ export class UnifiedAgent extends ModuleBase {
 
       barrierTaskIds = this.setupBarriers(session.channel_id, session.session_id)
 
+      // Phase 3c feature flag: 用环境变量切换到新 unified loop
+      const useUnifiedLoop = process.env.CRABOT_USE_UNIFIED_LOOP === 'true'
+
+      if (useUnifiedLoop) {
+        await this.processDirectMessageUnified({
+          messages: mergedMessages,
+          context,
+          trace,
+          friend,
+          session,
+          requestId,
+          barrierTaskIds,
+          memPerms,
+          resolvedPerms,
+        })
+        return
+      }
+
+      // 旧路径（默认）：frontHandler.handleMessage → decisionDispatcher
+
       // 8. 调用 Front Agent（传入合并后的消息列表）
       this.currentMemPerms = memPerms
       const result = await this.frontHandler.handleMessage({
@@ -794,6 +814,109 @@ export class UnifiedAgent extends ModuleBase {
     } finally {
       this.switchmapHandler.completeRequest(session.session_id, requestId)
     }
+  }
+
+  /**
+   * Phase 3c: 新统一 loop 私聊处理路径。
+   * 取代 frontHandler.handleMessage + decisionDispatcher 的两步式分诊+执行。
+   *
+   * Feature flag CRABOT_USE_UNIFIED_LOOP=true 启用。
+   *
+   * Spec: crabot-docs/superpowers/specs/2026-05-15-agent-unified-loop-redesign-design.md §2.1
+   */
+  private async processDirectMessageUnified(args: {
+    messages: ReadonlyArray<ChannelMessage>
+    context: import('./types.js').FrontAgentContext
+    trace: { trace_id: string }
+    friend: Friend
+    session: ChannelMessage['session']
+    requestId: string
+    barrierTaskIds: string[]
+    memPerms: MemoryPermissions
+    resolvedPerms: ResolvedPermissions | null
+  }): Promise<void> {
+    const { messages, context, trace, friend, session, requestId, barrierTaskIds, memPerms, resolvedPerms } = args
+
+    if (!this.workerHandler) {
+      this.traceStore.endTrace(trace.trace_id, 'failed', { summary: 'No worker handler configured' })
+      return
+    }
+
+    const triggerArrivedAtMs = Date.now()
+    const traceCallback = this.buildTraceCallback(trace.trace_id)
+
+    this.currentMemPerms = memPerms
+    let result
+    try {
+      result = await this.workerHandler.handleTriggerMessage({
+        messages: [...messages],
+        activeTasks: context.active_tasks ?? [],
+        isGroup: false,
+        ...(context.scene_profile ? { sceneProfile: context.scene_profile } : {}),
+        senderFriend: friend,
+        triggerArrivedAtMs,
+        memoryPermissions: memPerms,
+        resolvedPermissions: resolvedPerms as ResolvedPermissions,  // null only when admin RPC failed; best-effort proceed
+        channelId: session.channel_id,
+        sessionId: session.session_id,
+      }, traceCallback)
+    } catch (error) {
+      console.error(`[${this.config.moduleId}] processDirectMessageUnified error:`, error)
+      this.traceStore.endTrace(trace.trace_id, 'failed', {
+        summary: error instanceof Error ? error.message : String(error),
+      })
+      return
+    }
+
+    // Abort 检查
+    const currentPending = this.sessionManager.getPendingRequest(session.session_id)
+    if (currentPending !== requestId) {
+      this.traceStore.endTrace(trace.trace_id, 'completed', { summary: 'superseded by newer message' })
+      return
+    }
+
+    // Exit tool dispatch
+    if (result.exitToolCall) {
+      const exitName = result.exitToolCall.name
+      const exitInput = result.exitToolCall.input
+      if (exitName === 'supplement_task') {
+        const targetTaskId = exitInput['target_task_id']
+        const supplementText = exitInput['supplement_text']
+        if (typeof targetTaskId === 'string' && typeof supplementText === 'string') {
+          // 复用现有 supplement 路由
+          await this.handleLocalSupplement(
+            {
+              type: 'supplement_task',
+              task_id: targetTaskId,
+              supplement_content: supplementText,
+              immediate_reply: { type: 'text', text: '' },
+            },
+            session,
+            trace.trace_id,
+            '',
+            context.active_tasks ?? [],
+          )
+        }
+      } else if (exitName === 'stay_silent') {
+        // 群聊场景才会触发；私聊不应出现
+        console.warn(`[${this.config.moduleId}] unexpected stay_silent in private chat: ${JSON.stringify(exitInput)}`)
+      }
+    } else {
+      // loop 自然结束——agent 已通过 send_message 工具发消息（如果 sentMessage=true）
+      if (!result.sentMessage) {
+        console.warn(`[${this.config.moduleId}] unified loop ended without sending message; finalText="${result.finalText.slice(0, 50)}"`)
+      }
+    }
+
+    this.releaseBarriers(barrierTaskIds, [])
+
+    this.traceStore.endTrace(trace.trace_id, result.outcome === 'completed' ? 'completed' : 'failed', {
+      summary: result.exitToolCall
+        ? `exit:${result.exitToolCall.name}`
+        : result.sentMessage
+          ? 'sent_message'
+          : 'silent_end',
+    })
   }
 
   /**
