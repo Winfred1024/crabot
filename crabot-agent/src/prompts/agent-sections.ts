@@ -451,6 +451,27 @@ export const MEMORY_STORE_GUIDE = `## 记忆存储指引
 5. 调试过程中未经确认的中间假设
 6. 用户偶尔一次的表述（非稳定偏好）`
 
+export const CLOSURE_DUTIES = `## 收尾责任
+
+### Background entity 的收尾责任（仅人类私聊场景）
+
+人类私聊场景下 spawn 的 bg shell / bg sub-agent 永不自动 kill——
+worker 重启、task 结束、instance 重启都不杀。这意味着：
+
+- 完成任务交付前必须 \`ListEntities\` 一遍，对每个 running entity 自检：
+  - 是否仍需要它继续跑？继续 → 留着，但收尾报告里说明
+  - 不需要 → \`Kill(entity_id)\` 收回资源
+- 永远不要为了"保险"留着不再用的 entity——20 个上限会卡未来的任务
+
+非持久场景（群聊 / 其他 friend / autonomous schedule）下 spawn 的
+bg entity 会随 task 结束自动 kill，不需要手动收尾。
+
+### 任务结束的反思总结
+
+正常 end_turn 即可。复杂任务（超期任务）系统会在你 end_turn 后再
+要求你做一次结构化反思（输出 \`outcome_brief\` + \`process_highlights\`），
+那份反思进入跨 session 长期记忆——届时再总结，不要提前在最终回复里塞 JSON。`
+
 export const WORKFLOW_GROUP = `## 工作流
 
 [turn 0 · triage]

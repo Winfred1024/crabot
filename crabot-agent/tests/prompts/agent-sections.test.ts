@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { CRABOT_BRAIN_IDENTITY, SYSTEM_DIALOGUE_BOUNDARY, WORKFLOW_PRIVATE, WORKFLOW_GROUP, SEND_MESSAGE_SPEC, END_TURN_SELF_CHECK, TIME_AWARENESS, INFO_QUERY_GUIDE, TOOL_USAGE, TASK_HARD_CONSTRAINTS, MEMORY_STORE_GUIDE } from '../../src/prompts/agent-sections.js'
+import { CRABOT_BRAIN_IDENTITY, SYSTEM_DIALOGUE_BOUNDARY, WORKFLOW_PRIVATE, WORKFLOW_GROUP, SEND_MESSAGE_SPEC, END_TURN_SELF_CHECK, TIME_AWARENESS, INFO_QUERY_GUIDE, TOOL_USAGE, TASK_HARD_CONSTRAINTS, MEMORY_STORE_GUIDE, CLOSURE_DUTIES } from '../../src/prompts/agent-sections.js'
 
 describe('#1 你是 Crabot 的大脑', () => {
   it('开头自我定位为"认知中枢"', () => {
@@ -307,6 +307,26 @@ describe('#10 记忆存储指引', () => {
     expect(MEMORY_STORE_GUIDE).toContain('一次性数据快照')
     expect(MEMORY_STORE_GUIDE).toContain('时效性新闻')
     expect(MEMORY_STORE_GUIDE).toContain('调试过程中未经确认的中间假设')
+  })
+})
+
+describe('#11 收尾责任', () => {
+  it('含 bg entity 收尾责任', () => {
+    expect(CLOSURE_DUTIES).toContain('## 收尾责任')
+    expect(CLOSURE_DUTIES).toContain('ListEntities')
+    expect(CLOSURE_DUTIES).toContain('永不自动 kill')
+    expect(CLOSURE_DUTIES).toContain('Kill(entity_id)')
+  })
+
+  it('指引非持久场景自动 kill', () => {
+    expect(CLOSURE_DUTIES).toContain('非持久场景')
+    expect(CLOSURE_DUTIES).toContain('随 task 结束自动 kill')
+  })
+
+  it('含任务结束反思指引', () => {
+    expect(CLOSURE_DUTIES).toContain('反思')
+    expect(CLOSURE_DUTIES).toContain('正常 end_turn 即可')
+    expect(CLOSURE_DUTIES).toContain('不要提前在最终回复里塞 JSON')
   })
 })
 
