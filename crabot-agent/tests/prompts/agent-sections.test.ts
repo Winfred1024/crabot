@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { CRABOT_BRAIN_IDENTITY, SYSTEM_DIALOGUE_BOUNDARY, WORKFLOW_PRIVATE, WORKFLOW_GROUP, SEND_MESSAGE_SPEC } from '../../src/prompts/agent-sections.js'
+import { CRABOT_BRAIN_IDENTITY, SYSTEM_DIALOGUE_BOUNDARY, WORKFLOW_PRIVATE, WORKFLOW_GROUP, SEND_MESSAGE_SPEC, END_TURN_SELF_CHECK } from '../../src/prompts/agent-sections.js'
 
 describe('#1 你是 Crabot 的大脑', () => {
   it('开头自我定位为"认知中枢"', () => {
@@ -142,5 +142,33 @@ describe('#4 send_message 工具使用规范', () => {
     expect(SEND_MESSAGE_SPEC).toContain('信息不足以决策')
     expect(SEND_MESSAGE_SPEC).toContain('破坏性操作')
     expect(SEND_MESSAGE_SPEC).toContain('最多一个')
+  })
+})
+
+describe('#5 end_turn 前的 self-check', () => {
+  it('开篇明确触发条件', () => {
+    expect(END_TURN_SELF_CHECK).toContain('## end_turn 前的 self-check')
+    expect(END_TURN_SELF_CHECK).toContain('本 loop 内调用过 send_message')
+  })
+
+  it('含 3 类 anti-pattern', () => {
+    expect(END_TURN_SELF_CHECK).toContain('Sycophancy ghost-promise')
+    expect(END_TURN_SELF_CHECK).toContain('Context hallucination')
+    expect(END_TURN_SELF_CHECK).toContain('Effortful synthesis displacement')
+  })
+
+  it('保留 3 个真实 trace 反例引用', () => {
+    expect(END_TURN_SELF_CHECK).toContain('trace d790bbb4')
+    expect(END_TURN_SELF_CHECK).toContain('trace ffdfc894')
+    expect(END_TURN_SELF_CHECK).toContain('trace 26b67f2b')
+  })
+
+  it('每类 anti-pattern 含 self-check 问句', () => {
+    const occurrences = (END_TURN_SELF_CHECK.match(/Self-check:/g) || []).length
+    expect(occurrences).toBeGreaterThanOrEqual(3)
+  })
+
+  it('指引"不要 end_turn"作为反 pattern 后的动作', () => {
+    expect(END_TURN_SELF_CHECK).toContain('不要 end_turn')
   })
 })

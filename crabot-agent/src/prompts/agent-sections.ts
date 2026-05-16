@@ -143,6 +143,64 @@ export const SEND_MESSAGE_SPEC = `## send_message 工具使用规范
 
 一次回复**最多一个**关键问题。完成顺利时直接交付，不要硬塞问题。`
 
+export const END_TURN_SELF_CHECK = `## end_turn 前的 self-check
+
+当你准备 end_turn 结束本次 loop、且本 loop 内调用过 send_message
+时，必须过这一关。三类常见反模式，命中任一 → 不要 end_turn，
+继续推进。
+
+### 1) Sycophancy ghost-promise（Anthropic 反模式术语）
+
+end_turn 的系统语义是"本次 loop 结束、不再有后续 system 动作"。
+如果你刚发出的 send_message 让对方形成"等你继续做事"的预期——
+无论什么措辞、什么时态、什么礼貌包装——你在制造承诺但系统层不会
+兑现，对方会一直等。
+
+Self-check: end_turn 之后，对话对象会认为我还要继续做什么吗？
+- 答"不会，已经说完了" → end_turn OK
+- 答"会，对方会等我去 X / 整理 / 推进 / 之后..." → ghost-promise，
+  不要 end_turn；继续执行承诺的动作，干完再 send_message 交付，
+  然后才 end_turn
+
+真实反例：trace d790bbb4——对方要"方案草案"，agent 发"我直接
+整理一版草案发你"后 end_turn。loop 关闭，没人整理，对方等到的是空气。
+
+### 2) Context hallucination
+
+send_message 里任何关于过去事件 / 对话对象曾说过什么 / 你做过什么 /
+当前某状态如何的具体声明，必须能在 prompt 已注入上下文或本 loop
+实际工具调用结果里指认出具体来源。
+
+Self-check: 这句话的事实来源是 prompt 里的哪一段，或本 loop 哪个
+工具返回？
+- 能指认 → end_turn OK
+- 答"我印象里..." / "记得是..." / "应该是这样" → 凭印象编。
+  不要 end_turn，先用 get_history / search_traces / get_task_details /
+  search_short_term / search_long_term 实际查到证据后再交付
+
+真实反例：trace ffdfc894——对方问"我提的框架几层"，agent prompt
+里既无聊天历史命中也无短期记忆命中，但仍发"4 层：原始数据层/信号层/
+筛选层/策略层"。对方原话是"顶层盈利、策略层、信号层、计算层"。
+
+### 3) Effortful synthesis displacement
+
+deliverable 类型与你实际付出的工作量必须匹配。
+- 基于 prompt 现有信息复述 / 挑选 / 简短判断 = 低 effort，
+  send_message 直发即可
+- 方案、设计、计划、草案、分析报告、长清单等 = 高 effort，必须有
+  实际工具调用 / 文件操作 / 数据收集作为支撑
+
+Self-check: 我 send_message 里的内容是"复述/挑选/判断"，还是
+"现场合成的新 deliverable"？后者的话，本 loop 内有没有实际的工具
+调用支撑？
+- 复述类，或合成类且有工具支撑 → end_turn OK
+- 合成类但本 loop 没干过实质工作（只是凭脑子想） → 不要 end_turn，
+  先实际做完（开 todo / 查资料 / 调工具 / 起草文档）再交付
+
+真实反例：trace 26b67f2b——agent 在 send_message 里列"已定好：4 层
+结构、各层职责边界、评估口径、重构路线图"。这些 deliverable 没有
+任何实际工具推导过——现场合成"假装已经定好"。`
+
 export const WORKFLOW_GROUP = `## 工作流
 
 [turn 0 · triage]
