@@ -69,6 +69,16 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
   // 由上一轮追问设置、下一轮 onTurn 消费一次后清零。
   let pendingForcedSummaryAttempt: number | undefined = undefined
 
+  // 超期机制：在 turn 结束时检测 elapsed，至多注入一次。
+  const overdueConfig = options.overdueConfig
+  const engineStartedAtMs = overdueConfig?.startedAtMs ?? Date.now()
+  let overdueInjected = false
+
+  function shouldInjectOverdue(): boolean {
+    if (!overdueConfig || overdueInjected) return false
+    return Date.now() - engineStartedAtMs > overdueConfig.timeoutMs
+  }
+
   const workingDirectory = process.cwd()
   const hooks: HookConfig | undefined = options.hookRegistry ? {
     registry: options.hookRegistry,
@@ -86,7 +96,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
   for (let turn = 0; turn < maxTurns; turn++) {
     // Check abort before starting a turn
     if (abortSignal?.aborted) {
-      return buildResult('aborted', finalText, totalTurns, contextManager, messages)
+      return buildResult('aborted', finalText, totalTurns, contextManager, messages, overdueInjected)
     }
 
     // Check if context compaction is needed
@@ -129,10 +139,10 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
       llmCallMs = Date.now() - llmStartedAtMs
     } catch (error) {
       if (abortSignal?.aborted) {
-        return buildResult('aborted', finalText, totalTurns, contextManager, messages)
+        return buildResult('aborted', finalText, totalTurns, contextManager, messages, overdueInjected)
       }
       console.error('[query-loop] LLM call threw:', error)
-      return buildResult('failed', finalText, totalTurns, contextManager, messages, formatError(error))
+      return buildResult('failed', finalText, totalTurns, contextManager, messages, overdueInjected, formatError(error))
     }
 
     const processed = partitionResponseContent(response.content)
@@ -177,6 +187,19 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
         continue
       }
 
+      // 超期注入（end_turn 路径）：若已超过 timeout 且尚未注入过，调 onOverdue 询问。
+      // 顺序：supplement 优先于 overdue（真实人类纠偏比系统提醒重要）。
+      if (shouldInjectOverdue()) {
+        // overdueConfig 非空（shouldInjectOverdue 已校验）
+        const text = overdueConfig!.onOverdue()
+        overdueInjected = true
+        if (text !== null) {
+          messages.push(createUserMessage(text))
+          continue
+        }
+        // text === null：caller 主动跳过（如已 send_message）；不注入，进入正常收口路径
+      }
+
       // --- Stop hook ---
       if (hooks) {
         const stopInput: HookInput = { event: 'Stop', workingDirectory }
@@ -208,7 +231,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
         }
         // 配额耗尽：input 已被压过两次仍 max_tokens，再走 forced-summary 会让 input
         // 更大；此时只能诚实返回空 finalText。
-        return buildResult('completed', finalText, totalTurns, contextManager, messages)
+        return buildResult('completed', finalText, totalTurns, contextManager, messages, overdueInjected)
       }
 
       // 真静默 end_turn：早 return 路径不 fire onTurn，这里先补 fire 让 trace 看到这一轮。
@@ -224,7 +247,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
         continue
       }
 
-      return buildResult('completed', finalText, totalTurns, contextManager, messages)
+      return buildResult('completed', finalText, totalTurns, contextManager, messages, overdueInjected)
     }
 
     // ── Barrier check: wait for potential supplement before executing tools ──
@@ -233,7 +256,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
 
       // Check abort after waiting
       if (abortSignal?.aborted) {
-        return buildResult('aborted', finalText, totalTurns, contextManager, messages)
+        return buildResult('aborted', finalText, totalTurns, contextManager, messages, overdueInjected)
       }
 
       // If supplement arrived during wait, cancel tools and inject
@@ -378,6 +401,15 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
       }
     }
 
+    // 超期注入（tool_use 路径）：每轮工具执行收尾后检测 elapsed
+    if (shouldInjectOverdue()) {
+      const text = overdueConfig!.onOverdue()
+      overdueInjected = true
+      if (text !== null) {
+        messages.push(createUserMessage(text))
+      }
+    }
+
     // Prune old images — keep only the most recent N screenshots
     if (options.supportsVision) {
       pruneOldImages(messages)
@@ -385,7 +417,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
   }
 
   // Loop exhausted
-  return buildResult('max_turns', finalText, totalTurns, contextManager, messages)
+  return buildResult('max_turns', finalText, totalTurns, contextManager, messages, overdueInjected)
 }
 
 // --- Helpers ---
@@ -433,6 +465,7 @@ function buildResult(
   totalTurns: number,
   contextManager: ContextManager,
   messages: readonly EngineMessage[],
+  overdueInjected: boolean,
   error?: string
 ): EngineResult {
   const usage = contextManager.getCumulativeUsage()
@@ -444,6 +477,7 @@ function buildResult(
     // 浅拷贝防共享：runEngine 退出后 messages 不再被改，但 buildResult 直接持有引用会让
     // 未来的重构面临"我以为 EngineResult 是不可变的，结果上游 push 了一条消息"的隐患。
     finalMessages: [...messages],
+    overdueInjected,
     ...(error !== undefined ? { error } : {}),
   }
 }
