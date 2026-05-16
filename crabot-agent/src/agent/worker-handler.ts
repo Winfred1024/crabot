@@ -40,6 +40,7 @@ import type {
   ExecuteTaskParams,
   ExecuteTaskResult,
   WorkerAgentContext,
+  FrontAgentContext,
   WorkerTaskState,
   TaskId,
   TaskOrigin,
@@ -72,7 +73,7 @@ import type { ContentReviewer } from '../hooks/types.js'
 import { reviewCliContent } from './cli-content-reviewer.js'
 import { PromptManager, formatChannelMessageLine, formatShortTermMemoryLine } from '../prompt-manager.js'
 import { resolveSenderIdentity } from '../utils/sender-identity.js'
-import { formatNow, formatChannelMessageTime, resolveTimezone, formatRuntimeMs } from '../utils/time.js'
+import { formatNow, formatChannelMessageTime, formatTaskCreatedAt, resolveTimezone, formatRuntimeMs } from '../utils/time.js'
 import { getInstanceSkillsDir } from '../core/data-paths.js'
 import { llmUsageToTrace } from '../core/trace-usage.js'
 import { TodoStore } from './worker-todo-store.js'
@@ -82,8 +83,19 @@ import { reflectStructuredOutcome } from '../orchestration/structured-outcome-re
 
 import * as fs from 'fs'
 import * as path from 'path'
-import { createHash, randomBytes } from 'crypto'
+import { createHash, randomBytes, randomUUID } from 'crypto'
 import * as os from 'os'
+
+/** 已过时长的中文格式化（用于 trigger prompt 活跃任务渲染，与 front-handler 保持一致） */
+function formatElapsedMs(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '?'
+  const sec = Math.floor(ms / 1000)
+  if (sec < 60) return `${sec}秒`
+  const min = Math.floor(sec / 60)
+  if (min < 60) return `${min}分${sec % 60}秒`
+  const hr = Math.floor(min / 60)
+  return `${hr}小时${min % 60}分`
+}
 
 type ProgressReportMode = 'silent' | 'text_forward' | 'digest'
 
@@ -145,6 +157,30 @@ export interface WorkerTraceContext {
   traceStore: import('../core/trace-store').TraceStore
   traceId: string
   relatedTaskId?: string
+}
+
+// ============================================================================
+// runWorkerLoop shared types
+// ============================================================================
+
+export interface RunWorkerLoopOptions {
+  /** Override the initial user prompt sent to LLM. Default: taskMessage built from task. */
+  readonly initialPrompt?: string | ContentBlock[]
+  /** Extra tools appended to the dynamic tool list (e.g., exit tools for trigger flow). */
+  readonly extraTools?: ReadonlyArray<ToolDefinition>
+  /** Overdue config passed straight to runEngine. */
+  readonly overdueConfig?: import('../engine/types.js').OverdueConfig
+  /** Called once per turn AFTER traceCallback wiring, with the toolCalls of that turn.
+   *  Used by trigger flow to detect send_message. */
+  readonly onAfterTurn?: (event: EngineTurnEvent) => void
+}
+
+export interface RunWorkerLoopResult {
+  readonly engineResult: EngineResult
+  readonly taskState: WorkerTaskState
+  readonly humanQueue: HumanMessageQueue
+  readonly digest: ProgressDigest | undefined
+  readonly loopSpanId: string | undefined
 }
 
 export interface SdkEnvConfig {
@@ -230,6 +266,12 @@ export interface HandleTriggerMessageParams {
   /** Channel / session 标识 */
   readonly channelId: string
   readonly sessionId: string
+  /**
+   * 完整的 Front Agent context（由 unified-agent 在 processDirectMessageUnified 时传入）。
+   * 包含 recent_messages / time_windows / active_tasks / sender_friend / scene_profile / crab_display_name 等，
+   * 用于构造 worker 风格的 user prompt（含 channel/session/聊天历史/活跃任务）。
+   */
+  readonly frontContext: FrontAgentContext
 }
 
 export interface HandleTriggerMessageResult {
@@ -452,6 +494,63 @@ export class WorkerHandler {
     traceContext?: WorkerTraceContext,
   ): Promise<ExecuteTaskResult> {
     const { task, context } = params
+
+    let loopResult: RunWorkerLoopResult | undefined
+    try {
+      loopResult = await this.runWorkerLoop(task, context, traceCallback, traceContext)
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      log(`Worker error: ${errorMessage}`)
+      // Check if abort was requested — taskState may already be cleaned up by runWorkerLoop's finally
+      return {
+        task_id: task.task_id,
+        outcome: 'failed',
+        error: `执行失败: ${errorMessage}`,
+      }
+    }
+
+    const { engineResult, taskState } = loopResult
+
+    if (engineResult.error) {
+      log(`Engine error (outcome=${engineResult.outcome}, turns=${engineResult.totalTurns}): ${engineResult.error}`)
+    }
+
+    // 8. Failed outcomes: surface the engine error as the summary.
+    let finalEngineResult = engineResult
+    const isError = engineResult.outcome === 'failed'
+    if (isError && engineResult.error) {
+      finalEngineResult = { ...engineResult, finalText: `执行失败 (${engineResult.totalTurns}轮后): ${engineResult.error}` }
+    }
+
+    // Check if task was aborted
+    if (taskState.abortController.signal.aborted) {
+      return { task_id: task.task_id, outcome: 'failed', error: '任务被取消' }
+    }
+
+    // 8.5 Finalize: update admin task status + run structured reflection + memory write
+    await this.finalizeTask(task.task_id, finalEngineResult, context)
+
+    // 9. Map EngineResult → ExecuteTaskResult
+    return this.mapEngineResult(task.task_id, finalEngineResult)
+  }
+
+  /**
+   * 共享 worker loop：构造适配器、工具集、system prompt，运行 runEngine，
+   * 返回原始结果供 executeTask（完整任务）和 handleTriggerMessage（trigger 流）分别处理收尾。
+   *
+   * opts 允许 trigger 流注入 extraTools（exit 工具）、initialPrompt（user 侧 trigger prompt）、
+   * overdueConfig（超期提醒），以及 onAfterTurn 回调（检测 send_message 工具调用）。
+   *
+   * 注意：try/finally 清理（activeTasks / humanQueues / liveSnapshots / transientShells / bgCursorMap）
+   * 在本方法内完成，对 executeTask 和 handleTriggerMessage 两个 caller 均透明。
+   */
+  private async runWorkerLoop(
+    task: ExecuteTaskParams['task'],
+    context: WorkerAgentContext,
+    traceCallback?: TraceCallback,
+    traceContext?: WorkerTraceContext,
+    opts?: RunWorkerLoopOptions,
+  ): Promise<RunWorkerLoopResult> {
     const taskState: WorkerTaskState = {
       taskId: task.task_id,
       status: 'executing',
@@ -478,6 +577,8 @@ export class WorkerHandler {
     this.humanQueues.set(task.task_id, humanQueue)
 
     let digest: ProgressDigest | undefined
+    let loopSpanId: string | undefined
+
     try {
       // skillsDir 在 worker init / updateSkills 时已经写好（instance-level），这里不再 per-task 写盘
 
@@ -692,6 +793,11 @@ export class WorkerHandler {
         // 3j. todo tool — per-task mutable plan
         tools.push(createTodoTool(taskState.todoStore))
 
+        // 3k. Extra tools from opts (e.g., exit tools for trigger flow)
+        if (opts?.extraTools) {
+          tools.push(...opts.extraTools)
+        }
+
         // 最终过滤：用「完整 tools 集合」重算 permissionConfig，
         // 否则 delegate_*/trace_search 等后注入的工具因不在 baseToolsPermissionConfig 的 denyList 里而漏过 filter，
         // 导致 LLM 看见但 runEngine 用 initialPermissionConfig 又拒绝（违反「无权限工具不注入 prompt」）。
@@ -704,17 +810,23 @@ export class WorkerHandler {
       const buildSystemPromptDynamic = (): string => this.buildSystemPrompt(context)
 
       // 5. Build task message（一次性，task 启动后用户请求/记忆等不变）
-      // 拼接 bg-notification：上一次该 friend 留下的 bg entity exit 等事件
-      let taskMessage = await this.buildTaskMessage(task, context)
-      const ownerFriendId = context.sender_friend?.id
-        ?? `__system_${context.task_origin?.session_id ?? 'unknown'}`
-      const bgNotifBlock = this.drainBgNotifications(`friend:${ownerFriendId}`)
-      if (bgNotifBlock) {
-        if (typeof taskMessage === 'string') {
-          taskMessage = `${bgNotifBlock}\n\n${taskMessage}`
-        } else {
-          // ContentBlock[] 形式：在最前面加一个 text block
-          taskMessage = [{ type: 'text', text: `${bgNotifBlock}\n\n` }, ...taskMessage]
+      // 若 opts 提供了 initialPrompt，跳过 buildTaskMessage（trigger 流自己构造 prompt）。
+      let taskMessage: string | ContentBlock[]
+      if (opts?.initialPrompt !== undefined) {
+        taskMessage = opts.initialPrompt
+      } else {
+        // 拼接 bg-notification：上一次该 friend 留下的 bg entity exit 等事件
+        taskMessage = await this.buildTaskMessage(task, context)
+        const ownerFriendId = context.sender_friend?.id
+          ?? `__system_${context.task_origin?.session_id ?? 'unknown'}`
+        const bgNotifBlock = this.drainBgNotifications(`friend:${ownerFriendId}`)
+        if (bgNotifBlock) {
+          if (typeof taskMessage === 'string') {
+            taskMessage = `${bgNotifBlock}\n\n${taskMessage}`
+          } else {
+            // ContentBlock[] 形式：在最前面加一个 text block
+            taskMessage = [{ type: 'text', text: `${bgNotifBlock}\n\n` }, ...taskMessage]
+          }
         }
       }
 
@@ -726,7 +838,6 @@ export class WorkerHandler {
         senderIsMaster
         && context.task_origin?.session_type === 'private'
 
-      let loopSpanId: string | undefined
       const taskOrigin = context.task_origin
 
       // 初始 snapshot：用于 trace 记录 + 给 runEngine 的 permissionConfig option（兜底）。
@@ -860,6 +971,7 @@ export class WorkerHandler {
           senderIsMaster,
           ...(context.resolved_permissions ? { resolvedPermissions: context.resolved_permissions } : {}),
           contentReviewer: this.buildContentReviewer(),
+          ...(opts?.overdueConfig ? { overdueConfig: opts.overdueConfig } : {}),
           onLiveProgress: (event: LiveProgressEvent) => {
             // Update in-memory snapshot so ContextAssembler can read it.
             // 容错：如果任务已被清理（极端情况下 abort 后还有 in-flight 回调），略过。
@@ -977,6 +1089,9 @@ export class WorkerHandler {
                 }
               }
             }
+
+            // Caller hook: trigger flow uses this to detect send_message
+            opts?.onAfterTurn?.(event)
           },
         },
       })
@@ -989,33 +1104,15 @@ export class WorkerHandler {
       if (loopSpanId) {
         traceCallback?.onLoopEnd(loopSpanId, isError ? 'failed' : 'completed', engineResult.totalTurns)
       }
-      if (engineResult.error) {
-        log(`Engine error (outcome=${engineResult.outcome}, turns=${engineResult.totalTurns}): ${engineResult.error}`)
-      }
 
-      // 8. Failed outcomes: surface the engine error as the summary.
-      let finalEngineResult = engineResult
-      if (isError && engineResult.error) {
-        finalEngineResult = { ...engineResult, finalText: `执行失败 (${engineResult.totalTurns}轮后): ${engineResult.error}` }
-      }
-
-      // 8.5 Finalize: update admin task status + run structured reflection + memory write
-      await this.finalizeTask(task.task_id, finalEngineResult, context)
-
-      // 9. Map EngineResult → ExecuteTaskResult
-      return this.mapEngineResult(task.task_id, finalEngineResult)
-
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
-      log(`Worker error: ${errorMessage}`)
-      if (taskState.abortController.signal.aborted) {
-        return { task_id: task.task_id, outcome: 'failed', error: '任务被取消' }
-      }
       return {
-        task_id: task.task_id,
-        outcome: 'failed',
-        error: `执行失败: ${errorMessage}`,
+        engineResult,
+        taskState,
+        humanQueue,
+        digest,
+        loopSpanId,
       }
+
     } finally {
       digest?.dispose()
       this.humanQueues.get(task.task_id)?.clearBarrier()
@@ -1069,7 +1166,6 @@ export class WorkerHandler {
       messages,
       activeTasks,
       isGroup,
-      sceneProfile,
       senderFriend,
       triggerArrivedAtMs,
       timeoutMs = 30_000,
@@ -1078,68 +1174,59 @@ export class WorkerHandler {
       resolvedPermissions,
       channelId,
       sessionId,
+      frontContext,
     } = params
 
-    // Phase 3b: 这些 param 暂存但部分尚未在 minimal scope 内使用，标 void 防 unused warning
-    void memoryPermissions
-    void channelId
-    void sessionId
+    // 1. Build synthetic task + WorkerAgentContext from trigger params
+    const triggerSummary = messages
+      .map(m => m.content.type === 'text' ? (m.content.text ?? '') : '[非文本]')
+      .join(' ')
+      .slice(0, 100)
+    const syntheticTaskId = `trigger-${randomUUID()}`
 
-    const adapter = adapterFromSdkEnv(this.sdkEnv)
-    let sentMessage = false
-
-    // 通过 onTurn 检测 send_message / send_private_message 工具调用
-    const detectSendMessage = (toolCalls: ReadonlyArray<{ name: string; isError: boolean }>) => {
-      for (const tc of toolCalls) {
-        if ((tc.name === 'send_message' || tc.name === 'send_private_message') && !tc.isError) {
-          sentMessage = true
-          break
-        }
-      }
+    const task: ExecuteTaskParams['task'] = {
+      task_id: syntheticTaskId,
+      task_title: triggerSummary,
+      task_description: triggerSummary,
+      priority: 'normal',
     }
 
-    // 装配工具集：早退工具 + messaging tools
-    const activeTaskIds = activeTasks.map(t => t.task_id)
-    const exitTools = getAgentExitTools({ isGroup, activeTaskIds })
-    // Messaging tools — 复用 mcp config factory 获取 crab-messaging server
-    // 注：trigger 场景无 task_id / humanQueue，传入 synthetic 占位
-    const messagingTools: ReadonlyArray<ToolDefinition> = (() => {
-      const triggerHumanQueue = new HumanMessageQueue()  // empty，trigger 流程不会用
-      const externalMcpServers = this.mcpConfigFactory?.({
-        taskId: `trigger-${Date.now()}`,
-        humanQueue: triggerHumanQueue,
-      }) ?? {}
-      const result: ToolDefinition[] = []
-      for (const [name, server] of Object.entries(externalMcpServers)) {
-        // Phase 3c：只接入 crab-messaging（其他 mcp 在 Phase 3d 接入完整工具集时一并加）
-        if (name === 'crab-messaging') {
-          result.push(...mcpServerToToolDefinitions(server, name))
-        }
-      }
-      return result
-    })()
-    const tools = [...exitTools, ...messagingTools]
+    const taskOrigin: TaskOrigin = {
+      channel_id: channelId,
+      session_id: sessionId,
+      friend_id: senderFriend.id,
+      session_type: isGroup ? 'group' : 'private',
+    }
 
-    // 构造 system prompt — 用新统一 prompt 装配函数
-    // this.promptManager 是 WorkerHandlerOptions 中注入的可选字段
-    const assembledSystemPrompt = this.promptManager
-      ? this.promptManager.assembleAgentPrompt({
-        isGroup,
-        adminPersonality: this.systemPrompt || undefined,
-        skillListing: this.buildSkillListingSnapshot(),
-        availableSubAgents: this.subAgentHints,
-        ...(sceneProfile ? { sceneProfile: { label: sceneProfile.label, content: sceneProfile.content } } : {}),
-      })
-      : this.systemPrompt
+    // Build minimal WorkerAgentContext that satisfies the type.
+    // admin_endpoint / memory_endpoint / channel_endpoints are used by tools
+    // that runWorkerLoop wires up via this.deps and mcpConfigFactory; the context
+    // fields themselves are not directly read by runWorkerLoop's core loop.
+    const placeholderEndpoint = { module_id: '', port: 0, host: 'localhost' }
+    const context: WorkerAgentContext = {
+      task_origin: taskOrigin,
+      sender_friend: senderFriend,
+      memory_permissions: memoryPermissions,
+      resolved_permissions: resolvedPermissions,
+      trigger_messages: messages as ChannelMessage[],
+      recent_messages: frontContext.recent_messages ?? [],
+      short_term_memories: [],
+      long_term_memories: [],
+      available_tools: [],
+      admin_endpoint: placeholderEndpoint,
+      memory_endpoint: placeholderEndpoint,
+      channel_endpoints: [],
+      time_windows: frontContext.time_windows,
+      scene_profile: frontContext.scene_profile,
+    }
 
-    // 构造 user prompt（trigger messages 拼成单条 user message）
-    const userPromptText = messages
-      .map(m => m.content.type === 'text' ? (m.content.text ?? '') : '[非文本消息]')
-      .join('\n')
+    // 2. Build trigger user prompt (worker-style, with channel/session/chat history)
+    const triggerPrompt = this.buildTriggerUserPrompt(params)
 
-    // overdueConfig
+    // 3. Track sent_message + build overdue
+    let sentMessage = false
     const overdueReminderText =
-      `已处理 ${Math.floor((Date.now() - triggerArrivedAtMs) / 1000)} 秒，建议先 send_message ` +
+      `已处理超过 ${Math.floor(timeoutMs / 1000)} 秒，建议先 send_message ` +
       `友好告知人类正在处理 + 简要说明打算怎么干，发完继续执行。`
     const overdueConfig = overdueReminderEnabled
       ? {
@@ -1149,82 +1236,28 @@ export class WorkerHandler {
       }
       : undefined
 
-    // Start trace loop span
-    const loopSpanId = traceCallback?.onLoopStart('agent', {
-      model: this.sdkEnv.modelId,
-      tools: tools.map(t => t.name),
-    })
+    // 4. Exit tools (supplement_task / stay_silent)
+    const activeTaskIds = activeTasks.map(t => t.task_id)
+    const exitTools = getAgentExitTools({ isGroup, activeTaskIds })
 
-    let engineResult: import('../engine/types.js').EngineResult
+    // 5. Run the full worker loop with trigger-mode opts
+    let loopResult: RunWorkerLoopResult
     try {
-      engineResult = await runEngine({
-        prompt: userPromptText,
-        adapter,
-        options: {
-          tools,
-          systemPrompt: assembledSystemPrompt,
-          model: this.sdkEnv.modelId,
-          ...(this.sdkEnv.maxTokens !== undefined ? { maxTokens: this.sdkEnv.maxTokens } : {}),
-          senderIsMaster: senderFriend.permission === 'master',
-          resolvedPermissions,
-          ...(overdueConfig ? { overdueConfig } : {}),
-          onTurn: (event) => {
-            detectSendMessage(event.toolCalls)
-
-            // Trace spans for this turn (LLM + each tool call)
-            const inputSummary = event.turnNumber === 1
-              ? userPromptText.slice(0, 150)
-              : `(turn ${event.turnNumber})`
-            const llmEndedAtMs = event.llmStartedAtMs !== undefined && event.llmCallMs !== undefined
-              ? event.llmStartedAtMs + event.llmCallMs
-              : undefined
-            const llmSpanId = traceCallback?.onLlmCallStart(
-              event.turnNumber,
-              inputSummary,
-              undefined,
-              event.llmStartedAtMs,
-            )
-
-            for (const tc of event.toolCalls) {
-              const toolEndedAtMs = tc.startedAtMs !== undefined && tc.durationMs !== undefined
-                ? tc.startedAtMs + tc.durationMs
-                : undefined
-              const toolSpanId = traceCallback?.onToolCallStart(
-                tc.name,
-                JSON.stringify(tc.input ?? {}).slice(0, 200),
-                tc.startedAtMs,
-              )
-              if (toolSpanId) {
-                traceCallback?.onToolCallEnd(
-                  toolSpanId,
-                  tc.output?.slice(0, 500) || '(no output)',
-                  tc.isError ? tc.output : undefined,
-                  toolEndedAtMs,
-                )
-              }
+      loopResult = await this.runWorkerLoop(task, context, traceCallback, undefined, {
+        initialPrompt: triggerPrompt,
+        extraTools: exitTools,
+        ...(overdueConfig ? { overdueConfig } : {}),
+        onAfterTurn: (event) => {
+          for (const tc of event.toolCalls) {
+            if ((tc.name === 'send_message' || tc.name === 'send_private_message') && !tc.isError) {
+              sentMessage = true
+              break
             }
-
-            if (llmSpanId) {
-              traceCallback?.onLlmCallEnd(
-                llmSpanId,
-                {
-                  stopReason: event.stopReason ?? undefined,
-                  outputSummary: event.assistantText.slice(0, 200) || undefined,
-                  toolCallsCount: event.toolCalls.length > 0 ? event.toolCalls.length : undefined,
-                  ...(event.forcedSummaryAttempt !== undefined ? { forcedSummaryAttempt: event.forcedSummaryAttempt } : {}),
-                  ...(event.usage ? { usage: llmUsageToTrace(event.usage) } : {}),
-                },
-                llmEndedAtMs,
-              )
-            }
-          },
+          }
         },
       })
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error)
-      if (loopSpanId) {
-        traceCallback?.onLoopEnd(loopSpanId, 'failed', 0)
-      }
       return {
         outcome: 'failed' as const,
         finalText: '',
@@ -1234,12 +1267,9 @@ export class WorkerHandler {
       }
     }
 
-    // End trace loop span
-    const isError = engineResult.outcome === 'failed'
-    if (loopSpanId) {
-      traceCallback?.onLoopEnd(loopSpanId, isError ? 'failed' : 'completed', engineResult.totalTurns)
-    }
+    const { engineResult } = loopResult
 
+    // 6. Build result
     return {
       outcome: engineResult.outcome,
       finalText: engineResult.finalText,
@@ -1248,6 +1278,171 @@ export class WorkerHandler {
       sentMessage,
       ...(engineResult.error ? { error: engineResult.error } : {}),
     }
+  }
+
+  /**
+   * 构造 trigger 流的 worker 风格 user prompt。
+   *
+   * 从 front-handler.ts::buildUserMessage 移植，适配 trigger 场景：
+   * - 删除群聊决策提示（trigger loop 用 send_message + stay_silent + supplement_task）
+   * - 删除末尾 "## 指令" 段（工具 schema 自解释）
+   * - 新增尾部提醒：用 send_message 工具回复（含 channel_id / session_id）
+   * - 场景画像从 frontContext 读取（已在 system prompt 里，此处不再重复渲染）
+   */
+  private buildTriggerUserPrompt(params: HandleTriggerMessageParams): string {
+    const { messages, activeTasks, isGroup, senderFriend, channelId, sessionId, frontContext } = params
+    const parts: string[] = []
+    const timezone = this.getTimezone()
+    const now = new Date()
+
+    parts.push(`当前时间: ${formatNow(timezone, now)}`)
+    parts.push('')
+
+    // ── 对话场景 ──
+    parts.push('## 对话场景')
+    if (isGroup) {
+      const session = messages[0]?.session
+      parts.push(`- 类型: 群聊`)
+      parts.push(`- 对话对象: ${session?.session_id ?? sessionId}`)
+      parts.push(`- 对话对象 ID: group:${session?.channel_id ?? channelId}:${session?.session_id ?? sessionId}`)
+    } else {
+      parts.push(`- 类型: 私聊`)
+      parts.push(`- 对话对象: ${senderFriend.display_name}`)
+      parts.push(`- 对话对象 ID: friend:${senderFriend.id}`)
+      parts.push(`- 对话对象身份: ${senderFriend.permission}`)
+    }
+
+    // ── IM 渠道（send_message 工具需要这些 ID）──
+    parts.push('\n## IM 渠道')
+    parts.push(`- channel: ${channelId}`)
+    parts.push(`- session: ${sessionId}`)
+    if (frontContext.crab_display_name) {
+      parts.push(`- 你在该渠道的昵称: ${frontContext.crab_display_name}`)
+    }
+
+    // ── 活跃任务（三分类）──
+    if (activeTasks.length > 0) {
+      const currentChannel = messages[0]?.session?.channel_id ?? channelId
+      const currentSession = messages[0]?.session?.session_id ?? sessionId
+      const isMaster = senderFriend.permission === 'master'
+
+      const currentTasks: typeof activeTasks[number][] = []
+      const otherTasks: typeof activeTasks[number][] = []
+      const scheduledTasks: typeof activeTasks[number][] = []
+
+      for (const t of activeTasks) {
+        if (t.trigger_type === 'scheduled') scheduledTasks.push(t)
+        else if (t.source_session_id === currentSession && t.source_channel_id === currentChannel) currentTasks.push(t)
+        else otherTasks.push(t)
+      }
+
+      const renderTask = (t: typeof activeTasks[number], includeSource: boolean = false): string[] => {
+        const lines: string[] = []
+        const tag = t.trigger_type === 'scheduled' ? ' [定时/巡检任务，禁止 supplement]' : ''
+        const src = includeSource && t.source_channel_id ? ` [来源: ${t.source_channel_id}:${t.source_session_id}]` : ''
+        lines.push(`- [${t.task_id}] "${t.title}" (status: ${t.status})${tag}${src}`)
+        if (t.latest_progress) lines.push(`  最近进度（事后摘要）: ${t.latest_progress}`)
+        const live = t.live
+        if (t.status === 'waiting_human' && t.pending_question) {
+          lines.push(`  正在等待人类回答的问题:`)
+          const qLines = t.pending_question.split('\n')
+          for (const ql of qLines) {
+            lines.push(`  > ${ql}`)
+          }
+        }
+        if (live) {
+          lines.push(`  创建于 ${formatTaskCreatedAt(live.started_at, timezone, now)} / 第 ${live.current_turn} 轮`)
+          if (live.last_assistant_text) {
+            const tt = live.last_assistant_text.trim()
+            if (tt.length > 0) lines.push(`  上轮模型说: ${tt.slice(0, 200)}${tt.length > 200 ? '…' : ''}`)
+          }
+          if (live.active_tools.length > 0) {
+            for (const at of live.active_tools) {
+              const elapsed = formatElapsedMs(Date.now() - at.started_at)
+              lines.push(`  正在跑工具: ${at.name}（已 ${elapsed}）— ${at.input_summary}`)
+            }
+          }
+          if (live.recent_completed.length > 0) {
+            const tail = live.recent_completed.slice(-3).map(c => `${c.name}${c.is_error ? '(失败)' : ''}`).join(' / ')
+            lines.push(`  最近完成: ${tail}`)
+          }
+          if (live.llm_retry) {
+            const r = live.llm_retry
+            const elapsed = formatElapsedMs(Date.now() - r.since)
+            lines.push(`  LLM 调用 retry 中: ${r.attempt}/${r.max_attempts} (${r.source})，已 ${elapsed}，原因: ${r.last_error}`)
+          }
+        }
+        return lines
+      }
+
+      parts.push('\n## 活跃任务')
+
+      if (currentTasks.length > 0) {
+        parts.push(`\n### 当前对话对象的任务（${currentTasks.length} 条）`)
+        for (const t of currentTasks) parts.push(...renderTask(t))
+      }
+
+      if (isMaster && otherTasks.length > 0) {
+        parts.push(`\n### 其他对话场景的任务（${otherTasks.length} 条）`)
+        for (const t of otherTasks) parts.push(...renderTask(t, true))
+      }
+
+      if (isMaster && scheduledTasks.length > 0) {
+        parts.push(`\n### schedule 触发任务（${scheduledTasks.length} 条）`)
+        for (const t of scheduledTasks) parts.push(...renderTask(t))
+      }
+
+      parts.push('\n当消息可能是对某个任务的纠偏/补充时，使用 supplement_task 工具。')
+      parts.push('**带 [定时/巡检任务，禁止 supplement] 标签的任务一律不可作为 supplement 目标**。')
+    }
+
+    // ── 聊天历史（当前 session）──
+    const recentHours = frontContext.time_windows.recent_messages_window_hours
+    const recentSinceLabel = formatChannelMessageTime(
+      new Date(now.getTime() - recentHours * 3600 * 1000).toISOString(),
+      timezone,
+      now,
+    )
+    const recentMessages = frontContext.recent_messages ?? []
+    parts.push(`\n## 聊天历史（当前 session，最近 ${recentHours} 小时 = ${recentSinceLabel} 之后，${recentMessages.length} 条）`)
+    parts.push(`summary: ${recentSinceLabel} 之前的本会话历史不在此上下文里。`)
+    if (recentMessages.length > 0) {
+      const total = recentMessages.length
+      for (let i = 0; i < total; i++) {
+        const distFromEnd = total - 1 - i
+        const maxLen = distFromEnd < 3 ? 2000 : distFromEnd < 10 ? 600 : 300
+        const msg = recentMessages[i]
+        const identity = resolveSenderIdentity({
+          msg,
+          senderFriend,
+          crabDisplayName: frontContext.crab_display_name,
+          isGroup,
+        })
+        parts.push(formatChannelMessageLine(msg, { timezone, now, maxLen, identity }))
+      }
+    } else {
+      parts.push(`此窗口（${recentSinceLabel} 之后）本会话无消息。`)
+    }
+
+    // ── 当前消息 ──
+    parts.push(`\n## 当前消息`)
+    for (const msg of messages) {
+      const identity = resolveSenderIdentity({
+        msg,
+        senderFriend,
+        crabDisplayName: frontContext.crab_display_name,
+        isGroup,
+      })
+      parts.push(formatChannelMessageLine(msg, { timezone, now, maxLen: 2000, identity }))
+    }
+
+    // ── 行动提醒 ──
+    parts.push(`\n## 行动提醒`)
+    parts.push(`用 send_message 工具回复人类（channel_id="${channelId}"，session_id="${sessionId}"）。`)
+    parts.push(`如需把任务交给独立 worker 执行，调用 supplement_task 或 create_task（需先 create_task，这里暂用 send_message 确认）。`)
+    parts.push(`如果消息不需要回复，调用 stay_silent。`)
+
+    return parts.join('\n')
   }
 
   /**

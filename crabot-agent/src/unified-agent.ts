@@ -859,6 +859,7 @@ export class UnifiedAgent extends ModuleBase {
         resolvedPermissions: resolvedPerms as ResolvedPermissions,  // null only when admin RPC failed; best-effort proceed
         channelId: session.channel_id,
         sessionId: session.session_id,
+        frontContext: context,
       }, traceCallback)
     } catch (error) {
       console.error(`[${this.config.moduleId}] processDirectMessageUnified error:`, error)
