@@ -1099,10 +1099,25 @@ export class WorkerHandler {
     }
 
     // 装配工具集：早退工具 + messaging tools
-    // Phase 3b: messaging tools 简化为空数组——Phase 3c 接入完整工具集
     const activeTaskIds = activeTasks.map(t => t.task_id)
     const exitTools = getAgentExitTools({ isGroup, activeTaskIds })
-    const messagingTools: ReadonlyArray<ToolDefinition> = []
+    // Messaging tools — 复用 mcp config factory 获取 crab-messaging server
+    // 注：trigger 场景无 task_id / humanQueue，传入 synthetic 占位
+    const messagingTools: ReadonlyArray<ToolDefinition> = (() => {
+      const triggerHumanQueue = new HumanMessageQueue()  // empty，trigger 流程不会用
+      const externalMcpServers = this.mcpConfigFactory?.({
+        taskId: `trigger-${Date.now()}`,
+        humanQueue: triggerHumanQueue,
+      }) ?? {}
+      const result: ToolDefinition[] = []
+      for (const [name, server] of Object.entries(externalMcpServers)) {
+        // Phase 3c：只接入 crab-messaging（其他 mcp 在 Phase 3d 接入完整工具集时一并加）
+        if (name === 'crab-messaging') {
+          result.push(...mcpServerToToolDefinitions(server, name))
+        }
+      }
+      return result
+    })()
     const tools = [...exitTools, ...messagingTools]
 
     // 构造 system prompt — 用新统一 prompt 装配函数
