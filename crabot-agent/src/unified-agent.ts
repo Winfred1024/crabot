@@ -41,7 +41,6 @@ import { ContextAssembler } from './orchestration/context-assembler.js'
 import { DecisionDispatcher } from './orchestration/decision-dispatcher.js'
 import { MemoryWriter } from './orchestration/memory-writer.js'
 import { AttentionScheduler, type AttentionConfig, type BufferedMessage } from './orchestration/attention-scheduler.js'
-import { FrontHandler, type FrontHandlerLlmConfig } from './agent/front-handler.js'
 import { createAdapter, type LLMFormat } from './engine/llm-adapter.js'
 import type { ToolExecutorDeps } from './agent/tool-executor.js'
 import { WorkerHandler, type SdkEnvConfig } from './agent/worker-handler.js'
@@ -105,8 +104,6 @@ export class UnifiedAgent extends ModuleBase {
   private attentionScheduler: AttentionScheduler
 
   // 智能体层组件（可选，取决于配置）
-  private frontHandler?: FrontHandler
-  private frontHandlerFormat?: LLMFormat
   private workerHandler?: WorkerHandler
   private mcpConnector: McpConnector = new McpConnector()
   private roles: Set<'front' | 'worker'> = new Set()
@@ -244,7 +241,7 @@ export class UnifiedAgent extends ModuleBase {
 
     // MCP connections managed by mcpConnector in onStart()
 
-    const { basePersonality, workerPersonality, frontSkillListing } =
+    const { basePersonality, workerPersonality } =
       this.buildPromptParts(config.system_prompt, config.skills)
 
     // MCP config factory: creates fresh in-process McpServer instances per task
@@ -258,33 +255,6 @@ export class UnifiedAgent extends ModuleBase {
         ...(taskCtx ? { getTaskContext: () => taskCtx } : {}),
       }, this.sandboxPathMappingsRef),
     })
-
-    // 初始化 Front Handler（如果有 front 角色）
-    if (this.roles.has('front')) {
-      const frontModelConfig = config.model_config?.triage
-      if (frontModelConfig) {
-        const adapter = createAdapter({
-          endpoint: frontModelConfig.endpoint,
-          apikey: frontModelConfig.apikey,
-          format: frontModelConfig.format as LLMFormat,
-          ...(frontModelConfig.account_id ? { accountId: frontModelConfig.account_id } : {}),
-        })
-        const llmConfig: FrontHandlerLlmConfig = {
-          adapter,
-          model: frontModelConfig.model_id,
-          supportsVision: frontModelConfig.supports_vision === true,
-        }
-        this.frontHandler = new FrontHandler(llmConfig, this.buildToolExecutorDeps(), {
-          getSystemPrompt: (isGroup, sceneProfile) => this.promptManager.assembleFrontPrompt({
-            isGroup, adminPersonality: basePersonality, workerCapabilities: this.getWorkerCapabilitySummary(), skillListing: frontSkillListing,
-            ...(sceneProfile ? { sceneProfile } : {}),
-          }),
-          mcpConfigFactory: createMcpConfigs,
-          getTimezone: () => resolveTimezone(this.agentConfig?.timezone),
-        })
-        this.frontHandlerFormat = frontModelConfig.format as LLMFormat
-      }
-    }
 
     // 解析 digest 模型配置（回退链：digest → triage → worker 的配置）
     const digestModelConfig = config.model_config?.digest ?? config.model_config?.triage ?? config.model_config?.worker
@@ -472,21 +442,13 @@ export class UnifiedAgent extends ModuleBase {
     basePersonality?: string
     /** 与 basePersonality 内容相同，仅命名上对应"传给 WorkerHandler 的 personality 字段"。 */
     workerPersonality?: string
-    frontSkillListing?: string
   } {
     const basePersonality = systemPrompt || undefined
     // workerPersonality 仅承载 admin personality；skill listing 走独立通道，
     // 由 WorkerHandler 内部 buildSkillListingSnapshot 实时从 this.skills 拼装。
     const workerPersonality = basePersonality
 
-    const frontIntro =
-      '## 技能（Skill）\n\n' +
-      '以下技能为特定任务提供专业能力。当用户的请求匹配某个技能的描述时，' +
-      '**必须使用 create_task**，不能用 reply 直接回答。\n' +
-      '即使问题看起来简单（如"502是什么原因"），只要它属于某个技能的职责范围，就必须 create_task。'
-    const frontSkillListing = UnifiedAgent.buildSkillListing(skills, frontIntro) || undefined
-
-    return { basePersonality, workerPersonality, frontSkillListing }
+    return { basePersonality, workerPersonality }
   }
 
   /**
@@ -589,6 +551,7 @@ export class UnifiedAgent extends ModuleBase {
 
   /**
    * 私聊消息处理（SwitchMap：同 session 新消息取消旧请求）
+   * Phase 3e: 已合并为统一 loop，移除旧 frontHandler + decisionDispatcher 路径。
    */
   private async processDirectMessage(message: ChannelMessage, friend: Friend): Promise<void> {
     const { session, sender, content } = message
@@ -619,18 +582,18 @@ export class UnifiedAgent extends ModuleBase {
     let barrierTaskIds: string[] = []
 
     try {
-      // 4. 如果没有配置 Front Agent 能力，需要调用外部 Agent
-      if (!this.roles.has('front') || !this.frontHandler) {
-        this.traceStore.endTrace(trace.trace_id, 'failed', { summary: 'No front agent configured' })
+      // 4. 检查 Worker Handler 能力
+      if (!this.workerHandler) {
+        this.traceStore.endTrace(trace.trace_id, 'failed', { summary: 'No worker handler configured' })
         return
       }
 
-      // 5. 解析权限（friend ∪ session 并集，admin 侧统一处理 master 短路/explicit-config 优先/minimal 兜底）
+      // 5. 解析权限
       const resolvedPerms = await this.resolvePrincipalPermissions(friend, session.session_id, 'private')
       this.currentResolvedPerms = resolvedPerms
       const memPerms = await this.deriveMemoryPermissions(friend, session.session_id, resolvedPerms)
 
-      // 6. 组装上下文（带 span 追踪耗时；子 fetch 挂在此 span 下）
+      // 6. 组装上下文（带 span 追踪耗时）
       const ctxSpan = this.traceStore.startSpan(trace.trace_id, {
         type: 'context_assembly',
         details: {
@@ -644,7 +607,6 @@ export class UnifiedAgent extends ModuleBase {
           channel_id: session.channel_id,
           session_id: session.session_id,
           sender_id: sender.platform_user_id,
-          // 合并所有消息的文本作为上下文（与 processGroupBatch 保持一致）
           message: mergedMessages.map((m) => m.content.text ?? '').join('\n'),
           friend_id: sender.friend_id,
           session_type: 'private',
@@ -660,152 +622,90 @@ export class UnifiedAgent extends ModuleBase {
 
       barrierTaskIds = this.setupBarriers(session.channel_id, session.session_id)
 
-      // Phase 3d: unified loop 已默认启用——CRABOT_USE_UNIFIED_LOOP=false 可临时退回老路径（即将彻底删除）
-      const useUnifiedLoop = process.env.CRABOT_USE_UNIFIED_LOOP !== 'false'
-
-      if (useUnifiedLoop) {
-        await this.processDirectMessageUnified({
-          messages: mergedMessages,
-          context,
-          trace,
-          friend,
-          session,
-          requestId,
-          barrierTaskIds,
-          memPerms,
-          resolvedPerms,
+      // 8. 调用统一 loop
+      const triggerArrivedAtMs = Date.now()
+      this.currentMemPerms = memPerms
+      let result
+      try {
+        result = await this.workerHandler.handleTriggerMessage({
+          messages: [...mergedMessages],
+          activeTasks: context.active_tasks ?? [],
+          isGroup: false,
+          ...(context.scene_profile ? { sceneProfile: context.scene_profile } : {}),
+          senderFriend: friend,
+          triggerArrivedAtMs,
+          memoryPermissions: memPerms,
+          resolvedPermissions: resolvedPerms as ResolvedPermissions,
+          channelId: session.channel_id,
+          sessionId: session.session_id,
+          frontContext: context,
+        }, traceCallback)
+      } catch (error) {
+        console.error(`[${this.config.moduleId}] processDirectMessage error:`, error)
+        this.traceStore.endTrace(trace.trace_id, 'failed', {
+          summary: error instanceof Error ? error.message : String(error),
         })
         return
       }
 
-      // 旧路径（默认）：frontHandler.handleMessage → decisionDispatcher
-
-      // 8. 调用 Front Agent（传入合并后的消息列表）
-      this.currentMemPerms = memPerms
-      const result = await this.frontHandler.handleMessage({
-        messages: mergedMessages,
-        context,
-      }, traceCallback)
-
-      // 9. Abort 检查：若已被更新消息取代，跳过 dispatch（防止并发双发 reply）
+      // 9. Abort 检查
       const currentPending = this.sessionManager.getPendingRequest(session.session_id)
       if (currentPending !== requestId) {
-        console.warn(
-          `[${this.config.moduleId}] supersede(direct): session=${session.session_id} ` +
-          `requestId=${requestId} currentPending=${currentPending ?? '(none)'} ` +
-          `traceId=${trace.trace_id}`
-        )
-        this.traceStore.endTrace(trace.trace_id, 'completed', {
-          summary: 'superseded by newer message',
-        })
+        this.traceStore.endTrace(trace.trace_id, 'completed', { summary: 'superseded by newer message' })
         return
       }
 
-      // 10. 分发决策
-      for (const decision of result.decisions) {
-        const decisionSummary = decision.type === 'direct_reply'
-          ? (decision.reply.text ?? '').slice(0, 100)
-          : decision.type === 'create_task'
-          ? decision.task_title
-          : decision.type === 'supplement_task'
-          ? `supplement → ${decision.task_id}: ${decision.supplement_content.slice(0, 60)}`
-          : 'silent'
-
-        const decisionSpan = this.traceStore.startSpan(trace.trace_id, {
-          type: 'decision',
-          details: { decision_type: decision.type, summary: decisionSummary },
-        })
-
-        if (decision.type === 'supplement_task' && this.workerHandler) {
-          const delivered = await this.handleLocalSupplement(decision, session, trace.trace_id, decisionSpan.span_id, context.active_tasks)
-          if (!delivered) {
-            // 目标任务不存在 → 改写为 create_task，确保用户请求被真正执行
-            await this.decisionDispatcher.dispatch(
+      // 10. Exit tool dispatch
+      if (result.exitToolCall) {
+        const exitName = result.exitToolCall.name
+        const exitInput = result.exitToolCall.input
+        if (exitName === 'supplement_task') {
+          const targetTaskId = exitInput['target_task_id']
+          const supplementText = exitInput['supplement_text']
+          if (typeof targetTaskId === 'string' && typeof supplementText === 'string') {
+            await this.handleLocalSupplement(
               {
-                type: 'create_task',
-                task_title: decision.supplement_content.slice(0, 60) || '用户追加请求',
-                task_description: decision.supplement_content,
-                immediate_reply: decision.immediate_reply ?? { type: 'text', text: '' },
+                type: 'supplement_task',
+                task_id: targetTaskId,
+                supplement_content: supplementText,
+                immediate_reply: { type: 'text', text: '' },
               },
-              {
-                channel_id: session.channel_id,
-                session_id: session.session_id,
-                messages: mergedMessages,
-                senderFriend: friend,
-                memoryPermissions: memPerms,
-                resolvedPerms,
-              },
-              {
-                traceStore: this.traceStore as TraceStoreInterface,
-                traceId: trace.trace_id,
-                parentSpanId: decisionSpan.span_id,
-              }
+              session,
+              trace.trace_id,
+              '',
+              context.active_tasks ?? [],
             )
           }
-        } else {
-          await this.decisionDispatcher.dispatch(
-            decision,
-            {
-              channel_id: session.channel_id,
-              session_id: session.session_id,
-              messages: mergedMessages,
-              senderFriend: friend,
-              memoryPermissions: memPerms,
-              resolvedPerms,
-            },
-            {
-              traceStore: this.traceStore as TraceStoreInterface,
-              traceId: trace.trace_id,
-              parentSpanId: decisionSpan.span_id,
-            }
-          )
+        } else if (exitName === 'stay_silent') {
+          // 群聊场景才会触发；私聊不应出现
+          console.warn(`[${this.config.moduleId}] unexpected stay_silent in private chat: ${JSON.stringify(exitInput)}`)
         }
-
-        this.traceStore.endSpan(trace.trace_id, decisionSpan.span_id, 'completed')
-      }
-
-      this.releaseBarriers(barrierTaskIds, result.decisions)
-
-      // 11. 写入短期记忆：分诊决策事件（fire-and-forget，不阻塞 completeRequest）
-      if (sender.friend_id && result.decisions.length > 0) {
-        const messageBrief = mergedMessages
-          .map((m) => m.content.text ?? '')
-          .join(' ')
-          .slice(0, 80)
-
-        for (const decision of result.decisions) {
-          if (decision.type === 'silent') continue
-
-          const memSpan = this.traceStore.startSpan(trace.trace_id, {
-            type: 'memory_write',
-            details: {
-              friend_id: sender.friend_id,
-              channel_id: session.channel_id,
-              decision_type: decision.type,
-            },
-          })
-
-          if (decision.type === 'direct_reply' && decision.emotion && decision.emotion !== 'neutral') {
-            this.memoryWriter.writeUserSignal({
-              friend_name: friend.display_name,
-              friend_id: sender.friend_id,
-              channel_id: session.channel_id,
-              session_id: session.session_id,
-              message_brief: messageBrief,
-              emotion: decision.emotion,
-              visibility: memPerms.write_visibility,
-              scopes: memPerms.write_scopes,
-            }).then(() => this.traceStore.endSpan(trace.trace_id, memSpan.span_id, 'completed'))
-              .catch(() => this.traceStore.endSpan(trace.trace_id, memSpan.span_id, 'failed'))
-          } else {
-            // L0（无情绪）/ create_task / supplement_task / silent → 不写 triage 类记忆（spec §6.1）
-            this.traceStore.endSpan(trace.trace_id, memSpan.span_id, 'completed')
-          }
+      } else if (!result.sentMessage && result.finalText.trim() !== '') {
+        // loop 自然结束但 agent 没调 send_message——把 finalText 当作 fallback reply 发给用户
+        console.warn(`[${this.config.moduleId}] unified loop ended without send_message; dispatching finalText as fallback (length=${result.finalText.length})`)
+        try {
+          const channelPort = await this.getChannelPort(session.channel_id)
+          await this.rpcClient.call(channelPort, 'send_message', {
+            session_id: session.session_id,
+            content: { type: 'text', text: result.finalText },
+          }, this.config.moduleId)
+        } catch (err) {
+          console.error(`[${this.config.moduleId}] fallback dispatch failed:`, err)
         }
       }
+      // else (sentMessage=true OR finalText empty): 已通过工具发消息或确实无话可说
 
-      this.traceStore.endTrace(trace.trace_id, 'completed', {
-        summary: this.extractReplyText(result.decisions)?.slice(0, 200) ?? 'completed',
+      this.releaseBarriers(barrierTaskIds, [])
+
+      const summaryLabel = result.exitToolCall
+        ? `exit:${result.exitToolCall.name}`
+        : result.sentMessage
+          ? 'sent_message'
+          : result.finalText.trim() !== ''
+            ? 'fallback_dispatch'
+            : 'silent_end'
+      this.traceStore.endTrace(trace.trace_id, result.outcome === 'completed' ? 'completed' : 'failed', {
+        summary: summaryLabel,
       })
     } catch (error) {
       this.clearAllBarriers(barrierTaskIds)
@@ -814,122 +714,6 @@ export class UnifiedAgent extends ModuleBase {
     } finally {
       this.switchmapHandler.completeRequest(session.session_id, requestId)
     }
-  }
-
-  /**
-   * Phase 3c: 新统一 loop 私聊处理路径。
-   * 取代 frontHandler.handleMessage + decisionDispatcher 的两步式分诊+执行。
-   *
-   * Feature flag CRABOT_USE_UNIFIED_LOOP=true 启用。
-   *
-   * Spec: crabot-docs/superpowers/specs/2026-05-15-agent-unified-loop-redesign-design.md §2.1
-   */
-  private async processDirectMessageUnified(args: {
-    messages: ReadonlyArray<ChannelMessage>
-    context: import('./types.js').FrontAgentContext
-    trace: { trace_id: string }
-    friend: Friend
-    session: ChannelMessage['session']
-    requestId: string
-    barrierTaskIds: string[]
-    memPerms: MemoryPermissions
-    resolvedPerms: ResolvedPermissions | null
-  }): Promise<void> {
-    const { messages, context, trace, friend, session, requestId, barrierTaskIds, memPerms, resolvedPerms } = args
-
-    if (!this.workerHandler) {
-      this.traceStore.endTrace(trace.trace_id, 'failed', { summary: 'No worker handler configured' })
-      return
-    }
-
-    const triggerArrivedAtMs = Date.now()
-    const traceCallback = this.buildTraceCallback(trace.trace_id)
-
-    this.currentMemPerms = memPerms
-    let result
-    try {
-      result = await this.workerHandler.handleTriggerMessage({
-        messages: [...messages],
-        activeTasks: context.active_tasks ?? [],
-        isGroup: false,
-        ...(context.scene_profile ? { sceneProfile: context.scene_profile } : {}),
-        senderFriend: friend,
-        triggerArrivedAtMs,
-        memoryPermissions: memPerms,
-        resolvedPermissions: resolvedPerms as ResolvedPermissions,  // null only when admin RPC failed; best-effort proceed
-        channelId: session.channel_id,
-        sessionId: session.session_id,
-        frontContext: context,
-      }, traceCallback)
-    } catch (error) {
-      console.error(`[${this.config.moduleId}] processDirectMessageUnified error:`, error)
-      this.traceStore.endTrace(trace.trace_id, 'failed', {
-        summary: error instanceof Error ? error.message : String(error),
-      })
-      return
-    }
-
-    // Abort 检查
-    const currentPending = this.sessionManager.getPendingRequest(session.session_id)
-    if (currentPending !== requestId) {
-      this.traceStore.endTrace(trace.trace_id, 'completed', { summary: 'superseded by newer message' })
-      return
-    }
-
-    // Exit tool dispatch
-    if (result.exitToolCall) {
-      const exitName = result.exitToolCall.name
-      const exitInput = result.exitToolCall.input
-      if (exitName === 'supplement_task') {
-        const targetTaskId = exitInput['target_task_id']
-        const supplementText = exitInput['supplement_text']
-        if (typeof targetTaskId === 'string' && typeof supplementText === 'string') {
-          // 复用现有 supplement 路由
-          await this.handleLocalSupplement(
-            {
-              type: 'supplement_task',
-              task_id: targetTaskId,
-              supplement_content: supplementText,
-              immediate_reply: { type: 'text', text: '' },
-            },
-            session,
-            trace.trace_id,
-            '',
-            context.active_tasks ?? [],
-          )
-        }
-      } else if (exitName === 'stay_silent') {
-        // 群聊场景才会触发；私聊不应出现
-        console.warn(`[${this.config.moduleId}] unexpected stay_silent in private chat: ${JSON.stringify(exitInput)}`)
-      }
-    } else if (!result.sentMessage && result.finalText.trim() !== '') {
-      // loop 自然结束但 agent 没调 send_message——把 finalText 当作 fallback reply 发给用户
-      // 安全网：理想情况下 agent 应该用 send_message 工具；忘记调时不让用户看到空白
-      console.warn(`[${this.config.moduleId}] unified loop ended without send_message; dispatching finalText as fallback (length=${result.finalText.length})`)
-      try {
-        const channelPort = await this.getChannelPort(session.channel_id)
-        await this.rpcClient.call(channelPort, 'send_message', {
-          session_id: session.session_id,
-          content: { type: 'text', text: result.finalText },
-        }, this.config.moduleId)
-      } catch (err) {
-        console.error(`[${this.config.moduleId}] fallback dispatch failed:`, err)
-      }
-    }
-    // else (sentMessage=true OR finalText empty): loop 自然结束，agent 已通过工具发消息或确实无话可说
-
-    this.releaseBarriers(barrierTaskIds, [])
-
-    const summaryLabel = result.exitToolCall
-      ? `exit:${result.exitToolCall.name}`
-      : result.sentMessage
-        ? 'sent_message'
-        : result.finalText.trim() !== ''
-          ? 'fallback_dispatch'
-          : 'silent_end'
-    this.traceStore.endTrace(trace.trace_id, result.outcome === 'completed' ? 'completed' : 'failed', {
-      summary: summaryLabel,
-    })
   }
 
   /**
@@ -948,8 +732,8 @@ export class UnifiedAgent extends ModuleBase {
     const messages = buffered.map((b) => b.message)
     const session = messages[0].session
 
-    // 检查 Front Agent 能力
-    if (!this.roles.has('front') || !this.frontHandler) {
+    // 检查 Worker Handler 能力（群聊统一走 handleTriggerMessage）
+    if (!this.workerHandler) {
       return
     }
 
@@ -1025,66 +809,107 @@ export class UnifiedAgent extends ModuleBase {
 
       const traceCallback = this.buildTraceCallback(trace.trace_id)
 
-      // 调用 Front Agent，传入整批消息
+      // 调用统一 loop（群聊 isGroup=true）
       this.currentMemPerms = memPerms
-      const result = await this.frontHandler.handleMessage({
-        messages,
-        context,
-      }, traceCallback)
-
-      // 判断是否产生了有意义的回复
-      const hasReply = result.decisions.some(
-        (d) => d.type === 'direct_reply' || d.type === 'create_task' || d.type === 'supplement_task'
-      )
-
-      if (hasReply) {
-        // 分发决策
-        for (const decision of result.decisions) {
-          const decisionSpan = this.traceStore.startSpan(trace.trace_id, {
-            type: 'decision',
-            details: {
-              decision_type: decision.type,
-              summary: decision.type === 'direct_reply'
-                ? (decision.reply.text ?? '').slice(0, 100)
-                : decision.type === 'create_task'
-                ? decision.task_title
-                : decision.type === 'supplement_task'
-                ? `supplement → ${decision.task_id}: ${decision.supplement_content.slice(0, 60)}`
-                : 'silent',
-            },
-          })
-
-          await this.decisionDispatcher.dispatch(
-            decision,
-            {
-              channel_id: session.channel_id,
-              session_id: sessionId,
-              messages: messages,
-              senderFriend: lastEntry.friend,
-              memoryPermissions: memPerms,
-              resolvedPerms,
-            },
-            {
-              traceStore: this.traceStore as TraceStoreInterface,
-              traceId: trace.trace_id,
-              parentSpanId: decisionSpan.span_id,
-            }
-          )
-
-          this.traceStore.endSpan(trace.trace_id, decisionSpan.span_id, 'completed')
-        }
+      const triggerArrivedAtMs = Date.now()
+      let result
+      try {
+        result = await this.workerHandler.handleTriggerMessage({
+          messages: [...messages],
+          activeTasks: context.active_tasks ?? [],
+          isGroup: true,
+          ...(context.scene_profile ? { sceneProfile: context.scene_profile } : {}),
+          senderFriend: lastEntry.friend,
+          triggerArrivedAtMs,
+          memoryPermissions: memPerms,
+          resolvedPermissions: resolvedPerms as ResolvedPermissions,
+          channelId: session.channel_id,
+          sessionId,
+          frontContext: context,
+        }, traceCallback)
+      } catch (error) {
+        console.error(`[${this.config.moduleId}] processGroupBatch handleTriggerMessage error:`, error)
+        this.clearAllBarriers(barrierTaskIds)
+        this.traceStore.endTrace(trace.trace_id, 'failed', {
+          summary: error instanceof Error ? error.message : String(error),
+        })
+        return
       }
-      // else: silent discard — 不发送任何回复
 
-      this.releaseBarriers(barrierTaskIds, result.decisions)
+      // Exit tool dispatch
+      let hasReply: boolean
+      if (result.exitToolCall) {
+        const exitName = result.exitToolCall.name
+        const exitInput = result.exitToolCall.input
+        if (exitName === 'stay_silent') {
+          // 群聊 silent discard
+          hasReply = false
+        } else if (exitName === 'supplement_task') {
+          const targetTaskId = exitInput['target_task_id']
+          const supplementText = exitInput['supplement_text']
+          if (typeof targetTaskId === 'string' && typeof supplementText === 'string') {
+            await this.handleLocalSupplement(
+              {
+                type: 'supplement_task',
+                task_id: targetTaskId,
+                supplement_content: supplementText,
+                immediate_reply: { type: 'text', text: '' },
+              },
+              session,
+              trace.trace_id,
+              '',
+              context.active_tasks ?? [],
+            )
+          }
+          hasReply = true
+        } else {
+          // fallback dispatch：参考 processDirectMessage 私聊逻辑
+          if (!result.sentMessage && result.finalText.trim() !== '') {
+            console.warn(`[${this.config.moduleId}] group unified loop exit:${exitName} without send_message; dispatching finalText as fallback`)
+            try {
+              const channelPort = await this.getChannelPort(session.channel_id)
+              await this.rpcClient.call(channelPort, 'send_message', {
+                session_id: sessionId,
+                content: { type: 'text', text: result.finalText },
+              }, this.config.moduleId)
+            } catch (err) {
+              console.error(`[${this.config.moduleId}] group fallback dispatch failed:`, err)
+            }
+          }
+          hasReply = result.sentMessage || result.finalText.trim() !== ''
+        }
+      } else if (!result.sentMessage && result.finalText.trim() !== '') {
+        // loop 自然结束但 agent 没调 send_message——把 finalText 当作 fallback reply 发给用户
+        console.warn(`[${this.config.moduleId}] group unified loop ended without send_message; dispatching finalText as fallback (length=${result.finalText.length})`)
+        try {
+          const channelPort = await this.getChannelPort(session.channel_id)
+          await this.rpcClient.call(channelPort, 'send_message', {
+            session_id: sessionId,
+            content: { type: 'text', text: result.finalText },
+          }, this.config.moduleId)
+        } catch (err) {
+          console.error(`[${this.config.moduleId}] group fallback dispatch failed:`, err)
+        }
+        hasReply = true
+      } else {
+        // sentMessage=true（已发）或 finalText 空（真沉默）
+        hasReply = result.sentMessage
+      }
+
+      this.releaseBarriers(barrierTaskIds, [])
 
       // 报告结果，调整注意力巡检间隔
       this.attentionScheduler.reportResult(sessionId, hasReply)
 
-      this.traceStore.endTrace(trace.trace_id, 'completed', {
-        summary: hasReply
-          ? (this.extractReplyText(result.decisions)?.slice(0, 200) ?? 'replied')
-          : 'silent discard',
+      const summaryLabel = result.exitToolCall
+        ? `exit:${result.exitToolCall.name}`
+        : result.sentMessage
+          ? 'sent_message'
+          : result.finalText.trim() !== ''
+            ? 'fallback_dispatch'
+            : 'silent_discard'
+      this.traceStore.endTrace(trace.trace_id, result.outcome === 'completed' ? 'completed' : 'failed', {
+        summary: summaryLabel,
       })
     } catch (error) {
       this.clearAllBarriers(barrierTaskIds)
@@ -1600,7 +1425,7 @@ export class UnifiedAgent extends ModuleBase {
       return this.processAdminChatMessage(message, callback_info)
     }
 
-    // Channel 来源 - 使用标准消息处理流程
+    // Channel 来源 - 使用统一 loop 处理
     if (source_type === 'channel' || !source_type) {
       // 直接触发消息处理（跳过权限检查，因为来自内部调用）
       const sessionId = message.session.session_id
@@ -1613,8 +1438,8 @@ export class UnifiedAgent extends ModuleBase {
       const mergedMessages = await this.switchmapHandler.handleNewMessage(sessionId, requestId, message)
 
       try {
-        // 检查是否有 Front Agent 能力
-        if (!this.roles.has('front') || !this.frontHandler) {
+        // 检查是否有 Worker Handler 能力
+        if (!this.workerHandler) {
           return { decision_types: [] }
         }
 
@@ -1633,11 +1458,28 @@ export class UnifiedAgent extends ModuleBase {
           channelMemPerms
         )
 
-        // 调用 Front Agent
+        // 调用统一 loop
         this.currentMemPerms = channelMemPerms
-        const result = await this.frontHandler.handleMessage({
+        const triggerArrivedAtMs = Date.now()
+        const result = await this.workerHandler.handleTriggerMessage({
           messages: mergedMessages,
-          context,
+          activeTasks: context.active_tasks ?? [],
+          isGroup: message.session.type === 'group',
+          ...(context.scene_profile ? { sceneProfile: context.scene_profile } : {}),
+          senderFriend: {
+            id: message.sender.friend_id ?? message.sender.platform_user_id,
+            display_name: message.sender.platform_display_name,
+            permission: 'normal' as const,
+            channel_identities: [],
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+          triggerArrivedAtMs,
+          memoryPermissions: channelMemPerms,
+          resolvedPermissions: FAIL_CLOSED_TOOL_ACCESS as unknown as ResolvedPermissions,
+          channelId: message.session.channel_id,
+          sessionId,
+          frontContext: context,
         })
 
         // 检查是否已被更新消息取代
@@ -1645,22 +1487,67 @@ export class UnifiedAgent extends ModuleBase {
           return { decision_types: [] }
         }
 
-        // 分发决策
-        const taskIds: TaskId[] = []
+        // 映射 exitToolCall → decision_types / task_ids
         const decisionTypes: string[] = []
+        const taskIds: TaskId[] = []
 
-        for (const decision of result.decisions) {
-          decisionTypes.push(decision.type)
-          const dispatchResult = await this.decisionDispatcher.dispatch(decision, {
-            channel_id: message.session.channel_id,
-            session_id: sessionId,
-            messages: mergedMessages,
-            memoryPermissions: channelMemPerms,
-          })
-          if (dispatchResult.task_id) {
-            taskIds.push(dispatchResult.task_id)
+        if (result.exitToolCall) {
+          const exitName = result.exitToolCall.name
+          if (exitName === 'supplement_task') {
+            decisionTypes.push('supplement_task')
+            const exitInput = result.exitToolCall.input
+            const targetTaskId = exitInput['target_task_id']
+            const supplementText = exitInput['supplement_text']
+            if (typeof targetTaskId === 'string' && typeof supplementText === 'string') {
+              const delivered = await this.handleLocalSupplement(
+                {
+                  type: 'supplement_task',
+                  task_id: targetTaskId,
+                  supplement_content: supplementText,
+                  immediate_reply: { type: 'text', text: '' },
+                },
+                message.session,
+                '',
+                '',
+                context.active_tasks ?? [],
+              )
+              if (delivered) {
+                taskIds.push(targetTaskId)
+              }
+            }
+          } else if (exitName === 'stay_silent') {
+            decisionTypes.push('silent')
+          } else {
+            // 其他 exit tool（create_task 等）：用 finalText fallback
+            if (!result.sentMessage && result.finalText.trim() !== '') {
+              decisionTypes.push('direct_reply')
+              try {
+                const channelPort = await this.getChannelPort(message.session.channel_id)
+                await this.rpcClient.call(channelPort, 'send_message', {
+                  session_id: sessionId,
+                  content: { type: 'text', text: result.finalText },
+                }, this.config.moduleId)
+              } catch (err) {
+                console.error(`[${this.config.moduleId}] handleProcessMessage fallback dispatch failed:`, err)
+              }
+            }
+          }
+        } else if (result.sentMessage) {
+          decisionTypes.push('direct_reply')
+        } else if (result.finalText.trim() !== '') {
+          // loop 自然结束但未调 send_message——fallback dispatch
+          decisionTypes.push('direct_reply')
+          try {
+            const channelPort = await this.getChannelPort(message.session.channel_id)
+            await this.rpcClient.call(channelPort, 'send_message', {
+              session_id: sessionId,
+              content: { type: 'text', text: result.finalText },
+            }, this.config.moduleId)
+          } catch (err) {
+            console.error(`[${this.config.moduleId}] handleProcessMessage fallback dispatch failed:`, err)
           }
         }
+        // else: 完全沉默（sentMessage=false，finalText 空，无 exitTool）
 
         return {
           decision_types: decisionTypes,
@@ -1675,7 +1562,12 @@ export class UnifiedAgent extends ModuleBase {
   }
 
   /**
-   * 处理 Admin Chat 消息
+   * 处理 Admin Chat 消息（使用统一 loop）
+   *
+   * Admin Chat 特殊处理：send_message 工具以 channel_id='admin-web' 调用 Channel RPC，
+   * 但 admin 模块未注册 send_message 方法，会导致 RPC 失败。
+   * 因此 agent 调 send_message 失败后 sentMessage=false，finalText 保留回复内容，
+   * 统一 loop 结束后用 finalText 通过 chat_callback RPC 发出。
    */
   private async processAdminChatMessage(
     message: ChannelMessage,
@@ -1720,8 +1612,8 @@ export class UnifiedAgent extends ModuleBase {
         return { decision_types: [] }
       }
 
-      // 检查是否有 Front Agent 能力
-      if (!this.roles.has('front') || !this.frontHandler) {
+      // 检查是否有 Worker Handler 能力
+      if (!this.workerHandler) {
         // 发送错误回复
         await this.rpcClient.call(
           await this.getAdminPort(),
@@ -1733,7 +1625,7 @@ export class UnifiedAgent extends ModuleBase {
           },
           this.config.moduleId
         )
-        this.traceStore.endTrace(trace.trace_id, 'failed', { summary: 'No front agent configured' })
+        this.traceStore.endTrace(trace.trace_id, 'failed', { summary: 'No worker handler configured' })
         return { decision_types: [] }
       }
 
@@ -1743,6 +1635,21 @@ export class UnifiedAgent extends ModuleBase {
         write_scopes: [],
         read_min_visibility: 'private',
         read_accessible_scopes: undefined,
+      }
+
+      const masterFriend: Friend = {
+        id: 'master',
+        display_name: 'Master',
+        permission: 'master',
+        channel_identities: [],
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }
+
+      // 解析 master 权限
+      const masterResolvedPerms = await this.resolvePrincipalPermissions(masterFriend, sessionId, 'private')
+      if (masterResolvedPerms) {
+        this.currentResolvedPerms = masterResolvedPerms
       }
 
       // 组装上下文（Admin Chat 专用，带 span 追踪耗时）
@@ -1763,14 +1670,7 @@ export class UnifiedAgent extends ModuleBase {
           friend_id: message.sender.friend_id ?? 'master',
           session_type: 'private',
         },
-        {
-          id: 'master',
-          display_name: 'Master',
-          permission: 'master',
-          channel_identities: [],
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        },
+        masterFriend,
         masterMemPerms,
         { traceStore: this.traceStore as TraceStoreInterface, traceId: trace.trace_id, parentSpanId: ctxSpan.span_id },
       )
@@ -1779,12 +1679,43 @@ export class UnifiedAgent extends ModuleBase {
       // 构建 TraceCallback
       const traceCallback = this.buildTraceCallback(trace.trace_id)
 
-      // 调用 Front Agent
+      // 调用统一 loop
       this.currentMemPerms = masterMemPerms
-      const result = await this.frontHandler.handleMessage({
-        messages: mergedMessages,
-        context,
-      }, traceCallback)
+      const triggerArrivedAtMs = Date.now()
+      let result
+      try {
+        result = await this.workerHandler.handleTriggerMessage({
+          messages: mergedMessages,
+          activeTasks: context.active_tasks ?? [],
+          isGroup: false,
+          ...(context.scene_profile ? { sceneProfile: context.scene_profile } : {}),
+          senderFriend: masterFriend,
+          triggerArrivedAtMs,
+          memoryPermissions: masterMemPerms,
+          resolvedPermissions: (masterResolvedPerms ?? masterMemPerms) as unknown as ResolvedPermissions,
+          channelId: 'admin-web',
+          sessionId,
+          frontContext: context,
+        }, traceCallback)
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error)
+        console.error(`[${this.config.moduleId}] processAdminChatMessage handleTriggerMessage error:`, error)
+        // 通知 admin chat 发生错误
+        try {
+          await this.rpcClient.call(
+            await this.getAdminPort(),
+            'chat_callback',
+            {
+              request_id: callbackInfo.request_id,
+              reply_type: 'direct_reply',
+              content: '处理消息时发生错误，请稍后重试。',
+            },
+            this.config.moduleId
+          )
+        } catch { /* best effort */ }
+        this.traceStore.endTrace(trace.trace_id, 'failed', { summary: errMsg })
+        return { decision_types: [] }
+      }
 
       // 检查是否已被更新消息取代
       if (this.sessionManager.getPendingRequest(sessionId) !== requestId) {
@@ -1792,105 +1723,98 @@ export class UnifiedAgent extends ModuleBase {
         return { decision_types: [] }
       }
 
-      // 分发决策（使用 Admin Chat 回调）
-      const taskIds: TaskId[] = []
+      // Exit tool dispatch + admin chat 回复
       const decisionTypes: string[] = []
+      const taskIds: TaskId[] = []
 
-      for (const decision of result.decisions) {
-        decisionTypes.push(decision.type)
+      if (result.exitToolCall) {
+        const exitName = result.exitToolCall.name
+        const exitInput = result.exitToolCall.input
 
-        // 记录 decision span
-        const decisionSpan = this.traceStore.startSpan(trace.trace_id, {
-          type: 'decision',
-          details: {
-            decision_type: decision.type,
-            summary: decision.type === 'direct_reply'
-              ? (decision.reply.text ?? '').slice(0, 100)
-              : decision.type === 'create_task'
-              ? decision.task_title
-              : decision.type === 'supplement_task'
-              ? `supplement → ${decision.task_id}: ${decision.supplement_content.slice(0, 60)}`
-              : 'silent',
-          },
-        })
-
-        const dispatchResult = await this.decisionDispatcher.dispatch(
-          decision,
-          {
-            channel_id: 'admin-web',
-            session_id: sessionId,
-            messages: mergedMessages,
-            senderFriend: {
-              id: 'master',
-              display_name: 'Master',
-              permission: 'master' as const,
-              channel_identities: [],
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-            },
-            memoryPermissions: masterMemPerms,
-            admin_chat_callback: callbackInfo,
-          },
-          {
-            traceStore: this.traceStore as TraceStoreInterface,
-            traceId: trace.trace_id,
-            parentSpanId: decisionSpan.span_id,
-          }
-        )
-
-        this.traceStore.endSpan(trace.trace_id, decisionSpan.span_id, 'completed')
-
-        if (dispatchResult.task_id) {
-          taskIds.push(dispatchResult.task_id)
-        }
-      }
-
-      // 写入短期记忆：分诊决策事件（fire-and-forget，不阻塞主流程）
-      if (message.content.text && result.decisions.length > 0) {
-        const messageBrief = mergedMessages
-          .map((m) => m.content.text ?? '')
-          .join(' ')
-          .slice(0, 80)
-
-        for (const decision of result.decisions) {
-          if (decision.type === 'silent') continue
-
-          const memSpan = this.traceStore.startSpan(trace.trace_id, {
-            type: 'memory_write',
-            details: {
-              friend_id: message.sender.friend_id ?? 'master',
-              channel_id: 'admin-web',
-              decision_type: decision.type,
-            },
-          })
-
-          if (decision.type === 'direct_reply') {
-            const emotion = (decision as any).emotion as string | undefined
-            if (emotion && emotion !== 'neutral') {
-              this.memoryWriter.writeUserSignal({
-                friend_name: 'Master',
-                friend_id: message.sender.friend_id ?? 'master',
-                channel_id: 'admin-web',
-                session_id: sessionId,
-                message_brief: messageBrief,
-                emotion: emotion as 'unhappy' | 'frustrated' | 'angry' | 'dismissive',
-                visibility: masterMemPerms.write_visibility,
-                scopes: masterMemPerms.write_scopes,
-              }).then(() => this.traceStore.endSpan(trace.trace_id, memSpan.span_id, 'completed'))
-                .catch(() => this.traceStore.endSpan(trace.trace_id, memSpan.span_id, 'failed'))
-            } else {
-              // L0: 无情绪触发 → 不写短期记忆
-              this.traceStore.endSpan(trace.trace_id, memSpan.span_id, 'completed')
+        if (exitName === 'supplement_task') {
+          decisionTypes.push('supplement_task')
+          const targetTaskId = exitInput['target_task_id']
+          const supplementText = exitInput['supplement_text']
+          if (typeof targetTaskId === 'string' && typeof supplementText === 'string') {
+            // Admin chat supplement：用 chat_callback 发即时回复（不走 send_message）
+            const supplementDecision: import('./types.js').SupplementTaskDecision = {
+              type: 'supplement_task',
+              task_id: targetTaskId,
+              supplement_content: supplementText,
+              immediate_reply: { type: 'text', text: '' },
             }
-          } else {
-            // create_task / supplement_task / silent → 不写 triage 类记忆（spec §6.1.2 砍掉）
-            this.traceStore.endSpan(trace.trace_id, memSpan.span_id, 'completed')
+            const delivered = await this.handleLocalSupplementAdminChat(
+              supplementDecision,
+              sessionId,
+              trace.trace_id,
+              callbackInfo,
+              context.active_tasks ?? [],
+            )
+            if (delivered) {
+              taskIds.push(targetTaskId)
+            }
+          }
+        } else if (exitName === 'stay_silent') {
+          // admin chat 不应 stay_silent，但 warn 并不发任何回复
+          console.warn(`[${this.config.moduleId}] unexpected stay_silent in admin chat`)
+          decisionTypes.push('silent')
+        } else {
+          // 其他 exit tool：用 finalText 通过 chat_callback 发出
+          const replyText = result.finalText.trim()
+          if (replyText) {
+            decisionTypes.push('direct_reply')
+            try {
+              await this.rpcClient.call(
+                await this.getAdminPort(),
+                'chat_callback',
+                {
+                  request_id: callbackInfo.request_id,
+                  reply_type: 'direct_reply',
+                  content: replyText,
+                },
+                this.config.moduleId
+              )
+            } catch (err) {
+              console.error(`[${this.config.moduleId}] admin chat_callback failed:`, err)
+            }
           }
         }
+      } else if (result.sentMessage) {
+        // agent 成功调了 send_message（实际上 admin-web channel 没有 send_message，
+        // 这里 sentMessage=true 意味着工具调用没有 isError，视为已回复）
+        decisionTypes.push('direct_reply')
+      } else {
+        // loop 自然结束（或 send_message 调用失败）：用 finalText 通过 chat_callback 发出
+        const replyText = result.finalText.trim()
+        if (replyText) {
+          decisionTypes.push('direct_reply')
+          try {
+            await this.rpcClient.call(
+              await this.getAdminPort(),
+              'chat_callback',
+              {
+                request_id: callbackInfo.request_id,
+                reply_type: 'direct_reply',
+                content: replyText,
+              },
+              this.config.moduleId
+            )
+          } catch (err) {
+            console.error(`[${this.config.moduleId}] admin chat_callback failed:`, err)
+          }
+        }
+        // else: 完全沉默，不发任何回复
       }
 
-      this.traceStore.endTrace(trace.trace_id, 'completed', {
-        summary: this.extractReplyText(result.decisions)?.slice(0, 200) ?? 'completed',
+      const summaryLabel = result.exitToolCall
+        ? `exit:${result.exitToolCall.name}`
+        : result.sentMessage
+          ? 'sent_message'
+          : result.finalText.trim() !== ''
+            ? 'fallback_dispatch'
+            : 'silent_end'
+      this.traceStore.endTrace(trace.trace_id, result.outcome === 'completed' ? 'completed' : 'failed', {
+        summary: summaryLabel,
       })
 
       return {
@@ -1904,6 +1828,76 @@ export class UnifiedAgent extends ModuleBase {
     } finally {
       this.switchmapHandler.completeRequest(sessionId, requestId)
     }
+  }
+
+  /**
+   * Admin Chat 专用的 supplement 处理：用 chat_callback 发即时回复，而非 send_message。
+   */
+  private async handleLocalSupplementAdminChat(
+    decision: import('./types.js').SupplementTaskDecision,
+    sessionId: string,
+    traceId: string,
+    callbackInfo: { source_module_id: string; request_id: string },
+    activeTasks: ReadonlyArray<import('./types.js').TaskSummary>,
+  ): Promise<boolean> {
+    // Step 1: 检查任务存在
+    if (!this.workerHandler?.hasActiveTask(decision.task_id)) {
+      return false
+    }
+
+    // Step 1.5: scheduled task 不接受 supplement
+    const target = activeTasks.find(t => t.task_id === decision.task_id)
+    if (target?.trigger_type === 'scheduled') {
+      return false
+    }
+
+    // Step 1.7: waiting_human 状态切回 executing
+    if (target?.status === 'waiting_human') {
+      try {
+        const adminPort = await this.getAdminPort()
+        await this.rpcClient.call(adminPort, 'update_task_status', {
+          task_id: decision.task_id,
+          status: 'executing',
+          pending_question: null,
+        }, this.config.moduleId)
+      } catch (err) {
+        console.error(`[handleLocalSupplementAdminChat] failed to transition task ${decision.task_id}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+
+    // Step 2: 发即时回复（通过 chat_callback）
+    const replyText = decision.immediate_reply?.text
+      || `收到，正在调整：${decision.supplement_content.slice(0, 60)}`
+    try {
+      await this.rpcClient.call(
+        await this.getAdminPort(),
+        'chat_callback',
+        {
+          request_id: callbackInfo.request_id,
+          reply_type: 'direct_reply',
+          content: replyText,
+        },
+        this.config.moduleId
+      )
+    } catch (err) {
+      console.error(`[handleLocalSupplementAdminChat] chat_callback failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+
+    // Step 3: 投递纠偏消息
+    try {
+      this.workerHandler!.deliverHumanResponse(decision.task_id, [{
+        platform_message_id: `supplement-${Date.now()}`,
+        session: { channel_id: 'admin-web', session_id: sessionId, type: 'private' as const },
+        sender: { friend_id: 'master', platform_user_id: 'master', platform_display_name: 'Master' },
+        content: { type: 'text' as const, text: `用户补充指示：${decision.supplement_content}` },
+        features: { is_mention_crab: false },
+        platform_timestamp: new Date().toISOString(),
+      }])
+    } catch (error) {
+      console.error(`[handleLocalSupplementAdminChat] deliver failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+
+    return true
   }
 
   private async handleCreateTaskFromSchedule(params: {
@@ -2226,7 +2220,6 @@ export class UnifiedAgent extends ModuleBase {
       // Worker 已通过 updateSkills / updateSystemPrompt 热更新，无需重建（重建会让 in-flight task 的 RPC 路由
       // 找不到原 activeTasks 条目）。仅 model_config 变化才重建 Worker。
       await this.updateLlmClients(mergedModelConfig, {
-        forceFrontRebuild: skillsChanged || systemPromptChanged,
         skipWorkerRebuild: !modelConfigChanged,
       })
     }
@@ -2262,15 +2255,14 @@ export class UnifiedAgent extends ModuleBase {
   /**
    * 热更新 LLM 客户端
    * @param modelConfig 新的模型配置
-   * @param options.forceFrontRebuild 强制重建 Front handler（skills / system_prompt 等 prompt 依赖字段变更时用）
    * @param options.skipWorkerRebuild 跳过 Worker handler 重建（skills / system_prompt 走 worker 自己的热更新方法
    *   updateSkills / updateSystemPrompt，重建会鬼存 in-flight task 的 activeTasks）
    */
   private async updateLlmClients(
     modelConfig: Record<string, LLMConnectionInfo>,
-    options: { forceFrontRebuild?: boolean; skipWorkerRebuild?: boolean } = {},
+    options: { skipWorkerRebuild?: boolean } = {},
   ): Promise<void> {
-    const { basePersonality, workerPersonality, frontSkillListing } =
+    const { basePersonality, workerPersonality } =
       this.buildPromptParts(this.agentConfig?.system_prompt, this.agentConfig?.skills)
 
     // MCP config factory: creates fresh in-process McpServer instances per task
@@ -2283,46 +2275,6 @@ export class UnifiedAgent extends ModuleBase {
         ...(taskCtx ? { getTaskContext: () => taskCtx } : {}),
       }, this.sandboxPathMappingsRef),
     })
-
-    // 更新 Front Agent
-    if (this.roles.has('front')) {
-      const frontConfig = modelConfig.triage
-      if (frontConfig) {
-        const formatChanged = this.frontHandlerFormat !== frontConfig.format
-        if (this.frontHandler && !formatChanged && !options.forceFrontRebuild) {
-          this.frontHandler.updateLlmConfig({
-            endpoint: frontConfig.endpoint,
-            apikey: frontConfig.apikey,
-            model: frontConfig.model_id,
-            supportsVision: frontConfig.supports_vision === true,
-            ...(frontConfig.account_id ? { accountId: frontConfig.account_id } : {}),
-          })
-          console.log(`[${this.config.moduleId}] Front Agent LLM config updated`)
-        } else {
-          const adapter = createAdapter({
-            endpoint: frontConfig.endpoint,
-            apikey: frontConfig.apikey,
-            format: frontConfig.format as LLMFormat,
-            ...(frontConfig.account_id ? { accountId: frontConfig.account_id } : {}),
-          })
-          const llmConfig: FrontHandlerLlmConfig = {
-            adapter,
-            model: frontConfig.model_id,
-            supportsVision: frontConfig.supports_vision === true,
-          }
-          this.frontHandler = new FrontHandler(llmConfig, this.buildToolExecutorDeps(), {
-            getSystemPrompt: (isGroup, sceneProfile) => this.promptManager.assembleFrontPrompt({
-              isGroup, adminPersonality: basePersonality, workerCapabilities: this.getWorkerCapabilitySummary(), skillListing: frontSkillListing,
-              ...(sceneProfile ? { sceneProfile } : {}),
-            }),
-            mcpConfigFactory: createMcpConfigs,
-            getTimezone: () => resolveTimezone(this.agentConfig?.timezone),
-          })
-          this.frontHandlerFormat = frontConfig.format as LLMFormat
-          console.log(`[${this.config.moduleId}] Front Agent handler created (format: ${frontConfig.format})`)
-        }
-      }
-    }
 
     // 更新 Digest 模型（在 Worker 之前，因为 WorkerHandler 构造需要 digestSdkEnv）
     const digestConfig = modelConfig.digest ?? modelConfig.triage ?? modelConfig.worker
@@ -2524,7 +2476,7 @@ export class UnifiedAgent extends ModuleBase {
       active_sessions: this.sessionManager.getActiveSessionCount(),
       current_task_count: this.workerHandler?.getActiveTaskCount() ?? 0,
       llm_status: this.isConfigured() ? 'ready' : 'not_configured',
-      sdk_status: (this.frontHandler || this.sdkEnvWorker) ? 'ready' : 'not_configured',
+      sdk_status: this.sdkEnvWorker ? 'ready' : 'not_configured',
       mcp_servers_count: this.mcpConnector.count,
     }
   }
