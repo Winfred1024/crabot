@@ -255,6 +255,18 @@ export interface EngineOptions {
    * 不传时不做任何处理。
    */
   readonly onAfterCompaction?: (messages: ReadonlyArray<EngineMessage>) => ReadonlyArray<EngineMessage>
+  /**
+   * 超期检测配置。引擎在每个 turn 结束时测量从 `startedAtMs`（默认为 runEngine 入口时刻）
+   * 到当前的 elapsed；超过 timeoutMs 且本 loop 内未注入过时，调 `onOverdue()` 询问注入文本。
+   *
+   * `onOverdue` 返回 `string` 则把该字符串作为 user message 注入并继续 loop（不结束）；
+   * 返回 `null` 表示本次跳过（如 caller 判断已经 send_message 过，无需提醒）。
+   *
+   * 至多注入一次——即便条件继续满足也不会重复触发。
+   *
+   * 不传此字段则关闭超期机制。
+   */
+  readonly overdueConfig?: OverdueConfig
 }
 
 export interface HumanMessageQueueLike {
@@ -265,6 +277,15 @@ export interface HumanMessageQueueLike {
   readonly clearBarrier: () => void
 }
 
+export interface OverdueConfig {
+  /** Elapsed 阈值（毫秒）。命中后引擎询问 `onOverdue` 是否注入。 */
+  readonly timeoutMs: number
+  /** 自定义起始时刻；不传则用 runEngine 入口时刻（Date.now()）。 */
+  readonly startedAtMs?: number
+  /** 命中阈值后引擎调一次此回调。返回 string 注入；返回 null 跳过。引擎保证至多调用一次。 */
+  readonly onOverdue: () => string | null
+}
+
 export interface EngineResult {
   readonly outcome: 'completed' | 'failed' | 'max_turns' | 'aborted'
   readonly finalText: string
@@ -272,6 +293,8 @@ export interface EngineResult {
   readonly usage: LLMTokenUsage
   readonly error?: string
   readonly finalMessages: ReadonlyArray<EngineMessage>
+  /** 本次 run 是否触发过超期注入。未配置 overdueConfig 或未超期时为 false。 */
+  readonly overdueInjected: boolean
 }
 
 // --- Factory Functions ---
