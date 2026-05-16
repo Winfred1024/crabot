@@ -82,6 +82,26 @@ npm run test:coverage
 - `orchestration`: 编排层配置
 - `agent_config`: 智能体层配置
 
+## Feature flags
+
+### `CRABOT_USE_UNIFIED_LOOP`（Phase 3c+）
+
+环境变量，控制是否启用统一 agent loop（合并 Front + Worker 的新架构）。
+
+- `CRABOT_USE_UNIFIED_LOOP=true` → 私聊路径走 `WorkerHandler.handleTriggerMessage`（exit tools + overdue + send_message 检测）
+- 未设置或其他值 → 走原 `FrontHandler.handleMessage` → `decisionDispatcher` 路径（默认）
+
+**当前限制（Phase 3c）：**
+- 仅切换私聊路径；群聊仍走旧路径（Phase 3e 切换）
+- handleTriggerMessage 已接入 messaging tools 与 exit tools；**复杂任务所需的 bash / file / lsp / skill / sub-agent 等工具尚未接入**，复杂任务在 ON 模式下会失败（Phase 3d 接入完整工具集）
+- 启用后可端到端测试：简单 reply / supplement_task / 超期辅助提醒三条主路径
+
+本地测试：
+
+```bash
+CRABOT_USE_UNIFIED_LOOP=true ./dev.sh
+```
+
 ## 协议版本
 
 - v0.2.0: 合并 Flow + Agent
