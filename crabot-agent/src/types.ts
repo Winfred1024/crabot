@@ -747,12 +747,6 @@ export interface SupplementTaskDecision {
   user_attitude?: UserAttitudeNegOnly
 }
 
-export interface FrontLoopResult {
-  decision: MessageDecision
-  /** Only set on forced termination (max rounds exceeded) */
-  toolHistory?: ToolHistoryEntry[]
-}
-
 export type MessageDecision =
   | DirectReplyDecision
   | CreateTaskDecision
