@@ -272,6 +272,18 @@ export interface EngineOptions {
    */
   readonly onAfterCompaction?: (messages: ReadonlyArray<EngineMessage>) => ReadonlyArray<EngineMessage>
   /**
+   * 引擎层主动向 loop 注入 user message 时触发（trace 可见性钩子）。
+   *
+   * 当前 4 类注入：
+   * - `supplement` —— humanMessageQueue 实时纠偏注入
+   * - `overdue_reminder` —— 超期辅助提醒注入（详见 overdueConfig）
+   * - `forced_summary` —— silent end_turn 兜底要求模型重说
+   * - `stop_hook` —— Stop hook block 后注入的引导文本
+   *
+   * caller 可把它接到 traceCallback / 日志 / metric——engine 自身不做任何 trace 写入。
+   */
+  readonly onSystemInjection?: (event: SystemInjectionEvent) => void
+  /**
    * 超期检测配置。引擎在每个 turn 结束时测量从 `startedAtMs`（默认为 runEngine 入口时刻）
    * 到当前的 elapsed；超过 timeoutMs 且本 loop 内未注入过时，调 `onOverdue()` 询问注入文本。
    *
@@ -300,6 +312,19 @@ export interface OverdueConfig {
   readonly startedAtMs?: number
   /** 命中阈值后引擎调一次此回调。返回 string 注入；返回 null 跳过。引擎保证至多调用一次。 */
   readonly onOverdue: () => string | null
+}
+
+/**
+ * 引擎主动注入 user message 时的事件描述。详见 EngineOptions.onSystemInjection。
+ */
+export interface SystemInjectionEvent {
+  readonly type: 'supplement' | 'overdue_reminder' | 'forced_summary' | 'stop_hook'
+  /** 注入的文本内容（不含 ContentBlock[] 形态——supplement 的 ContentBlock 注入退化为 type 字符串描述） */
+  readonly text: string
+  /** 注入发生时的 turn 序号（与 EngineTurnEvent.turnNumber 同口径） */
+  readonly turnNumber: number
+  /** 注入时刻的墙钟（毫秒） */
+  readonly injectedAtMs: number
 }
 
 export interface EngineResult {

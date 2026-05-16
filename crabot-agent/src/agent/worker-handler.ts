@@ -972,6 +972,15 @@ export class WorkerHandler {
           ...(context.resolved_permissions ? { resolvedPermissions: context.resolved_permissions } : {}),
           contentReviewer: this.buildContentReviewer(),
           ...(opts?.overdueConfig ? { overdueConfig: opts.overdueConfig } : {}),
+          onSystemInjection: (event) => {
+            // 系统注入（supplement / overdue / forced_summary / stop_hook）作为 trace 上的 tool-call 风格 span 暴露
+            const label = `__system_${event.type}__`
+            const inputSummary = event.text.slice(0, 200)
+            const spanId = traceCallback?.onToolCallStart(label, inputSummary, event.injectedAtMs)
+            if (spanId) {
+              traceCallback?.onToolCallEnd(spanId, '(engine injected user message)', undefined, event.injectedAtMs)
+            }
+          },
           onLiveProgress: (event: LiveProgressEvent) => {
             // Update in-memory snapshot so ContextAssembler can read it.
             // 容错：如果任务已被清理（极端情况下 abort 后还有 in-flight 回调），略过。

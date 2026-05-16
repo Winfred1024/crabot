@@ -186,6 +186,12 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
         const supplements = options.humanMessageQueue.drainPending()
         for (const content of supplements) {
           messages.push(createUserMessage(content))
+          options.onSystemInjection?.({
+            type: 'supplement',
+            text: typeof content === 'string' ? content : '[ContentBlock[] supplement]',
+            turnNumber: totalTurns,
+            injectedAtMs: Date.now(),
+          })
         }
         continue
       }
@@ -198,6 +204,12 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
         overdueInjected = true
         if (text !== null) {
           messages.push(createUserMessage(text))
+          options.onSystemInjection?.({
+            type: 'overdue_reminder',
+            text,
+            turnNumber: totalTurns,
+            injectedAtMs: Date.now(),
+          })
           continue
         }
         // text === null：caller 主动跳过（如已 send_message）；不注入，进入正常收口路径
@@ -211,6 +223,12 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
           const stopResult = await executeHooks(matching, stopInput, hooks.context)
           if (stopResult.action === 'block' && stopResult.message) {
             messages.push(createUserMessage(stopResult.message))
+            options.onSystemInjection?.({
+              type: 'stop_hook',
+              text: stopResult.message,
+              turnNumber: totalTurns,
+              injectedAtMs: Date.now(),
+            })
             continue
           }
         }
@@ -246,6 +264,12 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
           ))
         }
         messages.push(createUserMessage(FORCED_SUMMARY_PROMPT))
+        options.onSystemInjection?.({
+          type: 'forced_summary',
+          text: FORCED_SUMMARY_PROMPT,
+          turnNumber: totalTurns,
+          injectedAtMs: Date.now(),
+        })
         pendingForcedSummaryAttempt = silentEndTurnCount
         continue
       }
@@ -274,6 +298,12 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
         const supplements = options.humanMessageQueue.drainPending()
         for (const content of supplements) {
           messages.push(createUserMessage(content))
+          options.onSystemInjection?.({
+            type: 'supplement',
+            text: typeof content === 'string' ? content : '[ContentBlock[] supplement]',
+            turnNumber: totalTurns,
+            injectedAtMs: Date.now(),
+          })
         }
 
         // Fire onTurn with cancelled tools for trace recording.
@@ -476,6 +506,12 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
       const supplements = options.humanMessageQueue.drainPending()
       for (const content of supplements) {
         messages.push(createUserMessage(content))
+        options.onSystemInjection?.({
+          type: 'supplement',
+          text: typeof content === 'string' ? content : '[ContentBlock[] supplement]',
+          turnNumber: totalTurns,
+          injectedAtMs: Date.now(),
+        })
       }
     }
 
@@ -485,6 +521,12 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
       overdueInjected = true
       if (text !== null) {
         messages.push(createUserMessage(text))
+        options.onSystemInjection?.({
+          type: 'overdue_reminder',
+          text,
+          turnNumber: totalTurns,
+          injectedAtMs: Date.now(),
+        })
       }
     }
 
