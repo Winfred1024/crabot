@@ -298,17 +298,34 @@ export class TraceStore {
     const indexEntry = this.traceIndex.find(e => e.trace_id === traceId)
     if (!indexEntry || !this.persistDir || !indexEntry.file) return undefined
 
-    // 3. 从 JSONL 按需读取
+    // 3. 从 JSONL 按需读取——分块循环读直到遇到换行符（容纳任意大小 trace；
+    //    历史 bug：固定 64KB buffer 会把 spans 较多的 trace 截断 → JSON parse 失败 → 404）
     try {
       const filePath = path.join(this.persistDir, indexEntry.file)
       const fd = fs.openSync(filePath, 'r')
       try {
-        const bufSize = 64 * 1024 // 64KB initial read (most traces are <50KB)
-        const buf = Buffer.allocUnsafe(bufSize)
-        const bytesRead = fs.readSync(fd, buf, 0, bufSize, indexEntry.file_offset)
-        const content = buf.toString('utf-8', 0, bytesRead)
-        const lineEnd = content.indexOf('\n')
-        const line = lineEnd >= 0 ? content.slice(0, lineEnd) : content
+        const CHUNK = 64 * 1024 // 64KB per read
+        const buf = Buffer.allocUnsafe(CHUNK)
+        const chunks: string[] = []
+        let position = indexEntry.file_offset
+        let foundNewline = false
+
+        while (!foundNewline) {
+          const bytesRead = fs.readSync(fd, buf, 0, CHUNK, position)
+          if (bytesRead === 0) break // EOF
+          const slice = buf.toString('utf-8', 0, bytesRead)
+          const nlIdx = slice.indexOf('\n')
+          if (nlIdx >= 0) {
+            chunks.push(slice.slice(0, nlIdx))
+            foundNewline = true
+          } else {
+            chunks.push(slice)
+            position += bytesRead
+          }
+        }
+
+        const line = chunks.join('')
+        if (!line) return undefined
         return JSON.parse(line) as AgentTrace
       } finally {
         fs.closeSync(fd)

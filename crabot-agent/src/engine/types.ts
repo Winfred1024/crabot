@@ -141,6 +141,22 @@ export interface ToolDefinition {
   readonly isReadOnly: boolean
   readonly permissionLevel?: ToolPermissionLevel
   readonly category?: ToolCategory
+  /**
+   * 仅 turn 0 可调用。在 turn ≥ 1 调用此工具时，引擎不真正执行 `call`，
+   * 而是返回 error 类工具结果（"Tool 'X' is only callable on turn 0..."），
+   * 让 LLM 看到拒绝信号并自行调整。
+   *
+   * 用于 supplement_task / stay_silent 这类 turn 0 triage 决策工具。
+   */
+  readonly turnZeroOnly?: boolean
+  /**
+   * 调用后引擎立刻退出 loop，把工具调用信息（name + input）写入 EngineResult.exitToolCall。
+   * 引擎不调用 `call` 函数（exit 工具本身无需执行），也不 push tool_result——
+   * 直接 buildResult('completed', ...) 返回。
+   *
+   * 用于 supplement_task / stay_silent 这类"调完就走"的早退工具。
+   */
+  readonly exitsLoop?: boolean
   readonly call: (input: Record<string, unknown>, context: ToolCallContext) => Promise<ToolCallResult>
 }
 
@@ -255,6 +271,50 @@ export interface EngineOptions {
    * 不传时不做任何处理。
    */
   readonly onAfterCompaction?: (messages: ReadonlyArray<EngineMessage>) => ReadonlyArray<EngineMessage>
+  /**
+   * 引擎层主动向 loop 注入 user message 时触发（trace 可见性钩子）。
+   *
+   * 当前 4 类注入：
+   * - `supplement` —— humanMessageQueue 实时纠偏注入
+   * - `overdue_reminder` —— 超期辅助提醒注入（详见 overdueConfig）
+   * - `forced_summary` —— silent end_turn 兜底要求模型重说
+   * - `stop_hook` —— Stop hook block 后注入的引导文本
+   *
+   * caller 可把它接到 traceCallback / 日志 / metric——engine 自身不做任何 trace 写入。
+   */
+  readonly onSystemInjection?: (event: SystemInjectionEvent) => void
+  /**
+   * 抑制 forced_summary 注入的判定回调。返回 true → engine 跳过 silent end_turn 的
+   * forced_summary 兜底机制，直接接受 silent end_turn 作为正常完成态。
+   *
+   * 设计动机：老 worker 路径下 finalText 是交付，silent end_turn 是异常→需要 forced_summary
+   * 兜底。新 unified loop 下交付走 send_message 工具，silent end_turn 是设计预期。caller
+   * （unified handler）传 `() => finalSent` 来表达"agent 已用 intent='final' 发过最终交付"。
+   *
+   * 不传时维持现有行为：始终启用 forced_summary。
+   */
+  readonly suppressForcedSummary?: () => boolean
+  /**
+   * 上下文压缩开始时触发（trace 可见性钩子）。
+   * compaction 内部跑一次 LLM call 做摘要，可能耗时几秒——不接 trace 就是黑洞。
+   */
+  readonly onCompactionStart?: () => void
+  /**
+   * 上下文压缩完成时触发。`info` 含压缩前后消息数与耗时。
+   */
+  readonly onCompactionEnd?: (info: { readonly beforeCount: number; readonly afterCount: number; readonly durationMs: number }) => void
+  /**
+   * 超期检测配置。引擎在每个 turn 结束时测量从 `startedAtMs`（默认为 runEngine 入口时刻）
+   * 到当前的 elapsed；超过 timeoutMs 且本 loop 内未注入过时，调 `onOverdue()` 询问注入文本。
+   *
+   * `onOverdue` 返回 `string` 则把该字符串作为 user message 注入并继续 loop（不结束）；
+   * 返回 `null` 表示本次跳过（如 caller 判断已经 send_message 过，无需提醒）。
+   *
+   * 至多注入一次——即便条件继续满足也不会重复触发。
+   *
+   * 不传此字段则关闭超期机制。
+   */
+  readonly overdueConfig?: OverdueConfig
 }
 
 export interface HumanMessageQueueLike {
@@ -265,6 +325,28 @@ export interface HumanMessageQueueLike {
   readonly clearBarrier: () => void
 }
 
+export interface OverdueConfig {
+  /** Elapsed 阈值（毫秒）。命中后引擎询问 `onOverdue` 是否注入。 */
+  readonly timeoutMs: number
+  /** 自定义起始时刻；不传则用 runEngine 入口时刻（Date.now()）。 */
+  readonly startedAtMs?: number
+  /** 命中阈值后引擎调一次此回调。返回 string 注入；返回 null 跳过。引擎保证至多调用一次。 */
+  readonly onOverdue: () => string | null
+}
+
+/**
+ * 引擎主动注入 user message 时的事件描述。详见 EngineOptions.onSystemInjection。
+ */
+export interface SystemInjectionEvent {
+  readonly type: 'supplement' | 'overdue_reminder' | 'forced_summary' | 'stop_hook'
+  /** 注入的文本内容（不含 ContentBlock[] 形态——supplement 的 ContentBlock 注入退化为 type 字符串描述） */
+  readonly text: string
+  /** 注入发生时的 turn 序号（与 EngineTurnEvent.turnNumber 同口径） */
+  readonly turnNumber: number
+  /** 注入时刻的墙钟（毫秒） */
+  readonly injectedAtMs: number
+}
+
 export interface EngineResult {
   readonly outcome: 'completed' | 'failed' | 'max_turns' | 'aborted'
   readonly finalText: string
@@ -272,6 +354,13 @@ export interface EngineResult {
   readonly usage: LLMTokenUsage
   readonly error?: string
   readonly finalMessages: ReadonlyArray<EngineMessage>
+  /** 本次 run 是否触发过超期注入。未配置 overdueConfig 或未超期时为 false。 */
+  readonly overdueInjected: boolean
+  /**
+   * 早退工具（`exitsLoop=true` 的工具）被调用时填入工具 name + 原始 input。
+   * 未触发早退时为 undefined。
+   */
+  readonly exitToolCall?: { readonly name: string; readonly input: Record<string, unknown> }
 }
 
 // --- Factory Functions ---
