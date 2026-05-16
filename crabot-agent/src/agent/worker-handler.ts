@@ -1149,6 +1149,12 @@ export class WorkerHandler {
       }
       : undefined
 
+    // Start trace loop span
+    const loopSpanId = traceCallback?.onLoopStart('agent', {
+      model: this.sdkEnv.modelId,
+      tools: tools.map(t => t.name),
+    })
+
     let engineResult: import('../engine/types.js').EngineResult
     try {
       engineResult = await runEngine({
@@ -1164,14 +1170,61 @@ export class WorkerHandler {
           ...(overdueConfig ? { overdueConfig } : {}),
           onTurn: (event) => {
             detectSendMessage(event.toolCalls)
-            // Phase 3b: traceCallback 调用省略——handleTriggerMessage 不建立 loopSpan，
-            // Phase 3c 接入完整 caller 时再对齐 executeTask 的 trace 写入模式。
-            void traceCallback
+
+            // Trace spans for this turn (LLM + each tool call)
+            const inputSummary = event.turnNumber === 1
+              ? userPromptText.slice(0, 150)
+              : `(turn ${event.turnNumber})`
+            const llmEndedAtMs = event.llmStartedAtMs !== undefined && event.llmCallMs !== undefined
+              ? event.llmStartedAtMs + event.llmCallMs
+              : undefined
+            const llmSpanId = traceCallback?.onLlmCallStart(
+              event.turnNumber,
+              inputSummary,
+              undefined,
+              event.llmStartedAtMs,
+            )
+
+            for (const tc of event.toolCalls) {
+              const toolEndedAtMs = tc.startedAtMs !== undefined && tc.durationMs !== undefined
+                ? tc.startedAtMs + tc.durationMs
+                : undefined
+              const toolSpanId = traceCallback?.onToolCallStart(
+                tc.name,
+                JSON.stringify(tc.input ?? {}).slice(0, 200),
+                tc.startedAtMs,
+              )
+              if (toolSpanId) {
+                traceCallback?.onToolCallEnd(
+                  toolSpanId,
+                  tc.output?.slice(0, 500) || '(no output)',
+                  tc.isError ? tc.output : undefined,
+                  toolEndedAtMs,
+                )
+              }
+            }
+
+            if (llmSpanId) {
+              traceCallback?.onLlmCallEnd(
+                llmSpanId,
+                {
+                  stopReason: event.stopReason ?? undefined,
+                  outputSummary: event.assistantText.slice(0, 200) || undefined,
+                  toolCallsCount: event.toolCalls.length > 0 ? event.toolCalls.length : undefined,
+                  ...(event.forcedSummaryAttempt !== undefined ? { forcedSummaryAttempt: event.forcedSummaryAttempt } : {}),
+                  ...(event.usage ? { usage: llmUsageToTrace(event.usage) } : {}),
+                },
+                llmEndedAtMs,
+              )
+            }
           },
         },
       })
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error)
+      if (loopSpanId) {
+        traceCallback?.onLoopEnd(loopSpanId, 'failed', 0)
+      }
       return {
         outcome: 'failed' as const,
         finalText: '',
@@ -1179,6 +1232,12 @@ export class WorkerHandler {
         overdueInjected: false,
         error: errMsg,
       }
+    }
+
+    // End trace loop span
+    const isError = engineResult.outcome === 'failed'
+    if (loopSpanId) {
+      traceCallback?.onLoopEnd(loopSpanId, isError ? 'failed' : 'completed', engineResult.totalTurns)
     }
 
     return {
