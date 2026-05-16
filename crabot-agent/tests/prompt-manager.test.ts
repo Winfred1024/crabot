@@ -3,97 +3,7 @@ import { PromptManager } from '../src/prompt-manager.js'
 
 const pm = new PromptManager()
 
-const frontPrivate = pm.assembleFrontPrompt({ isGroup: false })
-const frontGroup = pm.assembleFrontPrompt({ isGroup: true })
 const worker = pm.assembleWorkerPrompt()
-
-describe('Front prompt — 三段式章节标题', () => {
-  it('私聊版含三段标题', () => {
-    expect(frontPrivate).toContain('## 一、判别')
-    expect(frontPrivate).toContain('## 二、决策')
-    expect(frontPrivate).toContain('## 三、收尾措辞')
-  })
-
-  it('群聊版含三段标题', () => {
-    expect(frontGroup).toContain('## 一、判别')
-    expect(frontGroup).toContain('## 二、决策')
-    expect(frontGroup).toContain('## 三、收尾措辞')
-  })
-})
-
-describe('Front prompt — 已搬移规则保留', () => {
-  it('决策判断标准保留', () => {
-    expect(frontPrivate).toContain('1-2 步工具调用内完成')
-    expect(frontPrivate).toContain('需要多步操作')
-    expect(frontPrivate).toContain('任务匹配某个 skill')
-  })
-
-  it('reply 选用前的 3 类反模式 self-check 存在', () => {
-    expect(frontPrivate).toContain('Sycophancy ghost-promise')
-    expect(frontPrivate).toContain('Context hallucination')
-    expect(frontPrivate).toContain('Worker displacement')
-  })
-
-  it('supplement_task 使用条件保留', () => {
-    expect(frontPrivate).toContain('supplement_task')
-    expect(frontPrivate).toContain('活跃任务列表中存在匹配')
-  })
-
-  it('已注入的上下文段保留', () => {
-    expect(frontPrivate).toContain('聊天历史')
-    expect(frontPrivate).toContain('短期记忆')
-    expect(frontPrivate).toContain('活跃任务')
-  })
-
-  it('记忆路由保留', () => {
-    expect(frontPrivate).toContain('store_memory')
-    expect(frontPrivate).toContain('set_scene_profile')
-  })
-
-  it('user_attitude 4 档判定保留', () => {
-    expect(frontPrivate).toContain('strong_pass')
-    expect(frontPrivate).toContain('strong_fail')
-    expect(frontPrivate).toContain('情绪用于判别')
-  })
-
-  it('user_attitude 绝不填情形保留', () => {
-    expect(frontPrivate).toContain('感觉')
-    expect(frontPrivate).toContain('全新话题')
-    expect(frontPrivate).toContain('补充（不是纠偏）')
-  })
-
-  it('群聊规则保留（仅群聊版）', () => {
-    expect(frontGroup).toContain('## 群聊规则')
-    expect(frontGroup).toContain('被 @你 时禁止 stay_silent')
-    expect(frontPrivate).not.toContain('## 群聊规则')
-  })
-
-  it('私聊版包含必须回复声明', () => {
-    expect(frontPrivate).toContain('必须回复')
-  })
-})
-
-describe('Front prompt — 新增规则', () => {
-  it('收到失败反馈时（决策段）', () => {
-    expect(frontPrivate).toContain('收到失败反馈时')
-    expect(frontPrivate).toContain('显式以问句结尾')  // 反问决策权但不给固定句式模板
-    expect(frontPrivate).toContain('禁止')
-  })
-
-  it('reply.text 克制反问（收尾段）', () => {
-    expect(frontPrivate).toContain('克制反问')
-    expect(frontPrivate).toContain('信息不足以决策')
-    expect(frontPrivate).toContain('用户态度模糊')
-    expect(frontPrivate).toContain('多分支')
-    expect(frontPrivate).toContain('破坏性操作')
-    expect(frontPrivate).toContain('最多一个')
-  })
-
-  it('ack_text 禁止反问（收尾段）', () => {
-    expect(frontPrivate).toContain('ack_text')
-    expect(frontPrivate).toContain('立即开始')
-  })
-})
 
 describe('Worker prompt — 三段式章节标题', () => {
   it('含三段标题', () => {
@@ -179,12 +89,6 @@ describe('Worker prompt — 新增规则', () => {
   })
 })
 
-describe('Front prompt — 删除项不应再出现', () => {
-  it('不含 ProgressDigest 已接管的过时叙事', () => {
-    expect(frontPrivate).not.toContain('实时看到')
-  })
-})
-
 describe('Worker prompt — 删除项不应再出现', () => {
   it('不含 L0/L1/L2 v1 残留', () => {
     expect(worker).not.toContain('L0')
@@ -205,27 +109,6 @@ describe('Worker prompt — 删除项不应再出现', () => {
     expect(worker).not.toContain('已验：')
     expect(worker).not.toContain('未验：')
     expect(worker).not.toContain('分层声明覆盖')
-  })
-})
-
-describe('PromptManager 注入', () => {
-  it('worker capabilities 注入', () => {
-    const out = pm.assembleFrontPrompt({
-      isGroup: false,
-      workerCapabilities: [{ category: '浏览器操作', tools: ['screenshot'] }],
-    })
-    expect(out).toContain('任务执行能力范围')
-    expect(out).toContain('浏览器操作')
-    expect(out).toContain('工具调用硬性规则')
-  })
-
-  it('skill listing 注入', () => {
-    const out = pm.assembleFrontPrompt({
-      isGroup: false,
-      skillListing: '## 可用技能\n- foo: bar',
-    })
-    expect(out).toContain('可用技能')
-    expect(out).toContain('foo: bar')
   })
 })
 
@@ -270,27 +153,14 @@ describe('PromptManager.assembleWorkerPrompt — opts 签名', () => {
   })
 })
 
-describe('Crabot 产品自我认知 — Front + Worker 同源注入', () => {
-  it('Front 私聊版含产品自我认知段', () => {
-    expect(frontPrivate).toContain('## 你是基于 Crabot 打造的具有独立人格的 AI 数字人')
-    expect(frontPrivate).toContain('Crabot 的组成')
-  })
-
-  it('Front 群聊版同样含产品自我认知段', () => {
-    expect(frontGroup).toContain('## 你是基于 Crabot 打造的具有独立人格的 AI 数字人')
-    expect(frontGroup).toContain('Crabot 的组成')
-  })
-
+describe('Crabot 产品自我认知 — Worker 同源注入', () => {
   it('Worker 含产品自我认知段', () => {
     expect(worker).toContain('## 你是基于 Crabot 打造的具有独立人格的 AI 数字人')
     expect(worker).toContain('Crabot 的组成')
   })
 
   it('明确"AI 数字人"产品定位（不是仅响应式问答机器人）', () => {
-    expect(frontPrivate).toContain('AI 数字人')
     expect(worker).toContain('AI 数字人')
-    // 主动 = 自发推动事情（产品定位的核心动词）
-    expect(frontPrivate).toContain('自发推动事情')
   })
 
   it('涵盖 Crabot 全部基础设施类别（不是只 schedule + task + memory 三件套）', () => {
@@ -305,55 +175,21 @@ describe('Crabot 产品自我认知 — Front + Worker 同源注入', () => {
       '工具生态',
       '自管理 CLI',
     ]) {
-      expect(frontPrivate).toContain(infra)
       expect(worker).toContain(infra)
     }
   })
 
-  it('主动性的具体动作有提及', () => {
-    // 用动作动词而非触发词，避免 specification gaming
-    expect(frontPrivate).toContain('send_private_message')       // 执行中遇额外信号 → 通报
-    expect(frontPrivate).toContain('多想一步')                    // 任务收尾多想一步
-  })
-
   it('用"承诺 → 产物"目标语义引导，不依赖触发词清单', () => {
-    expect(frontPrivate).toContain('承诺 → 产物')
-    expect(frontPrivate).toContain('可观测、可重放的产物')
     expect(worker).toContain('承诺 → 产物')
+    expect(worker).toContain('可观测、可重放的产物')
   })
 
   it('显式点出"我会想着 / 盯着 / 主动观察"是没有产物的反模式', () => {
-    expect(frontPrivate).toContain('我会想着')
     expect(worker).toContain('我会想着')
   })
 
   it('对话对象是"人类"而非 master（Crabot 是多 Channel / 多 Friend 角色）', () => {
-    // CRABOT_PRODUCT_SELF 段不应出现"对 master 的承诺"——多 Friend 场景下不准确
-    expect(frontPrivate).toContain('对人类的承诺')
     expect(worker).toContain('对人类的承诺')
-  })
-})
-
-describe('Front 工具调用硬性规则 — 措辞精准（修复 A→B 间发现的 over-restriction）', () => {
-  it('不再写死"你唯一能调用的工具是 4 个决策工具"', () => {
-    const out = pm.assembleFrontPrompt({
-      isGroup: false,
-      workerCapabilities: [{ category: 'browser', tools: [] }],
-    })
-    // 旧措辞会让 LLM 误以为 query_tasks / create_schedule / messaging MCP 等
-    // 已注册工具都不能调用——本次放宽为"已注册给你的工具列表"。
-    expect(out).not.toContain('你唯一能调用的工具是你的决策工具')
-    expect(out).toContain('已注册给你的工具列表')
-  })
-
-  it('保留反幻觉防护：禁止模拟 Worker 端工具', () => {
-    const out = pm.assembleFrontPrompt({
-      isGroup: false,
-      workerCapabilities: [{ category: 'browser', tools: [] }],
-    })
-    expect(out).toContain('Worker 端能力')
-    expect(out).toContain('<invoke name="...">')
-    expect(out).toContain('必须通过 create_task 委派')
   })
 })
 

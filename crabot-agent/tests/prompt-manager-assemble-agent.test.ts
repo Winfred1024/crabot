@@ -16,12 +16,7 @@ describe('PromptManager.assembleAgentPrompt 委派', () => {
     expect(prompt).toContain('stay_silent(reason)')
   })
 
-  it('旧 assembleFrontPrompt 仍然可用（兼容期）', () => {
-    const old = pm.assembleFrontPrompt({ isGroup: false })
-    expect(old).toContain('## 一、判别')
-  })
-
-  it('旧 assembleWorkerPrompt 仍然可用（兼容期）', () => {
+  it('assembleWorkerPrompt 仍然可用', () => {
     const old = pm.assembleWorkerPrompt()
     expect(old).toContain('## 一、接任')
   })
