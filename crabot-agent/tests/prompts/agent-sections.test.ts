@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { CRABOT_BRAIN_IDENTITY, SYSTEM_DIALOGUE_BOUNDARY, WORKFLOW_PRIVATE, WORKFLOW_GROUP } from '../../src/prompts/agent-sections.js'
+import { CRABOT_BRAIN_IDENTITY, SYSTEM_DIALOGUE_BOUNDARY, WORKFLOW_PRIVATE, WORKFLOW_GROUP, SEND_MESSAGE_SPEC } from '../../src/prompts/agent-sections.js'
 
 describe('#1 你是 Crabot 的大脑', () => {
   it('开头自我定位为"认知中枢"', () => {
@@ -108,5 +108,39 @@ describe('#3 工作流 · 群聊版', () => {
 
   it('主工作流/超期辅助/反思 段说明引用私聊版', () => {
     expect(WORKFLOW_GROUP).toContain('与私聊一致')
+  })
+})
+
+describe('#4 send_message 工具使用规范', () => {
+  it('说明 intent 字段语义', () => {
+    expect(SEND_MESSAGE_SPEC).toContain('intent="normal"')
+    expect(SEND_MESSAGE_SPEC).toContain('intent="ask_human"')
+  })
+
+  it('要求 ask_human 结构化书写', () => {
+    expect(SEND_MESSAGE_SPEC).toContain('背景一句话')
+    expect(SEND_MESSAGE_SPEC).toContain('问题清单')
+    expect(SEND_MESSAGE_SPEC).toContain('明示阻塞性')
+  })
+
+  it('含 ask_human 反例 + 正例', () => {
+    expect(SEND_MESSAGE_SPEC).toContain('反例')
+    expect(SEND_MESSAGE_SPEC).toContain('正例')
+  })
+
+  it('要求隐藏内部 ID', () => {
+    expect(SEND_MESSAGE_SPEC).toContain('隐藏内部 ID')
+    expect(SEND_MESSAGE_SPEC).toContain('message_id')
+    expect(SEND_MESSAGE_SPEC).toContain('task_id')
+  })
+
+  it('强调 send_message 不会自动调用', () => {
+    expect(SEND_MESSAGE_SPEC).toContain('必须显式调用')
+  })
+
+  it('含克制反问 4 条触发条件', () => {
+    expect(SEND_MESSAGE_SPEC).toContain('信息不足以决策')
+    expect(SEND_MESSAGE_SPEC).toContain('破坏性操作')
+    expect(SEND_MESSAGE_SPEC).toContain('最多一个')
   })
 })
