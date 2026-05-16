@@ -24,7 +24,7 @@ describe('#1 你是 Crabot 的大脑', () => {
     expect(CRABOT_BRAIN_IDENTITY).toContain('### 事实 → 证据')
   })
 
-  it('保留 specification gaming 命名出处', () => {
-    expect(CRABOT_BRAIN_IDENTITY).toContain('证据')
+  it('事实→证据 段含"缺证据就去补证据"指令', () => {
+    expect(CRABOT_BRAIN_IDENTITY).toContain('缺证据就去补证据')
   })
 })
