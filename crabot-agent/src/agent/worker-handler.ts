@@ -1249,7 +1249,10 @@ export class WorkerHandler {
         ...(overdueConfig ? { overdueConfig } : {}),
         onAfterTurn: (event) => {
           for (const tc of event.toolCalls) {
-            if ((tc.name === 'send_message' || tc.name === 'send_private_message') && !tc.isError) {
+            // MCP 工具名带 namespace 前缀（mcp__crab-messaging__send_message）；
+            // 裸名形式（send_message）作为同名直连工具的 fallback 也支持。
+            const bare = tc.name.replace(/^mcp__[^_]+__/, '')
+            if ((bare === 'send_message' || bare === 'send_private_message') && !tc.isError) {
               sentMessage = true
               break
             }
