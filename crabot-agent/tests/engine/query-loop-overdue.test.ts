@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { runEngine } from '../../src/engine/query-loop.js'
 import type { LLMAdapter } from '../../src/engine/llm-adapter-types.js'
+import { HumanMessageQueue } from '../../src/engine/human-message-queue.js'
 
 function makeAdapter(responses: Array<{ text: string; stopReason: 'end_turn' | 'tool_use' }>): LLMAdapter {
   let i = 0
@@ -147,5 +148,41 @@ describe('query-loop overdue: 守卫与跳过', () => {
     expect((adapter.complete as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2)
     expect(result.overdueInjected).toBe(true)
     expect(result.finalText).toBe('收到，已 send_message')
+  })
+})
+
+describe('query-loop overdue: 与 supplement 的交互', () => {
+  it('end_turn 时 supplement 已 pending + 同时超期 → supplement 优先，overdue 留待下一轮', async () => {
+    const queue = new HumanMessageQueue()
+    queue.push('用户突然纠偏')
+
+    const adapter = makeAdapter([
+      { text: '准备结束', stopReason: 'end_turn' },          // turn 1：supplement 截胡，不触发 overdue
+      { text: '改做 X', stopReason: 'end_turn' },             // turn 2：仍超期且 supplement 已耗尽 → 触发 overdue
+      { text: '收到提醒，已告知', stopReason: 'end_turn' },     // turn 3：结束
+    ])
+    const onOverdue = vi.fn(() => '请先 send_message 告知正在处理')
+
+    const result = await runEngine({
+      prompt: 'test',
+      adapter,
+      options: {
+        tools: [],
+        systemPrompt: '',
+        model: 'test',
+        humanMessageQueue: queue,
+        overdueConfig: {
+          timeoutMs: 1000,
+          startedAtMs: Date.now() - 5000,
+          onOverdue,
+        },
+      },
+    })
+
+    // 3 次 LLM 调用：supplement 截 turn 1, overdue 截 turn 2, turn 3 才结束
+    expect((adapter.complete as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(3)
+    expect(onOverdue).toHaveBeenCalledTimes(1)
+    expect(result.overdueInjected).toBe(true)
+    expect(result.finalText).toBe('收到提醒，已告知')
   })
 })
