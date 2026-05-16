@@ -51,6 +51,10 @@ import type {
   LiveToolCall,
   LiveCompletedTool,
   ResolvedPermissions,
+  Friend,
+  TaskSummary,
+  MemoryPermissions,
+  RuntimeSceneProfile,
 } from '../types.js'
 import type { RpcClient } from 'crabot-shared'
 import { createCrabMemoryServer } from '../mcp/crab-memory.js'
@@ -73,6 +77,7 @@ import { getInstanceSkillsDir } from '../core/data-paths.js'
 import { llmUsageToTrace } from '../core/trace-usage.js'
 import { TodoStore } from './worker-todo-store.js'
 import { createTodoTool } from './worker-todo-tool.js'
+import { getAgentExitTools } from './agent-exit-tools.js'
 import { reflectStructuredOutcome } from '../orchestration/structured-outcome-reflector.js'
 
 import * as fs from 'fs'
@@ -199,6 +204,49 @@ export interface WorkerHandlerOptions {
    * 来自 createWorkerHandler 解析 SUBAGENT_DEFINITIONS 后的实际可用列表。
    */
   subAgentHints?: ReadonlyArray<{ readonly toolName: string; readonly workerHint: string }>
+}
+
+export interface HandleTriggerMessageParams {
+  /** 触发消息列表（已合并：多条相邻同 sender 消息可能合一） */
+  readonly messages: ReadonlyArray<ChannelMessage>
+  /** 当前活跃任务摘要 */
+  readonly activeTasks: ReadonlyArray<TaskSummary>
+  /** 是否群聊 */
+  readonly isGroup: boolean
+  /** 当前场景画像（私聊也可能有） */
+  readonly sceneProfile?: RuntimeSceneProfile
+  /** 触发消息发送者 friend 信息 */
+  readonly senderFriend: Friend
+  /** 触发消息进入 agent 的时刻（用于 overdue 计算） */
+  readonly triggerArrivedAtMs: number
+  /** 超期阈值（毫秒）；默认 30_000 */
+  readonly timeoutMs?: number
+  /** 是否启用超期辅助提醒；默认 true */
+  readonly overdueReminderEnabled?: boolean
+  /** 内存权限 */
+  readonly memoryPermissions: MemoryPermissions
+  /** 解析后的发送者权限 */
+  readonly resolvedPermissions: ResolvedPermissions
+  /** Channel / session 标识 */
+  readonly channelId: string
+  readonly sessionId: string
+}
+
+export interface HandleTriggerMessageResult {
+  /** Engine 结束原因 */
+  readonly outcome: 'completed' | 'failed' | 'max_turns' | 'aborted'
+  /** 最终 assistant 文本（未必是发给用户的——可能仍是内部 reasoning） */
+  readonly finalText: string
+  /** 早退工具调用（supplement_task / stay_silent）。若 loop 自然结束则 undefined */
+  readonly exitToolCall?: { readonly name: string; readonly input: Record<string, unknown> }
+  /** 是否触发过超期注入 */
+  readonly overdueInjected: boolean
+  /** loop 内是否调过 send_message（任一 messaging tool） */
+  readonly sentMessage: boolean
+  /** Engine 错误信息（outcome=failed 时填） */
+  readonly error?: string
+  /** Trace ID（供 caller 关联） */
+  readonly traceId?: string
 }
 
 export class WorkerHandler {
