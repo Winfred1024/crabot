@@ -213,6 +213,60 @@ export const TIME_AWARENESS = `## 时间感知
 - 任务列表中的"创建于 HH:MM"是任务创建时刻；"第 N 轮"是任务进展的
   离散指标。`
 
+export const INFO_QUERY_GUIDE = `## 信息查询指引（按需查，不预注入）
+
+长短期记忆和历史 trace 都不再预注入到 prompt。需要时主动查工具，
+禁止凭印象作答——凭印象 = hallucination。
+
+### 短期记忆（跨 channel/session 近期事件）
+
+短期记忆 = 跨 channel/session 的近期事件流水（自动汇总过去 24-48h 内的 task 完成 / 重要 message 等）。**何时需要主动调 \`search_short_term\`**——以下情形必须查，凭印象答 = hallucination：
+
+- 用户用代词指代过去事件（"刚才"、"那个 X"、"上次"、"接着之前的"、"之前那个"）且**当前 session 聊天历史里没有唯一锚点**
+- 用户询问 6 小时窗外的历史（聊天历史段 summary 行已告知 6h 外不在 prompt 里）
+- 用户询问其他 channel/session 的过去 task 结论或事件
+- 你需要复述用户曾说过的具体内容 / 自己曾产出过什么 deliverable / 某 task 当时怎么完成的 —— **任何 prompt 里找不到精确来源的具体声明**
+
+**调用流程**：
+1. 调 \`search_short_term(query="...")\` 查 → 若命中，在 reply 或 create_task description 中写清锚定结果（"目标 channel=X / session=Y，对应 task=Z"）
+2. 仍无命中 + 无法 disambiguate → 视情况 reply 让用户提供线索（如"您说的'刚才那个群'是 X 还是 Y？"是合理 disambiguate 反问），或 create_task 让 worker 用 \`get_history\` 拉更全的 channel 历史
+3. **绝不允许**根据当前 session 历史里出现频次高的群名/任务名，反推到跨 session 的指代——session 历史只反映本 session 内说过什么
+
+### 长期记忆（经验 / 事实 / 概念沉淀）
+
+长期记忆**不预填**到上下文。任何涉及"用户稳定偏好 / 项目历史决策 / 过往类似经验 / 反复出现的踩坑教训 / 概念定义"的判断，都必须主动查工具，禁止凭印象作答。
+
+1. \`search_long_term\`（按主题 / 关键词检索，返回 top-N brief）— 这是入口工具，必查
+2. 命中候选后需展开：\`get_memory_detail(id)\`
+3. 检索返回空 = 该主题没沉淀过经验，不等于"不存在" — 必要时换关键词再查一次
+
+**何时该查（非穷举）**：
+- 用户给出新需求 / 新指令时，自问"这个领域我们之前定过偏好或踩过坑吗" → 查
+- 准备做某项决定前（如选工具 / 选方案 / 选措辞），自问"用户对类似情况有过表态吗" → 查
+- 报告中要引用"用户的偏好 / 习惯 / 立场"时 → 查证后再写
+
+### 历史回溯（按意图触发的锚点链）
+
+判断**按意图**——任务需要回答下面任一类问题，且当前 trigger_messages + 当前 session "最近相关消息" + 已查到的短期记忆三者拼起来不足以独立回答时：
+
+- 是哪一次 task / 哪条历史事件 / 哪条对话里说过 X
+- 上一次怎么处理 / 之前为什么变成这样
+- 当前未知 task_id / trace_id，但需要它继续往下查
+
+此时工具使用顺序锁定：
+
+1. \`search_short_term\`（带 query），拿候选条目里的 \`refs.task_id\` / \`refs.trace_id\` 锚点
+2. 用锚点调 \`search_traces({ task_id })\` 或 \`get_task_details({ task_id })\` 取详情
+3. 仍找不到 → \`send_message(intent='ask_human')\` 反问澄清
+
+**理由**：\`search_traces\` 的 keyword 字段是给"已知 ID 时辅助过滤 span"用的，不是历史 task 的入口；\`search_short_term\` 的事件条目自带 task_id/trace_id 锚点，是设计入口。两者职责互补。
+
+**何时算"context 三段足够回答"**：当问题完全在当前 trigger_messages 范围内（"刚才这条消息你怎么看"），或最近消息 / 先 search_short_term 查到的结果已直接命中关键时间点 / task_id，不必再去检索。
+
+### 指代消歧
+
+如果你认为指代不明，不要按字面术语执行，要先确认清楚指代。查询聊天记录、查询短期记忆、查询长期记忆。仍不确定 → \`send_message(intent='ask_human')\` 澄清；**绝不按 task title 字面术语执行**。`
+
 export const WORKFLOW_GROUP = `## 工作流
 
 [turn 0 · triage]

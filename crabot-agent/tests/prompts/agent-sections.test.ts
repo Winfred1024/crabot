@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { CRABOT_BRAIN_IDENTITY, SYSTEM_DIALOGUE_BOUNDARY, WORKFLOW_PRIVATE, WORKFLOW_GROUP, SEND_MESSAGE_SPEC, END_TURN_SELF_CHECK, TIME_AWARENESS } from '../../src/prompts/agent-sections.js'
+import { CRABOT_BRAIN_IDENTITY, SYSTEM_DIALOGUE_BOUNDARY, WORKFLOW_PRIVATE, WORKFLOW_GROUP, SEND_MESSAGE_SPEC, END_TURN_SELF_CHECK, TIME_AWARENESS, INFO_QUERY_GUIDE } from '../../src/prompts/agent-sections.js'
 
 describe('#1 你是 Crabot 的大脑', () => {
   it('开头自我定位为"认知中枢"', () => {
@@ -196,5 +196,44 @@ describe('#6 时间感知', () => {
   it('说明任务列表时间格式', () => {
     expect(TIME_AWARENESS).toContain('创建于 HH:MM')
     expect(TIME_AWARENESS).toContain('第 N 轮')
+  })
+})
+
+describe('#7 信息查询指引', () => {
+  it('明确"按需查、不预注入"的指导原则', () => {
+    expect(INFO_QUERY_GUIDE).toContain('## 信息查询指引')
+    expect(INFO_QUERY_GUIDE).toContain('按需查')
+    expect(INFO_QUERY_GUIDE).toContain('不预注入')
+  })
+
+  it('列出短期记忆必须查的情形', () => {
+    expect(INFO_QUERY_GUIDE).toContain('search_short_term')
+    expect(INFO_QUERY_GUIDE).toContain('用代词指代过去事件')
+    expect(INFO_QUERY_GUIDE).toContain('其他 channel/session')
+  })
+
+  it('含长期记忆查询入口', () => {
+    expect(INFO_QUERY_GUIDE).toContain('search_long_term')
+    expect(INFO_QUERY_GUIDE).toContain('get_memory_detail')
+  })
+
+  it('含历史回溯锚点链', () => {
+    expect(INFO_QUERY_GUIDE).toContain('search_traces')
+    expect(INFO_QUERY_GUIDE).toContain('get_task_details')
+  })
+
+  it('含指代消歧规则', () => {
+    expect(INFO_QUERY_GUIDE).toContain('指代消歧')
+    expect(INFO_QUERY_GUIDE).toContain('绝不按 task title 字面术语执行')
+  })
+
+  it('明确"凭印象=hallucination"', () => {
+    expect(INFO_QUERY_GUIDE).toContain('凭印象')
+    expect(INFO_QUERY_GUIDE).toContain('hallucination')
+  })
+
+  it('明确检索为空 ≠ 不存在', () => {
+    expect(INFO_QUERY_GUIDE).toContain('检索返回空')
+    expect(INFO_QUERY_GUIDE).toContain('不等于"不存在"')
   })
 })
