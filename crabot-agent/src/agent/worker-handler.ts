@@ -948,6 +948,8 @@ export class WorkerHandler {
       // 7. Run engine — systemPrompt 和 tools 传 lambda，每轮 LLM 调用前 query-loop 重新 resolve
       // maxTurns: 主任务允许长时间执行（探索类任务可能跑 1000+ turn）；context-manager 在
       // 80% 窗口时自动 compaction 兜底。真正死循环可通过 supplement_task 或 abort 中断。
+      let compactionSpanId: string | undefined = undefined
+      let compactionStartedAtMs: number | undefined = undefined
       const engineResult = await runEngine({
         prompt: taskMessage,
         adapter,
@@ -979,6 +981,24 @@ export class WorkerHandler {
             const spanId = traceCallback?.onToolCallStart(label, inputSummary, event.injectedAtMs)
             if (spanId) {
               traceCallback?.onToolCallEnd(spanId, '(engine injected user message)', undefined, event.injectedAtMs)
+            }
+          },
+          onCompactionStart: () => {
+            // 上下文压缩开始——开个 __compaction__ span，结束时填入压缩前后消息数和耗时
+            compactionStartedAtMs = Date.now()
+            compactionSpanId = traceCallback?.onToolCallStart('__compaction__', 'context compaction', compactionStartedAtMs)
+          },
+          onCompactionEnd: (info) => {
+            if (compactionSpanId) {
+              const endedAtMs = (compactionStartedAtMs ?? Date.now()) + info.durationMs
+              traceCallback?.onToolCallEnd(
+                compactionSpanId,
+                `compacted ${info.beforeCount} → ${info.afterCount} msgs in ${info.durationMs}ms`,
+                undefined,
+                endedAtMs,
+              )
+              compactionSpanId = undefined
+              compactionStartedAtMs = undefined
             }
           },
           onLiveProgress: (event: LiveProgressEvent) => {

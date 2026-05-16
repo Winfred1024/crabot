@@ -548,13 +548,24 @@ async function compactInPlace(
   adapter: LLMAdapter,
   options: EngineOptions,
 ): Promise<void> {
-  const compacted = await contextManager.compactWithLLM(messages, adapter, options.model)
-  const finalMessages = options.onAfterCompaction
-    ? options.onAfterCompaction(compacted)
-    : compacted
-  messages.length = 0
-  for (const msg of finalMessages) {
-    messages.push(msg)
+  const startedAtMs = Date.now()
+  const beforeCount = messages.length
+  options.onCompactionStart?.()
+  try {
+    const compacted = await contextManager.compactWithLLM(messages, adapter, options.model)
+    const finalMessages = options.onAfterCompaction
+      ? options.onAfterCompaction(compacted)
+      : compacted
+    messages.length = 0
+    for (const msg of finalMessages) {
+      messages.push(msg)
+    }
+  } finally {
+    options.onCompactionEnd?.({
+      beforeCount,
+      afterCount: messages.length,
+      durationMs: Date.now() - startedAtMs,
+    })
   }
 }
 

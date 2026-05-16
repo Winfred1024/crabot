@@ -284,6 +284,15 @@ export interface EngineOptions {
    */
   readonly onSystemInjection?: (event: SystemInjectionEvent) => void
   /**
+   * 上下文压缩开始时触发（trace 可见性钩子）。
+   * compaction 内部跑一次 LLM call 做摘要，可能耗时几秒——不接 trace 就是黑洞。
+   */
+  readonly onCompactionStart?: () => void
+  /**
+   * 上下文压缩完成时触发。`info` 含压缩前后消息数与耗时。
+   */
+  readonly onCompactionEnd?: (info: { readonly beforeCount: number; readonly afterCount: number; readonly durationMs: number }) => void
+  /**
    * 超期检测配置。引擎在每个 turn 结束时测量从 `startedAtMs`（默认为 runEngine 入口时刻）
    * 到当前的 elapsed；超过 timeoutMs 且本 loop 内未注入过时，调 `onOverdue()` 询问注入文本。
    *
