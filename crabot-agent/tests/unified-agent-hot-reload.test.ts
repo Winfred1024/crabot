@@ -3,7 +3,7 @@ import { UnifiedAgent } from '../src/unified-agent.js'
 
 function buildAgent(deps: {
   mcpConnector?: { reconnect?: ReturnType<typeof vi.fn> }
-  workerHandler?: {
+  agentHandler?: {
     updateSkills?: ReturnType<typeof vi.fn>
     updateSystemPrompt?: ReturnType<typeof vi.fn>
     updateExtra?: ReturnType<typeof vi.fn>
@@ -16,7 +16,7 @@ function buildAgent(deps: {
   const agent = Object.create(UnifiedAgent.prototype) as Record<string, unknown>
   agent.agentConfig = deps.agentConfig ?? { mcp_servers: [], skills: [] }
   if (deps.mcpConnector) agent.mcpConnector = deps.mcpConnector
-  if (deps.workerHandler) agent.workerHandler = deps.workerHandler
+  if (deps.agentHandler) agent.agentHandler = deps.agentHandler
   agent.extra = deps.extra ?? {}
   // 'config' is referenced for moduleId logging — provide minimal stub
   agent.config = { moduleId: 'test-agent' }
@@ -43,10 +43,10 @@ describe('UnifiedAgent.handleUpdateConfig — hot reload', () => {
     expect(result.restart_required).toBe(false)
   })
 
-  it('skills 变更触发 workerHandler.updateSkills（不再标 restartRequired）', async () => {
+  it('skills 变更触发 agentHandler.updateSkills（不再标 restartRequired）', async () => {
     const updateSkills = vi.fn()
     const updateSystemPrompt = vi.fn()
-    const agent = buildAgent({ workerHandler: { updateSkills, updateSystemPrompt } })
+    const agent = buildAgent({ agentHandler: { updateSkills, updateSystemPrompt } })
 
     const newSkills = [{ id: 's1', name: 'foo', description: 'bar', content: 'body' }]
     const result = await (agent as { handleUpdateConfig: (p: unknown) => Promise<{ changed_fields: string[]; restart_required: boolean }> })
@@ -57,10 +57,10 @@ describe('UnifiedAgent.handleUpdateConfig — hot reload', () => {
     expect(result.restart_required).toBe(false)
   })
 
-  it('system_prompt 变更触发 workerHandler.updateSystemPrompt', async () => {
+  it('system_prompt 变更触发 agentHandler.updateSystemPrompt', async () => {
     const updateSkills = vi.fn()
     const updateSystemPrompt = vi.fn()
-    const agent = buildAgent({ workerHandler: { updateSkills, updateSystemPrompt } })
+    const agent = buildAgent({ agentHandler: { updateSkills, updateSystemPrompt } })
 
     const result = await (agent as { handleUpdateConfig: (p: unknown) => Promise<{ changed_fields: string[]; restart_required: boolean }> })
       .handleUpdateConfig({ system_prompt: 'new prompt' })
@@ -85,7 +85,7 @@ describe('UnifiedAgent.handleUpdateConfig — hot reload', () => {
     // Phase 3e 已删 FrontHandler，Worker 已通过 updateSystemPrompt 热更新，skipWorkerRebuild=true。
     const updateSkills = vi.fn()
     const updateSystemPrompt = vi.fn()
-    const agent = buildAgent({ workerHandler: { updateSkills, updateSystemPrompt } })
+    const agent = buildAgent({ agentHandler: { updateSkills, updateSystemPrompt } })
     const updateLlmClients = vi.fn().mockResolvedValue(undefined)
     ;(agent as { updateLlmClients: typeof updateLlmClients }).updateLlmClients = updateLlmClients
 
@@ -102,7 +102,7 @@ describe('UnifiedAgent.handleUpdateConfig — hot reload', () => {
     // （否则 in-flight task 的 activeTasks 会被新 worker handler 丢失）
     const updateSkills = vi.fn()
     const updateSystemPrompt = vi.fn()
-    const agent = buildAgent({ workerHandler: { updateSkills, updateSystemPrompt } })
+    const agent = buildAgent({ agentHandler: { updateSkills, updateSystemPrompt } })
     const updateLlmClients = vi.fn().mockResolvedValue(undefined)
     ;(agent as { updateLlmClients: typeof updateLlmClients }).updateLlmClients = updateLlmClients
 
@@ -114,10 +114,10 @@ describe('UnifiedAgent.handleUpdateConfig — hot reload', () => {
     expect(callArg.skipWorkerRebuild).toBe(true)
   })
 
-  it('extra 变更触发 workerHandler.updateExtra（防止 progress_digest_interval_seconds 等不生效）', async () => {
+  it('extra 变更触发 agentHandler.updateExtra（防止 progress_digest_interval_seconds 等不生效）', async () => {
     const updateExtra = vi.fn()
     const agent = buildAgent({
-      workerHandler: { updateExtra },
+      agentHandler: { updateExtra },
       extra: { progress_digest_interval_seconds: 60 },
     })
 
@@ -133,7 +133,7 @@ describe('UnifiedAgent.handleUpdateConfig — hot reload', () => {
     // model_config 真正变化时才需要重建 Worker（SDK env 改变）
     const updateSkills = vi.fn()
     const updateSystemPrompt = vi.fn()
-    const agent = buildAgent({ workerHandler: { updateSkills, updateSystemPrompt } })
+    const agent = buildAgent({ agentHandler: { updateSkills, updateSystemPrompt } })
     const updateLlmClients = vi.fn().mockResolvedValue(undefined)
     ;(agent as { updateLlmClients: typeof updateLlmClients }).updateLlmClients = updateLlmClients
 

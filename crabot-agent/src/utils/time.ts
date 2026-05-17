@@ -173,7 +173,7 @@ export function stampToolResult(content: string, timezone: string, now: Date = n
 
 /**
  * 把毫秒数渲染成紧凑的 "1h23m45s" / "5m12s" / "32s" 字符串。
- * worker-handler bg-notification、list-entities-tool 表格共用。
+ * agent-handler bg-notification、list-entities-tool 表格共用。
  */
 export function formatRuntimeMs(ms: number): string {
   const totalSecs = Math.max(0, Math.floor(ms / 1000))

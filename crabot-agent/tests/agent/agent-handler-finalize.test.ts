@@ -1,13 +1,13 @@
 /**
- * worker-handler-finalize.test.ts
+ * agent-handler-finalize.test.ts
  *
  * 覆盖 finalizeTask 编排的核心行为不变式：
  *   1. completed 任务：update_task_status(completed) → drainPending → reflectFn → update_task_outcome
  *   2. failed 任务：只调 update_task_status(failed)，不跑 reflectFn
  *   3. reflector 自身抛错时不回滚 task 状态（task 仍为 completed）
  *
- * 注意：受限于 WorkerHandler 构造函数的重依赖（sdkEnv / mcpConfigFactory / skills /
- * bgRegistry 等），这里不实例化真实 WorkerHandler，而是直接模拟 finalizeTask 的调用
+ * 注意：受限于 AgentHandler 构造函数的重依赖（sdkEnv / mcpConfigFactory / skills /
+ * bgRegistry 等），这里不实例化真实 AgentHandler，而是直接模拟 finalizeTask 的调用
  * 序列并验证关键 invariant。这种"仿真流程"测试足以保证核心调用顺序不被意外改变。
  */
 
@@ -32,7 +32,7 @@ describe('Worker finalize 编排', () => {
       fellBackToLastText: false,
     })
 
-    // 模拟 WorkerHandler 私有 finalizeTask 的关键行为
+    // 模拟 AgentHandler 私有 finalizeTask 的关键行为
     const taskId = 'test-task-001'
     const adminPort = 19001
     const moduleId = 'test'

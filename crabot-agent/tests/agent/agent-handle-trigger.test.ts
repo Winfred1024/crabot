@@ -1,13 +1,13 @@
 import { describe, it, expect } from 'vitest'
-import { WorkerHandler } from '../../src/agent/worker-handler.js'
+import { AgentHandler } from '../../src/agent/agent-handler.js'
 import type {
   HandleTriggerMessageParams,
   HandleTriggerMessageResult,
-} from '../../src/agent/worker-handler.js'
+} from '../../src/agent/agent-handler.js'
 
-describe('WorkerHandler.handleTriggerMessage 类型契约', () => {
-  it('方法存在于 WorkerHandler 原型上', () => {
-    expect(typeof WorkerHandler.prototype.handleTriggerMessage).toBe('function')
+describe('AgentHandler.handleTriggerMessage 类型契约', () => {
+  it('方法存在于 AgentHandler 原型上', () => {
+    expect(typeof AgentHandler.prototype.handleTriggerMessage).toBe('function')
   })
 
   it('HandleTriggerMessageParams 类型支持 minimal 字段', () => {

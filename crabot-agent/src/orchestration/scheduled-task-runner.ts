@@ -12,7 +12,7 @@ import type {
   ExecuteTaskResult,
   WorkerAgentContext,
 } from '../types.js'
-import type { WorkerHandler } from '../agent/worker-handler.js'
+import type { AgentHandler } from '../agent/agent-handler.js'
 import { MemoryWriter } from './memory-writer.js'
 
 /** Admin create_task 返回的任务信息 */
@@ -26,7 +26,7 @@ interface AdminTask {
 }
 
 export class ScheduledTaskRunner {
-  private workerHandler: WorkerHandler | null = null
+  private agentHandler: AgentHandler | null = null
 
   constructor(
     private rpcClient: RpcClient,
@@ -39,8 +39,8 @@ export class ScheduledTaskRunner {
   /**
    * 设置本地 Worker Handler 引用（UnifiedAgent 在初始化 Worker 后调用）
    */
-  setWorkerHandler(handler: WorkerHandler): void {
-    this.workerHandler = handler
+  setWorkerHandler(handler: AgentHandler): void {
+    this.agentHandler = handler
   }
 
   /**
@@ -123,7 +123,7 @@ export class ScheduledTaskRunner {
         if (this.executeTaskFn) {
           await this.executeTaskFn({ ...taskPayload, related_task_id: task.id })
         } else {
-          await this.workerHandler!.executeTask(taskPayload)
+          await this.agentHandler!.executeTask(taskPayload)
         }
       } catch (error) {
         // worker handler 自身崩溃（throw）——兜底：标失败 + 写失败记忆
@@ -163,7 +163,7 @@ export class ScheduledTaskRunner {
   /**
    * worker handler 自身崩溃时的失败记忆兜底写入（短期 + 长期）。两者均 fire-and-forget。
    *
-   * 成功路径的记忆已由 worker-handler.finalizeMemoryWrite 内部写入，dispatcher 不再重复。
+   * 成功路径的记忆已由 agent-handler.finalizeMemoryWrite 内部写入，dispatcher 不再重复。
    */
   private finalizeTaskMemory(args: {
     taskId: string

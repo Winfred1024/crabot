@@ -4,10 +4,10 @@ import * as path from 'path'
 
 const WORKER_HANDLER_PATH = path.resolve(
   process.cwd(),
-  'src/agent/worker-handler.ts',
+  'src/agent/agent-handler.ts',
 )
 
-describe('WorkerHandler v2 (engine-based)', () => {
+describe('AgentHandler v2 (engine-based)', () => {
   const source = fs.readFileSync(WORKER_HANDLER_PATH, 'utf-8')
 
   // Extract import blocks (may span multiple lines)
@@ -65,8 +65,8 @@ describe('WorkerHandler v2 (engine-based)', () => {
     expect(source).toContain('runEngine(')
   })
 
-  it('should export WorkerHandler class', () => {
-    expect(source).toMatch(/export class WorkerHandler/)
+  it('should export AgentHandler class', () => {
+    expect(source).toMatch(/export class AgentHandler/)
   })
 
   it('should export SdkEnvConfig interface', () => {

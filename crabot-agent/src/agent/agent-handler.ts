@@ -113,17 +113,17 @@ function getReportMode(
   return 'digest'
 }
 
-const LOG_FILE = path.join(process.cwd(), '../data/worker-handler-debug.log')
+const LOG_FILE = path.join(process.cwd(), '../data/agent-handler-debug.log')
 
 function log(msg: string) {
   const ts = new Date().toISOString()
   try { fs.appendFileSync(LOG_FILE, `[${ts}] ${msg}\n`) } catch { /* ignore */ }
 }
 
-export interface WorkerHandlerConfig {
+export interface AgentHandlerConfig {
   /**
    * Admin personality（system_prompt）。仅承载 personality，不再包含 skill listing。
-   * skillListing 通过 `updateSkills` 维护，由 worker-handler 内 buildSkillListingSnapshot 即时拼装。
+   * skillListing 通过 `updateSkills` 维护，由 agent-handler 内 buildSkillListingSnapshot 即时拼装。
    */
   systemPrompt: string
   extra?: Record<string, unknown>
@@ -131,7 +131,7 @@ export interface WorkerHandlerConfig {
   getTimezone?: () => string
 }
 
-export interface WorkerDeps {
+export interface AgentHandlerDeps {
   rpcClient: RpcClient
   moduleId: string
   resolveChannelPort: (channelId: string) => Promise<number>
@@ -220,12 +220,12 @@ function computeSkillsHash(skills: ReadonlyArray<SkillConfig>): string {
 
 
 // ============================================================================
-// WorkerHandler
+// AgentHandler
 // ============================================================================
 
-export interface WorkerHandlerOptions {
+export interface AgentHandlerOptions {
   mcpConfigFactory?: (taskCtx: TaskContext) => Record<string, McpServer>
-  deps?: WorkerDeps
+  deps?: AgentHandlerDeps
   builtinToolConfig?: BuiltinToolConfig
   mcpConnector?: McpConnector
   digestSdkEnv?: SdkEnvConfig
@@ -294,7 +294,7 @@ export interface HandleTriggerMessageResult {
   readonly traceId?: string
 }
 
-export class WorkerHandler {
+export class AgentHandler {
   private sdkEnv: SdkEnvConfig
   private systemPrompt: string
   private activeTasks: Map<TaskId, WorkerTaskState> = new Map()
@@ -309,7 +309,7 @@ export class WorkerHandler {
   /** recent_completed 保留的最大条数 */
   private static readonly RECENT_COMPLETED_LIMIT = 5
   private mcpConfigFactory: ((taskCtx: TaskContext) => Record<string, McpServer>) | undefined
-  private deps?: WorkerDeps
+  private deps?: AgentHandlerDeps
   private builtinToolConfig?: BuiltinToolConfig
   private mcpConnector?: McpConnector
   private extra: Record<string, unknown>
@@ -344,8 +344,8 @@ export class WorkerHandler {
 
   constructor(
     sdkEnv: SdkEnvConfig,
-    config: WorkerHandlerConfig,
-    options?: WorkerHandlerOptions,
+    config: AgentHandlerConfig,
+    options?: AgentHandlerOptions,
   ) {
     this.sdkEnv = sdkEnv
     this.mcpConfigFactory = options?.mcpConfigFactory
@@ -370,18 +370,18 @@ export class WorkerHandler {
 
     // Startup: recover persistent bg entities (mark dead shells as failed, stalled agents)
     void this.bgRegistry.recoverPersistent().catch((err) => {
-      console.error('[WorkerHandler] bg-entities recovery failed:', err)
+      console.error('[AgentHandler] bg-entities recovery failed:', err)
     })
 
     // Startup: GC dead entities older than 7 days
     void this.bgRegistry.gcDeadEntities(new Date()).catch((err) => {
-      console.error('[WorkerHandler] bg-entities gc failed:', err)
+      console.error('[AgentHandler] bg-entities gc failed:', err)
     })
 
     // Periodic 24h GC — .unref() so it does not block process exit
     this.gcIntervalHandle = setInterval(() => {
       void this.bgRegistry.gcDeadEntities(new Date()).catch((err) => {
-        console.error('[WorkerHandler] periodic gc failed:', err)
+        console.error('[AgentHandler] periodic gc failed:', err)
       })
     }, 24 * 60 * 60 * 1000)
     this.gcIntervalHandle.unref()
@@ -439,7 +439,7 @@ export class WorkerHandler {
     this.skillsWritePromise = this.skillsWritePromise
       .then(() => this.writeSkillsToInstancePath())
       .catch((err) => {
-        console.error('[WorkerHandler] skills disk write failed:', err)
+        console.error('[AgentHandler] skills disk write failed:', err)
       })
   }
 
@@ -1041,8 +1041,8 @@ export class WorkerHandler {
                 }))
                 this.updateLiveSnapshot(task.task_id, prev => {
                   const merged = [...prev.recent_completed, ...completed]
-                  const trimmed = merged.length > WorkerHandler.RECENT_COMPLETED_LIMIT
-                    ? merged.slice(merged.length - WorkerHandler.RECENT_COMPLETED_LIMIT)
+                  const trimmed = merged.length > AgentHandler.RECENT_COMPLETED_LIMIT
+                    ? merged.slice(merged.length - AgentHandler.RECENT_COMPLETED_LIMIT)
                     : merged
                   // 工具完成时清掉 llm_retry 状态（之前的 retry 已经过去）
                   const next = { ...prev, active_tools: [], recent_completed: trimmed }

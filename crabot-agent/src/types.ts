@@ -343,7 +343,7 @@ export interface LiveCompletedTool {
 
 /**
  * Worker 运行时的实时进度快照。
- * 由 worker-handler 维护内存映射，ContextAssembler 同进程同步读取，
+ * 由 agent-handler 维护内存映射，ContextAssembler 同进程同步读取，
  * 用于 Front 回答"汇报进度"类提问时拥有飞行中状态信息。
  */
 export interface LiveTaskSnapshot {
@@ -913,7 +913,7 @@ export interface TraceCallback {
   }): string
   onLoopEnd(spanId: string, status: 'completed' | 'failed', iterationCount: number): void
   /** `startedAtMs`/`endedAtMs` back-date spans for post-hoc callers (e.g.
-   * worker-handler's onTurn fires after the LLM call already completed). */
+   * agent-handler's onTurn fires after the LLM call already completed). */
   onLlmCallStart(iteration: number, inputSummary: string, attempt?: number, startedAtMs?: number): string
   onLlmCallEnd(spanId: string, result: { stopReason?: string; outputSummary?: string; toolCallsCount?: number; fullInput?: string; fullOutput?: string; error?: string; forcedSummaryAttempt?: number; usage?: TokenUsage }, endedAtMs?: number): void
   onToolCallStart(toolName: string, inputSummary: string, startedAtMs?: number): string

@@ -40,7 +40,7 @@ import { ContextAssembler } from './orchestration/context-assembler.js'
 import { ScheduledTaskRunner } from './orchestration/scheduled-task-runner.js'
 import { MemoryWriter } from './orchestration/memory-writer.js'
 import { AttentionScheduler, type AttentionConfig, type BufferedMessage } from './orchestration/attention-scheduler.js'
-import { WorkerHandler, type SdkEnvConfig } from './agent/worker-handler.js'
+import { AgentHandler, type SdkEnvConfig } from './agent/agent-handler.js'
 import type { ToolPermissionConfig, ToolDefinition as EngineToolDefinition } from './engine/types.js'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { McpConnector } from './agent/mcp-connector.js'
@@ -113,7 +113,7 @@ export class UnifiedAgent extends ModuleBase {
   private attentionScheduler: AttentionScheduler
 
   // 智能体层组件（可选，取决于配置）
-  private workerHandler?: WorkerHandler
+  private agentHandler?: AgentHandler
   private mcpConnector: McpConnector = new McpConnector()
   private roles: Set<'front' | 'worker'> = new Set()
   /** SDK 环境配置（Worker 专用） */
@@ -275,13 +275,13 @@ export class UnifiedAgent extends ModuleBase {
         // 启动 LSP Manager（coding_expert sub-agent 使用）
         void this.lspManager.start(process.cwd())
 
-        this.workerHandler = this.createWorkerHandler(
+        this.agentHandler = this.createWorkerHandler(
           this.sdkEnvWorker, config.model_config, workerPersonality,
           createMcpConfigs, config.builtin_tool_config, config.skills)
-        this.scheduledTaskRunner.setWorkerHandler(this.workerHandler)
+        this.scheduledTaskRunner.setWorkerHandler(this.agentHandler)
         // 让 ContextAssembler 同进程同步读取 worker 实时快照（用于 Front 汇报进度）
         this.contextAssembler.setLiveSnapshotProvider(
-          (taskId) => this.workerHandler?.getLiveSnapshot(taskId)
+          (taskId) => this.agentHandler?.getLiveSnapshot(taskId)
         )
       }
     }
@@ -368,16 +368,16 @@ export class UnifiedAgent extends ModuleBase {
     createMcpConfigs: (taskCtx?: TaskContext) => Record<string, McpServer>,
     builtinToolConfig?: BuiltinToolConfig,
     skills?: ReadonlyArray<SkillConfig>,
-  ): WorkerHandler {
+  ): AgentHandler {
     const subAgentConfigs = this.buildSubAgentConfigs(modelConfig)
     const subAgentHints = subAgentConfigs.map(({ definition }) => ({
       toolName: definition.toolName,
       workerHint: definition.workerHint,
     }))
     // workerPersonality 仅承载 admin personality（system_prompt）；skill listing 走独立通道，
-    // 由 WorkerHandler 内部 buildSkillListingSnapshot 实时从 this.skills 拼装，
+    // 由 AgentHandler 内部 buildSkillListingSnapshot 实时从 this.skills 拼装，
     // 保证 updateSkills 后下一轮 LLM 调用即时生效。
-    const handler = new WorkerHandler(workerSdkEnv, {
+    const handler = new AgentHandler(workerSdkEnv, {
       systemPrompt: workerPersonality ?? '',
       extra: this.extra,
       getTimezone: () => resolveTimezone(this.agentConfig?.timezone),
@@ -412,7 +412,7 @@ export class UnifiedAgent extends ModuleBase {
     systemPrompt?: string
   ): { workerPersonality?: string } {
     // workerPersonality 仅承载 admin personality；skill listing 走独立通道，
-    // 由 WorkerHandler 内部 buildSkillListingSnapshot 实时从 this.skills 拼装。
+    // 由 AgentHandler 内部 buildSkillListingSnapshot 实时从 this.skills 拼装。
     return { workerPersonality: systemPrompt || undefined }
   }
 
@@ -547,7 +547,7 @@ export class UnifiedAgent extends ModuleBase {
 
     try {
       // 4. 检查 Worker Handler 能力
-      if (!this.workerHandler) {
+      if (!this.agentHandler) {
         this.traceStore.endTrace(trace.trace_id, 'failed', { summary: 'No worker handler configured' })
         return
       }
@@ -590,7 +590,7 @@ export class UnifiedAgent extends ModuleBase {
       const triggerArrivedAtMs = Date.now()
       let result
       try {
-        result = await this.workerHandler.handleTriggerMessage({
+        result = await this.agentHandler.handleTriggerMessage({
           messages: [...mergedMessages],
           activeTasks: context.active_tasks ?? [],
           isGroup: false,
@@ -680,7 +680,7 @@ export class UnifiedAgent extends ModuleBase {
     const session = messages[0].session
 
     // 检查 Worker Handler 能力（群聊统一走 handleTriggerMessage）
-    if (!this.workerHandler) {
+    if (!this.agentHandler) {
       return
     }
 
@@ -760,7 +760,7 @@ export class UnifiedAgent extends ModuleBase {
       const triggerArrivedAtMs = Date.now()
       let result
       try {
-        result = await this.workerHandler.handleTriggerMessage({
+        result = await this.agentHandler.handleTriggerMessage({
           messages: [...messages],
           activeTasks: context.active_tasks ?? [],
           isGroup: true,
@@ -1000,7 +1000,7 @@ export class UnifiedAgent extends ModuleBase {
     activeTasks: ReadonlyArray<import('./types.js').TaskSummary>,
   ): Promise<boolean> {
     // Step 1: Verify task exists BEFORE doing anything
-    if (!this.workerHandler!.hasActiveTask(decision.task_id)) {
+    if (!this.agentHandler!.hasActiveTask(decision.task_id)) {
       const span = this.traceStore.startSpan(traceId, {
         type: 'tool_call' as const,
         parent_span_id: parentSpanId,
@@ -1094,7 +1094,7 @@ export class UnifiedAgent extends ModuleBase {
       },
     })
     try {
-      this.workerHandler!.deliverHumanResponse(decision.task_id, [{
+      this.agentHandler!.deliverHumanResponse(decision.task_id, [{
         platform_message_id: `supplement-${Date.now()}`,
         session: { channel_id: session.channel_id, session_id: session.session_id, type: 'private' as const },
         sender: { friend_id: 'system', platform_user_id: 'system', platform_display_name: 'System' },
@@ -1119,17 +1119,17 @@ export class UnifiedAgent extends ModuleBase {
    * 从决策列表中提取 Agent 发出的第一条回复文本
    */
   private setupBarriers(channelId: string, sessionId: string): string[] {
-    if (!this.workerHandler) return []
-    const taskIds = this.workerHandler.getActiveTasksByOrigin(channelId, sessionId)
+    if (!this.agentHandler) return []
+    const taskIds = this.agentHandler.getActiveTasksByOrigin(channelId, sessionId)
     for (const taskId of taskIds) {
-      this.workerHandler.setBarrierForTask(taskId, BARRIER_TIMEOUT_MS)
+      this.agentHandler.setBarrierForTask(taskId, BARRIER_TIMEOUT_MS)
     }
     return taskIds
   }
 
   private clearAllBarriers(barrierTaskIds: string[]): void {
     for (const taskId of barrierTaskIds) {
-      this.workerHandler?.clearBarrierForTask(taskId)
+      this.agentHandler?.clearBarrierForTask(taskId)
     }
   }
 
@@ -1143,7 +1143,7 @@ export class UnifiedAgent extends ModuleBase {
    * silent end_turn 就是 silent，靠 trace 排查，不二次猜测。
    */
   private buildResultSummaryLabel(
-    result: import('./agent/worker-handler.js').HandleTriggerMessageResult,
+    result: import('./agent/agent-handler.js').HandleTriggerMessageResult,
     silentLabel: string,
   ): string {
     if (result.exitToolCall) return `exit:${result.exitToolCall.name}`
@@ -1342,7 +1342,7 @@ export class UnifiedAgent extends ModuleBase {
 
       try {
         // 检查是否有 Worker Handler 能力
-        if (!this.workerHandler) {
+        if (!this.agentHandler) {
           return { decision_types: [] }
         }
 
@@ -1363,7 +1363,7 @@ export class UnifiedAgent extends ModuleBase {
 
         // 调用统一 loop
         const triggerArrivedAtMs = Date.now()
-        const result = await this.workerHandler.handleTriggerMessage({
+        const result = await this.agentHandler.handleTriggerMessage({
           messages: mergedMessages,
           activeTasks: context.active_tasks ?? [],
           isGroup: message.session.type === 'group',
@@ -1491,7 +1491,7 @@ export class UnifiedAgent extends ModuleBase {
       }
 
       // 检查是否有 Worker Handler 能力
-      if (!this.workerHandler) {
+      if (!this.agentHandler) {
         // 发送错误回复
         await this.rpcClient.call(
           await this.getAdminPort(),
@@ -1554,7 +1554,7 @@ export class UnifiedAgent extends ModuleBase {
       const triggerArrivedAtMs = Date.now()
       let result
       try {
-        result = await this.workerHandler.handleTriggerMessage({
+        result = await this.agentHandler.handleTriggerMessage({
           messages: mergedMessages,
           activeTasks: context.active_tasks ?? [],
           isGroup: false,
@@ -1702,7 +1702,7 @@ export class UnifiedAgent extends ModuleBase {
     activeTasks: ReadonlyArray<import('./types.js').TaskSummary>,
   ): Promise<boolean> {
     // Step 1: 检查任务存在
-    if (!this.workerHandler?.hasActiveTask(decision.task_id)) {
+    if (!this.agentHandler?.hasActiveTask(decision.task_id)) {
       return false
     }
 
@@ -1742,7 +1742,7 @@ export class UnifiedAgent extends ModuleBase {
 
     // Step 3: 投递纠偏消息
     try {
-      this.workerHandler!.deliverHumanResponse(decision.task_id, [{
+      this.agentHandler!.deliverHumanResponse(decision.task_id, [{
         platform_message_id: `supplement-${Date.now()}`,
         session: { channel_id: 'admin-web', session_id: sessionId, type: 'private' as const },
         sender: { friend_id: 'master', platform_user_id: 'master', platform_display_name: 'Master' },
@@ -1910,7 +1910,7 @@ export class UnifiedAgent extends ModuleBase {
     specialization: string
   }> {
     const maxCapacity = this.agentConfig?.max_concurrent_tasks ?? 5
-    const currentTaskCount = this.workerHandler?.getActiveTaskCount() ?? 0
+    const currentTaskCount = this.agentHandler?.getActiveTaskCount() ?? 0
 
     return {
       roles: Array.from(this.roles),
@@ -1928,7 +1928,7 @@ export class UnifiedAgent extends ModuleBase {
     parent_span_id?: string
     related_task_id?: string
   }): Promise<ExecuteTaskResult & { trace_id?: string }> {
-    if (!this.workerHandler) {
+    if (!this.agentHandler) {
       throw new Error('Worker handler not configured')
     }
 
@@ -1964,14 +1964,14 @@ export class UnifiedAgent extends ModuleBase {
     })
     this.traceStore.endSpan(trace.trace_id, ctxSpan.span_id, 'completed')
 
-    const traceContext: import('./agent/worker-handler').WorkerTraceContext = {
+    const traceContext: import('./agent/agent-handler').WorkerTraceContext = {
       traceStore: this.traceStore,
       traceId: trace.trace_id,
       relatedTaskId: related_task_id,
     }
 
     try {
-      const result = await this.workerHandler.executeTask(taskParams, traceCallback, traceContext)
+      const result = await this.agentHandler.executeTask(taskParams, traceCallback, traceContext)
       const status = result.outcome === 'completed' ? 'completed' : 'failed'
       const summary = result.error ? result.error.slice(0, 200) : (status === 'completed' ? '任务已完成' : '任务失败')
       this.traceStore.endTrace(trace.trace_id, status, {
@@ -1990,20 +1990,20 @@ export class UnifiedAgent extends ModuleBase {
     task_id: TaskId
     messages: ChannelMessage[]
   }): DeliverHumanResponseResult {
-    if (!this.workerHandler) {
+    if (!this.agentHandler) {
       throw new Error('Worker handler not configured')
     }
 
-    this.workerHandler.deliverHumanResponse(params.task_id, params.messages)
+    this.agentHandler.deliverHumanResponse(params.task_id, params.messages)
     return { received: true, task_status: 'executing' }
   }
 
   private handleCancelTask(params: { task_id: TaskId; reason: string }): { cancelled: true } {
-    if (!this.workerHandler) {
+    if (!this.agentHandler) {
       throw new Error('Worker handler not configured')
     }
 
-    this.workerHandler.cancelTask(params.task_id, params.reason)
+    this.agentHandler.cancelTask(params.task_id, params.reason)
     return { cancelled: true }
   }
 
@@ -2051,7 +2051,7 @@ export class UnifiedAgent extends ModuleBase {
 
     // 更新系统提示词（热更新：worker 在下一轮 LLM 调用时通过 callback 看到新 prompt）
     if (params.system_prompt !== undefined) {
-      this.workerHandler?.updateSystemPrompt(params.system_prompt)
+      this.agentHandler?.updateSystemPrompt(params.system_prompt)
       this.agentConfig.system_prompt = params.system_prompt
       changedFields.push('system_prompt')
     }
@@ -2065,7 +2065,7 @@ export class UnifiedAgent extends ModuleBase {
 
     // 更新 Skills（热更新：worker 在下一轮 LLM 调用时通过 callback 看到新 skill 列表）
     if (params.skills !== undefined) {
-      this.workerHandler?.updateSkills(params.skills)
+      this.agentHandler?.updateSkills(params.skills)
       this.agentConfig.skills = params.skills
       changedFields.push('skills')
     }
@@ -2084,7 +2084,7 @@ export class UnifiedAgent extends ModuleBase {
     // 更新扩展配置（热生效，下次使用对应功能时生效）
     if (params.extra !== undefined && Object.keys(params.extra).length > 0) {
       this.extra = { ...this.extra, ...params.extra }
-      this.workerHandler?.updateExtra(params.extra)
+      this.agentHandler?.updateExtra(params.extra)
       changedFields.push('extra')
     }
 
@@ -2092,7 +2092,7 @@ export class UnifiedAgent extends ModuleBase {
     if (params.max_iterations !== undefined) {
       this.agentConfig.max_iterations = params.max_iterations
       changedFields.push('max_iterations')
-      // WorkerHandler 的 max_iterations 在构造时设置
+      // AgentHandler 的 max_iterations 在构造时设置
       // 更新后需要重新创建 Handler 或重启
       restartRequired = true
     }
@@ -2132,7 +2132,7 @@ export class UnifiedAgent extends ModuleBase {
       }, this.sandboxPathMappingsRef),
     })
 
-    // 更新 Digest 模型（在 Worker 之前，因为 WorkerHandler 构造需要 digestSdkEnv）
+    // 更新 Digest 模型（在 Worker 之前，因为 AgentHandler 构造需要 digestSdkEnv）
     const digestConfig = modelConfig.digest ?? modelConfig.triage ?? modelConfig.worker
     if (digestConfig) {
       this.digestSdkEnv = this.buildSdkEnv(digestConfig)
@@ -2143,11 +2143,11 @@ export class UnifiedAgent extends ModuleBase {
       const workerConfig = modelConfig.worker
       if (workerConfig) {
         this.sdkEnvWorker = this.buildSdkEnv(workerConfig)
-        this.workerHandler = this.createWorkerHandler(
+        this.agentHandler = this.createWorkerHandler(
           this.sdkEnvWorker, modelConfig, workerPersonality,
           createMcpConfigs, this.agentConfig?.builtin_tool_config, this.agentConfig?.skills)
-        this.scheduledTaskRunner.setWorkerHandler(this.workerHandler)
-        console.log(`[${this.config.moduleId}] Worker Agent SDK env ${this.workerHandler ? 'updated' : 'created from config push'}`)
+        this.scheduledTaskRunner.setWorkerHandler(this.agentHandler)
+        console.log(`[${this.config.moduleId}] Worker Agent SDK env ${this.agentHandler ? 'updated' : 'created from config push'}`)
       }
     }
   }
@@ -2292,18 +2292,18 @@ export class UnifiedAgent extends ModuleBase {
     status?: BgEntityStatus[]
     type?: BgEntityType
   }): Promise<{ entities: BgEntityRecord[] }> {
-    if (!this.workerHandler) {
+    if (!this.agentHandler) {
       throw new Error('Worker handler not initialized')
     }
-    const entities = await this.workerHandler.listBgEntities(params)
+    const entities = await this.agentHandler.listBgEntities(params)
     return { entities }
   }
 
   private async handleKillBgEntity(params: {
     entity_id: string
   }): Promise<{ ok: boolean; message?: string }> {
-    if (!this.workerHandler) throw new Error('Worker handler not initialized')
-    return this.workerHandler.killBgEntity(params.entity_id)
+    if (!this.agentHandler) throw new Error('Worker handler not initialized')
+    return this.agentHandler.killBgEntity(params.entity_id)
   }
 
   private async handleGetBgEntityLog(params: {
@@ -2316,8 +2316,8 @@ export class UnifiedAgent extends ModuleBase {
     status: BgEntityStatus
     type: BgEntityType
   }> {
-    if (!this.workerHandler) throw new Error('Worker handler not initialized')
-    return this.workerHandler.getBgEntityLog(params.entity_id, params)
+    if (!this.agentHandler) throw new Error('Worker handler not initialized')
+    return this.agentHandler.getBgEntityLog(params.entity_id, params)
   }
 
   // ============================================================================
@@ -2330,7 +2330,7 @@ export class UnifiedAgent extends ModuleBase {
       idle: this.sessionManager.getPendingSessionCount() === 0,
       processing_messages: this.sessionManager.getPendingSessionCount(),
       active_sessions: this.sessionManager.getActiveSessionCount(),
-      current_task_count: this.workerHandler?.getActiveTaskCount() ?? 0,
+      current_task_count: this.agentHandler?.getActiveTaskCount() ?? 0,
       llm_status: this.isConfigured() ? 'ready' : 'not_configured',
       sdk_status: this.sdkEnvWorker ? 'ready' : 'not_configured',
       mcp_servers_count: this.mcpConnector.count,
