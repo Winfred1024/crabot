@@ -13,7 +13,6 @@ import type {
   OrchestrationConfig,
   AgentLayerConfig,
   ChannelMessage,
-  MessageDecision,
   ExecuteTaskResult,
   ExecuteTaskParams,
   DeliverHumanResponseResult,
@@ -51,7 +50,6 @@ import { getAgentTraceDir } from './core/data-paths.js'
 import { PromptManager } from './prompt-manager.js'
 import { SUBAGENT_DEFINITIONS, type SubAgentDefinition } from './agent/subagent-prompts.js'
 import { createLSPManager, type LSPManager } from './lsp/lsp-manager.js'
-import type { SupplementTaskDecision } from './types.js'
 import type { BgEntityRecord, BgEntityStatus, BgEntityType } from './engine/bg-entities/types.js'
 
 const BARRIER_TIMEOUT_MS = 8_000
@@ -88,6 +86,19 @@ function toToolPermissionConfig(
   return deniedTools.length === 0
     ? { mode: 'bypass' as const }
     : { mode: 'denyList' as const, toolNames: deniedTools }
+}
+
+/**
+ * Admin Web 对话的 master Friend 常量。channel_identities 不参与 admin chat 流程，
+ * created_at / updated_at 用零值——master 没有真实账户创建时刻语义。
+ */
+const MASTER_FRIEND: Readonly<Friend> = {
+  id: 'master',
+  display_name: 'Master',
+  permission: 'master',
+  channel_identities: [],
+  created_at: '1970-01-01T00:00:00.000Z',
+  updated_at: '1970-01-01T00:00:00.000Z',
 }
 
 export class UnifiedAgent extends ModuleBase {
@@ -507,7 +518,6 @@ export class UnifiedAgent extends ModuleBase {
 
   /**
    * 私聊消息处理（SwitchMap：同 session 新消息取消旧请求）
-   * Phase 3e: 已合并为统一 loop，移除旧 frontHandler + decisionDispatcher 路径。
    */
   private async processDirectMessage(message: ChannelMessage, friend: Friend): Promise<void> {
     const { session, sender, content } = message
@@ -636,31 +646,14 @@ export class UnifiedAgent extends ModuleBase {
           console.warn(`[${this.config.moduleId}] unexpected stay_silent in private chat: ${JSON.stringify(exitInput)}`)
         }
       } else if (!result.sentMessage && result.finalText.trim() !== '') {
-        // loop 自然结束但 agent 没调 send_message——把 finalText 当作 fallback reply 发给用户
         console.warn(`[${this.config.moduleId}] unified loop ended without send_message; dispatching finalText as fallback (length=${result.finalText.length})`)
-        try {
-          const channelPort = await this.getChannelPort(session.channel_id)
-          await this.rpcClient.call(channelPort, 'send_message', {
-            session_id: session.session_id,
-            content: { type: 'text', text: result.finalText },
-          }, this.config.moduleId)
-        } catch (err) {
-          console.error(`[${this.config.moduleId}] fallback dispatch failed:`, err)
-        }
+        await this.dispatchFallbackText(session.channel_id, session.session_id, result.finalText)
       }
-      // else (sentMessage=true OR finalText empty): 已通过工具发消息或确实无话可说
 
-      this.releaseBarriers(barrierTaskIds, [])
+      this.clearAllBarriers(barrierTaskIds)
 
-      const summaryLabel = result.exitToolCall
-        ? `exit:${result.exitToolCall.name}`
-        : result.sentMessage
-          ? 'sent_message'
-          : result.finalText.trim() !== ''
-            ? 'fallback_dispatch'
-            : 'silent_end'
       this.traceStore.endTrace(trace.trace_id, result.outcome === 'completed' ? 'completed' : 'failed', {
-        summary: summaryLabel,
+        summary: this.buildResultSummaryLabel(result, 'silent_end'),
       })
     } catch (error) {
       this.clearAllBarriers(barrierTaskIds)
@@ -817,53 +810,25 @@ export class UnifiedAgent extends ModuleBase {
           }
           hasReply = true
         } else {
-          // fallback dispatch：参考 processDirectMessage 私聊逻辑
           if (!result.sentMessage && result.finalText.trim() !== '') {
             console.warn(`[${this.config.moduleId}] group unified loop exit:${exitName} without send_message; dispatching finalText as fallback`)
-            try {
-              const channelPort = await this.getChannelPort(session.channel_id)
-              await this.rpcClient.call(channelPort, 'send_message', {
-                session_id: sessionId,
-                content: { type: 'text', text: result.finalText },
-              }, this.config.moduleId)
-            } catch (err) {
-              console.error(`[${this.config.moduleId}] group fallback dispatch failed:`, err)
-            }
+            await this.dispatchFallbackText(session.channel_id, sessionId, result.finalText)
           }
           hasReply = result.sentMessage || result.finalText.trim() !== ''
         }
       } else if (!result.sentMessage && result.finalText.trim() !== '') {
-        // loop 自然结束但 agent 没调 send_message——把 finalText 当作 fallback reply 发给用户
         console.warn(`[${this.config.moduleId}] group unified loop ended without send_message; dispatching finalText as fallback (length=${result.finalText.length})`)
-        try {
-          const channelPort = await this.getChannelPort(session.channel_id)
-          await this.rpcClient.call(channelPort, 'send_message', {
-            session_id: sessionId,
-            content: { type: 'text', text: result.finalText },
-          }, this.config.moduleId)
-        } catch (err) {
-          console.error(`[${this.config.moduleId}] group fallback dispatch failed:`, err)
-        }
+        await this.dispatchFallbackText(session.channel_id, sessionId, result.finalText)
         hasReply = true
       } else {
-        // sentMessage=true（已发）或 finalText 空（真沉默）
         hasReply = result.sentMessage
       }
 
-      this.releaseBarriers(barrierTaskIds, [])
-
-      // 报告结果，调整注意力巡检间隔
+      this.clearAllBarriers(barrierTaskIds)
       this.attentionScheduler.reportResult(sessionId, hasReply)
 
-      const summaryLabel = result.exitToolCall
-        ? `exit:${result.exitToolCall.name}`
-        : result.sentMessage
-          ? 'sent_message'
-          : result.finalText.trim() !== ''
-            ? 'fallback_dispatch'
-            : 'silent_discard'
       this.traceStore.endTrace(trace.trace_id, result.outcome === 'completed' ? 'completed' : 'failed', {
-        summary: summaryLabel,
+        summary: this.buildResultSummaryLabel(result, 'silent_discard'),
       })
     } catch (error) {
       this.clearAllBarriers(barrierTaskIds)
@@ -1167,24 +1132,43 @@ export class UnifiedAgent extends ModuleBase {
     return taskIds
   }
 
-  private releaseBarriers(barrierTaskIds: string[], decisions: MessageDecision[]): void {
-    if (barrierTaskIds.length === 0) return
-    const supplementedTaskIds = new Set(
-      decisions
-        .filter((d): d is SupplementTaskDecision => d.type === 'supplement_task')
-        .map(d => d.task_id)
-    )
-    for (const taskId of barrierTaskIds) {
-      if (!supplementedTaskIds.has(taskId)) {
-        this.workerHandler?.clearBarrierForTask(taskId)
-      }
-    }
-  }
-
   private clearAllBarriers(barrierTaskIds: string[]): void {
     for (const taskId of barrierTaskIds) {
       this.workerHandler?.clearBarrierForTask(taskId)
     }
+  }
+
+  /**
+   * 兜底派发：unified loop 自然结束但 agent 没调 send_message + finalText 非空时，
+   * 把 finalText 当作 reply 发出去——避免用户看到空白。仅写 log，不向上抛异常。
+   */
+  private async dispatchFallbackText(channelId: string, sessionId: string, text: string): Promise<void> {
+    try {
+      const channelPort = await this.getChannelPort(channelId)
+      await this.rpcClient.call(channelPort, 'send_message', {
+        session_id: sessionId,
+        content: { type: 'text', text },
+      }, this.config.moduleId)
+    } catch (err) {
+      console.error(`[${this.config.moduleId}] fallback dispatch failed:`, err)
+    }
+  }
+
+  /**
+   * 把 handleTriggerMessage 的 result 收尾态转成 trace endTrace 的 summary 字符串。
+   * - exitToolCall 命中 → `exit:<name>`
+   * - 调过 send_message → `sent_message`
+   * - 走了 fallback dispatch → `fallback_dispatch`
+   * - 完全静默 → `silentLabel`（私聊 silent_end / 群聊 silent_discard）
+   */
+  private buildResultSummaryLabel(
+    result: import('./agent/worker-handler.js').HandleTriggerMessageResult,
+    silentLabel: string,
+  ): string {
+    if (result.exitToolCall) return `exit:${result.exitToolCall.name}`
+    if (result.sentMessage) return 'sent_message'
+    if (result.finalText.trim() !== '') return 'fallback_dispatch'
+    return silentLabel
   }
 
   /**
@@ -1459,31 +1443,14 @@ export class UnifiedAgent extends ModuleBase {
             // 其他 exit tool（create_task 等）：用 finalText fallback
             if (!result.sentMessage && result.finalText.trim() !== '') {
               decisionTypes.push('direct_reply')
-              try {
-                const channelPort = await this.getChannelPort(message.session.channel_id)
-                await this.rpcClient.call(channelPort, 'send_message', {
-                  session_id: sessionId,
-                  content: { type: 'text', text: result.finalText },
-                }, this.config.moduleId)
-              } catch (err) {
-                console.error(`[${this.config.moduleId}] handleProcessMessage fallback dispatch failed:`, err)
-              }
+              await this.dispatchFallbackText(message.session.channel_id, sessionId, result.finalText)
             }
           }
         } else if (result.sentMessage) {
           decisionTypes.push('direct_reply')
         } else if (result.finalText.trim() !== '') {
-          // loop 自然结束但未调 send_message——fallback dispatch
           decisionTypes.push('direct_reply')
-          try {
-            const channelPort = await this.getChannelPort(message.session.channel_id)
-            await this.rpcClient.call(channelPort, 'send_message', {
-              session_id: sessionId,
-              content: { type: 'text', text: result.finalText },
-            }, this.config.moduleId)
-          } catch (err) {
-            console.error(`[${this.config.moduleId}] handleProcessMessage fallback dispatch failed:`, err)
-          }
+          await this.dispatchFallbackText(message.session.channel_id, sessionId, result.finalText)
         }
         // else: 完全沉默（sentMessage=false，finalText 空，无 exitTool）
 
@@ -1575,14 +1542,7 @@ export class UnifiedAgent extends ModuleBase {
         read_accessible_scopes: undefined,
       }
 
-      const masterFriend: Friend = {
-        id: 'master',
-        display_name: 'Master',
-        permission: 'master',
-        channel_identities: [],
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      }
+      const masterFriend: Friend = MASTER_FRIEND
 
       // 解析 master 权限
       const masterResolvedPerms = await this.resolvePrincipalPermissions(masterFriend, sessionId, 'private')
@@ -1742,15 +1702,8 @@ export class UnifiedAgent extends ModuleBase {
         // else: 完全沉默，不发任何回复
       }
 
-      const summaryLabel = result.exitToolCall
-        ? `exit:${result.exitToolCall.name}`
-        : result.sentMessage
-          ? 'sent_message'
-          : result.finalText.trim() !== ''
-            ? 'fallback_dispatch'
-            : 'silent_end'
       this.traceStore.endTrace(trace.trace_id, result.outcome === 'completed' ? 'completed' : 'failed', {
-        summary: summaryLabel,
+        summary: this.buildResultSummaryLabel(result, 'silent_end'),
       })
 
       return {
@@ -1786,10 +1739,11 @@ export class UnifiedAgent extends ModuleBase {
       return false
     }
 
+    const adminPort = await this.getAdminPort()
+
     // Step 1.7: waiting_human 状态切回 executing
     if (target?.status === 'waiting_human') {
       try {
-        const adminPort = await this.getAdminPort()
         await this.rpcClient.call(adminPort, 'update_task_status', {
           task_id: decision.task_id,
           status: 'executing',
@@ -1804,16 +1758,11 @@ export class UnifiedAgent extends ModuleBase {
     const replyText = decision.immediate_reply?.text
       || `收到，正在调整：${decision.supplement_content.slice(0, 60)}`
     try {
-      await this.rpcClient.call(
-        await this.getAdminPort(),
-        'chat_callback',
-        {
-          request_id: callbackInfo.request_id,
-          reply_type: 'direct_reply',
-          content: replyText,
-        },
-        this.config.moduleId
-      )
+      await this.rpcClient.call(adminPort, 'chat_callback', {
+        request_id: callbackInfo.request_id,
+        reply_type: 'direct_reply',
+        content: replyText,
+      }, this.config.moduleId)
     } catch (err) {
       console.error(`[handleLocalSupplementAdminChat] chat_callback failed: ${err instanceof Error ? err.message : String(err)}`)
     }

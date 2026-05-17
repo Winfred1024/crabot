@@ -270,7 +270,7 @@ export interface HandleTriggerMessageParams {
   readonly channelId: string
   readonly sessionId: string
   /**
-   * 完整的 Front Agent context（由 unified-agent 在 processDirectMessageUnified 时传入）。
+   * 完整的 Front Agent context（由 unified-agent 在调用 handleTriggerMessage 前装配）。
    * 包含 recent_messages / time_windows / active_tasks / sender_friend / scene_profile / crab_display_name 等，
    * 用于构造 worker 风格的 user prompt（含 channel/session/聊天历史/活跃任务）。
    */
