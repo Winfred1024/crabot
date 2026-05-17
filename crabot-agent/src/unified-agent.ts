@@ -645,9 +645,10 @@ export class UnifiedAgent extends ModuleBase {
           // 群聊场景才会触发；私聊不应出现
           console.warn(`[${this.config.moduleId}] unexpected stay_silent in private chat: ${JSON.stringify(exitInput)}`)
         }
-      } else if (!result.sentMessage && result.finalText.trim() !== '') {
-        console.warn(`[${this.config.moduleId}] unified loop ended without send_message; dispatching finalText as fallback (length=${result.finalText.length})`)
-        await this.dispatchFallbackText(session.channel_id, session.session_id, result.finalText)
+      } else if (!result.sentMessage) {
+        // unified loop 设计：交付走 send_message 工具。silent end_turn 不应出现，
+        // 出现说明 agent 没遵守 send_message 协议——用 trace 排查，不二次猜测 finalText
+        console.warn(`[${this.config.moduleId}] unified loop ended without send_message (finalText len=${result.finalText.length}, ignored)`)
       }
 
       this.clearAllBarriers(barrierTaskIds)
@@ -810,18 +811,14 @@ export class UnifiedAgent extends ModuleBase {
           }
           hasReply = true
         } else {
-          if (!result.sentMessage && result.finalText.trim() !== '') {
-            console.warn(`[${this.config.moduleId}] group unified loop exit:${exitName} without send_message; dispatching finalText as fallback`)
-            await this.dispatchFallbackText(session.channel_id, sessionId, result.finalText)
-          }
-          hasReply = result.sentMessage || result.finalText.trim() !== ''
+          // 其他 exit tool（理论不应出现）：以 sentMessage 为准
+          hasReply = result.sentMessage
         }
-      } else if (!result.sentMessage && result.finalText.trim() !== '') {
-        console.warn(`[${this.config.moduleId}] group unified loop ended without send_message; dispatching finalText as fallback (length=${result.finalText.length})`)
-        await this.dispatchFallbackText(session.channel_id, sessionId, result.finalText)
-        hasReply = true
       } else {
         hasReply = result.sentMessage
+        if (!hasReply) {
+          console.warn(`[${this.config.moduleId}] group unified loop ended without send_message (finalText len=${result.finalText.length}, ignored)`)
+        }
       }
 
       this.clearAllBarriers(barrierTaskIds)
@@ -1139,27 +1136,13 @@ export class UnifiedAgent extends ModuleBase {
   }
 
   /**
-   * 兜底派发：unified loop 自然结束但 agent 没调 send_message + finalText 非空时，
-   * 把 finalText 当作 reply 发出去——避免用户看到空白。仅写 log，不向上抛异常。
-   */
-  private async dispatchFallbackText(channelId: string, sessionId: string, text: string): Promise<void> {
-    try {
-      const channelPort = await this.getChannelPort(channelId)
-      await this.rpcClient.call(channelPort, 'send_message', {
-        session_id: sessionId,
-        content: { type: 'text', text },
-      }, this.config.moduleId)
-    } catch (err) {
-      console.error(`[${this.config.moduleId}] fallback dispatch failed:`, err)
-    }
-  }
-
-  /**
    * 把 handleTriggerMessage 的 result 收尾态转成 trace endTrace 的 summary 字符串。
    * - exitToolCall 命中 → `exit:<name>`
    * - 调过 send_message → `sent_message`
-   * - 走了 fallback dispatch → `fallback_dispatch`
    * - 完全静默 → `silentLabel`（私聊 silent_end / 群聊 silent_discard）
+   *
+   * 不再用 finalText 作为兜底交付——unified loop 设计下 send_message 是唯一通道，
+   * silent end_turn 就是 silent，靠 trace 排查，不二次猜测。
    */
   private buildResultSummaryLabel(
     result: import('./agent/worker-handler.js').HandleTriggerMessageResult,
@@ -1167,7 +1150,6 @@ export class UnifiedAgent extends ModuleBase {
   ): string {
     if (result.exitToolCall) return `exit:${result.exitToolCall.name}`
     if (result.sentMessage) return 'sent_message'
-    if (result.finalText.trim() !== '') return 'fallback_dispatch'
     return silentLabel
   }
 
@@ -1439,20 +1421,13 @@ export class UnifiedAgent extends ModuleBase {
             }
           } else if (exitName === 'stay_silent') {
             decisionTypes.push('silent')
-          } else {
-            // 其他 exit tool（create_task 等）：用 finalText fallback
-            if (!result.sentMessage && result.finalText.trim() !== '') {
-              decisionTypes.push('direct_reply')
-              await this.dispatchFallbackText(message.session.channel_id, sessionId, result.finalText)
-            }
           }
+          // 其他 exit tool（理论不应出现）：忽略
         } else if (result.sentMessage) {
           decisionTypes.push('direct_reply')
-        } else if (result.finalText.trim() !== '') {
-          decisionTypes.push('direct_reply')
-          await this.dispatchFallbackText(message.session.channel_id, sessionId, result.finalText)
+        } else {
+          console.warn(`[${this.config.moduleId}] handleProcessMessage unified loop ended without send_message (finalText len=${result.finalText.length}, ignored)`)
         }
-        // else: 完全沉默（sentMessage=false，finalText 空，无 exitTool）
 
         return {
           decision_types: decisionTypes,
