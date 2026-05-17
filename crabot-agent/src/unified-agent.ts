@@ -201,10 +201,8 @@ export class UnifiedAgent extends ModuleBase {
     this.scheduledTaskRunner = new ScheduledTaskRunner(
       this.rpcClient,
       config.module_id,
-      this.contextAssembler,
       this.memoryWriter,
       async () => await this.getAdminPort(),
-      async (channelId) => await this.getChannelPort(channelId),
       (params) => this.handleExecuteTask(params),
     )
 

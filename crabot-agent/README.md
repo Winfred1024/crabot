@@ -82,26 +82,6 @@ npm run test:coverage
 - `orchestration`: 编排层配置
 - `agent_config`: 智能体层配置
 
-## Feature flags
-
-### `CRABOT_USE_UNIFIED_LOOP`（Phase 3d 默认 ON）
-
-环境变量，控制是否启用统一 agent loop（合并 Front + Worker 的新架构）。
-
-- **未设置 / 任意非 `"false"` 值** → 启用 unified loop（默认）：私聊路径走 `WorkerHandler.handleTriggerMessage`（exit tools + overdue + send_message 检测 + 完整 worker 工具栈）
-- `CRABOT_USE_UNIFIED_LOOP=false` → 退回老 `FrontHandler` 路径（**即将彻底删除**，仅作过渡兜底）
-
-**当前状态：**
-- 私聊路径已切换到 unified loop
-- 群聊路径仍走旧 FrontHandler（Phase 3e 后续切换）
-- 老 FrontHandler / front-loop / front-tools 即将删除
-
-本地需要回退老路径测试时：
-
-```bash
-CRABOT_USE_UNIFIED_LOOP=false ./dev.sh
-```
-
 ## 协议版本
 
 - v0.2.0: 合并 Flow + Agent

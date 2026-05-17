@@ -42,12 +42,14 @@ const MAX_SILENT_END_TURN_RETRIES = 3
 // reasoning 烧得更多，必须先压缩再重跑。
 const MAX_MAX_TOKENS_COMPACT_RETRIES = 2
 
-// 规则细节由 worker 自己的 system prompt（WORKER_RULES「三、收尾」段）维护，
-// 这里只做 engine 层的机制兜底钩子——告诉模型违反了哪条规则、要求重新汇报。
-// 把规则写两份会产生维护漂移。
+// 规则细节由 agent 自己的 system prompt 维护（assembleAgentPrompt 的 end_turn
+// self-check + 收尾责任段），这里只做 engine 层的机制兜底钩子——告诉模型违反了
+// 哪条规则、要求重新汇报。把规则写两份会产生维护漂移。
+// 注：unified loop 下 caller 可传 suppressForcedSummary 跳过此机制（agent 已用
+// send_message(intent='final') 显式收尾时）。
 const FORCED_SUMMARY_PROMPT =
   '你刚才以 end_turn 结束但没有输出任何文字。本次任务由用户派发并在等待结果，必须给出最终汇报。\n\n' +
-  '请按你 system prompt 中 WORKER_RULES「三、收尾」段的规则给出完整汇报（"可验证的产出" 或 "Named blocker" 二选一）。\n' +
+  '请按 system prompt 中"## 收尾责任"段的规则给出完整汇报：可验证的产出，或 Named blocker。\n' +
   '如需回看任务历史、重读文档或工具输出再汇报，可继续用工具。'
 
 // --- Core Loop ---

@@ -31,10 +31,8 @@ export class ScheduledTaskRunner {
   constructor(
     private rpcClient: RpcClient,
     private moduleId: string,
-    private contextAssembler: unknown,
     private memoryWriter: MemoryWriter,
     private getAdminPort: () => number | Promise<number>,
-    private getChannelPort: (channelId: string) => Promise<number>,
     private executeTaskFn?: (params: ExecuteTaskParams & { related_task_id?: string }) => Promise<ExecuteTaskResult & { trace_id?: string }>,
   ) {}
 

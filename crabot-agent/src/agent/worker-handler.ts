@@ -1584,9 +1584,11 @@ export class WorkerHandler {
 
     // ── 行动提醒 ──
     parts.push(`\n## 行动提醒`)
-    parts.push(`用 send_message 工具回复人类（channel_id="${channelId}"，session_id="${sessionId}"）。`)
-    parts.push(`如需把任务交给独立 worker 执行，调用 supplement_task 或 create_task（需先 create_task，这里暂用 send_message 确认）。`)
-    parts.push(`如果消息不需要回复，调用 stay_silent。`)
+    parts.push(`- 给人类回复用 \`send_message\` 工具（channel_id="${channelId}"，session_id="${sessionId}"）；最终交付用 intent="final"。`)
+    if (isGroup) {
+      parts.push(`- 若本批消息与你无关（群成员之间的讨论），调 \`stay_silent\` 退出 loop。`)
+    }
+    parts.push(`- 若本消息是对某个活跃任务的纠偏/补充，turn 0 调 \`supplement_task\` 退出 loop。`)
 
     return parts.join('\n')
   }

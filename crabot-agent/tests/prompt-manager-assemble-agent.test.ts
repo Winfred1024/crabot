@@ -16,8 +16,4 @@ describe('PromptManager.assembleAgentPrompt 委派', () => {
     expect(prompt).toContain('stay_silent(reason)')
   })
 
-  it('assembleWorkerPrompt 仍然可用', () => {
-    const old = pm.assembleWorkerPrompt()
-    expect(old).toContain('## 一、接任')
-  })
 })
