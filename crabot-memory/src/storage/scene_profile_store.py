@@ -45,13 +45,60 @@ class SceneProfileStore:
         self.conn.commit()
 
     def _migrate_schema(self) -> None:
-        # 老库可能缺 content 列；abstract/overview/sections_json 保留为遗留列，不再读写。
+        """老库迁移：补 content 列；若发现遗留 NOT NULL 列（sections_json 等），重建表。
+
+        SQLite 不支持 ALTER COLUMN，遇到 `sections_json TEXT NOT NULL` 这类老约束时
+        必须表重建（rename → new → insert select → drop old → rename）。否则 INSERT
+        会触发 NOT NULL 约束错误（曾发生：2026-05-17 02:05 每日反思更新场景画像失败）。
+        """
         columns = {
-            row["name"]
+            row["name"]: row
             for row in self.conn.execute("PRAGMA table_info(scene_profiles)").fetchall()
         }
         if "content" not in columns:
             self.conn.execute("ALTER TABLE scene_profiles ADD COLUMN content TEXT")
+            columns["content"] = None  # 占位
+
+        # 检查是否有遗留 NOT NULL 列（不在新 schema 里但有 NOT NULL 约束的列）
+        legacy_not_null = {"sections_json", "abstract", "overview"}
+        has_legacy_not_null = any(
+            name in columns and columns[name] is not None and columns[name]["notnull"] == 1
+            for name in legacy_not_null
+        )
+        if has_legacy_not_null:
+            self._rebuild_table()
+
+    def _rebuild_table(self) -> None:
+        """表重建：把遗留列（sections_json/abstract/overview）的 NOT NULL 约束清理掉。"""
+        self.conn.executescript("""
+        ALTER TABLE scene_profiles RENAME TO scene_profiles_legacy;
+        CREATE TABLE scene_profiles (
+          scene_type             TEXT NOT NULL,
+          friend_id              TEXT,
+          channel_id             TEXT,
+          session_id             TEXT,
+          label                  TEXT NOT NULL,
+          content                TEXT,
+          source_memory_ids_json TEXT,
+          created_at             TEXT NOT NULL,
+          updated_at             TEXT NOT NULL,
+          last_declared_at       TEXT
+        );
+        INSERT INTO scene_profiles
+          (scene_type, friend_id, channel_id, session_id, label,
+           content, source_memory_ids_json, created_at, updated_at, last_declared_at)
+        SELECT scene_type, friend_id, channel_id, session_id, label,
+               content, source_memory_ids_json, created_at, updated_at, last_declared_at
+        FROM scene_profiles_legacy;
+        DROP TABLE scene_profiles_legacy;
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_friend ON scene_profiles(friend_id)
+          WHERE scene_type = 'friend';
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_group ON scene_profiles(channel_id, session_id)
+          WHERE scene_type = 'group_session';
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_global ON scene_profiles(scene_type)
+          WHERE scene_type = 'global';
+        """)
+        self.conn.commit()
 
     # ---------- public API ----------
 
