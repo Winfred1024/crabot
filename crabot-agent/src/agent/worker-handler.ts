@@ -86,7 +86,7 @@ import * as path from 'path'
 import { createHash, randomBytes, randomUUID } from 'crypto'
 import * as os from 'os'
 
-/** 已过时长的中文格式化（用于 trigger prompt 活跃任务渲染，与 front-handler 保持一致） */
+/** 已过时长的中文格式化（用于 trigger prompt 活跃任务渲染） */
 function formatElapsedMs(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '?'
   const sec = Math.floor(ms / 1000)
@@ -1428,9 +1428,8 @@ export class WorkerHandler {
   }
 
   /**
-   * 构造 trigger 流的 worker 风格 user prompt。
+   * 构造 trigger 场景的 user prompt。
    *
-   * 从 front-handler.ts::buildUserMessage 移植，适配 trigger 场景：
    * - 删除群聊决策提示（trigger loop 用 send_message + stay_silent + supplement_task）
    * - 删除末尾 "## 指令" 段（工具 schema 自解释）
    * - 新增尾部提醒：用 send_message 工具回复（含 channel_id / session_id）

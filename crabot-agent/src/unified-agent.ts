@@ -1802,7 +1802,7 @@ export class UnifiedAgent extends ModuleBase {
           description,
           assigned_worker: workerId,
           // trigger_type='scheduled' 让 Front prompt 给任务打 [定时/巡检任务，禁止 supplement]
-          // 标签，并让 engine 兜底（unified-agent.handleLocalSupplement / dispatcher.handleSupplementTask）
+          // 标签，并让 engine 兜底（unified-agent.handleLocalSupplement）
           // 把 LLM 误投递的 supplement 自动降级为 create_task。漏传过会导致防线全部失效。
           source: {
             origin: 'system',
@@ -2094,7 +2094,7 @@ export class UnifiedAgent extends ModuleBase {
     if (params.max_iterations !== undefined) {
       this.agentConfig.max_iterations = params.max_iterations
       changedFields.push('max_iterations')
-      // FrontHandler 和 WorkerHandler 的 max_iterations 在构造时设置
+      // WorkerHandler 的 max_iterations 在构造时设置
       // 更新后需要重新创建 Handler 或重启
       restartRequired = true
     }
