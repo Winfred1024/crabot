@@ -3,7 +3,7 @@ import { UnifiedAgent } from '../src/unified-agent.js'
 
 function buildAgent(deps: {
   mcpConnector?: { reconnect?: ReturnType<typeof vi.fn> }
-  workerHandler?: {
+  agentHandler?: {
     updateSkills?: ReturnType<typeof vi.fn>
     updateSystemPrompt?: ReturnType<typeof vi.fn>
     updateExtra?: ReturnType<typeof vi.fn>
@@ -16,7 +16,7 @@ function buildAgent(deps: {
   const agent = Object.create(UnifiedAgent.prototype) as Record<string, unknown>
   agent.agentConfig = deps.agentConfig ?? { mcp_servers: [], skills: [] }
   if (deps.mcpConnector) agent.mcpConnector = deps.mcpConnector
-  if (deps.workerHandler) agent.workerHandler = deps.workerHandler
+  if (deps.agentHandler) agent.agentHandler = deps.agentHandler
   agent.extra = deps.extra ?? {}
   // 'config' is referenced for moduleId logging — provide minimal stub
   agent.config = { moduleId: 'test-agent' }
@@ -43,10 +43,10 @@ describe('UnifiedAgent.handleUpdateConfig — hot reload', () => {
     expect(result.restart_required).toBe(false)
   })
 
-  it('skills 变更触发 workerHandler.updateSkills（不再标 restartRequired）', async () => {
+  it('skills 变更触发 agentHandler.updateSkills（不再标 restartRequired）', async () => {
     const updateSkills = vi.fn()
     const updateSystemPrompt = vi.fn()
-    const agent = buildAgent({ workerHandler: { updateSkills, updateSystemPrompt } })
+    const agent = buildAgent({ agentHandler: { updateSkills, updateSystemPrompt } })
 
     const newSkills = [{ id: 's1', name: 'foo', description: 'bar', content: 'body' }]
     const result = await (agent as { handleUpdateConfig: (p: unknown) => Promise<{ changed_fields: string[]; restart_required: boolean }> })
@@ -57,10 +57,10 @@ describe('UnifiedAgent.handleUpdateConfig — hot reload', () => {
     expect(result.restart_required).toBe(false)
   })
 
-  it('system_prompt 变更触发 workerHandler.updateSystemPrompt', async () => {
+  it('system_prompt 变更触发 agentHandler.updateSystemPrompt', async () => {
     const updateSkills = vi.fn()
     const updateSystemPrompt = vi.fn()
-    const agent = buildAgent({ workerHandler: { updateSkills, updateSystemPrompt } })
+    const agent = buildAgent({ agentHandler: { updateSkills, updateSystemPrompt } })
 
     const result = await (agent as { handleUpdateConfig: (p: unknown) => Promise<{ changed_fields: string[]; restart_required: boolean }> })
       .handleUpdateConfig({ system_prompt: 'new prompt' })
@@ -80,13 +80,12 @@ describe('UnifiedAgent.handleUpdateConfig — hot reload', () => {
     ).rejects.toThrow('connect fail')
   })
 
-  it('system_prompt 变更触发 updateLlmClients（Front 重建路径）', async () => {
-    // 此 test 锁定 review feedback I-2 修复：system_prompt 变更必须经过 updateLlmClients
-    // 让 Front 重建（Front prompt closure 嵌入了 personality）
+  it('system_prompt 变更触发 updateLlmClients（Worker 热更新后跳过重建）', async () => {
+    // system_prompt 变更必须经过 updateLlmClients；
+    // Phase 3e 已删 FrontHandler，Worker 已通过 updateSystemPrompt 热更新，skipWorkerRebuild=true。
     const updateSkills = vi.fn()
     const updateSystemPrompt = vi.fn()
-    const agent = buildAgent({ workerHandler: { updateSkills, updateSystemPrompt } })
-    // Spy on updateLlmClients to verify it's invoked with correct options
+    const agent = buildAgent({ agentHandler: { updateSkills, updateSystemPrompt } })
     const updateLlmClients = vi.fn().mockResolvedValue(undefined)
     ;(agent as { updateLlmClients: typeof updateLlmClients }).updateLlmClients = updateLlmClients
 
@@ -94,17 +93,16 @@ describe('UnifiedAgent.handleUpdateConfig — hot reload', () => {
       .handleUpdateConfig({ system_prompt: 'new personality' })
 
     expect(updateLlmClients).toHaveBeenCalledTimes(1)
-    const callArg = updateLlmClients.mock.calls[0][1] as { forceFrontRebuild: boolean; skipWorkerRebuild: boolean }
-    expect(callArg.forceFrontRebuild).toBe(true)
+    const callArg = updateLlmClients.mock.calls[0][1] as { skipWorkerRebuild: boolean }
     expect(callArg.skipWorkerRebuild).toBe(true) // worker 已通过 updateSystemPrompt 热更新，不该重建
   })
 
-  it('skills 变更走 Front 重建但跳过 Worker 重建（防鬼存）', async () => {
-    // 此 test 锁定 review feedback I-1 修复：skills 变更不重建 Worker handler
+  it('skills 变更跳过 Worker 重建（防鬼存）', async () => {
+    // skills 变更不重建 Worker handler
     // （否则 in-flight task 的 activeTasks 会被新 worker handler 丢失）
     const updateSkills = vi.fn()
     const updateSystemPrompt = vi.fn()
-    const agent = buildAgent({ workerHandler: { updateSkills, updateSystemPrompt } })
+    const agent = buildAgent({ agentHandler: { updateSkills, updateSystemPrompt } })
     const updateLlmClients = vi.fn().mockResolvedValue(undefined)
     ;(agent as { updateLlmClients: typeof updateLlmClients }).updateLlmClients = updateLlmClients
 
@@ -112,15 +110,14 @@ describe('UnifiedAgent.handleUpdateConfig — hot reload', () => {
       .handleUpdateConfig({ skills: [{ id: 's1', name: 'foo', description: 'bar', content: '' }] })
 
     expect(updateLlmClients).toHaveBeenCalledTimes(1)
-    const callArg = updateLlmClients.mock.calls[0][1] as { forceFrontRebuild: boolean; skipWorkerRebuild: boolean }
-    expect(callArg.forceFrontRebuild).toBe(true)
+    const callArg = updateLlmClients.mock.calls[0][1] as { skipWorkerRebuild: boolean }
     expect(callArg.skipWorkerRebuild).toBe(true)
   })
 
-  it('extra 变更触发 workerHandler.updateExtra（防止 progress_digest_interval_seconds 等不生效）', async () => {
+  it('extra 变更触发 agentHandler.updateExtra（防止 progress_digest_interval_seconds 等不生效）', async () => {
     const updateExtra = vi.fn()
     const agent = buildAgent({
-      workerHandler: { updateExtra },
+      agentHandler: { updateExtra },
       extra: { progress_digest_interval_seconds: 60 },
     })
 
@@ -136,7 +133,7 @@ describe('UnifiedAgent.handleUpdateConfig — hot reload', () => {
     // model_config 真正变化时才需要重建 Worker（SDK env 改变）
     const updateSkills = vi.fn()
     const updateSystemPrompt = vi.fn()
-    const agent = buildAgent({ workerHandler: { updateSkills, updateSystemPrompt } })
+    const agent = buildAgent({ agentHandler: { updateSkills, updateSystemPrompt } })
     const updateLlmClients = vi.fn().mockResolvedValue(undefined)
     ;(agent as { updateLlmClients: typeof updateLlmClients }).updateLlmClients = updateLlmClients
 
@@ -144,7 +141,7 @@ describe('UnifiedAgent.handleUpdateConfig — hot reload', () => {
       .handleUpdateConfig({ model_config: { worker: { endpoint: 'https://x', apikey: 'k', model_id: 'm', format: 'anthropic', provider_id: 'p' } } })
 
     expect(updateLlmClients).toHaveBeenCalledTimes(1)
-    const callArg = updateLlmClients.mock.calls[0][1] as { forceFrontRebuild: boolean; skipWorkerRebuild: boolean }
+    const callArg = updateLlmClients.mock.calls[0][1] as { skipWorkerRebuild: boolean }
     expect(callArg.skipWorkerRebuild).toBe(false) // model_config 变更必须重建 Worker
   })
 })

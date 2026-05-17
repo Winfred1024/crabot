@@ -343,7 +343,7 @@ export interface LiveCompletedTool {
 
 /**
  * Worker 运行时的实时进度快照。
- * 由 worker-handler 维护内存映射，ContextAssembler 同进程同步读取，
+ * 由 agent-handler 维护内存映射，ContextAssembler 同进程同步读取，
  * 用于 Front 回答"汇报进度"类提问时拥有飞行中状态信息。
  */
 export interface LiveTaskSnapshot {
@@ -509,28 +509,6 @@ export type UserAttitudeNegOnly = 'fail' | 'strong_fail'
 
 export type UserEmotion = 'neutral' | 'unhappy' | 'frustrated' | 'angry' | 'dismissive'
 
-export interface DirectReplyDecision {
-  type: 'direct_reply'
-  reply: MessageContent
-  /** 用户对 prev finished task 的态度（可选，求准策略下 Front 不确定时不填） */
-  user_attitude?: UserAttitude
-  /** 用户当前消息表达的情绪（可选）；frustrated/angry/dismissive 触发 L1 短期记忆写入 */
-  emotion?: UserEmotion
-}
-
-export interface CreateTaskDecision {
-  type: 'create_task'
-  task_title: string
-  task_description: string
-  priority?: string
-  preferred_worker_specialization?: string
-  immediate_reply: MessageContent
-  /** Front loop context, only set on forced termination (max rounds exceeded) */
-  front_context?: ToolHistoryEntry[]
-  /** 用户对 prev finished task 的态度（可选；不是对正在创建的新 task 的评价） */
-  user_attitude?: UserAttitude
-}
-
 // ============================================================================
 // 协议接口参数
 // ============================================================================
@@ -662,10 +640,6 @@ export interface AgentRole {
   skills?: SkillConfig[]
 }
 
-export interface HandleMessageResult {
-  decisions: MessageDecision[]
-}
-
 export interface ExecuteTaskResult {
   task_id: TaskId
   outcome: 'completed' | 'failed'
@@ -686,11 +660,6 @@ export interface ToolHandler {
 // ============================================================================
 // Handler 参数类型
 // ============================================================================
-
-export interface HandleMessageParams {
-  messages: ChannelMessage[]
-  context: FrontAgentContext
-}
 
 export interface ExecuteTaskParams {
   task: {
@@ -734,10 +703,6 @@ export interface WorkerTaskState {
   todoStore: import('./agent/worker-todo-store.js').TodoStore
 }
 
-export interface SilentDecision {
-  type: 'silent'
-}
-
 export interface SupplementTaskDecision {
   type: 'supplement_task'
   task_id: TaskId
@@ -746,18 +711,6 @@ export interface SupplementTaskDecision {
   /** 用户对当前 supplement 的 task 的否定程度（仅 fail/strong_fail；补充而非纠偏时不填） */
   user_attitude?: UserAttitudeNegOnly
 }
-
-export interface FrontLoopResult {
-  decision: MessageDecision
-  /** Only set on forced termination (max rounds exceeded) */
-  toolHistory?: ToolHistoryEntry[]
-}
-
-export type MessageDecision =
-  | DirectReplyDecision
-  | CreateTaskDecision
-  | SupplementTaskDecision
-  | SilentDecision
 
 // ============================================================================
 // 配置热更新
@@ -960,7 +913,7 @@ export interface TraceCallback {
   }): string
   onLoopEnd(spanId: string, status: 'completed' | 'failed', iterationCount: number): void
   /** `startedAtMs`/`endedAtMs` back-date spans for post-hoc callers (e.g.
-   * worker-handler's onTurn fires after the LLM call already completed). */
+   * agent-handler's onTurn fires after the LLM call already completed). */
   onLlmCallStart(iteration: number, inputSummary: string, attempt?: number, startedAtMs?: number): string
   onLlmCallEnd(spanId: string, result: { stopReason?: string; outputSummary?: string; toolCallsCount?: number; fullInput?: string; fullOutput?: string; error?: string; forcedSummaryAttempt?: number; usage?: TokenUsage }, endedAtMs?: number): void
   onToolCallStart(toolName: string, inputSummary: string, startedAtMs?: number): string

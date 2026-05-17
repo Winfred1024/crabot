@@ -184,7 +184,7 @@ export class TraceStore {
       type: AgentSpanType
       parent_span_id?: string
       details: AgentSpanDetails
-      /** Back-date from post-hoc callbacks (e.g. worker-handler onTurn fires
+      /** Back-date from post-hoc callbacks (e.g. agent-handler onTurn fires
        * after LLM + tools complete). Defaults to Date.now(). */
       started_at_ms?: number
     }

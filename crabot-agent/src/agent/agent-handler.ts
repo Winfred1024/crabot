@@ -86,7 +86,7 @@ import * as path from 'path'
 import { createHash, randomBytes, randomUUID } from 'crypto'
 import * as os from 'os'
 
-/** 已过时长的中文格式化（用于 trigger prompt 活跃任务渲染，与 front-handler 保持一致） */
+/** 已过时长的中文格式化（用于 trigger prompt 活跃任务渲染） */
 function formatElapsedMs(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '?'
   const sec = Math.floor(ms / 1000)
@@ -113,17 +113,17 @@ function getReportMode(
   return 'digest'
 }
 
-const LOG_FILE = path.join(process.cwd(), '../data/worker-handler-debug.log')
+const LOG_FILE = path.join(process.cwd(), '../data/agent-handler-debug.log')
 
 function log(msg: string) {
   const ts = new Date().toISOString()
   try { fs.appendFileSync(LOG_FILE, `[${ts}] ${msg}\n`) } catch { /* ignore */ }
 }
 
-export interface WorkerHandlerConfig {
+export interface AgentHandlerConfig {
   /**
    * Admin personality（system_prompt）。仅承载 personality，不再包含 skill listing。
-   * skillListing 通过 `updateSkills` 维护，由 worker-handler 内 buildSkillListingSnapshot 即时拼装。
+   * skillListing 通过 `updateSkills` 维护，由 agent-handler 内 buildSkillListingSnapshot 即时拼装。
    */
   systemPrompt: string
   extra?: Record<string, unknown>
@@ -131,7 +131,7 @@ export interface WorkerHandlerConfig {
   getTimezone?: () => string
 }
 
-export interface WorkerDeps {
+export interface AgentHandlerDeps {
   rpcClient: RpcClient
   moduleId: string
   resolveChannelPort: (channelId: string) => Promise<number>
@@ -220,12 +220,12 @@ function computeSkillsHash(skills: ReadonlyArray<SkillConfig>): string {
 
 
 // ============================================================================
-// WorkerHandler
+// AgentHandler
 // ============================================================================
 
-export interface WorkerHandlerOptions {
+export interface AgentHandlerOptions {
   mcpConfigFactory?: (taskCtx: TaskContext) => Record<string, McpServer>
-  deps?: WorkerDeps
+  deps?: AgentHandlerDeps
   builtinToolConfig?: BuiltinToolConfig
   mcpConnector?: McpConnector
   digestSdkEnv?: SdkEnvConfig
@@ -270,7 +270,7 @@ export interface HandleTriggerMessageParams {
   readonly channelId: string
   readonly sessionId: string
   /**
-   * 完整的 Front Agent context（由 unified-agent 在 processDirectMessageUnified 时传入）。
+   * 完整的 Front Agent context（由 unified-agent 在调用 handleTriggerMessage 前装配）。
    * 包含 recent_messages / time_windows / active_tasks / sender_friend / scene_profile / crab_display_name 等，
    * 用于构造 worker 风格的 user prompt（含 channel/session/聊天历史/活跃任务）。
    */
@@ -294,7 +294,7 @@ export interface HandleTriggerMessageResult {
   readonly traceId?: string
 }
 
-export class WorkerHandler {
+export class AgentHandler {
   private sdkEnv: SdkEnvConfig
   private systemPrompt: string
   private activeTasks: Map<TaskId, WorkerTaskState> = new Map()
@@ -309,7 +309,7 @@ export class WorkerHandler {
   /** recent_completed 保留的最大条数 */
   private static readonly RECENT_COMPLETED_LIMIT = 5
   private mcpConfigFactory: ((taskCtx: TaskContext) => Record<string, McpServer>) | undefined
-  private deps?: WorkerDeps
+  private deps?: AgentHandlerDeps
   private builtinToolConfig?: BuiltinToolConfig
   private mcpConnector?: McpConnector
   private extra: Record<string, unknown>
@@ -344,8 +344,8 @@ export class WorkerHandler {
 
   constructor(
     sdkEnv: SdkEnvConfig,
-    config: WorkerHandlerConfig,
-    options?: WorkerHandlerOptions,
+    config: AgentHandlerConfig,
+    options?: AgentHandlerOptions,
   ) {
     this.sdkEnv = sdkEnv
     this.mcpConfigFactory = options?.mcpConfigFactory
@@ -370,18 +370,18 @@ export class WorkerHandler {
 
     // Startup: recover persistent bg entities (mark dead shells as failed, stalled agents)
     void this.bgRegistry.recoverPersistent().catch((err) => {
-      console.error('[WorkerHandler] bg-entities recovery failed:', err)
+      console.error('[AgentHandler] bg-entities recovery failed:', err)
     })
 
     // Startup: GC dead entities older than 7 days
     void this.bgRegistry.gcDeadEntities(new Date()).catch((err) => {
-      console.error('[WorkerHandler] bg-entities gc failed:', err)
+      console.error('[AgentHandler] bg-entities gc failed:', err)
     })
 
     // Periodic 24h GC — .unref() so it does not block process exit
     this.gcIntervalHandle = setInterval(() => {
       void this.bgRegistry.gcDeadEntities(new Date()).catch((err) => {
-        console.error('[WorkerHandler] periodic gc failed:', err)
+        console.error('[AgentHandler] periodic gc failed:', err)
       })
     }, 24 * 60 * 60 * 1000)
     this.gcIntervalHandle.unref()
@@ -439,7 +439,7 @@ export class WorkerHandler {
     this.skillsWritePromise = this.skillsWritePromise
       .then(() => this.writeSkillsToInstancePath())
       .catch((err) => {
-        console.error('[WorkerHandler] skills disk write failed:', err)
+        console.error('[AgentHandler] skills disk write failed:', err)
       })
   }
 
@@ -1041,8 +1041,8 @@ export class WorkerHandler {
                 }))
                 this.updateLiveSnapshot(task.task_id, prev => {
                   const merged = [...prev.recent_completed, ...completed]
-                  const trimmed = merged.length > WorkerHandler.RECENT_COMPLETED_LIMIT
-                    ? merged.slice(merged.length - WorkerHandler.RECENT_COMPLETED_LIMIT)
+                  const trimmed = merged.length > AgentHandler.RECENT_COMPLETED_LIMIT
+                    ? merged.slice(merged.length - AgentHandler.RECENT_COMPLETED_LIMIT)
                     : merged
                   // 工具完成时清掉 llm_retry 状态（之前的 retry 已经过去）
                   const next = { ...prev, active_tools: [], recent_completed: trimmed }
@@ -1428,9 +1428,8 @@ export class WorkerHandler {
   }
 
   /**
-   * 构造 trigger 流的 worker 风格 user prompt。
+   * 构造 trigger 场景的 user prompt。
    *
-   * 从 front-handler.ts::buildUserMessage 移植，适配 trigger 场景：
    * - 删除群聊决策提示（trigger loop 用 send_message + stay_silent + supplement_task）
    * - 删除末尾 "## 指令" 段（工具 schema 自解释）
    * - 新增尾部提醒：用 send_message 工具回复（含 channel_id / session_id）
@@ -1585,9 +1584,11 @@ export class WorkerHandler {
 
     // ── 行动提醒 ──
     parts.push(`\n## 行动提醒`)
-    parts.push(`用 send_message 工具回复人类（channel_id="${channelId}"，session_id="${sessionId}"）。`)
-    parts.push(`如需把任务交给独立 worker 执行，调用 supplement_task 或 create_task（需先 create_task，这里暂用 send_message 确认）。`)
-    parts.push(`如果消息不需要回复，调用 stay_silent。`)
+    parts.push(`- 给人类回复用 \`send_message\` 工具（channel_id="${channelId}"，session_id="${sessionId}"）；最终交付用 intent="final"。`)
+    if (isGroup) {
+      parts.push(`- 若本批消息与你无关（群成员之间的讨论），调 \`stay_silent\` 退出 loop。`)
+    }
+    parts.push(`- 若本消息是对某个活跃任务的纠偏/补充，turn 0 调 \`supplement_task\` 退出 loop。`)
 
     return parts.join('\n')
   }
@@ -1895,11 +1896,19 @@ export class WorkerHandler {
   }
 
   private buildSystemPrompt(context: WorkerAgentContext): string {
+    // unified loop spec §3.1：使用 assembleAgentPrompt（12 段统一模板）。
+    // isGroup 从 task_origin.session_type 推断；scheduled task 无 session 时默认 false。
+    const isGroup = context.task_origin?.session_type === 'group'
+    const sceneProfile = context.scene_profile
+      ? { label: context.scene_profile.label, content: context.scene_profile.content }
+      : undefined
     const baseAssembled = this.promptManager
-      ? this.promptManager.assembleWorkerPrompt({
+      ? this.promptManager.assembleAgentPrompt({
+        isGroup,
         adminPersonality: this.systemPrompt || undefined,
         skillListing: this.buildSkillListingSnapshot(),
         availableSubAgents: this.subAgentHints,
+        ...(sceneProfile ? { sceneProfile } : {}),
       })
       : this.systemPrompt
     const parts: string[] = [baseAssembled]

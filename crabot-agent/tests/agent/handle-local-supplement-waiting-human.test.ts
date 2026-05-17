@@ -15,7 +15,7 @@
  *      → 不强行中止（继续调 deliverHumanResponse）
  *
  * 注意：UnifiedAgent 构造依赖 ModuleBase 网络绑定，不适合在单元测试中完整实例化。
- * 这里按 worker-handler-finalize.test.ts 的惯例，仿真 handleLocalSupplement 的调用
+ * 这里按 agent-handler-finalize.test.ts 的惯例，仿真 handleLocalSupplement 的调用
  * 序列并验证 RPC 调用顺序/参数。
  */
 

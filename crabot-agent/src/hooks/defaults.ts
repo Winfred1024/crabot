@@ -17,7 +17,7 @@ export function createCliPermissionHook(): HookDefinition {
   }
 }
 
-// Backward-compat alias for existing references in worker-handler
+// Backward-compat alias for existing references in agent-handler
 export const createCliBlockHook = createCliPermissionHook
 
 function getCodingExpertHooks(): ReadonlyArray<HookDefinition> {

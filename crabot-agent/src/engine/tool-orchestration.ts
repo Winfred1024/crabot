@@ -63,7 +63,7 @@ async function executeSingleTool(
     started_at_ms: startedAtMs,
     duration_ms: Date.now() - startedAtMs,
   })
-  // context.timezone 由调用方（runEngine / front-loop）保证已 resolve；缺省时兜底
+  // context.timezone 由调用方（runEngine）保证已 resolve；缺省时兜底
   const timezone = context.timezone ?? resolveTimezone(undefined)
   const stamp = (content: string): string => stampToolResult(content, timezone)
 

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { WorkerHandler } from '../../src/agent/worker-handler.js'
+import { AgentHandler } from '../../src/agent/agent-handler.js'
 import { BgEntityRegistry } from '../../src/engine/bg-entities/registry.js'
 import { createSkillTool } from '../../src/engine/tools/skill-tool.js'
 import { getInstanceSkillsDir } from '../../src/core/data-paths.js'
@@ -37,7 +37,7 @@ function makeHandler() {
   const config = {
     systemPrompt: 'You are a helpful worker.',
   }
-  return new WorkerHandler(sdkEnv, config)
+  return new AgentHandler(sdkEnv, config)
 }
 
 function makeTask(overrides?: Partial<ExecuteTaskParams['task']>): ExecuteTaskParams['task'] {
@@ -82,7 +82,7 @@ function makeEngineResult(overrides?: Partial<{
   }
 }
 
-describe('WorkerHandler', () => {
+describe('AgentHandler', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
@@ -291,7 +291,7 @@ describe('WorkerHandler', () => {
           ? { mode: 'bypass' as const }
           : { mode: 'denyList' as const, toolNames: deniedTools }
       }
-      const handler = new WorkerHandler(sdkEnv, { systemPrompt: 'worker' }, {
+      const handler = new AgentHandler(sdkEnv, { systemPrompt: 'worker' }, {
         deps: {
           rpcClient: { call: vi.fn() } as any,
           moduleId: 'agent-test',
@@ -332,7 +332,7 @@ describe('WorkerHandler', () => {
         maxTurns: 30,
       }
       const getPermissionConfig = () => ({ mode: 'bypass' as const })
-      const handler = new WorkerHandler(sdkEnv, { systemPrompt: 'worker' }, {
+      const handler = new AgentHandler(sdkEnv, { systemPrompt: 'worker' }, {
         deps: {
           rpcClient: { call: vi.fn() } as any,
           moduleId: 'agent-test',
@@ -418,7 +418,7 @@ describe('WorkerHandler', () => {
   })
 })
 
-describe('WorkerHandler.updateSkills atomic write', () => {
+describe('AgentHandler.updateSkills atomic write', () => {
   let dataDir: string
   let originalDataDir: string | undefined
 
@@ -544,7 +544,7 @@ describe('WorkerHandler.updateSkills atomic write', () => {
   })
 })
 
-describe('WorkerHandler bg-entity push notifications', () => {
+describe('AgentHandler bg-entity push notifications', () => {
   it('enqueueBgNotification + drainBgNotifications round-trip', () => {
     // 用 any 旁路 private 访问限制——drainBgNotifications 是内部 helper
     const handler: any = makeHandler()
@@ -572,10 +572,10 @@ describe('WorkerHandler bg-entity push notifications', () => {
   })
 })
 
-describe('WorkerHandler bg-entities lifecycle', () => {
+describe('AgentHandler bg-entities lifecycle', () => {
   let dataDir: string
   let originalDataDir: string | undefined
-  let handler: WorkerHandler | undefined
+  let handler: AgentHandler | undefined
 
   beforeEach(() => {
     dataDir = mkdtempSync(join(tmpdir(), 'worker-bg-lifecycle-test-'))
@@ -653,7 +653,7 @@ describe('WorkerHandler bg-entities lifecycle', () => {
         ANTHROPIC_API_KEY: 'test-key',
       },
     }
-    return new WorkerHandler(sdkEnv, { systemPrompt: 'You are a helpful worker.' })
+    return new AgentHandler(sdkEnv, { systemPrompt: 'You are a helpful worker.' })
   }
 
   it('recovery marks a running shell with non-existent pid as failed', async () => {
@@ -712,10 +712,10 @@ describe('WorkerHandler bg-entities lifecycle', () => {
   })
 })
 
-describe('WorkerHandler bg-entities admin RPC', () => {
+describe('AgentHandler bg-entities admin RPC', () => {
   let dataDir: string
   let originalDataDir: string | undefined
-  let wh: WorkerHandler
+  let wh: AgentHandler
 
   beforeEach(() => {
     dataDir = mkdtempSync(join(tmpdir(), 'worker-bg-admin-test-'))
@@ -727,7 +727,7 @@ describe('WorkerHandler bg-entities admin RPC', () => {
       format: 'anthropic' as const,
       env: { ANTHROPIC_BASE_URL: 'http://localhost:4000', ANTHROPIC_API_KEY: 'test-key' },
     }
-    wh = new WorkerHandler(sdkEnv, { systemPrompt: 'worker' })
+    wh = new AgentHandler(sdkEnv, { systemPrompt: 'worker' })
   })
 
   afterEach(() => {
