@@ -37,7 +37,7 @@ import { SwitchMapHandler } from './orchestration/switchmap-handler.js'
 import { PermissionChecker } from './orchestration/permission-checker.js'
 import { WorkerSelector } from './orchestration/worker-selector.js'
 import { ContextAssembler } from './orchestration/context-assembler.js'
-import { DecisionDispatcher } from './orchestration/decision-dispatcher.js'
+import { ScheduledTaskRunner } from './orchestration/scheduled-task-runner.js'
 import { MemoryWriter } from './orchestration/memory-writer.js'
 import { AttentionScheduler, type AttentionConfig, type BufferedMessage } from './orchestration/attention-scheduler.js'
 import { WorkerHandler, type SdkEnvConfig } from './agent/worker-handler.js'
@@ -108,7 +108,7 @@ export class UnifiedAgent extends ModuleBase {
   private permissionChecker: PermissionChecker
   private workerSelector: WorkerSelector
   private contextAssembler: ContextAssembler
-  private decisionDispatcher: DecisionDispatcher
+  private scheduledTaskRunner: ScheduledTaskRunner
   private memoryWriter: MemoryWriter
   private attentionScheduler: AttentionScheduler
 
@@ -198,7 +198,7 @@ export class UnifiedAgent extends ModuleBase {
       config.module_id,
       async () => await this.getMemoryPort()
     )
-    this.decisionDispatcher = new DecisionDispatcher(
+    this.scheduledTaskRunner = new ScheduledTaskRunner(
       this.rpcClient,
       config.module_id,
       this.contextAssembler,
@@ -280,7 +280,7 @@ export class UnifiedAgent extends ModuleBase {
         this.workerHandler = this.createWorkerHandler(
           this.sdkEnvWorker, config.model_config, workerPersonality,
           createMcpConfigs, config.builtin_tool_config, config.skills)
-        this.decisionDispatcher.setWorkerHandler(this.workerHandler)
+        this.scheduledTaskRunner.setWorkerHandler(this.workerHandler)
         // 让 ContextAssembler 同进程同步读取 worker 实时快照（用于 Front 汇报进度）
         this.contextAssembler.setLiveSnapshotProvider(
           (taskId) => this.workerHandler?.getLiveSnapshot(taskId)
@@ -1825,7 +1825,7 @@ export class UnifiedAgent extends ModuleBase {
         ? { ...workerContext, resolved_permissions }
         : workerContext
 
-      this.decisionDispatcher.executeScheduledTaskInBackground(
+      this.scheduledTaskRunner.executeScheduledTaskInBackground(
         {
           id: taskId,
           title,
@@ -2148,7 +2148,7 @@ export class UnifiedAgent extends ModuleBase {
         this.workerHandler = this.createWorkerHandler(
           this.sdkEnvWorker, modelConfig, workerPersonality,
           createMcpConfigs, this.agentConfig?.builtin_tool_config, this.agentConfig?.skills)
-        this.decisionDispatcher.setWorkerHandler(this.workerHandler)
+        this.scheduledTaskRunner.setWorkerHandler(this.workerHandler)
         console.log(`[${this.config.moduleId}] Worker Agent SDK env ${this.workerHandler ? 'updated' : 'created from config push'}`)
       }
     }

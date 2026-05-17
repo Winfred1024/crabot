@@ -1,14 +1,13 @@
 /**
- * Decision Dispatcher - 调度任务执行器
+ * Scheduled Task Runner - 调度任务执行器
  *
  * unified-agent.handleCreateTaskFromSchedule 触发的调度任务执行入口。
  * 其他决策（direct_reply / create_task / supplement_task / silent）已由 unified loop 直接处理，
- * dispatcher 不再介入。
+ * 本模块仅负责 schedule 触发的任务。
  */
 
 import type { RpcClient } from 'crabot-shared'
 import type {
-  SupplementTaskDecision,
   ExecuteTaskParams,
   ExecuteTaskResult,
   WorkerAgentContext,
@@ -26,7 +25,7 @@ interface AdminTask {
   task_type?: string
 }
 
-export class DecisionDispatcher {
+export class ScheduledTaskRunner {
   private workerHandler: WorkerHandler | null = null
 
   constructor(
@@ -70,7 +69,7 @@ export class DecisionDispatcher {
         )
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err)
-        console.error(`[DecisionDispatcher] Failed to transition scheduled task ${task.id} to executing: ${msg}`)
+        console.error(`[ScheduledTaskRunner] Failed to transition scheduled task ${task.id} to executing: ${msg}`)
       }
 
       // memory_maintenance 直接走 RPC，不经 Worker
@@ -93,7 +92,7 @@ export class DecisionDispatcher {
           )
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error)
-          console.error(`[DecisionDispatcher] memory_maintenance task ${task.id} failed: ${msg}`)
+          console.error(`[ScheduledTaskRunner] memory_maintenance task ${task.id} failed: ${msg}`)
           await this.rpcClient.call(
             adminPort,
             'update_task_status',
@@ -131,7 +130,7 @@ export class DecisionDispatcher {
       } catch (error) {
         // worker handler 自身崩溃（throw）——兜底：标失败 + 写失败记忆
         const msg = error instanceof Error ? error.message : String(error)
-        console.error(`[DecisionDispatcher] Background scheduled task ${task.id} failed: ${msg}`)
+        console.error(`[ScheduledTaskRunner] Background scheduled task ${task.id} failed: ${msg}`)
 
         try {
           await this.rpcClient.call(
@@ -159,7 +158,7 @@ export class DecisionDispatcher {
     }
 
     run().catch((err) => {
-      console.error(`[DecisionDispatcher] Unexpected error in scheduled task: ${err}`)
+      console.error(`[ScheduledTaskRunner] Unexpected error in scheduled task: ${err}`)
     })
   }
 
