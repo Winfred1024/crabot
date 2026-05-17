@@ -1894,11 +1894,19 @@ export class WorkerHandler {
   }
 
   private buildSystemPrompt(context: WorkerAgentContext): string {
+    // unified loop spec §3.1：使用 assembleAgentPrompt（12 段统一模板）。
+    // isGroup 从 task_origin.session_type 推断；scheduled task 无 session 时默认 false。
+    const isGroup = context.task_origin?.session_type === 'group'
+    const sceneProfile = context.scene_profile
+      ? { label: context.scene_profile.label, content: context.scene_profile.content }
+      : undefined
     const baseAssembled = this.promptManager
-      ? this.promptManager.assembleWorkerPrompt({
+      ? this.promptManager.assembleAgentPrompt({
+        isGroup,
         adminPersonality: this.systemPrompt || undefined,
         skillListing: this.buildSkillListingSnapshot(),
         availableSubAgents: this.subAgentHints,
+        ...(sceneProfile ? { sceneProfile } : {}),
       })
       : this.systemPrompt
     const parts: string[] = [baseAssembled]
