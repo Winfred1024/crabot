@@ -129,6 +129,65 @@ describe('send_message intent=ask_human', () => {
     expect(queue.hasBarrier).toBe(false)
   })
 
+  it('scheduled 任务调用 ask_human 时返回拒绝错误，错误消息含明确指引', async () => {
+    const queue = new HumanMessageQueue()
+
+    const tools = buildMessagingTools({
+      rpcClient: { call: vi.fn() } as never,
+      moduleId: 'worker-test',
+      getAdminPort: async () => 19001,
+      resolveChannelPort: async () => 19009,
+      getTaskContext: () => ({ taskId: 't1', humanQueue: queue, triggerType: 'scheduled' as const }),
+    })
+
+    const sendTool = findTool(tools, 'send_message')
+    const result = await sendTool.handler({
+      channel_id: 'telegram-001',
+      session_id: 's1',
+      content: 'are you there?',
+      intent: 'ask_human',
+    })
+
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    const parsed = JSON.parse(text)
+    expect(parsed.error).toBeDefined()
+    expect(parsed.error).toContain('ask_human is not allowed in scheduled tasks')
+    expect(parsed.error).toMatch(/intent='?normal'?/)
+  })
+
+  it('message 任务调用 ask_human 不在 scheduled 闸门被拒（仍可走后续流程）', async () => {
+    const queue = new HumanMessageQueue()
+
+    const tools = buildMessagingTools({
+      rpcClient: {
+        call: vi.fn().mockImplementation(async (_port: number, method: string) => {
+          if (method === 'update_task_status') return { task: { id: 't1', status: 'waiting_human' } }
+          if (method === 'send_message') return { platform_message_id: 'm1', sent_at: '' }
+          return {}
+        }),
+      } as never,
+      moduleId: 'worker-test',
+      getAdminPort: async () => 19001,
+      resolveChannelPort: async () => 19009,
+      getTaskContext: () => ({ taskId: 't1', humanQueue: queue, triggerType: 'message' as const }),
+    })
+
+    const sendTool = findTool(tools, 'send_message')
+    const result = await sendTool.handler({
+      channel_id: 'telegram-001',
+      session_id: 's1',
+      content: 'are you there?',
+      intent: 'ask_human',
+    })
+
+    const text = (result as { content: Array<{ text: string }> }).content[0].text
+    const parsed = JSON.parse(text)
+    // message 触发的任务不应被第一道闸门（scheduled 拒绝）挡住
+    expect(parsed.error ?? '').not.toContain('ask_human is not allowed in scheduled tasks')
+
+    queue.clearBarrier()
+  })
+
   it('does NOT set barrier if update_task_status fails', async () => {
     const queue = new HumanMessageQueue()
 

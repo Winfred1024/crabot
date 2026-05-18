@@ -468,6 +468,13 @@ export function buildMessagingTools(
             // 消息尚未发出，直接拒绝。ask_human 不该被 front 调用，这是 safeguard。
             return wrapText({ error: 'ask_human 仅可在 worker 任务上下文内调用' })
           }
+          if (taskCtx.triggerType === 'scheduled') {
+            return wrapText({
+              error: 'ask_human is not allowed in scheduled tasks. Scheduled tasks have no synchronous '
+                + "human responder. If you are blocked or have failed, send_message with intent='normal' "
+                + 'to report status, then end_turn.',
+            })
+          }
         }
 
         // === Step 1: 先 send（高失败率操作先做；失败 → state 完全不变）===
