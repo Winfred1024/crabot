@@ -88,17 +88,15 @@ export class ContextManager {
       return [...messages]
     }
 
-    const splitIndex = this.findSafeSplitIndex(messages)
-    if (splitIndex <= 0) {
+    const split = this.partitionForCompaction(messages)
+    if (!split) {
       return [...messages]
     }
-    const oldMessages = messages.slice(0, splitIndex)
-    const recentMessages = messages.slice(splitIndex)
 
-    const summaryText = this.buildSummary(oldMessages)
+    const summaryText = this.buildSummary(split.oldMessages)
     const summaryMessage = createUserMessage(summaryText)
 
-    return [summaryMessage, ...recentMessages]
+    return [split.firstMessage, summaryMessage, ...split.recentMessages]
   }
 
   async compactWithLLM(
@@ -110,15 +108,13 @@ export class ContextManager {
       return [...messages]
     }
 
-    const splitIndex = this.findSafeSplitIndex(messages)
-    if (splitIndex <= 0) {
+    const split = this.partitionForCompaction(messages)
+    if (!split) {
       return [...messages]
     }
-    const oldMessages = messages.slice(0, splitIndex)
-    const recentMessages = messages.slice(splitIndex)
 
     try {
-      const summaryPrompt = this.buildSummaryPrompt(oldMessages)
+      const summaryPrompt = this.buildSummaryPrompt(split.oldMessages)
       const promptMessage = createUserMessage(summaryPrompt)
 
       const response = await callNonStreaming(adapter, {
@@ -137,7 +133,7 @@ export class ContextManager {
         `[Earlier conversation summary]\n${summaryText}`
       )
 
-      return [summaryMessage, ...recentMessages]
+      return [split.firstMessage, summaryMessage, ...split.recentMessages]
     } catch {
       // Fall back to text-based compaction
       return this.compactMessages(messages)
@@ -153,6 +149,27 @@ export class ContextManager {
 
   getCumulativeUsage(): CumulativeUsage {
     return this.cumulativeUsage
+  }
+
+  /**
+   * 切出三段：首条 user message（钉住不压，含 task_origin 等任务级 immortal facts，
+   * 被摘要 LLM 丢字段会导致回复发错 channel）、待压缩段、recent 段。
+   * 返回 null 表示无可压缩内容（首条之后没有更多 old 消息）。
+   */
+  private partitionForCompaction(messages: ReadonlyArray<EngineMessage>): {
+    firstMessage: EngineMessage
+    oldMessages: ReadonlyArray<EngineMessage>
+    recentMessages: ReadonlyArray<EngineMessage>
+  } | null {
+    const splitIndex = this.findSafeSplitIndex(messages)
+    if (splitIndex <= 1) {
+      return null
+    }
+    return {
+      firstMessage: messages[0],
+      oldMessages: messages.slice(1, splitIndex),
+      recentMessages: messages.slice(splitIndex),
+    }
   }
 
   /**

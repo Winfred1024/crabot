@@ -30,6 +30,26 @@ function mockFailingAdapter(errorMessage: string): LLMAdapter {
   }
 }
 
+interface CapturedCall {
+  messages: EngineMessage[]
+  systemPrompt: string
+}
+
+function capturingAdapter(responseText: string): { adapter: LLMAdapter; captured: CapturedCall } {
+  const captured: CapturedCall = { messages: [], systemPrompt: '' }
+  const adapter: LLMAdapter = {
+    async *stream(params) {
+      captured.messages = [...params.messages]
+      captured.systemPrompt = params.systemPrompt
+      yield { type: 'message_start', messageId: 'msg_1' } as StreamChunk
+      yield { type: 'text_delta', text: responseText } as StreamChunk
+      yield { type: 'message_end', stopReason: 'end_turn' } as StreamChunk
+    },
+    updateConfig() {},
+  }
+  return { adapter, captured }
+}
+
 function makeTextMessages(count: number, charsEach: number): EngineMessage[] {
   const messages: EngineMessage[] = []
   const text = 'a'.repeat(charsEach)
@@ -166,23 +186,25 @@ describe('ContextManager', () => {
 
       const compacted = cm.compactMessages(messages)
 
-      // Should have: 1 summary message + 2 recent messages = 3
-      expect(compacted).toHaveLength(3)
+      // Should have: 1 first user msg (immortal) + 1 summary + 2 recent = 4
+      expect(compacted).toHaveLength(4)
 
-      // First message should be the summary (user role)
-      expect(compacted[0].role).toBe('user')
-      const summaryContent = compacted[0] as { content: string | ContentBlock[] }
+      // First slot 是被钉住的首条 user message（含 task_origin 等）
+      expect(compacted[0]).toBe(messages[0])
+
+      // Second slot 才是摘要
+      expect(compacted[1].role).toBe('user')
+      const summaryContent = compacted[1] as { content: string | ContentBlock[] }
       if (typeof summaryContent.content === 'string') {
         expect(summaryContent.content).toContain('[Summary')
       } else {
-        // If content blocks, first block should contain summary
         const textBlock = summaryContent.content.find((b) => b.type === 'text')
         expect(textBlock).toBeDefined()
       }
 
       // Last 2 messages should be preserved exactly
-      expect(compacted[1]).toBe(messages[4])
-      expect(compacted[2]).toBe(messages[5])
+      expect(compacted[2]).toBe(messages[4])
+      expect(compacted[3]).toBe(messages[5])
     })
 
     it('should return messages as-is when count is at or below keepRecentMessages', () => {
@@ -225,23 +247,25 @@ describe('ContextManager', () => {
       // recent[0]=assistant_with_tool_use, recent[1]=tool_result，配对完整。
       const compacted = cm.compactMessages(messages)
 
-      // 1 summary + 2 recent，且 recent 完整保留 tool_use → tool_result 配对
-      expect(compacted).toHaveLength(3)
-      expect(compacted[1]).toBe(messages[3]) // assistant_with_tool_use
-      expect(compacted[2]).toBe(messages[4]) // tool_result
+      // 1 first + 1 summary + 2 recent，且 recent 完整保留 tool_use → tool_result 配对
+      expect(compacted).toHaveLength(4)
+      expect(compacted[0]).toBe(messages[0]) // 首条 user message 钉住
+      expect(compacted[2]).toBe(messages[3]) // assistant_with_tool_use
+      expect(compacted[3]).toBe(messages[4]) // tool_result
     })
 
     it('should retreat split when default split lands on a tool_result', () => {
       // 构造让默认 split 直接落在 tool_result：
-      // [user, assistant_tool_use, tool_result, user, assistant, tool_result]
-      //                                ^splitIndex=2 (= 6 - 4) 落在 tool_result 上
-      // findSafeSplitIndex 应回退 1 步到 1（assistant_tool_use），让两者一起进 recent
+      // [Q0, Q1, assistant_tool_use, tool_result, user, assistant, tool_result]
+      //                                ^splitIndex=3 (= 7 - 4) 落在 tool_result 上
+      // findSafeSplitIndex 应回退 1 步到 2（assistant_tool_use），让两者一起进 recent
       const cm = new ContextManager({
         maxContextTokens: 10000,
         keepRecentMessages: 4,
       })
 
       const messages: EngineMessage[] = [
+        createUserMessage('Q0'),
         createUserMessage('Q1'),
         createAssistantMessage([
           { type: 'tool_use', id: 'tu_A', name: 'search', input: {} },
@@ -256,15 +280,16 @@ describe('ContextManager', () => {
 
       const compacted = cm.compactMessages(messages)
 
-      // 回退后 splitIndex=1，oldMessages=[Q1]，recent=后 5 条，全部带配对
-      expect(compacted).toHaveLength(6) // 1 summary + 5 recent
-      expect(compacted[1]).toBe(messages[1]) // assistant_tool_use A
-      expect(compacted[2]).toBe(messages[2]) // tool_result A
-      expect(compacted[3]).toBe(messages[3])
+      // 回退后 splitIndex=2，首条钉住=Q0，oldMessages=[Q1]，recent=后 5 条，全部带配对
+      expect(compacted).toHaveLength(7) // 1 first + 1 summary + 5 recent
+      expect(compacted[0]).toBe(messages[0]) // 首条 user message 钉住
+      expect(compacted[2]).toBe(messages[2]) // assistant_tool_use A
+      expect(compacted[3]).toBe(messages[3]) // tool_result A
       expect(compacted[4]).toBe(messages[4])
       expect(compacted[5]).toBe(messages[5])
+      expect(compacted[6]).toBe(messages[6])
       // 关键不变量：recent 第一条不是孤儿 tool_result
-      expect('toolResults' in compacted[1]).toBe(false)
+      expect('toolResults' in compacted[2]).toBe(false)
     })
 
     it('should return as-is when retreating split would leave nothing to summarize', () => {
@@ -325,19 +350,22 @@ describe('ContextManager', () => {
       const adapter = mockAdapter('The user asked two questions and received answers about topics.')
       const compacted = await cm.compactWithLLM(messages, adapter, 'test-model')
 
-      // Should have: 1 summary message + 2 recent messages = 3
-      expect(compacted).toHaveLength(3)
+      // Should have: 1 first + 1 summary + 2 recent = 4
+      expect(compacted).toHaveLength(4)
 
-      // First message should be LLM-generated summary
-      expect(compacted[0].role).toBe('user')
-      const summaryContent = (compacted[0] as { content: string | ContentBlock[] }).content
+      // First slot 是被钉住的首条 user message
+      expect(compacted[0]).toBe(messages[0])
+
+      // Second slot 是 LLM 摘要
+      expect(compacted[1].role).toBe('user')
+      const summaryContent = (compacted[1] as { content: string | ContentBlock[] }).content
       expect(typeof summaryContent).toBe('string')
       expect(summaryContent).toContain('[Earlier conversation summary]')
       expect(summaryContent).toContain('The user asked two questions')
 
       // Last 2 messages should be preserved exactly
-      expect(compacted[1]).toBe(messages[4])
-      expect(compacted[2]).toBe(messages[5])
+      expect(compacted[2]).toBe(messages[4])
+      expect(compacted[3]).toBe(messages[5])
     })
 
     it('should preserve recent messages unchanged', async () => {
@@ -357,11 +385,12 @@ describe('ContextManager', () => {
       const adapter = mockAdapter('Summary of old conversation.')
       const compacted = await cm.compactWithLLM(messages, adapter, 'test-model')
 
-      // 1 summary + 3 recent = 4
-      expect(compacted).toHaveLength(4)
-      expect(compacted[1]).toBe(messages[2])
-      expect(compacted[2]).toBe(messages[3])
-      expect(compacted[3]).toBe(messages[4])
+      // 1 first + 1 summary + 3 recent = 5
+      expect(compacted).toHaveLength(5)
+      expect(compacted[0]).toBe(messages[0])
+      expect(compacted[2]).toBe(messages[2])
+      expect(compacted[3]).toBe(messages[3])
+      expect(compacted[4]).toBe(messages[4])
     })
 
     it('should fall back to text-based compact on LLM error', async () => {
@@ -381,9 +410,10 @@ describe('ContextManager', () => {
       const compacted = await cm.compactWithLLM(messages, adapter, 'test-model')
 
       // Should still produce a valid result via text-based fallback
-      expect(compacted).toHaveLength(3) // 1 summary + 2 recent
-      expect(compacted[0].role).toBe('user')
-      const summaryContent = (compacted[0] as { content: string | ContentBlock[] }).content
+      expect(compacted).toHaveLength(4) // 1 first + 1 summary + 2 recent
+      expect(compacted[0]).toBe(messages[0]) // 首条钉住
+      expect(compacted[1].role).toBe('user')
+      const summaryContent = (compacted[1] as { content: string | ContentBlock[] }).content
       expect(typeof summaryContent).toBe('string')
       // Text-based fallback uses [Summary of earlier conversation]
       expect(summaryContent).toContain('[Summary')
@@ -426,26 +456,46 @@ describe('ContextManager', () => {
         createAssistantMessage([{ type: 'text', text: 'Recent answer' }], 'end_turn'),
       ]
 
-      let capturedMessages: EngineMessage[] = []
-      const capturingAdapter: LLMAdapter = {
-        async *stream(params) {
-          capturedMessages = [...params.messages]
-          yield { type: 'message_start', messageId: 'msg_1' } as StreamChunk
-          yield { type: 'text_delta', text: 'Summary with tool usage.' } as StreamChunk
-          yield { type: 'message_end', stopReason: 'end_turn' } as StreamChunk
-        },
-        updateConfig() {},
-      }
-
-      const compacted = await cm.compactWithLLM(messages, capturingAdapter, 'test-model')
+      const { adapter, captured } = capturingAdapter('Summary with tool usage.')
+      const compacted = await cm.compactWithLLM(messages, adapter, 'test-model')
 
       // The summary prompt sent to LLM should mention tool calls
-      expect(capturedMessages).toHaveLength(1)
-      const promptContent = (capturedMessages[0] as { content: string | ContentBlock[] }).content
+      expect(captured.messages).toHaveLength(1)
+      const promptContent = (captured.messages[0] as { content: string | ContentBlock[] }).content
       expect(typeof promptContent).toBe('string')
       expect(promptContent as string).toContain('search_docs')
 
-      expect(compacted).toHaveLength(3) // 1 summary + 2 recent
+      expect(compacted).toHaveLength(4) // 1 first + 1 summary + 2 recent
+      expect(compacted[0]).toBe(messages[0]) // 首条 user message 钉住
+    })
+
+    it('should pin first user message (task_origin) across LLM compaction', async () => {
+      // 回归：压缩丢首条 user message 的 channel_id 导致 worker 回复发错 channel。
+      // 不变量：首条 user message 不进摘要 LLM 输入、原对象引用保留。
+      const cm = new ContextManager({
+        maxContextTokens: 10000,
+        keepRecentMessages: 2,
+      })
+
+      const taskMessage = createUserMessage(
+        '## 任务来源\n- Channel ID: wechat-棉花糖\n- Session ID: c34a33a8\n\n## 用户请求\n搭一下 deepseek 引擎'
+      )
+      const messages: EngineMessage[] = [
+        taskMessage,
+        createAssistantMessage([{ type: 'text', text: 'OK 开始干' }], 'end_turn'),
+        createUserMessage('shell 输出 1'),
+        createAssistantMessage([{ type: 'text', text: '继续' }], 'end_turn'),
+        createUserMessage('shell 输出 2'),
+        createAssistantMessage([{ type: 'text', text: '快好了' }], 'end_turn'),
+      ]
+
+      const { adapter, captured } = capturingAdapter('shell 跑了两轮。')
+      const compacted = await cm.compactWithLLM(messages, adapter, 'test-model')
+
+      expect(compacted[0]).toBe(taskMessage)
+      const summaryPrompt = (captured.messages[0] as { content: string }).content
+      expect(summaryPrompt).not.toContain('wechat-棉花糖')
+      expect(summaryPrompt).not.toContain('任务来源')
     })
 
     it('should use custom compactSystemPrompt when provided', async () => {
@@ -463,20 +513,10 @@ describe('ContextManager', () => {
         createAssistantMessage([{ type: 'text', text: 'Response 2' }], 'end_turn'),
       ]
 
-      let capturedSystemPrompt = ''
-      const capturingAdapter: LLMAdapter = {
-        async *stream(params) {
-          capturedSystemPrompt = params.systemPrompt
-          yield { type: 'message_start', messageId: 'msg_1' } as StreamChunk
-          yield { type: 'text_delta', text: 'Brief summary.' } as StreamChunk
-          yield { type: 'message_end', stopReason: 'end_turn' } as StreamChunk
-        },
-        updateConfig() {},
-      }
+      const { adapter, captured } = capturingAdapter('Brief summary.')
+      await cm.compactWithLLM(messages, adapter, 'test-model')
 
-      await cm.compactWithLLM(messages, capturingAdapter, 'test-model')
-
-      expect(capturedSystemPrompt).toBe(customPrompt)
+      expect(captured.systemPrompt).toBe(customPrompt)
     })
   })
 })
