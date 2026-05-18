@@ -33,7 +33,6 @@ import type {
   WorkerAgentContext,
 } from './types.js'
 import { SessionManager } from './orchestration/session-manager.js'
-import { SwitchMapHandler } from './orchestration/switchmap-handler.js'
 import { PermissionChecker } from './orchestration/permission-checker.js'
 import { WorkerSelector } from './orchestration/worker-selector.js'
 import { ContextAssembler } from './orchestration/context-assembler.js'
@@ -106,7 +105,6 @@ const MASTER_FRIEND: Readonly<Friend> = {
 export class UnifiedAgent extends ModuleBase {
   // 编排层组件
   private sessionManager: SessionManager
-  private switchmapHandler: SwitchMapHandler
   private permissionChecker: PermissionChecker
   private workerSelector: WorkerSelector
   private contextAssembler: ContextAssembler
@@ -176,12 +174,6 @@ export class UnifiedAgent extends ModuleBase {
 
     // 初始化编排层组件
     this.sessionManager = new SessionManager(this.orchestrationConfig.session_state_ttl)
-    this.switchmapHandler = new SwitchMapHandler(
-      this.sessionManager,
-      this.rpcClient,
-      config.module_id,
-      async () => await this.getAdminPort()
-    )
     this.permissionChecker = new PermissionChecker(
       this.rpcClient,
       config.module_id,
@@ -1364,103 +1356,97 @@ export class UnifiedAgent extends ModuleBase {
       // 更新 session 状态
       this.sessionManager.updateLastMessageTime(sessionId)
 
-      // switchMap 处理
       const requestId = crypto.randomUUID()
-      const mergedMessages = await this.switchmapHandler.handleNewMessage(sessionId, requestId, message)
 
-      try {
-        // 检查是否有 Worker Handler 能力
-        if (!this.agentHandler) {
-          return { decision_types: [] }
-        }
+      // 检查是否有 Worker Handler 能力
+      if (!this.agentHandler) {
+        return { decision_types: [] }
+      }
 
-        // 组装上下文（channel 内部调用无 permResult，从 session 配置读取 memory_scopes）
-        const channelMemPerms = await this.buildSessionMemoryPermissions(sessionId)
-        const context = await this.contextAssembler.assembleFrontContext(
-          {
-            channel_id: message.session.channel_id,
-            session_id: sessionId,
-            sender_id: message.sender.platform_user_id,
-            message: mergedMessages.map((m) => m.content.text ?? '').join('\n'),
-            friend_id: message.sender.friend_id,
-            session_type: message.session.type,
-          },
-          undefined,
-          channelMemPerms
-        )
+      // 组装上下文（channel 内部调用无 permResult，从 session 配置读取 memory_scopes）
+      const channelMemPerms = await this.buildSessionMemoryPermissions(sessionId)
+      const context = await this.contextAssembler.assembleFrontContext(
+        {
+          channel_id: message.session.channel_id,
+          session_id: sessionId,
+          sender_id: message.sender.platform_user_id,
+          message: message.content.text ?? '',
+          friend_id: message.sender.friend_id,
+          session_type: message.session.type,
+        },
+        undefined,
+        channelMemPerms
+      )
 
-        // 调用统一 loop
-        const triggerArrivedAtMs = Date.now()
-        const result = await this.agentHandler.executeTriggerMessage({
-          messages: mergedMessages,
-          activeTasks: context.active_tasks ?? [],
-          isGroup: message.session.type === 'group',
-          ...(context.scene_profile ? { sceneProfile: context.scene_profile } : {}),
-          senderFriend: {
-            id: message.sender.friend_id ?? message.sender.platform_user_id,
-            display_name: message.sender.platform_display_name,
-            permission: 'normal' as const,
-            channel_identities: [],
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          },
-          triggerArrivedAtMs,
-          memoryPermissions: channelMemPerms,
-          resolvedPermissions: FAIL_CLOSED_TOOL_ACCESS as unknown as ResolvedPermissions,
-          channelId: message.session.channel_id,
-          sessionId,
-          frontContext: context,
-        })
+      // 调用统一 loop
+      const triggerArrivedAtMs = Date.now()
+      const result = await this.agentHandler.executeTriggerMessage({
+        messages: [message],
+        activeTasks: context.active_tasks ?? [],
+        isGroup: message.session.type === 'group',
+        ...(context.scene_profile ? { sceneProfile: context.scene_profile } : {}),
+        senderFriend: {
+          id: message.sender.friend_id ?? message.sender.platform_user_id,
+          display_name: message.sender.platform_display_name,
+          permission: 'normal' as const,
+          channel_identities: [],
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+        triggerArrivedAtMs,
+        memoryPermissions: channelMemPerms,
+        resolvedPermissions: FAIL_CLOSED_TOOL_ACCESS as unknown as ResolvedPermissions,
+        channelId: message.session.channel_id,
+        sessionId,
+        frontContext: context,
+      })
 
-        // 检查是否已被更新消息取代
-        if (this.sessionManager.getPendingRequest(sessionId) !== requestId) {
-          return { decision_types: [] }
-        }
+      // 检查是否已被更新消息取代
+      if (this.sessionManager.getPendingRequest(sessionId) !== requestId) {
+        return { decision_types: [] }
+      }
 
-        // 映射 exitToolCall → decision_types / task_ids
-        const decisionTypes: string[] = []
-        const taskIds: TaskId[] = []
+      // 映射 exitToolCall → decision_types / task_ids
+      const decisionTypes: string[] = []
+      const taskIds: TaskId[] = []
 
-        if (result.exitToolCall) {
-          const exitName = result.exitToolCall.name
-          if (exitName === 'supplement_task') {
-            decisionTypes.push('supplement_task')
-            const exitInput = result.exitToolCall.input
-            const targetTaskId = exitInput['target_task_id']
-            const supplementText = exitInput['supplement_text']
-            if (typeof targetTaskId === 'string' && typeof supplementText === 'string') {
-              const delivered = await this.handleLocalSupplement(
-                {
-                  type: 'supplement_task',
-                  task_id: targetTaskId,
-                  supplement_content: supplementText,
-                  immediate_reply: { type: 'text', text: '' },
-                },
-                message.session,
-                '',
-                '',
-                context.active_tasks ?? [],
-              )
-              if (delivered) {
-                taskIds.push(targetTaskId)
-              }
+      if (result.exitToolCall) {
+        const exitName = result.exitToolCall.name
+        if (exitName === 'supplement_task') {
+          decisionTypes.push('supplement_task')
+          const exitInput = result.exitToolCall.input
+          const targetTaskId = exitInput['target_task_id']
+          const supplementText = exitInput['supplement_text']
+          if (typeof targetTaskId === 'string' && typeof supplementText === 'string') {
+            const delivered = await this.handleLocalSupplement(
+              {
+                type: 'supplement_task',
+                task_id: targetTaskId,
+                supplement_content: supplementText,
+                immediate_reply: { type: 'text', text: '' },
+              },
+              message.session,
+              '',
+              '',
+              context.active_tasks ?? [],
+            )
+            if (delivered) {
+              taskIds.push(targetTaskId)
             }
-          } else if (exitName === 'stay_silent') {
-            decisionTypes.push('silent')
           }
-          // 其他 exit tool（理论不应出现）：忽略
-        } else if (result.sentMessage) {
-          decisionTypes.push('direct_reply')
-        } else {
-          console.warn(`[${this.config.moduleId}] handleProcessMessage unified loop ended without send_message (finalText len=${result.finalText.length}, ignored)`)
+        } else if (exitName === 'stay_silent') {
+          decisionTypes.push('silent')
         }
+        // 其他 exit tool（理论不应出现）：忽略
+      } else if (result.sentMessage) {
+        decisionTypes.push('direct_reply')
+      } else {
+        console.warn(`[${this.config.moduleId}] handleProcessMessage unified loop ended without send_message (finalText len=${result.finalText.length}, ignored)`)
+      }
 
-        return {
-          decision_types: decisionTypes,
-          task_ids: taskIds.length > 0 ? taskIds : undefined,
-        }
-      } finally {
-        this.switchmapHandler.completeRequest(sessionId, requestId)
+      return {
+        decision_types: decisionTypes,
+        task_ids: taskIds.length > 0 ? taskIds : undefined,
       }
     }
 

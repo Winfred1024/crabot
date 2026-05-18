@@ -3,7 +3,6 @@
  */
 
 export { SessionManager } from './session-manager.js'
-export { SwitchMapHandler } from './switchmap-handler.js'
 export { PermissionChecker } from './permission-checker.js'
 export { WorkerSelector } from './worker-selector.js'
 export { ContextAssembler } from './context-assembler.js'
