@@ -40,7 +40,9 @@ import { ContextAssembler } from './orchestration/context-assembler.js'
 import { ScheduledTaskRunner } from './orchestration/scheduled-task-runner.js'
 import { MemoryWriter } from './orchestration/memory-writer.js'
 import { AttentionScheduler, type AttentionConfig, type BufferedMessage } from './orchestration/attention-scheduler.js'
-import { AgentHandler, type SdkEnvConfig } from './agent/agent-handler.js'
+import { AgentHandler, type SdkEnvConfig, adapterFromSdkEnv } from './agent/agent-handler.js'
+import { dispatch } from './dispatcher/dispatcher.js'
+import { executeDispatchActions } from './dispatcher/dispatcher-executor.js'
 import type { ToolPermissionConfig, ToolDefinition as EngineToolDefinition } from './engine/types.js'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { McpConnector } from './agent/mcp-connector.js'
@@ -519,46 +521,38 @@ export class UnifiedAgent extends ModuleBase {
    * 私聊消息处理（SwitchMap：同 session 新消息取消旧请求）
    */
   private async processDirectMessage(message: ChannelMessage, friend: Friend): Promise<void> {
-    const { session, sender, content } = message
-
-    // 1. 更新 session 状态
+    const { session } = message
     this.sessionManager.updateLastMessageTime(session.session_id)
 
-    // 2. switchMap 处理：取消旧请求，合并被中断消息
-    const requestId = crypto.randomUUID()
-    const mergedMessages = await this.switchmapHandler.handleNewMessage(
-      session.session_id,
-      requestId,
-      message
-    )
-
-    // 3. 创建 Trace
+    // 创建 trace
     const trace = this.traceStore.startTrace({
       module_id: this.config.moduleId,
       trigger: {
         type: 'message',
-        summary: mergedMessages.length > 1
-          ? `[merged×${mergedMessages.length}] ${mergedMessages.map((m) => (m.content.text ?? '').slice(0, 50)).join(' | ').slice(0, 200)}`
-          : (content.text ?? '[非文本消息]').slice(0, 200),
+        summary: (message.content.text ?? '[非文本]').slice(0, 200),
         source: session.channel_id,
       },
     })
 
-    let barrierTaskIds: string[] = []
-
     try {
-      // 4. 检查 Worker Handler 能力
       if (!this.agentHandler) {
         this.traceStore.endTrace(trace.trace_id, 'failed', { summary: 'No worker handler configured' })
         return
       }
 
-      // 5. 解析权限
+      // 权限 + memory perm
       const resolvedPerms = await this.resolvePrincipalPermissions(friend, session.session_id, 'private')
       this.currentResolvedPerms = resolvedPerms
-      const memPerms = await this.deriveMemoryPermissions(friend, session.session_id, resolvedPerms)
+      const memPerms = resolvedPerms
+        ? {
+            write_visibility: 'internal' as const,
+            write_scopes: resolvedPerms.memory_scopes,
+            read_min_visibility: 'internal' as const,
+            read_accessible_scopes: resolvedPerms.memory_scopes,
+          }
+        : await this.buildSessionMemoryPermissions(session.session_id)
 
-      // 6. 组装上下文（带 span 追踪耗时）
+      // 上下文装配（带 span 追踪耗时）
       const ctxSpan = this.traceStore.startSpan(trace.trace_id, {
         type: 'context_assembly',
         details: {
@@ -567,13 +561,13 @@ export class UnifiedAgent extends ModuleBase {
           session_id: session.session_id,
         },
       })
-      const context = await this.contextAssembler.assembleFrontContext(
+      const frontContext = await this.contextAssembler.assembleFrontContext(
         {
           channel_id: session.channel_id,
           session_id: session.session_id,
-          sender_id: sender.platform_user_id,
-          message: mergedMessages.map((m) => m.content.text ?? '').join('\n'),
-          friend_id: sender.friend_id,
+          sender_id: message.sender.platform_user_id,
+          message: message.content.text ?? '',
+          friend_id: friend.id,
           session_type: 'private',
         },
         friend,
@@ -582,85 +576,97 @@ export class UnifiedAgent extends ModuleBase {
       )
       this.traceStore.endSpan(trace.trace_id, ctxSpan.span_id, 'completed')
 
-      // 7. 构建 TraceCallback
-      const traceCallback = this.buildTraceCallback(trace.trace_id)
-
-      barrierTaskIds = this.setupBarriers(session.channel_id, session.session_id)
-
-      // 8. 调用统一 loop
-      const triggerArrivedAtMs = Date.now()
-      let result
-      try {
-        result = await this.agentHandler.executeTriggerMessage({
-          messages: [...mergedMessages],
-          activeTasks: context.active_tasks ?? [],
-          isGroup: false,
-          ...(context.scene_profile ? { sceneProfile: context.scene_profile } : {}),
-          senderFriend: friend,
-          triggerArrivedAtMs,
-          memoryPermissions: memPerms,
-          resolvedPermissions: resolvedPerms as ResolvedPermissions,
-          channelId: session.channel_id,
-          sessionId: session.session_id,
-          frontContext: context,
-        }, traceCallback)
-      } catch (error) {
-        console.error(`[${this.config.moduleId}] processDirectMessage error:`, error)
-        this.traceStore.endTrace(trace.trace_id, 'failed', {
-          summary: error instanceof Error ? error.message : String(error),
-        })
+      // 调 dispatcher
+      if (!this.sdkEnvWorker) {
+        this.traceStore.endTrace(trace.trace_id, 'failed', { summary: 'sdkEnvWorker missing' })
         return
       }
 
-      // 9. Abort 检查
-      const currentPending = this.sessionManager.getPendingRequest(session.session_id)
-      if (currentPending !== requestId) {
-        this.traceStore.endTrace(trace.trace_id, 'completed', { summary: 'superseded by newer message' })
-        return
+      const dispatchCtx = {
+        messages: [message] as ReadonlyArray<ChannelMessage>,
+        activeTasks: frontContext.active_tasks ?? [],
+        sessionType: 'private' as const,
+        channelId: session.channel_id,
+        sessionId: session.session_id,
+        senderFriend: friend,
+        ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
+        traceId: trace.trace_id,
       }
 
-      // 10. Exit tool dispatch
-      if (result.exitToolCall) {
-        const exitName = result.exitToolCall.name
-        const exitInput = result.exitToolCall.input
-        if (exitName === 'supplement_task') {
-          const targetTaskId = exitInput['target_task_id']
-          const supplementText = exitInput['supplement_text']
-          if (typeof targetTaskId === 'string' && typeof supplementText === 'string') {
-            await this.handleLocalSupplement(
-              {
-                type: 'supplement_task',
-                task_id: targetTaskId,
-                supplement_content: supplementText,
-                immediate_reply: { type: 'text', text: '' },
-              },
-              session,
-              trace.trace_id,
-              '',
-              context.active_tasks ?? [],
-            )
-          }
-        } else if (exitName === 'stay_silent') {
-          // 群聊场景才会触发；私聊不应出现
-          console.warn(`[${this.config.moduleId}] unexpected stay_silent in private chat: ${JSON.stringify(exitInput)}`)
+      const sendErrorToUser = async (text: string) => {
+        try {
+          const channelPort = await this.getChannelPort(session.channel_id)
+          await this.rpcClient.call(channelPort, 'send_message', {
+            session_id: session.session_id,
+            content: { type: 'text', text },
+          }, this.config.moduleId)
+        } catch (err) {
+          console.error(`[${this.config.moduleId}] processDirectMessage sendErrorToUser failed:`, err instanceof Error ? err.message : String(err))
         }
-      } else if (!result.sentMessage) {
-        // unified loop 设计：交付走 send_message 工具。silent end_turn 不应出现，
-        // 出现说明 agent 没遵守 send_message 协议——用 trace 排查，不二次猜测 finalText
-        console.warn(`[${this.config.moduleId}] unified loop ended without send_message (finalText len=${result.finalText.length}, ignored)`)
       }
 
-      this.clearAllBarriers(barrierTaskIds)
-
-      this.traceStore.endTrace(trace.trace_id, result.outcome === 'completed' ? 'completed' : 'failed', {
-        summary: this.buildResultSummaryLabel(result, 'silent_end'),
+      const dispatchSpan = this.traceStore.startSpan(trace.trace_id, {
+        type: 'dispatch_call' as never,
+        details: { model: this.sdkEnvWorker.modelId, session_type: 'private' } as never,
       })
-    } catch (error) {
-      this.clearAllBarriers(barrierTaskIds)
-      const msg = error instanceof Error ? error.message : String(error)
+      const { actions } = await dispatch(dispatchCtx, {
+        adapter: adapterFromSdkEnv(this.sdkEnvWorker),
+        modelId: this.sdkEnvWorker.modelId,
+        sendErrorToUser,
+      })
+      this.traceStore.endSpan(trace.trace_id, dispatchSpan.span_id, 'completed', {
+        output_summary: `actions=${actions.length}`,
+      })
+
+      // 执行动作
+      await executeDispatchActions(actions, {
+        dispatchCtx,
+        pushSupplement: async (taskId: string, text: string): Promise<'delivered' | 'fallback'> => {
+          if (!this.agentHandler!.hasActiveTask(taskId)) return 'fallback'
+          try {
+            // deliverHumanResponse 接受 ChannelMessage[]，构造一条伪消息传递 text
+            const syntheticMessage: ChannelMessage = {
+              ...message,
+              content: { ...message.content, text },
+            }
+            this.agentHandler!.deliverHumanResponse(taskId, [syntheticMessage])
+            return 'delivered'
+          } catch {
+            return 'fallback'
+          }
+        },
+        spawnAgentInstance: async (text: string) => {
+          const triggerMessage: ChannelMessage = {
+            ...message,
+            content: { ...message.content, text },
+          }
+          const result = await this.agentHandler!.executeTriggerMessage(
+            {
+              messages: [triggerMessage],
+              activeTasks: frontContext.active_tasks ?? [],
+              isGroup: false,
+              ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
+              senderFriend: friend,
+              triggerArrivedAtMs: Date.now(),
+              memoryPermissions: memPerms,
+              resolvedPermissions: resolvedPerms as ResolvedPermissions,
+              channelId: session.channel_id,
+              sessionId: session.session_id,
+              frontContext,
+            },
+            this.buildTraceCallback(trace.trace_id),
+          )
+          return { spawnedTraceId: (result as { traceId?: string }).traceId ?? trace.trace_id }
+        },
+        sendErrorToUser,
+      })
+
+      this.traceStore.endTrace(trace.trace_id, 'completed', {
+        summary: actions.length === 0 ? 'silent' : `dispatched (${actions.length} actions)`,
+      })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
       this.traceStore.endTrace(trace.trace_id, 'failed', { summary: msg, error: msg })
-    } finally {
-      this.switchmapHandler.completeRequest(session.session_id, requestId)
     }
   }
 

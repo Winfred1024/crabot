@@ -195,7 +195,7 @@ export interface SdkEnvConfig {
   env: Record<string, string>
 }
 
-function adapterFromSdkEnv(sdkEnv: SdkEnvConfig) {
+export function adapterFromSdkEnv(sdkEnv: SdkEnvConfig) {
   return createAdapter({
     endpoint: sdkEnv.env.LLM_BASE_URL ?? '',
     apikey: sdkEnv.env.LLM_API_KEY ?? '',
