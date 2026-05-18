@@ -1,0 +1,115 @@
+/**
+ * delegate_task 工具
+ *
+ * worker 工具表里唯一的 subagent 入口。
+ * - description 含 <available_subagents> 段 + 每个 subagent 的 when_to_use 原文
+ * - inputSchema.subagent_type.enum 限制为已 enabled 的 subagent name
+ * - call: 按 subagent_type 查表 → 调 runSubAgent（caller 提供）
+ *
+ * 注意：subagent 工具集**永远不含** delegate_task（防嵌套），由 subagent-tool-filter
+ * 在 spawn 子 agent 工具表时统一剔除。
+ *
+ * Spec: crabot-docs/superpowers/specs/2026-05-17-subagent-customization-and-admin-ui-design.md §3.2
+ */
+
+import type { ToolDefinition, ToolCallContext, ToolCallResult } from '../engine/types.js'
+import type { SubAgentConfig } from '../types.js'
+
+/** Subagent 调用入参 */
+export interface RunSubAgentInput {
+  readonly subagent_type: string
+  readonly task: string
+  readonly context?: string
+  readonly image_paths?: string[]
+  readonly run_in_background?: boolean
+}
+
+/** 调用 subagent 的实际函数；由 caller（agent-handler）实现，注入到 createDelegateTaskTool */
+export type RunSubAgentFn = (
+  subagent: SubAgentConfig,
+  input: RunSubAgentInput,
+  ctx: ToolCallContext,
+) => Promise<ToolCallResult>
+
+/**
+ * 组装 delegate_task 工具的 description。
+ * 内含 <available_subagents> 列表 + 每个 subagent 的 when_to_use 原文。
+ */
+export function buildDelegateTaskDescription(subAgents: ReadonlyArray<SubAgentConfig>): string {
+  const lines: string[] = [
+    'Launch a specialized subagent to autonomously handle a task that benefits from a focused expert + 独立上下文。',
+    '',
+    '<available_subagents>',
+  ]
+  if (subAgents.length === 0) {
+    lines.push('(no subagents currently enabled)')
+  } else {
+    for (const s of subAgents) {
+      const head = s.description || s.when_to_use.split('\n')[0] || s.name
+      lines.push(`- "${s.name}": ${head}`)
+    }
+  }
+  lines.push('</available_subagents>')
+
+  if (subAgents.length > 0) {
+    lines.push('', 'When to use each subagent type:')
+    for (const s of subAgents) {
+      lines.push('', `=== ${s.name} ===`, s.when_to_use)
+    }
+  }
+
+  lines.push(
+    '',
+    'Usage notes:',
+    '- 单条 message 内可并发调多次 delegate_task',
+    '- subagent 在隔离上下文执行，不继承父对话历史；prompt 要写完整任务描述',
+    '- 子 agent 返回 final output 后退出，无法续会话',
+    '- subagent 看不到 delegate_task 工具，不能再委派下一层',
+  )
+  return lines.join('\n')
+}
+
+export interface CreateDelegateTaskToolOptions {
+  readonly subAgents: ReadonlyArray<SubAgentConfig>
+  readonly runSubAgent: RunSubAgentFn
+}
+
+/**
+ * 创建 delegate_task 工具实例。
+ * - subAgents 决定 inputSchema.subagent_type.enum + description 内容
+ * - runSubAgent 由 caller 注入（含 trace / spawn / model adapter 选择等运行时依赖）
+ */
+export function createDelegateTaskTool(opts: CreateDelegateTaskToolOptions): ToolDefinition {
+  const enabledNames = opts.subAgents.map((s) => s.name)
+  return {
+    name: 'delegate_task',
+    description: buildDelegateTaskDescription(opts.subAgents),
+    isReadOnly: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        subagent_type: { type: 'string', enum: enabledNames, description: 'Which subagent to delegate to' },
+        task: { type: 'string', description: '完整的任务描述（subagent 不继承父对话历史）' },
+        context: { type: 'string', description: '可选；将父任务相关上下文传给 subagent' },
+        image_paths: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '可选；仅当 subagent 的模型支持 vision 时生效',
+        },
+        run_in_background: { type: 'boolean', description: '可选；持久化场景支持 bg spawn' },
+      },
+      required: ['subagent_type', 'task'],
+    },
+    call: async (input: Record<string, unknown>, ctx: ToolCallContext): Promise<ToolCallResult> => {
+      const subagentType = String(input.subagent_type ?? '')
+      const subagent = opts.subAgents.find((s) => s.name === subagentType)
+      if (subagent === undefined) {
+        return {
+          output: `Unknown subagent_type "${subagentType}"。可用：[${enabledNames.join(', ')}]`,
+          isError: true,
+        }
+      }
+      return opts.runSubAgent(subagent, input as unknown as RunSubAgentInput, ctx)
+    },
+  }
+}
