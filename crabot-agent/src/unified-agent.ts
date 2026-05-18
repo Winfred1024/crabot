@@ -686,11 +686,6 @@ export class UnifiedAgent extends ModuleBase {
     const messages = buffered.map((b) => b.message)
     const session = messages[0].session
 
-    // 检查 Worker Handler 能力（群聊统一走 executeTriggerMessage）
-    if (!this.agentHandler) {
-      return
-    }
-
     // 创建 Trace
     const summary = messages
       .map((m) => `${m.sender.platform_display_name}: ${(m.content.text ?? '').slice(0, 50)}`)
@@ -705,9 +700,15 @@ export class UnifiedAgent extends ModuleBase {
       },
     })
 
+    let hasReply = false
     let barrierTaskIds: string[] = []
 
     try {
+      if (!this.agentHandler) {
+        this.traceStore.endTrace(trace.trace_id, 'failed', { summary: 'No worker handler configured' })
+        return
+      }
+
       // 群聊 barrier：仅在有 @bot 消息时设置（非 @bot 群聊消息不暂停 worker）
       const hasMention = messages.some(m => m.features.is_mention_crab)
       if (hasMention) {
@@ -745,7 +746,7 @@ export class UnifiedAgent extends ModuleBase {
         },
       })
       const lastMsg = messages[messages.length - 1]
-      const context = await this.contextAssembler.assembleFrontContext(
+      const frontContext = await this.contextAssembler.assembleFrontContext(
         {
           channel_id: session.channel_id,
           session_id: sessionId,
@@ -761,80 +762,100 @@ export class UnifiedAgent extends ModuleBase {
       )
       this.traceStore.endSpan(trace.trace_id, ctxSpan.span_id, 'completed')
 
-      const traceCallback = this.buildTraceCallback(trace.trace_id)
-
-      // 调用统一 loop（群聊 isGroup=true）
-      const triggerArrivedAtMs = Date.now()
-      let result
-      try {
-        result = await this.agentHandler.executeTriggerMessage({
-          messages: [...messages],
-          activeTasks: context.active_tasks ?? [],
-          isGroup: true,
-          ...(context.scene_profile ? { sceneProfile: context.scene_profile } : {}),
-          senderFriend: lastEntry.friend,
-          triggerArrivedAtMs,
-          memoryPermissions: memPerms,
-          resolvedPermissions: resolvedPerms as ResolvedPermissions,
-          channelId: session.channel_id,
-          sessionId,
-          frontContext: context,
-        }, traceCallback)
-      } catch (error) {
-        console.error(`[${this.config.moduleId}] processGroupBatch executeTriggerMessage error:`, error)
-        this.clearAllBarriers(barrierTaskIds)
-        this.traceStore.endTrace(trace.trace_id, 'failed', {
-          summary: error instanceof Error ? error.message : String(error),
-        })
+      if (!this.sdkEnvWorker) {
+        this.traceStore.endTrace(trace.trace_id, 'failed', { summary: 'sdkEnvWorker missing' })
         return
       }
 
-      // Exit tool dispatch
-      let hasReply: boolean
-      if (result.exitToolCall) {
-        const exitName = result.exitToolCall.name
-        const exitInput = result.exitToolCall.input
-        if (exitName === 'stay_silent') {
-          // 群聊 silent discard
-          hasReply = false
-        } else if (exitName === 'supplement_task') {
-          const targetTaskId = exitInput['target_task_id']
-          const supplementText = exitInput['supplement_text']
-          if (typeof targetTaskId === 'string' && typeof supplementText === 'string') {
-            await this.handleLocalSupplement(
-              {
-                type: 'supplement_task',
-                task_id: targetTaskId,
-                supplement_content: supplementText,
-                immediate_reply: { type: 'text', text: '' },
-              },
-              session,
-              trace.trace_id,
-              '',
-              context.active_tasks ?? [],
-            )
-          }
-          hasReply = true
-        } else {
-          // 其他 exit tool（理论不应出现）：以 sentMessage 为准
-          hasReply = result.sentMessage
-        }
-      } else {
-        hasReply = result.sentMessage
-        if (!hasReply) {
-          console.warn(`[${this.config.moduleId}] group unified loop ended without send_message (finalText len=${result.finalText.length}, ignored)`)
+      const dispatchCtx = {
+        messages: messages as ReadonlyArray<ChannelMessage>,
+        activeTasks: frontContext.active_tasks ?? [],
+        sessionType: 'group' as const,
+        channelId: session.channel_id,
+        sessionId,
+        senderFriend: lastEntry.friend,
+        ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
+        traceId: trace.trace_id,
+      }
+
+      const sendErrorToUser = async (text: string) => {
+        try {
+          const channelPort = await this.getChannelPort(session.channel_id)
+          await this.rpcClient.call(channelPort, 'send_message', {
+            session_id: sessionId,
+            content: { type: 'text', text },
+          }, this.config.moduleId)
+        } catch (err) {
+          console.error(`[${this.config.moduleId}] processGroupBatch sendErrorToUser failed:`, err instanceof Error ? err.message : String(err))
         }
       }
+
+      const dispatchSpan = this.traceStore.startSpan(trace.trace_id, {
+        type: 'dispatch_call' as never,
+        details: { model: this.sdkEnvWorker.modelId, session_type: 'group' } as never,
+      })
+      const { actions } = await dispatch(dispatchCtx, {
+        adapter: adapterFromSdkEnv(this.sdkEnvWorker),
+        modelId: this.sdkEnvWorker.modelId,
+        sendErrorToUser,
+      })
+      this.traceStore.endSpan(trace.trace_id, dispatchSpan.span_id, 'completed', {
+        output_summary: `actions=${actions.length}`,
+      })
+
+      // 退避信号：actions 中是否含非 stay_silent 动作
+      hasReply = actions.some(a => a.kind !== 'stay_silent')
+
+      await executeDispatchActions(actions, {
+        dispatchCtx,
+        pushSupplement: async (taskId: string, text: string): Promise<'delivered' | 'fallback'> => {
+          if (!this.agentHandler!.hasActiveTask(taskId)) return 'fallback'
+          try {
+            const syntheticMessage: ChannelMessage = {
+              ...lastMsg,
+              content: { ...lastMsg.content, text },
+            }
+            this.agentHandler!.deliverHumanResponse(taskId, [syntheticMessage])
+            return 'delivered'
+          } catch {
+            return 'fallback'
+          }
+        },
+        spawnAgentInstance: async (text: string) => {
+          const triggerMessage: ChannelMessage = {
+            ...lastMsg,
+            content: { ...lastMsg.content, text },
+          }
+          const result = await this.agentHandler!.executeTriggerMessage(
+            {
+              messages: [triggerMessage],
+              activeTasks: frontContext.active_tasks ?? [],
+              isGroup: true,
+              ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
+              senderFriend: lastEntry.friend,
+              triggerArrivedAtMs: Date.now(),
+              memoryPermissions: memPerms,
+              resolvedPermissions: resolvedPerms as ResolvedPermissions,
+              channelId: session.channel_id,
+              sessionId,
+              frontContext,
+            },
+            this.buildTraceCallback(trace.trace_id),
+          )
+          return { spawnedTraceId: (result as { traceId?: string }).traceId ?? trace.trace_id }
+        },
+        sendErrorToUser,
+      })
 
       this.clearAllBarriers(barrierTaskIds)
       this.attentionScheduler.reportResult(sessionId, hasReply)
 
-      this.traceStore.endTrace(trace.trace_id, result.outcome === 'completed' ? 'completed' : 'failed', {
-        summary: this.buildResultSummaryLabel(result, 'silent_discard'),
+      this.traceStore.endTrace(trace.trace_id, 'completed', {
+        summary: actions.length === 0 ? 'silent' : `dispatched (${actions.length} actions)`,
       })
-    } catch (error) {
+    } catch (err) {
       this.clearAllBarriers(barrierTaskIds)
-      const msg = error instanceof Error ? error.message : String(error)
+      const msg = err instanceof Error ? err.message : String(err)
       this.traceStore.endTrace(trace.trace_id, 'failed', { summary: msg, error: msg })
     }
   }
