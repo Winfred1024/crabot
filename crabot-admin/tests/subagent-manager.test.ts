@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { SubAgentManager } from '../src/subagent-manager.js'
+import { SubAgentManager, resolveSubAgentModel } from '../src/subagent-manager.js'
 
 describe('SubAgentManager', () => {
   let tmpDir: string
@@ -128,5 +128,29 @@ describe('SubAgentManager', () => {
     await expect(mgr.update(b.id, { name: 'alpha' })).rejects.toThrow(/已存在/)
     // 改成自己原名应允许
     await expect(mgr.update(b.id, { name: 'beta' })).resolves.toBeTruthy()
+  })
+})
+
+describe('resolveSubAgentModel', () => {
+  it('provider_id+model_id 非 null 优先返回 specific', () => {
+    const entry = { provider_id: 'p1', model_id: 'm1', model_role: 'powerful' as const }
+    expect(resolveSubAgentModel(entry)).toEqual({ mode: 'specific', provider_id: 'p1', model_id: 'm1' })
+  })
+
+  it('provider_id 或 model_id 任一为 null 时走 role', () => {
+    const entryA = { provider_id: null, model_id: 'm1', model_role: 'powerful' as const }
+    expect(resolveSubAgentModel(entryA)).toEqual({ mode: 'role', role: 'powerful' })
+    const entryB = { provider_id: 'p1', model_id: null, model_role: 'powerful' as const }
+    expect(resolveSubAgentModel(entryB)).toEqual({ mode: 'role', role: 'powerful' })
+  })
+
+  it('只有 model_role 时返回 role mode', () => {
+    const entry = { provider_id: null, model_id: null, model_role: 'cost_effective' as const }
+    expect(resolveSubAgentModel(entry)).toEqual({ mode: 'role', role: 'cost_effective' })
+  })
+
+  it('都缺则抛错', () => {
+    const entry = { provider_id: null, model_id: null, model_role: null }
+    expect(() => resolveSubAgentModel(entry)).toThrow(/缺失/)
   })
 })

@@ -7,7 +7,7 @@
 import fs from 'fs/promises'
 import path from 'path'
 import { generateId, generateTimestamp } from 'crabot-shared'
-import type { SubAgentRegistryEntry } from './types.js'
+import type { SubAgentRegistryEntry, ModelRole } from './types.js'
 
 export type CreateSubAgentParams = Omit<
   SubAgentRegistryEntry,
@@ -162,4 +162,32 @@ export class SubAgentManager {
       throw new Error('model spec 缺失：provider_id+model_id 或 model_role 至少需一组')
     }
   }
+}
+
+export type ResolvedSubAgentModelSpec =
+  | { mode: 'specific'; provider_id: string; model_id: string }
+  | { mode: 'role'; role: ModelRole }
+
+/**
+ * 解析 subagent model 配置（hybrid 模式）。
+ *
+ * 优先级：
+ *   1. provider_id 和 model_id 都非 null → mode='specific'（用户指定具体模型）
+ *   2. model_role 非 null → mode='role'（按 role 查全局 model_config）
+ *   3. 都缺 → 抛错（数据非法，SubAgentManager.validateModelSpec 应已拦截，此处再次防御）
+ *
+ * 调用方按 mode 进一步解析：
+ *   - 'specific' → ModelProviderManager.buildConnectionInfo(provider_id, model_id)
+ *   - 'role'     → 查 agent 实例 model_config[role] 拿 ModelSlotRef 后再 buildConnectionInfo
+ */
+export function resolveSubAgentModel(
+  entry: Pick<SubAgentRegistryEntry, 'provider_id' | 'model_id' | 'model_role'>
+): ResolvedSubAgentModelSpec {
+  if (entry.provider_id !== null && entry.model_id !== null) {
+    return { mode: 'specific', provider_id: entry.provider_id, model_id: entry.model_id }
+  }
+  if (entry.model_role !== null) {
+    return { mode: 'role', role: entry.model_role }
+  }
+  throw new Error('SubAgent model 配置缺失：provider_id+model_id 或 model_role 至少需一组')
 }
