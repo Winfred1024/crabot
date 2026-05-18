@@ -27,7 +27,7 @@ describe('send_message intent=ask_human', () => {
       moduleId: 'worker-test',
       getAdminPort: async () => 19001,
       resolveChannelPort: async () => 19009,
-      getTaskContext: () => ({ taskId: 't1', humanQueue: queue }),
+      getTaskContext: () => ({ taskId: 't1', humanQueue: queue, triggerType: 'message' as const }),
     })
 
     const sendTool = findTool(tools, 'send_message')
@@ -65,7 +65,7 @@ describe('send_message intent=ask_human', () => {
       moduleId: 'worker-test',
       getAdminPort: async () => 19001,
       resolveChannelPort: async () => 19009,
-      getTaskContext: () => ({ taskId: 't1', humanQueue: queue }),
+      getTaskContext: () => ({ taskId: 't1', humanQueue: queue, triggerType: 'message' as const }),
     })
 
     expect(queue.hasBarrier).toBe(false)
@@ -116,7 +116,7 @@ describe('send_message intent=ask_human', () => {
       moduleId: 'worker-test',
       getAdminPort: async () => 19001,
       resolveChannelPort: async () => 19009,
-      getTaskContext: () => ({ taskId: 't1', humanQueue: queue }),
+      getTaskContext: () => ({ taskId: 't1', humanQueue: queue, triggerType: 'message' as const }),
     })
 
     const sendTool = findTool(tools, 'send_message')
@@ -143,7 +143,7 @@ describe('send_message intent=ask_human', () => {
       moduleId: 'worker-test',
       getAdminPort: async () => 19001,
       resolveChannelPort: async () => 19009,
-      getTaskContext: () => ({ taskId: 't1', humanQueue: queue }),
+      getTaskContext: () => ({ taskId: 't1', humanQueue: queue, triggerType: 'message' as const }),
     })
 
     const sendTool = findTool(tools, 'send_message')

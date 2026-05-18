@@ -669,6 +669,11 @@ export interface ExecuteTaskParams {
     priority: string
     plan?: string
     task_type?: string
+    /** 任务来源信息。Schedule 路径由 ScheduledTaskRunner 填入 trigger_type='scheduled'；
+     *  trigger 路径合成 task 不填此字段（视为 'message'）。 */
+    source?: {
+      trigger_type?: 'manual' | 'scheduled' | 'auto' | 'event'
+    }
   }
   context: WorkerAgentContext
 }

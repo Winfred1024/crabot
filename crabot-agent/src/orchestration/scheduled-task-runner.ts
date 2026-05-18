@@ -115,6 +115,7 @@ export class ScheduledTaskRunner {
             priority: task.priority,
             plan: task.plan,
             task_type: task.task_type,
+            source: { trigger_type: 'scheduled' },
           },
           context: workerContext,
         }

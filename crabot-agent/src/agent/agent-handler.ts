@@ -648,6 +648,7 @@ export class AgentHandler {
         const externalMcpServers = this.mcpConfigFactory?.({
           taskId: task.task_id,
           humanQueue,
+          triggerType: task.source?.trigger_type === 'scheduled' ? 'scheduled' : 'message',
         }) ?? {}
         for (const [serverName, server] of Object.entries(externalMcpServers)) {
           tools.push(...mcpServerToToolDefinitions(server, serverName))

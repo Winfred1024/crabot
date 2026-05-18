@@ -35,6 +35,9 @@ export interface CrabMessagingDeps {
 export interface TaskContext {
   taskId: string
   humanQueue: import('../engine/human-message-queue.js').HumanMessageQueue
+  /** 任务来源类型——schedule 触发的任务禁止调用 send_message(intent='ask_human')。
+   *  与 Task.source.trigger_type 同名同枚举。 */
+  triggerType: 'message' | 'scheduled'
 }
 
 // ============================================================================
