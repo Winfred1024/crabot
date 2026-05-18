@@ -67,11 +67,12 @@ describe('handleCreateTask client-provided id', () => {
     ).rejects.toThrow(AdminErrorCode.TASK_ALREADY_EXISTS)
   })
 
-  it('不传 id 时走 generateId 路径（回归）', async () => {
+  it('不传 id 时自动生成唯一 id（回归）', async () => {
     const admin = buildAdmin()
     const { task } = await (admin as { handleCreateTask: (p: CreateTaskParams) => Promise<{ task: Task }> })
       .handleCreateTask(baseParams)
-    expect(task.id).toBeTruthy()
+    // 验证自动生成的 UUID v4 格式
+    expect(task.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i)
     expect(task.id).not.toBe('trigger-custom-123')  // 不应是上一个测试的固定值
   })
 })
