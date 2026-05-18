@@ -1262,6 +1262,24 @@ export class AgentHandler {
     // finalSent: 显式 intent='final' 调用才置 true（用于 silent end_turn 视为完成）
     let sentMessage = false
     let finalSent = false
+
+    // 闭包内捕获标志：register 调用最多触发一次（防止 onOverdue 在某些 path 被多次调）
+    let registerTriggered = false
+    const fireAndForgetRegister = (): void => {
+      if (registerTriggered) return
+      registerTriggered = true
+      this.registerTriggerTaskToAdmin({
+        syntheticTaskId,
+        triggerSummary,
+        channelId,
+        sessionId,
+        senderFriendId: senderFriend.id,
+        isGroup,
+      }).catch((err) => {
+        log(`executeTriggerMessage: registerToAdmin failed (continuing): ${err instanceof Error ? err.message : String(err)}`)
+      })
+    }
+
     const overdueReminderText =
       `已处理超过 ${Math.floor(timeoutMs / 1000)} 秒，建议先 send_message ` +
       `友好告知人类正在处理 + 简要说明打算怎么干，发完继续执行。`
@@ -1269,7 +1287,10 @@ export class AgentHandler {
       ? {
         timeoutMs,
         startedAtMs: triggerArrivedAtMs,
-        onOverdue: () => sentMessage ? null : overdueReminderText,
+        onOverdue: () => {
+          fireAndForgetRegister() // 超期那一刻 fire-and-forget 注册到 admin
+          return sentMessage ? null : overdueReminderText
+        },
       }
       : undefined
 
@@ -1592,6 +1613,43 @@ export class AgentHandler {
     parts.push(`- 若本消息是对某个活跃任务的纠偏/补充，turn 0 调 \`supplement_task\` 退出 loop。`)
 
     return parts.join('\n')
+  }
+
+  /**
+   * trigger 路径超期那一刻把任务注册到 admin task 表，让后续 trigger 能通过
+   * list_tasks 拿到这条 in-flight 任务、走 supplement 通道。
+   *
+   * 失败 best-effort：admin 不可用时 log + 继续，本 trigger 期间 supplement 通道失效，
+   * 主流程继续。finalize 时调 update_task_status / update_task_outcome 会拿到
+   * NOT_FOUND，由 bestEffortRpc 吞掉，不需要 register-success flag。
+   *
+   * Spec: crabot-docs/superpowers/specs/2026-05-18-unified-loop-cleanup-design.md §4
+   */
+  private async registerTriggerTaskToAdmin(params: {
+    syntheticTaskId: string
+    triggerSummary: string
+    channelId: string
+    sessionId: string
+    senderFriendId: string
+    isGroup: boolean
+  }): Promise<void> {
+    if (!this.deps?.getAdminPort || !this.deps.rpcClient) {
+      log(`registerTriggerTaskToAdmin: deps missing, skipping`)
+      return
+    }
+    const adminPort = await this.deps.getAdminPort()
+    await this.deps.rpcClient.call(adminPort, 'create_task', {
+      id: params.syntheticTaskId,
+      title: params.triggerSummary,
+      source: {
+        origin: 'human',
+        channel_id: params.channelId,
+        session_id: params.sessionId,
+        friend_id: params.senderFriendId,
+        trigger_type: 'message',
+      },
+      priority: 'normal',
+    }, this.deps.moduleId)
   }
 
   /**

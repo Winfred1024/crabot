@@ -566,7 +566,7 @@ export interface TaskSource {
   /** 发起用户 */
   friend_id?: FriendId
   /** 触发类型 */
-  trigger_type: 'manual' | 'scheduled' | 'auto' | 'event'
+  trigger_type: 'manual' | 'scheduled' | 'auto' | 'event' | 'message'
   /** Admin Chat 请求 ID（admin_chat 来源时） */
   chat_request_id?: string
   /** 来源模块 ID（admin_chat 来源时） */
