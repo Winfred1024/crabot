@@ -48,7 +48,6 @@ import { createCrabMessagingServer, type PathMapping, type TaskContext } from '.
 import { TraceStore } from './core/trace-store.js'
 import { getAgentTraceDir } from './core/data-paths.js'
 import { PromptManager } from './prompt-manager.js'
-import { SUBAGENT_DEFINITIONS, type SubAgentDefinition } from './agent/subagent-prompts.js'
 import { createLSPManager, type LSPManager } from './lsp/lsp-manager.js'
 import type { BgEntityRecord, BgEntityStatus, BgEntityType } from './engine/bg-entities/types.js'
 
@@ -276,7 +275,7 @@ export class UnifiedAgent extends ModuleBase {
         void this.lspManager.start(process.cwd())
 
         this.agentHandler = this.createWorkerHandler(
-          this.sdkEnvWorker, config.model_config, workerPersonality,
+          this.sdkEnvWorker, workerPersonality,
           createMcpConfigs, config.builtin_tool_config, config.skills)
         this.scheduledTaskRunner.setWorkerHandler(this.agentHandler)
         // 让 ContextAssembler 同进程同步读取 worker 实时快照（用于 Front 汇报进度）
@@ -304,72 +303,13 @@ export class UnifiedAgent extends ModuleBase {
     }
   }
 
-  private buildSubAgentConfigs(
-    modelConfig: Record<string, LLMConnectionInfo>
-  ): ReadonlyArray<{ readonly definition: SubAgentDefinition; readonly sdkEnv: SdkEnvConfig }> {
-    return SUBAGENT_DEFINITIONS
-      .map((def) => {
-        const connInfo = this.resolveSubAgentSlot(def, modelConfig)
-        if (!connInfo) return null
-        return {
-          definition: def,
-          sdkEnv: this.buildSdkEnv(connInfo),
-        }
-      })
-      .filter((item): item is NonNullable<typeof item> => item !== null)
-  }
-
-  /**
-   * 解析 sub-agent 的 model slot，支持 vision 降级。
-   *
-   * 优先级：
-   *  1. 显式配置的 slot（且能力匹配）
-   *  2. 对于需要 vision 的 slot，降级到任意已配且 supports_vision=true 的模型
-   *  3. 都没有 → 返回 undefined（跳过该 sub-agent）
-   */
-  private resolveSubAgentSlot(
-    def: SubAgentDefinition,
-    modelConfig: Record<string, LLMConnectionInfo>
-  ): LLMConnectionInfo | undefined {
-    const needsVision = def.recommendedCapabilities.includes('vision')
-    const explicit = modelConfig[def.slotKey]
-
-    // 显式配置且能力匹配
-    if (explicit) {
-      if (!needsVision || explicit.supports_vision) {
-        return explicit
-      }
-      console.log(`[SubAgent] Slot '${def.slotKey}' model lacks vision capability, trying fallback`)
-    }
-
-    // 需要 vision 能力：从其他 slot 中找一个 VLM
-    if (needsVision) {
-      for (const [key, connInfo] of Object.entries(modelConfig)) {
-        if (key !== def.slotKey && connInfo.supports_vision) {
-          console.log(`[SubAgent] Slot '${def.slotKey}' falling back to '${key}' model (${connInfo.model_id})`)
-          return connInfo
-        }
-      }
-      console.log(`[SubAgent] No VLM available for slot '${def.slotKey}', skipping`)
-      return undefined
-    }
-
-    // 非 vision slot，未配置则跳过
-    if (!explicit) {
-      console.log(`[SubAgent] Slot '${def.slotKey}' not configured, skipping ${def.toolName}`)
-    }
-    return explicit
-  }
-
   private createWorkerHandler(
     workerSdkEnv: SdkEnvConfig,
-    modelConfig: Record<string, LLMConnectionInfo>,
     workerPersonality: string | undefined,
     createMcpConfigs: (taskCtx?: TaskContext) => Record<string, McpServer>,
     builtinToolConfig?: BuiltinToolConfig,
     skills?: ReadonlyArray<SkillConfig>,
   ): AgentHandler {
-    // TODO(task-11): 接入 this.agentConfig?.subagents；buildSubAgentConfigs / resolveSubAgentSlot 将在 Task 11 一并删除
     const subAgents = this.agentConfig?.subagents ?? []
     // workerPersonality 仅承载 admin personality（system_prompt）；skill listing 走独立通道，
     // 由 AgentHandler 内部 buildSkillListingSnapshot 实时从 this.skills 拼装，
@@ -1884,14 +1824,6 @@ export class UnifiedAgent extends ModuleBase {
           used_by: ['worker'],
           fallback: 'global_default',
         },
-        ...SUBAGENT_DEFINITIONS.map((def) => ({
-          key: def.slotKey,
-          description: def.slotDescription,
-          required: false as const,
-          used_by: ['worker'] as Array<'front' | 'worker'>,
-          recommended_capabilities: [...def.recommendedCapabilities],
-          fallback: 'none' as const,
-        })),
       ],
     }
   }
@@ -2035,6 +1967,8 @@ export class UnifiedAgent extends ModuleBase {
     const modelConfigChanged = params.model_config !== undefined
     const skillsChanged = params.skills !== undefined
     const systemPromptChanged = params.system_prompt !== undefined
+    const subagentsChanged = params.subagents !== undefined &&
+      JSON.stringify(params.subagents) !== JSON.stringify(this.agentConfig.subagents)
 
     // 更新模型配置
     if (params.model_config) {
@@ -2066,14 +2000,20 @@ export class UnifiedAgent extends ModuleBase {
       changedFields.push('skills')
     }
 
+    // 更新 Subagents（AgentHandler 在构造时接收 subAgents，无热更新 API；需重建 Worker）
+    if (params.subagents !== undefined) {
+      this.agentConfig.subagents = params.subagents
+      changedFields.push('subagents')
+    }
+
     // 根据变更字段，按需触发 handler 重建
-    if (modelConfigChanged || skillsChanged || systemPromptChanged) {
+    if (modelConfigChanged || skillsChanged || systemPromptChanged || subagentsChanged) {
       const mergedModelConfig = this.agentConfig.model_config ?? {}
       // skills / system_prompt 变更时 Front 必须重建（Front prompt closure 在构造时绑定 personality + skill listing）；
       // Worker 已通过 updateSkills / updateSystemPrompt 热更新，无需重建（重建会让 in-flight task 的 RPC 路由
-      // 找不到原 activeTasks 条目）。仅 model_config 变化才重建 Worker。
+      // 找不到原 activeTasks 条目）。仅 model_config 或 subagents 变化才重建 Worker。
       await this.updateLlmClients(mergedModelConfig, {
-        skipWorkerRebuild: !modelConfigChanged,
+        skipWorkerRebuild: !modelConfigChanged && !subagentsChanged,
       })
     }
 
@@ -2140,7 +2080,7 @@ export class UnifiedAgent extends ModuleBase {
       if (workerConfig) {
         this.sdkEnvWorker = this.buildSdkEnv(workerConfig)
         this.agentHandler = this.createWorkerHandler(
-          this.sdkEnvWorker, modelConfig, workerPersonality,
+          this.sdkEnvWorker, workerPersonality,
           createMcpConfigs, this.agentConfig?.builtin_tool_config, this.agentConfig?.skills)
         this.scheduledTaskRunner.setWorkerHandler(this.agentHandler)
         console.log(`[${this.config.moduleId}] Worker Agent SDK env ${this.agentHandler ? 'updated' : 'created from config push'}`)
