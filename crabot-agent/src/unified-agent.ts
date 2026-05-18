@@ -100,6 +100,18 @@ const MASTER_FRIEND: Readonly<Friend> = {
   updated_at: '1970-01-01T00:00:00.000Z',
 }
 
+/** 解析 Front 升格 Worker 的超时秒数；缺省 30。
+ *  注：禁用超期提醒请走 overdue_reminder_enabled=false，不要用 timeout_seconds=0
+ *  （传 0 会被 engine 当 0ms 处理 = 立即超时）。 */
+export function resolveTimeoutSeconds(value: number | undefined): number {
+  return value ?? 30
+}
+
+/** 解析超时辅助提醒开关；缺省 true。 */
+export function resolveOverdueReminder(value: boolean | undefined): boolean {
+  return value ?? true
+}
+
 export class UnifiedAgent extends ModuleBase {
   // 编排层组件
   private sessionManager: SessionManager
@@ -533,6 +545,8 @@ export class UnifiedAgent extends ModuleBase {
           ...(context.scene_profile ? { sceneProfile: context.scene_profile } : {}),
           senderFriend: friend,
           triggerArrivedAtMs,
+          timeoutMs: resolveTimeoutSeconds(this.agentConfig?.timeout_seconds) * 1000,
+          overdueReminderEnabled: resolveOverdueReminder(this.agentConfig?.overdue_reminder_enabled),
           memoryPermissions: memPerms,
           resolvedPermissions: resolvedPerms as ResolvedPermissions,
           channelId: session.channel_id,
@@ -703,6 +717,8 @@ export class UnifiedAgent extends ModuleBase {
           ...(context.scene_profile ? { sceneProfile: context.scene_profile } : {}),
           senderFriend: lastEntry.friend,
           triggerArrivedAtMs,
+          timeoutMs: resolveTimeoutSeconds(this.agentConfig?.timeout_seconds) * 1000,
+          overdueReminderEnabled: resolveOverdueReminder(this.agentConfig?.overdue_reminder_enabled),
           memoryPermissions: memPerms,
           resolvedPermissions: resolvedPerms as ResolvedPermissions,
           channelId: session.channel_id,
@@ -1313,6 +1329,8 @@ export class UnifiedAgent extends ModuleBase {
             updated_at: new Date().toISOString(),
           },
           triggerArrivedAtMs,
+          timeoutMs: resolveTimeoutSeconds(this.agentConfig?.timeout_seconds) * 1000,
+          overdueReminderEnabled: resolveOverdueReminder(this.agentConfig?.overdue_reminder_enabled),
           memoryPermissions: channelMemPerms,
           resolvedPermissions: FAIL_CLOSED_TOOL_ACCESS as unknown as ResolvedPermissions,
           channelId: message.session.channel_id,
@@ -1497,6 +1515,8 @@ export class UnifiedAgent extends ModuleBase {
           ...(context.scene_profile ? { sceneProfile: context.scene_profile } : {}),
           senderFriend: masterFriend,
           triggerArrivedAtMs,
+          timeoutMs: resolveTimeoutSeconds(this.agentConfig?.timeout_seconds) * 1000,
+          overdueReminderEnabled: resolveOverdueReminder(this.agentConfig?.overdue_reminder_enabled),
           memoryPermissions: masterMemPerms,
           resolvedPermissions: (masterResolvedPerms ?? masterMemPerms) as unknown as ResolvedPermissions,
           channelId: 'admin-web',
@@ -2004,6 +2024,16 @@ export class UnifiedAgent extends ModuleBase {
     if (params.subagents !== undefined) {
       this.agentConfig.subagents = params.subagents
       changedFields.push('subagents')
+    }
+
+    // 软热更：timeout_seconds / overdue_reminder_enabled 下次 executeTriggerMessage 调用时生效，不触发 worker 重建
+    if (params.timeout_seconds !== undefined) {
+      this.agentConfig.timeout_seconds = params.timeout_seconds
+      changedFields.push('timeout_seconds')
+    }
+    if (params.overdue_reminder_enabled !== undefined) {
+      this.agentConfig.overdue_reminder_enabled = params.overdue_reminder_enabled
+      changedFields.push('overdue_reminder_enabled')
     }
 
     // 根据变更字段，按需触发 handler 重建
