@@ -63,6 +63,48 @@ export interface BuiltinToolConfig {
   bash_timeout?: number
 }
 
+// ============================================================================
+// Subagent 配置（Phase 5）
+// ============================================================================
+
+export interface BuiltinCapabilities {
+  /** Read / Write / Edit / Glob / Grep — 文件读写检索 */
+  file_system: boolean
+  /** Bash（含 run_in_background）/ Output / Kill / ListEntities — shell + 后台进程管理 */
+  shell: boolean
+  /** search_traces / get_task_details / search_short_term — 任务情报查询 */
+  task_intel: boolean
+  /** crab-memory MCP 全部工具 — 长期记忆读写 */
+  crab_memory: boolean
+  /** crab-messaging MCP 全部工具 — channel 消息发送 */
+  crab_messaging: boolean
+}
+
+/** Admin 推过来的运行时 subagent 配置；model 已解析为 LLMConnectionInfo */
+export interface SubAgentConfig {
+  id: string
+  name: string
+  description: string
+
+  /** 触发条件，注入 delegate_task 工具的 <available_subagents> 段 */
+  when_to_use: string
+  /** 角色 + 边界声明 */
+  role: string
+  workflow: string
+  deliverables: string
+  verification?: string
+
+  model: LLMConnectionInfo
+
+  builtin_capabilities: BuiltinCapabilities
+  allowed_mcp_server_ids: string[]
+  allowed_skill_ids: string[]
+
+  max_turns: number
+  /** 代码内置 hook bundle 名（如 'coding_expert'） */
+  hook_preset?: string
+}
+
 export interface AgentLayerConfig {
   /** 实例 ID */
   instance_id: string
@@ -90,6 +132,12 @@ export interface AgentLayerConfig {
   builtin_tool_config?: BuiltinToolConfig
   /** IANA 时区名（如 "Asia/Shanghai"），用于 prompt 时间感知 */
   timezone?: string
+  /** Subagent 列表（Phase 5），由 admin 推过来 */
+  subagents?: SubAgentConfig[]
+  /** Front 升格 Worker 的超时秒数；缺省 30 */
+  timeout_seconds?: number
+  /** 超时辅助提醒开关；缺省 true */
+  overdue_reminder_enabled?: boolean
 }
 
 export interface UnifiedAgentConfig {
@@ -734,6 +782,12 @@ export interface UpdateConfigParams {
   max_iterations?: number
   /** 更新的扩展配置 */
   extra?: Record<string, unknown>
+  /** Phase 5: 更新的 Subagent 列表 */
+  subagents?: SubAgentConfig[]
+  /** Phase 5: 更新的超时秒数 */
+  timeout_seconds?: number
+  /** Phase 5: 更新的超时辅助提醒开关 */
+  overdue_reminder_enabled?: boolean
 }
 
 export interface UpdateConfigResult {

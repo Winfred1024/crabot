@@ -79,6 +79,7 @@ import {
   type AgentInstance,
   type AgentInstanceConfig,
   type ResolvedAgentConfig,
+  type SubAgentConfig,
   type CreateAgentInstanceParams,
   type UpdateAgentInstanceParams,
   type UpdateAgentConfigParams,
@@ -124,6 +125,7 @@ import { ModuleInstaller } from './module-installer.js'
 import { ChatManager } from './chat-manager.js'
 import { PtyManager } from './pty-manager.js'
 import { MCPServerManager, SkillManager, EssentialToolsManager, DuplicateSkillError } from './mcp-skill-manager.js'
+import { SubAgentManager, resolveSubAgentModel } from './subagent-manager.js'
 import { PRESET_VENDORS } from './preset-vendors.js'
 import { Cron } from 'croner'
 import { ScheduleEngine } from './schedule-engine.js'
@@ -315,6 +317,9 @@ export class AdminModule extends ModuleBase {
   // 必要工具配置管理器
   private essentialToolsManager!: EssentialToolsManager
 
+  // SubAgent 管理器
+  private subAgentManager!: SubAgentManager
+
   // Browser 管理器（CDP 浏览器自动化）
   private browserManager!: BrowserManager
 
@@ -367,6 +372,7 @@ export class AdminModule extends ModuleBase {
     this.mcpServerManager = new MCPServerManager(this.adminConfig.data_dir)
     this.skillManager = new SkillManager(this.adminConfig.data_dir)
     this.essentialToolsManager = new EssentialToolsManager(this.adminConfig.data_dir)
+    this.subAgentManager = new SubAgentManager(this.adminConfig.data_dir)
     this.browserManager = new BrowserManager(
       this.adminConfig.data_dir,
       parseInt(process.env.CRABOT_PORT_OFFSET || '0', 10)
@@ -583,6 +589,9 @@ export class AdminModule extends ModuleBase {
 
     // 初始化必要工具配置管理器
     await this.essentialToolsManager.initialize()
+
+    // 初始化 SubAgent 管理器
+    await this.subAgentManager.initialize()
 
     // 初始化 Browser 管理器
     await this.browserManager.loadConfig()
@@ -1193,6 +1202,35 @@ export class AdminModule extends ModuleBase {
 
       if (pathname === '/api/skills/import-upload' && req.method === 'POST') {
         await this.handleImportSkillUploadApi(req, res)
+        return
+      }
+
+      // SubAgent 路由
+      if (pathname === '/api/subagents' && req.method === 'GET') {
+        await this.handleListSubAgentsApi(req, res)
+        return
+      }
+
+      if (pathname === '/api/subagents' && req.method === 'POST') {
+        await this.handleCreateSubAgentApi(req, res)
+        return
+      }
+
+      if (pathname.match(/^\/api\/subagents\/[^/]+$/) && req.method === 'GET') {
+        const id = pathname.split('/')[3]
+        await this.handleGetSubAgentApi(req, res, id)
+        return
+      }
+
+      if (pathname.match(/^\/api\/subagents\/[^/]+$/) && req.method === 'PATCH') {
+        const id = pathname.split('/')[3]
+        await this.handleUpdateSubAgentApi(req, res, id)
+        return
+      }
+
+      if (pathname.match(/^\/api\/subagents\/[^/]+$/) && req.method === 'DELETE') {
+        const id = pathname.split('/')[3]
+        await this.handleDeleteSubAgentApi(req, res, id)
         return
       }
 
@@ -5387,6 +5425,88 @@ export class AdminModule extends ModuleBase {
   }
 
   // ============================================================================
+  // SubAgent REST API 处理方法
+  // ============================================================================
+
+  private async handleListSubAgentsApi(
+    _req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    const list = this.subAgentManager.list()
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(list))
+  }
+
+  private async handleGetSubAgentApi(
+    _req: IncomingMessage,
+    res: ServerResponse,
+    id: string,
+  ): Promise<void> {
+    const entry = this.subAgentManager.get(id)
+    if (!entry) {
+      res.writeHead(404, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: `SubAgent not found: ${id}` }))
+      return
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(entry))
+  }
+
+  private async handleCreateSubAgentApi(
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    try {
+      const body = await this.readJsonBody<Parameters<typeof this.subAgentManager.create>[0]>(req)
+      const entry = await this.subAgentManager.create(body)
+      this.triggerPushAfter('subagent create')
+      res.writeHead(201, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(entry))
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: msg }))
+    }
+  }
+
+  private async handleUpdateSubAgentApi(
+    req: IncomingMessage,
+    res: ServerResponse,
+    id: string,
+  ): Promise<void> {
+    try {
+      const body = await this.readJsonBody<Parameters<typeof this.subAgentManager.update>[1]>(req)
+      const entry = await this.subAgentManager.update(id, body)
+      this.triggerPushAfter('subagent update')
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(entry))
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      const status = msg.includes('not found') ? 404 : 400
+      res.writeHead(status, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: msg }))
+    }
+  }
+
+  private async handleDeleteSubAgentApi(
+    _req: IncomingMessage,
+    res: ServerResponse,
+    id: string,
+  ): Promise<void> {
+    try {
+      await this.subAgentManager.delete(id)
+      this.triggerPushAfter('subagent delete')
+      res.writeHead(204)
+      res.end()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      const status = msg.includes('not found') ? 404 : 400
+      res.writeHead(status, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: msg }))
+    }
+  }
+
+  // ============================================================================
   // MCP Server 导入 REST API 处理方法
   // ============================================================================
 
@@ -6289,6 +6409,66 @@ export class AdminModule extends ModuleBase {
     this.pushDebounceTimer.unref?.()
   }
 
+  private async buildSubAgentConfigsForPush(
+    agentInstanceConfig: AgentInstanceConfig,
+  ): Promise<SubAgentConfig[]> {
+    const enabled = this.subAgentManager.listEnabled()
+    const result: SubAgentConfig[] = []
+
+    for (const entry of enabled) {
+      let model: LLMConnectionInfo
+      try {
+        const spec = resolveSubAgentModel(entry)
+        if (spec.mode === 'specific') {
+          model = await this.modelProviderManager.buildConnectionInfo(
+            spec.provider_id, spec.model_id
+          )
+        } else {
+          const ref = agentInstanceConfig.model_config[spec.role]
+          if (!ref) {
+            console.warn(
+              `[Admin] SubAgent "${entry.name}" model_role=${spec.role} ` +
+              `在实例 ${agentInstanceConfig.instance_id} 未配置，跳过`
+            )
+            continue
+          }
+          model = await this.modelProviderManager.buildConnectionInfo(
+            ref.provider_id, ref.model_id
+          )
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.warn(`[Admin] SubAgent "${entry.name}" model 解析失败: ${msg}，跳过`)
+        continue
+      }
+
+      result.push({
+        id: entry.id,
+        name: entry.name,
+        description: entry.description,
+        when_to_use: entry.when_to_use,
+        role: entry.role,
+        workflow: entry.workflow,
+        deliverables: entry.deliverables,
+        verification: entry.verification,
+        model,
+        builtin_capabilities: entry.builtin_capabilities,
+        allowed_mcp_server_ids: entry.allowed_mcp_server_ids,
+        allowed_skill_ids: entry.allowed_skill_ids,
+        max_turns: entry.max_turns,
+        hook_preset: entry.hook_preset,
+      })
+    }
+
+    if (enabled.length > 0 && result.length === 0) {
+      console.error(
+        `[Admin] 0/${enabled.length} subagents 推送给 agent — 全部模型解析失败，` +
+        `请检查全局 LLM Provider 配置 / 实例 model_config / subagent provider+model 引用`
+      )
+    }
+    return result
+  }
+
   private async pushConfigToAgentModules(): Promise<void> {
     try {
       const port = await this.ensureAgentPort()
@@ -6297,17 +6477,27 @@ export class AdminModule extends ModuleBase {
       // 复用 handleGetAgentConfig 的配置解析逻辑
       const { config } = await this.handleGetAgentConfig({ instance_id: 'crabot-agent' })
 
+      // 拿原始 instance config（用于解析 model_role + 透传 timeout 字段）
+      const instance = this.agentManager.getConfig('crabot-agent')
+      const subagents = instance ? await this.buildSubAgentConfigsForPush(instance) : []
+
       // 推送可热更新的字段
       const updateParams = {
         model_config: config.model_config,
         skills: config.skills,
         extra: config.extra,
+        subagents,
+        timeout_seconds: instance?.timeout_seconds,
+        overdue_reminder_enabled: instance?.overdue_reminder_enabled,
       }
 
       const result = await this.rpcClient.call<typeof updateParams, { restart_required: boolean; changed_fields: string[] }>(
         port, 'update_config', updateParams, this.config.moduleId
       )
-      console.log(`[Admin] Agent config pushed, changed: ${result.changed_fields?.join(', ') || 'none'}`)
+      console.log(
+        `[Admin] Agent config pushed, changed: ${result.changed_fields?.join(', ') || 'none'}` +
+        ` (subagents: ${subagents.length})`
+      )
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e)
       console.warn(`[Admin] Failed to push config to Agent:`, msg)
