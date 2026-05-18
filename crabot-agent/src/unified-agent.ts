@@ -1464,18 +1464,12 @@ export class UnifiedAgent extends ModuleBase {
     // 更新 session 状态
     this.sessionManager.updateLastMessageTime(sessionId)
 
-    // switchMap 处理
-    const requestId = crypto.randomUUID()
-    const mergedMessages = await this.switchmapHandler.handleNewMessage(sessionId, requestId, message)
-
     // 创建 Trace
     const trace = this.traceStore.startTrace({
       module_id: this.config.moduleId,
       trigger: {
         type: 'message',
-        summary: mergedMessages.length > 1
-          ? `[merged×${mergedMessages.length}] ${mergedMessages.map((m) => (m.content.text ?? '').slice(0, 50)).join(' | ').slice(0, 200)}`
-          : (message.content.text ?? '[非文本消息]').slice(0, 200),
+        summary: (message.content.text ?? '[非文本消息]').slice(0, 200),
         source: 'admin-web',
       },
     })
@@ -1499,7 +1493,6 @@ export class UnifiedAgent extends ModuleBase {
 
       // 检查是否有 Worker Handler 能力
       if (!this.agentHandler) {
-        // 发送错误回复
         await this.rpcClient.call(
           await this.getAdminPort(),
           'chat_callback',
@@ -1511,6 +1504,12 @@ export class UnifiedAgent extends ModuleBase {
           this.config.moduleId
         )
         this.traceStore.endTrace(trace.trace_id, 'failed', { summary: 'No worker handler configured' })
+        return { decision_types: [] }
+      }
+
+      // 检查 sdkEnvWorker
+      if (!this.sdkEnvWorker) {
+        this.traceStore.endTrace(trace.trace_id, 'failed', { summary: 'sdkEnvWorker missing' })
         return { decision_types: [] }
       }
 
@@ -1539,12 +1538,12 @@ export class UnifiedAgent extends ModuleBase {
           session_id: sessionId,
         },
       })
-      const context = await this.contextAssembler.assembleFrontContext(
+      const frontContext = await this.contextAssembler.assembleFrontContext(
         {
           channel_id: 'admin-web',
           session_id: sessionId,
           sender_id: 'master',
-          message: mergedMessages.map((m) => m.content.text ?? '').join('\n'),
+          message: message.content.text ?? '',
           friend_id: message.sender.friend_id ?? 'master',
           session_type: 'private',
         },
@@ -1554,30 +1553,19 @@ export class UnifiedAgent extends ModuleBase {
       )
       this.traceStore.endSpan(trace.trace_id, ctxSpan.span_id, 'completed')
 
-      // 构建 TraceCallback
-      const traceCallback = this.buildTraceCallback(trace.trace_id)
+      // 调 dispatcher
+      const dispatchCtx = {
+        messages: [message] as ReadonlyArray<ChannelMessage>,
+        activeTasks: frontContext.active_tasks ?? [],
+        sessionType: 'admin_chat' as const,
+        channelId: 'admin-web',
+        sessionId,
+        senderFriend: masterFriend,
+        ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
+        traceId: trace.trace_id,
+      }
 
-      // 调用统一 loop
-      const triggerArrivedAtMs = Date.now()
-      let result
-      try {
-        result = await this.agentHandler.executeTriggerMessage({
-          messages: mergedMessages,
-          activeTasks: context.active_tasks ?? [],
-          isGroup: false,
-          ...(context.scene_profile ? { sceneProfile: context.scene_profile } : {}),
-          senderFriend: masterFriend,
-          triggerArrivedAtMs,
-          memoryPermissions: masterMemPerms,
-          resolvedPermissions: (masterResolvedPerms ?? masterMemPerms) as unknown as ResolvedPermissions,
-          channelId: 'admin-web',
-          sessionId,
-          frontContext: context,
-        }, traceCallback)
-      } catch (error) {
-        const errMsg = error instanceof Error ? error.message : String(error)
-        console.error(`[${this.config.moduleId}] processAdminChatMessage executeTriggerMessage error:`, error)
-        // 通知 admin chat 发生错误
+      const sendErrorToUser = async (text: string) => {
         try {
           await this.rpcClient.call(
             await this.getAdminPort(),
@@ -1585,105 +1573,121 @@ export class UnifiedAgent extends ModuleBase {
             {
               request_id: callbackInfo.request_id,
               reply_type: 'direct_reply',
-              content: '处理消息时发生错误，请稍后重试。',
+              content: text,
             },
             this.config.moduleId
           )
-        } catch { /* best effort */ }
-        this.traceStore.endTrace(trace.trace_id, 'failed', { summary: errMsg })
-        return { decision_types: [] }
-      }
-
-      // 检查是否已被更新消息取代
-      if (this.sessionManager.getPendingRequest(sessionId) !== requestId) {
-        this.traceStore.endTrace(trace.trace_id, 'completed', { summary: 'superseded by newer message' })
-        return { decision_types: [] }
-      }
-
-      // Exit tool dispatch + admin chat 回复
-      const decisionTypes: string[] = []
-      const taskIds: TaskId[] = []
-
-      if (result.exitToolCall) {
-        const exitName = result.exitToolCall.name
-        const exitInput = result.exitToolCall.input
-
-        if (exitName === 'supplement_task') {
-          decisionTypes.push('supplement_task')
-          const targetTaskId = exitInput['target_task_id']
-          const supplementText = exitInput['supplement_text']
-          if (typeof targetTaskId === 'string' && typeof supplementText === 'string') {
-            // Admin chat supplement：用 chat_callback 发即时回复（不走 send_message）
-            const supplementDecision: import('./types.js').SupplementTaskDecision = {
-              type: 'supplement_task',
-              task_id: targetTaskId,
-              supplement_content: supplementText,
-              immediate_reply: { type: 'text', text: '' },
-            }
-            const delivered = await this.handleLocalSupplementAdminChat(
-              supplementDecision,
-              sessionId,
-              callbackInfo,
-              context.active_tasks ?? [],
-            )
-            if (delivered) {
-              taskIds.push(targetTaskId)
-            }
-          }
-        } else if (exitName === 'stay_silent') {
-          // admin chat 不应 stay_silent，但 warn 并不发任何回复
-          console.warn(`[${this.config.moduleId}] unexpected stay_silent in admin chat`)
-          decisionTypes.push('silent')
-        } else {
-          // 其他 exit tool：用 finalText 通过 chat_callback 发出
-          const replyText = result.finalText.trim()
-          if (replyText) {
-            decisionTypes.push('direct_reply')
-            try {
-              await this.rpcClient.call(
-                await this.getAdminPort(),
-                'chat_callback',
-                {
-                  request_id: callbackInfo.request_id,
-                  reply_type: 'direct_reply',
-                  content: replyText,
-                },
-                this.config.moduleId
-              )
-            } catch (err) {
-              console.error(`[${this.config.moduleId}] admin chat_callback failed:`, err)
-            }
-          }
+        } catch (err) {
+          console.error(`[${this.config.moduleId}] processAdminChatMessage sendErrorToUser failed:`, err instanceof Error ? err.message : String(err))
         }
-      } else if (result.sentMessage) {
-        // agent 成功调了 send_message（实际上 admin-web channel 没有 send_message，
-        // 这里 sentMessage=true 意味着工具调用没有 isError，视为已回复）
-        decisionTypes.push('direct_reply')
-      } else {
-        // loop 自然结束（或 send_message 调用失败）：用 finalText 通过 chat_callback 发出
-        const replyText = result.finalText.trim()
-        if (replyText) {
-          decisionTypes.push('direct_reply')
+      }
+
+      const dispatchSpan = this.traceStore.startSpan(trace.trace_id, {
+        type: 'dispatch_call' as never,
+        details: { model: this.sdkEnvWorker.modelId, session_type: 'admin_chat' } as never,
+      })
+      const { actions } = await dispatch(dispatchCtx, {
+        adapter: adapterFromSdkEnv(this.sdkEnvWorker),
+        modelId: this.sdkEnvWorker.modelId,
+        sendErrorToUser,
+      })
+      this.traceStore.endSpan(trace.trace_id, dispatchSpan.span_id, 'completed', {
+        output_summary: `actions=${actions.length}`,
+      })
+
+      // 执行动作
+      await executeDispatchActions(actions, {
+        dispatchCtx,
+        pushSupplement: async (taskId: string, text: string): Promise<'delivered' | 'fallback'> => {
+          if (!this.agentHandler!.hasActiveTask(taskId)) return 'fallback'
+
+          // scheduled task 不接受 supplement
+          const target = (frontContext.active_tasks ?? []).find(t => t.task_id === taskId)
+          if (target?.trigger_type === 'scheduled') return 'fallback'
+
           try {
-            await this.rpcClient.call(
-              await this.getAdminPort(),
-              'chat_callback',
-              {
+            const adminPort = await this.getAdminPort()
+
+            // waiting_human 状态切回 executing
+            if (target?.status === 'waiting_human') {
+              try {
+                await this.rpcClient.call(adminPort, 'update_task_status', {
+                  task_id: taskId,
+                  status: 'executing',
+                  pending_question: null,
+                }, this.config.moduleId)
+              } catch (err) {
+                console.error(`[${this.config.moduleId}] pushSupplement admin_chat: failed to transition task ${taskId}: ${err instanceof Error ? err.message : String(err)}`)
+              }
+            }
+
+            // 即时回复（通过 chat_callback）
+            const replyText = `收到，正在调整：${text.slice(0, 60)}`
+            try {
+              await this.rpcClient.call(adminPort, 'chat_callback', {
                 request_id: callbackInfo.request_id,
                 reply_type: 'direct_reply',
                 content: replyText,
-              },
-              this.config.moduleId
-            )
-          } catch (err) {
-            console.error(`[${this.config.moduleId}] admin chat_callback failed:`, err)
-          }
-        }
-        // else: 完全沉默，不发任何回复
-      }
+              }, this.config.moduleId)
+            } catch (err) {
+              console.error(`[${this.config.moduleId}] pushSupplement admin_chat: chat_callback failed: ${err instanceof Error ? err.message : String(err)}`)
+            }
 
-      this.traceStore.endTrace(trace.trace_id, result.outcome === 'completed' ? 'completed' : 'failed', {
-        summary: this.buildResultSummaryLabel(result, 'silent_end'),
+            // 投递纠偏消息
+            const syntheticMessage: ChannelMessage = {
+              platform_message_id: `supplement-${Date.now()}`,
+              session: { channel_id: 'admin-web', session_id: sessionId, type: 'private' as const },
+              sender: { friend_id: 'master', platform_user_id: 'master', platform_display_name: 'Master' },
+              content: { type: 'text' as const, text: `用户补充指示：${text}` },
+              features: { is_mention_crab: false },
+              platform_timestamp: new Date().toISOString(),
+            }
+            this.agentHandler!.deliverHumanResponse(taskId, [syntheticMessage])
+            return 'delivered'
+          } catch {
+            return 'fallback'
+          }
+        },
+        spawnAgentInstance: async (text: string) => {
+          const triggerMessage: ChannelMessage = {
+            ...message,
+            content: { ...message.content, text },
+          }
+          const result = await this.agentHandler!.executeTriggerMessage(
+            {
+              messages: [triggerMessage],
+              activeTasks: frontContext.active_tasks ?? [],
+              isGroup: false,
+              ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
+              senderFriend: masterFriend,
+              triggerArrivedAtMs: Date.now(),
+              memoryPermissions: masterMemPerms,
+              resolvedPermissions: (masterResolvedPerms ?? masterMemPerms) as unknown as ResolvedPermissions,
+              channelId: 'admin-web',
+              sessionId,
+              frontContext,
+            },
+            this.buildTraceCallback(trace.trace_id),
+          )
+          return { spawnedTraceId: (result as { traceId?: string }).traceId ?? trace.trace_id }
+        },
+        sendErrorToUser,
+      })
+
+      // 从 actions 推导 decision_types 和 task_ids（保持与旧接口的兼容）
+      const decisionTypes: string[] = actions.length === 0
+        ? []
+        : actions.map(a => {
+            if (a.kind === 'supplement') return 'supplement_task'
+            if (a.kind === 'new_task') return 'create_task'
+            return 'silent'
+          })
+      const taskIds: TaskId[] = actions
+        .filter((a): a is Extract<typeof a, { kind: 'supplement' }> => a.kind === 'supplement')
+        .map(a => a.target_task_id)
+
+      this.traceStore.endTrace(trace.trace_id, 'completed', {
+        summary: actions.length === 0 ? 'silent' : `dispatched (${actions.length} actions)`,
       })
 
       return {
@@ -1694,74 +1698,7 @@ export class UnifiedAgent extends ModuleBase {
       const msg = error instanceof Error ? error.message : String(error)
       this.traceStore.endTrace(trace.trace_id, 'failed', { summary: msg, error: msg })
       throw error
-    } finally {
-      this.switchmapHandler.completeRequest(sessionId, requestId)
     }
-  }
-
-  /**
-   * Admin Chat 专用的 supplement 处理：用 chat_callback 发即时回复，而非 send_message。
-   */
-  private async handleLocalSupplementAdminChat(
-    decision: import('./types.js').SupplementTaskDecision,
-    sessionId: string,
-    callbackInfo: { source_module_id: string; request_id: string },
-    activeTasks: ReadonlyArray<import('./types.js').TaskSummary>,
-  ): Promise<boolean> {
-    // Step 1: 检查任务存在
-    if (!this.agentHandler?.hasActiveTask(decision.task_id)) {
-      return false
-    }
-
-    // Step 1.5: scheduled task 不接受 supplement
-    const target = activeTasks.find(t => t.task_id === decision.task_id)
-    if (target?.trigger_type === 'scheduled') {
-      return false
-    }
-
-    const adminPort = await this.getAdminPort()
-
-    // Step 1.7: waiting_human 状态切回 executing
-    if (target?.status === 'waiting_human') {
-      try {
-        await this.rpcClient.call(adminPort, 'update_task_status', {
-          task_id: decision.task_id,
-          status: 'executing',
-          pending_question: null,
-        }, this.config.moduleId)
-      } catch (err) {
-        console.error(`[handleLocalSupplementAdminChat] failed to transition task ${decision.task_id}: ${err instanceof Error ? err.message : String(err)}`)
-      }
-    }
-
-    // Step 2: 发即时回复（通过 chat_callback）
-    const replyText = decision.immediate_reply?.text
-      || `收到，正在调整：${decision.supplement_content.slice(0, 60)}`
-    try {
-      await this.rpcClient.call(adminPort, 'chat_callback', {
-        request_id: callbackInfo.request_id,
-        reply_type: 'direct_reply',
-        content: replyText,
-      }, this.config.moduleId)
-    } catch (err) {
-      console.error(`[handleLocalSupplementAdminChat] chat_callback failed: ${err instanceof Error ? err.message : String(err)}`)
-    }
-
-    // Step 3: 投递纠偏消息
-    try {
-      this.agentHandler!.deliverHumanResponse(decision.task_id, [{
-        platform_message_id: `supplement-${Date.now()}`,
-        session: { channel_id: 'admin-web', session_id: sessionId, type: 'private' as const },
-        sender: { friend_id: 'master', platform_user_id: 'master', platform_display_name: 'Master' },
-        content: { type: 'text' as const, text: `用户补充指示：${decision.supplement_content}` },
-        features: { is_mention_crab: false },
-        platform_timestamp: new Date().toISOString(),
-      }])
-    } catch (error) {
-      console.error(`[handleLocalSupplementAdminChat] deliver failed: ${error instanceof Error ? error.message : String(error)}`)
-    }
-
-    return true
   }
 
   private async handleCreateTaskFromSchedule(params: {
