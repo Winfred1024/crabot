@@ -143,6 +143,8 @@ import { OnboardingManager } from './onboarding-manager.js'
 import type { Onboarder } from 'crabot-shared'
 import { tailLogFile } from './module-log-tail.js'
 import { buildRecoveryTask } from './recovery-handler.js'
+import { getBuiltinSkills } from './builtin-skills.js'
+import { getBuiltinSubAgents } from './builtin-subagents.js'
 
 // ============================================================================
 // JWT 工具函数
@@ -587,11 +589,19 @@ export class AdminModule extends ModuleBase {
     const builtinSkillsPath = path.join(__dirname, '..', 'builtins', 'skills')
     await this.skillManager.registerBuiltins(builtinSkillsPath)
 
+    // Seed builtin skills（幂等）
+    await this.skillManager.seedBuiltinSkills(getBuiltinSkills())
+    console.log(`[Admin] Seeded ${getBuiltinSkills().length} builtin skills`)
+
     // 初始化必要工具配置管理器
     await this.essentialToolsManager.initialize()
 
     // 初始化 SubAgent 管理器
     await this.subAgentManager.initialize()
+
+    // Seed builtin subagents（幂等）
+    await this.subAgentManager.seedBuiltin(getBuiltinSubAgents())
+    console.log(`[Admin] Seeded ${getBuiltinSubAgents().length} builtin subagents`)
 
     // 初始化 Browser 管理器
     await this.browserManager.loadConfig()

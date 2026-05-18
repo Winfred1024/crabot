@@ -603,6 +603,21 @@ export class SkillManager {
   }
 
   /**
+   * 注入内置 Skill：仅当 id 不存在时插入，已存在则跳过。
+   * 与 SubAgentManager.seedBuiltin 相同语义。
+   */
+  async seedBuiltinSkills(entries: SkillRegistryEntry[]): Promise<void> {
+    let changed = false
+    for (const e of entries) {
+      if (!this.skills.has(e.id)) {
+        this.skills.set(e.id, e)
+        changed = true
+      }
+    }
+    if (changed) await this.save()
+  }
+
+  /**
    * 注册内置 Skill（幂等：已存在同名的不会重复注册）
    * 在 Admin 初始化时调用，扫描 builtinsDir 下的子目录，每个子目录应包含 SKILL.md
    */

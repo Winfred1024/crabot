@@ -2013,12 +2013,14 @@ export class AgentHandler {
       toolName: s.name,
       workerHint: s.when_to_use.split('\n')[0] || s.description || s.name,
     }))
+    const hasCodePlanner = this.subAgents.some((s) => s.name === 'code_planner')
     const baseAssembled = this.promptManager
       ? this.promptManager.assembleAgentPrompt({
         isGroup,
         adminPersonality: this.systemPrompt || undefined,
         skillListing: this.buildSkillListingSnapshot(),
         availableSubAgents: availableSubAgents.length > 0 ? availableSubAgents : undefined,
+        hasCodePlanner,
         ...(sceneProfile ? { sceneProfile } : {}),
       })
       : this.systemPrompt

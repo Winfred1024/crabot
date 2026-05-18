@@ -1,8 +1,36 @@
 # Crabot 项目进度
 
-> 最后更新：2026-05-18 — Phase 5 阶段 1：subagent 架构骨架（admin-managed + 单一 delegate_task + ModelRole 重整）
+> 最后更新：2026-05-18 — Phase 5 阶段 2b：内置 subagent + plan-and-execute 落地
 
-## 最新里程碑（2026-05-18 — Phase 5 阶段 1：subagent 架构骨架完成）
+## 最新里程碑（2026-05-18 — Phase 5 阶段 2b：内置 subagent + plan-and-execute 落地）
+
+阶段 2a 调研产物落地：admin 启动时 seed 3 个 builtin subagent（code_planner / code_writer / vision）+ 3 个 builtin skill（superpowers v5.0.7 MIT 的 writing-plans / systematic-debugging / verification-before-completion）+ main worker prompt 在 enabled subagents 含 code_planner 时自动注入 PLAN_AND_EXECUTE_GUIDE 引导段。
+
+spec：`crabot-docs/superpowers/specs/2026-05-18-subagent-phase2b-builtin-design.md`
+plan：`crabot-docs/superpowers/plans/2026-05-18-subagent-phase2b-builtin.md`
+research：`crabot-docs/superpowers/research/2026-05-18-coding-skill-survey.md`
+
+主要改动（6 个代码 commit + 1 个协议文档 commit + 1 个 progress commit，TDD 全程）：
+
+- `crabot-admin/builtin-skills/*.md` 3 个 SKILL.md snapshot（superpowers v5.0.7 MIT，加 attribution header；项目根级，dev/prod 通过 `join(__dirname, '..', 'builtin-skills')` 均可访问）
+- `crabot-admin/src/builtin-skills.ts` getBuiltinSkills() + BUILTIN_SKILL_IDS
+- `crabot-admin/src/builtin-subagents.ts` getBuiltinSubAgents() + BUILTIN_SUBAGENT_IDS + 完整 5 段 prompt 文本（来自调研报告）
+- `crabot-admin/src/mcp-skill-manager.ts` SkillManager.seedBuiltinSkills（idempotent）
+- `crabot-admin/src/index.ts` AdminModule.initialize 接入两个 seedBuiltin + 启动日志
+- `crabot-agent/src/prompts/agent-sections.ts` PLAN_AND_EXECUTE_GUIDE 常量
+- `crabot-agent/src/prompts/assemble-agent.ts` hasCodePlanner option + 条件注入
+- `crabot-agent/src/agent/agent-handler.ts` buildSystemPrompt 计算 hasCodePlanner = subAgents 含 code_planner
+- `crabot-docs/protocols/protocol-agent-v2.md` §11.8 内置 subagent + §11.8.1 内置 skill + §11.8.2 plan-and-execute 引导段 + §11.8.3 writer 上报格式
+
+build + dist smoke test 已通过：dist/builtin-skills.js + dist/builtin-subagents.js 编译后可加载 3 个 skill + 3 个 subagent（writing-plans content 6284 字节）。13 个新增 admin 测试 + 4 个新增 agent 测试全绿。
+
+待 master 跑端到端：
+1. `./dev.sh stop && ./dev.sh` 重启
+2. `curl http://localhost:3000/api/skills` 看 3 个 is_builtin=true 的 builtin skill（writing-plans / systematic-debugging / verification-before-completion）
+3. `curl http://localhost:3000/api/subagents` 看 3 个 builtin subagent
+4. 发"帮我加个 X 功能"类编码消息 → trace 看 worker 先调 code_planner（拿 PLAN_PATH）再调 code_writer（按 plan 实施）
+
+## 上一里程碑（2026-05-18 — Phase 5 阶段 1：subagent 架构骨架完成）
 
 把 subagent 体系从 hardcoded `SUBAGENT_DEFINITIONS` 升级为 admin-managed 资源；worker 工具表注入单一 `delegate_task` 工具；agent role 整顿为 3 个 ModelRole；不预填任何内置 subagent（阶段 2b 才 seed code_planner/code_writer/vision）。
 
