@@ -1,8 +1,50 @@
 # Crabot 项目进度
 
-> 最后更新：2026-05-08 — crab-messaging list 工具对齐（修早报 list_groups 失败）
+> 最后更新：2026-05-18 — Phase 5 阶段 1：subagent 架构骨架（admin-managed + 单一 delegate_task + ModelRole 重整）
 
-## 最新里程碑（2026-05-08 — crab-messaging list_contacts/list_groups 路由修正 + 分页可见性）
+## 最新里程碑（2026-05-18 — Phase 5 阶段 1：subagent 架构骨架完成）
+
+把 subagent 体系从 hardcoded `SUBAGENT_DEFINITIONS` 升级为 admin-managed 资源；worker 工具表注入单一 `delegate_task` 工具；agent role 整顿为 3 个 ModelRole；不预填任何内置 subagent（阶段 2b 才 seed code_planner/code_writer/vision）。
+
+分支：`feature/subagent-phase1`（4 个 repo：root / crabot-admin / crabot-agent / crabot-docs）。12 个代码 commit + 2 个 docs commit，TDD 全程。
+
+spec：`crabot-docs/superpowers/specs/2026-05-17-subagent-customization-and-admin-ui-design.md`
+plan：`crabot-docs/superpowers/plans/2026-05-17-subagent-phase1-architecture.md`
+
+**Admin 侧（Task 1-5）**：
+- `crabot-admin/src/types.ts`：新增 `SubAgentRegistryEntry` / `SubAgentConfig` / `BuiltinCapabilities` / `ModelRole`；`AgentInstanceConfig` 加 `timeout_seconds` + `overdue_reminder_enabled`
+- `crabot-admin/src/subagent-manager.ts`：`SubAgentManager` 类（CRUD + 原子写 + seed 内置 + validateModelSpec），12 个单测；新增 `resolveSubAgentModel`（specific 优先 / role 回退）
+- `crabot-admin/src/index.ts`：`/api/subagents` 5 个 REST handler；mutating 触发 `triggerPushAfter`；`buildSubAgentConfigsForPush` 把 entry 转 SubAgentConfig（实时解析 LLMConnectionInfo），失败 skip + warn；`pushConfigToAgentModules` 把 subagents + timeout_seconds + overdue_reminder_enabled 加入 update_config payload
+- `crabot-admin/src/agent-manager.ts`：`DEFAULT_IMPLEMENTATION.model_roles` 整顿为 `powerful` / `cost_effective` / `vision`；`migrateModelConfig` 启动 migration（default/worker/smart → powerful；triage/digest/fast → cost_effective；vision_expert → vision；coding_expert 丢弃），7 个单测
+
+**Agent 侧（Task 6-12）**：
+- `crabot-agent/src/types.ts`：新增 `SubAgentConfig` / `BuiltinCapabilities`；`AgentLayerConfig` 加 3 个新字段；`UpdateConfigParams` 同步
+- `crabot-agent/src/agent/subagent-prompt-assembler.ts`：5 段拼装 + 头尾守则（不轮询 / 不持久化 / 不主动副作用 / 截断重读），6 个单测
+- `crabot-agent/src/agent/subagent-tool-filter.ts`：`classifyTool`（9 group）+ `filterToolsForSubAgent`，24 个单测；`delegate_task` 永远从 subagent 工具集剔除（防嵌套）
+- `crabot-agent/src/agent/delegate-task-tool.ts`：`buildDelegateTaskDescription`（`<available_subagents>` 装配）+ `createDelegateTaskTool`（单一工具入口 + dispatch by subagent_type），8 个单测
+- `crabot-agent/src/agent/agent-handler.ts`：删 per-subagent 循环；注入单一 `delegate_task`；新增 `makeRunSubAgent`（filter → assemble → adapter → forkEngine + trace stitching + endTrace 双路径）
+- `crabot-agent/src/unified-agent.ts`：buildSubAgentConfigs 改读 `config.subagents`；删 `buildSubAgentConfigs` / `resolveSubAgentSlot` 旧方法；`handleUpdateConfig` 加 subagents 变化检测（触发 worker 重建）+ timeout_seconds / overdue_reminder_enabled 软热更；新增 `resolveTimeoutSeconds` / `resolveOverdueReminder` 默认 30s/true，4 个 `handleTriggerMessage` 调用点接入
+- `crabot-agent/src/agent/subagent-prompts.ts`：删 `SUBAGENT_DEFINITIONS` 常量 + `SubAgentDefinition` interface + `DELEGATE_TASK_SYSTEM_PROMPT`；保留 `formatSupplementForSubAgent`
+
+**协议文档（Task 13）**：
+- `crabot-docs/protocols/protocol-agent-v2.md`：新增 §11 "Subagent 配置"（7 子章节）；旧 §9 标注"已被 §11 替换"
+- `crabot-docs/protocols/protocol-admin.md`：§3.19 加 Subagent 注册表 + ModelRole 重整两子章节
+
+**端到端验证（待 master 自跑）**：
+
+1. `./dev.sh stop && ./dev.sh` 重启加载新代码
+2. `curl http://localhost:3000/api/subagents` → 期望返回 `[]`（阶段 1 不预填）
+3. `curl -X POST http://localhost:3000/api/subagents -H 'Content-Type: application/json' -d '{...}'` 创建测试 subagent → 期望 201 + entry JSON
+4. `node scripts/debug-agent.mjs traces` → 触发一条消息后看最新 trace，worker 工具表应有 `delegate_task` + description 含新 subagent
+5. 检查 `data/admin/agent-instances/*.json`，原 model_config keys（如 `worker` / `triage`）应已迁移到 `powerful` / `cost_effective`
+6. 删除测试 subagent + `./dev.sh stop`
+
+阶段 2a / 2b / 3 留给后续 PR：
+- 2a：coding skill 调研（hermes-agent superpowers + everything-claude-code）
+- 2b：seed code_planner + code_writer + vision 内置 subagent，挂接 coding skill；main worker prompt 加 plan-and-execute 引导
+- 3：Admin Web UI（SubagentList + SubagentEditor 6 tab）
+
+## 上一里程碑（2026-05-08 — crab-messaging list_contacts/list_groups 路由修正 + 分页可见性）
 
 修复 2026-05-08 早报 trace `f0f7d4bb` 暴露的"`list_groups` 必失败"bug：自 2026-04-04 commit `f48fbb9` 引入以来，`crab-messaging` MCP 的 `list_contacts` / `list_groups` 工具一直把 RPC 路由到 `adminPort.list_sessions`（admin 端从来没有这个 method），每次调用必返回 `Method "list_sessions" not found`，靠 LLM 改名重试到 `list_sessions` 兜底掩盖。
 
