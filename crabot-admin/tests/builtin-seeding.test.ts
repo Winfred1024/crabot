@@ -5,6 +5,8 @@ import { join } from 'path'
 import { SkillManager } from '../src/mcp-skill-manager.js'
 import type { SkillRegistryEntry } from '../src/mcp-skill-manager.js'
 import { getBuiltinSkills, BUILTIN_SKILL_IDS } from '../src/builtin-skills.js'
+import { SubAgentManager } from '../src/subagent-manager.js'
+import { getBuiltinSubAgents, BUILTIN_SUBAGENT_IDS } from '../src/builtin-subagents.js'
 
 function makeEntry(id: string, name: string): SkillRegistryEntry {
   return {
@@ -78,5 +80,68 @@ describe('getBuiltinSkills', () => {
       expect(s.is_builtin).toBe(true)
       expect(s.enabled).toBe(true)
     }
+  })
+})
+
+describe('getBuiltinSubAgents', () => {
+  it('返回 3 个 builtin subagent', () => {
+    const list = getBuiltinSubAgents()
+    expect(list).toHaveLength(3)
+    expect(list.map((s) => s.id).sort()).toEqual([
+      BUILTIN_SUBAGENT_IDS.codePlanner,
+      BUILTIN_SUBAGENT_IDS.codeWriter,
+      BUILTIN_SUBAGENT_IDS.vision,
+    ].sort())
+  })
+
+  it('全部 is_builtin=true + enabled=true', () => {
+    for (const s of getBuiltinSubAgents()) {
+      expect(s.is_builtin).toBe(true)
+      expect(s.enabled).toBe(true)
+    }
+  })
+
+  it('code_planner 使用 powerful role + 挂 writing-plans skill', () => {
+    const p = getBuiltinSubAgents().find((s) => s.name === 'code_planner')!
+    expect(p.model_role).toBe('powerful')
+    expect(p.allowed_skill_ids).toContain(BUILTIN_SKILL_IDS.writingPlans)
+  })
+
+  it('code_writer 使用 cost_effective role + 挂 systematic-debugging + verification-before-completion', () => {
+    const w = getBuiltinSubAgents().find((s) => s.name === 'code_writer')!
+    expect(w.model_role).toBe('cost_effective')
+    expect(w.allowed_skill_ids).toContain(BUILTIN_SKILL_IDS.systematicDebugging)
+    expect(w.allowed_skill_ids).toContain(BUILTIN_SKILL_IDS.verificationBeforeCompletion)
+  })
+
+  it('vision 使用 vision role', () => {
+    const v = getBuiltinSubAgents().find((s) => s.name === 'vision')!
+    expect(v.model_role).toBe('vision')
+  })
+})
+
+describe('SubAgentManager.seedBuiltin via getBuiltinSubAgents', () => {
+  let tmpDir2: string
+  let mgr2: SubAgentManager
+
+  beforeEach(async () => {
+    tmpDir2 = mkdtempSync(join(tmpdir(), 'subagent-seed-e2e-'))
+    mgr2 = new SubAgentManager(tmpDir2)
+    await mgr2.initialize()
+  })
+
+  afterEach(() => {
+    rmSync(tmpDir2, { recursive: true, force: true })
+  })
+
+  it('空 registry 注入全 3 个', async () => {
+    await mgr2.seedBuiltin(getBuiltinSubAgents())
+    expect(mgr2.list()).toHaveLength(3)
+  })
+
+  it('idempotent — 第二次调用不变', async () => {
+    await mgr2.seedBuiltin(getBuiltinSubAgents())
+    await mgr2.seedBuiltin(getBuiltinSubAgents())
+    expect(mgr2.list()).toHaveLength(3)
   })
 })
