@@ -255,12 +255,13 @@ describe('executeTriggerMessage 超期注册到 admin', () => {
     expect(result!.overdueInjected).toBe(true)
   })
 
-  it('onOverdue 被多次调用时 fireAndForgetRegister 只额外触发一次（registerTriggered flag 防重）', async () => {
+  it('onOverdue 被多次调用しても create_task は startup の 1 回のみ（fireAndForgetRegister 削除済み）', async () => {
     // Engine calls onOverdue twice (edge case: timer fires multiple times)
+    // Since fireAndForgetRegister is gone, onOverdue is a pure string callback — no side effects.
     mockRunEngine.mockImplementation(async (opts) => {
       if (opts.options?.overdueConfig?.onOverdue) {
         opts.options.overdueConfig.onOverdue()
-        opts.options.overdueConfig.onOverdue() // second call — should be no-op (registerTriggered flag)
+        opts.options.overdueConfig.onOverdue() // second call — pure string, no register side-effect
       }
       await new Promise(r => setImmediate(r))
       return makeOverdueEngineResult()
@@ -269,14 +270,13 @@ describe('executeTriggerMessage 超期注册到 admin', () => {
     const params = makeTriggerParams()
     await handler.executeTriggerMessage(params)
 
-    // Wait for all fire-and-forget promises
+    // Wait for any async ticks
     await new Promise(r => setTimeout(r, 20))
 
     const createTaskCalls = mockRpcCall.mock.calls.filter(
       (call: unknown[]) => call[1] === 'create_task',
     )
-    // startup register = 1, onOverdue fireAndForgetRegister = 1 more (second onOverdue is no-op)
-    // Total = 2 (not 3)
-    expect(createTaskCalls).toHaveLength(2)
+    // Only startup register = 1 (onOverdue no longer triggers register)
+    expect(createTaskCalls).toHaveLength(1)
   })
 })

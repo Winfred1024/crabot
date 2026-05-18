@@ -882,35 +882,6 @@ export class UnifiedAgent extends ModuleBase {
   }
 
   /**
-   * 从 Friend 权限和 Session 配置派生记忆读写权限参数
-   *
-   * - master 权限：写入 private，读取不过滤（可见所有私有记忆）
-   * - normal 权限：写入 internal + session memory_scopes，读取限 session memory_scopes
-   *
-   * 优先从 Admin.get_session_config 读取 session.memory_scopes，
-   * fallback 到 [sessionId]（兼容未配置的场景）。
-   */
-  private async deriveMemoryPermissions(friend: Friend, sessionId: string, resolvedPerms?: ResolvedPermissions | null): Promise<MemoryPermissions> {
-    if (friend.permission === 'master') {
-      return {
-        write_visibility: 'private',
-        write_scopes: [],
-        read_min_visibility: 'private',
-        read_accessible_scopes: undefined,
-      }
-    }
-
-    // Use resolved permissions if available, otherwise fall back to RPC
-    const memoryScopes = resolvedPerms?.memory_scopes ?? await this.getSessionMemoryScopes(sessionId)
-    return {
-      write_visibility: 'internal',
-      write_scopes: memoryScopes,
-      read_min_visibility: 'internal',
-      read_accessible_scopes: memoryScopes,
-    }
-  }
-
-  /**
    * 调 admin RPC 解析"消息发起人"effective permissions（friend ∪ session 并集）。
    *
    * 取代旧的 resolveSessionPermissions / resolveGroupPermissions 双路径：
@@ -1151,24 +1122,6 @@ export class UnifiedAgent extends ModuleBase {
     for (const taskId of barrierTaskIds) {
       this.agentHandler?.clearBarrierForTask(taskId)
     }
-  }
-
-  /**
-   * 把 executeTriggerMessage 的 result 收尾态转成 trace endTrace 的 summary 字符串。
-   * - exitToolCall 命中 → `exit:<name>`
-   * - 调过 send_message → `sent_message`
-   * - 完全静默 → `silentLabel`（私聊 silent_end / 群聊 silent_discard）
-   *
-   * 不再用 finalText 作为兜底交付——unified loop 设计下 send_message 是唯一通道，
-   * silent end_turn 就是 silent，靠 trace 排查，不二次猜测。
-   */
-  private buildResultSummaryLabel(
-    result: import('./agent/agent-handler.js').ExecuteTriggerMessageResult,
-    silentLabel: string,
-  ): string {
-    if (result.exitToolCall) return `exit:${result.exitToolCall.name}`
-    if (result.sentMessage) return 'sent_message'
-    return silentLabel
   }
 
   /**

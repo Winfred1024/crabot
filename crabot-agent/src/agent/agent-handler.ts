@@ -78,7 +78,7 @@ import { getInstanceSkillsDir } from '../core/data-paths.js'
 import { llmUsageToTrace } from '../core/trace-usage.js'
 import { TodoStore } from './worker-todo-store.js'
 import { createTodoTool } from './worker-todo-tool.js'
-import { getAgentExitTools } from './agent-exit-tools.js'
+
 import { reflectStructuredOutcome } from '../orchestration/structured-outcome-reflector.js'
 
 import * as fs from 'fs'
@@ -1219,9 +1219,7 @@ export class AgentHandler {
       .slice(0, 100)
     const syntheticTaskId = `trigger-${randomUUID()}`
 
-    // 启动入口立即 register admin（取代旧 onOverdue 闭包内的延迟 register）
-    // 与下方 fireAndForgetRegister 共存——第二次调用拿到 TASK_ALREADY_EXISTS 被吞掉
-    // （Task 11 会彻底删 fireAndForgetRegister）
+    // 启动入口立即 register admin
     await this.registerTriggerTaskToAdmin({
       syntheticTaskId,
       triggerSummary,
@@ -1277,22 +1275,6 @@ export class AgentHandler {
     let sentMessage = false
     let finalSent = false
 
-    // 闭包内捕获标志：register 调用最多触发一次（防止 onOverdue 在某些 path 被多次调）
-    let registerTriggered = false
-    const fireAndForgetRegister = (): void => {
-      if (registerTriggered) return
-      registerTriggered = true
-      this.registerTriggerTaskToAdmin({
-        syntheticTaskId,
-        triggerSummary,
-        channelId,
-        sessionId,
-        senderFriendId: senderFriend.id,
-      }).catch((err) => {
-        log(`executeTriggerMessage: registerToAdmin failed (continuing) syntheticTaskId=${syntheticTaskId}: ${err instanceof Error ? err.message : String(err)}`)
-      })
-    }
-
     const overdueReminderText =
       `已处理超过 ${Math.floor(timeoutMs / 1000)} 秒，建议先 send_message ` +
       `友好告知人类正在处理 + 简要说明打算怎么干，发完继续执行。`
@@ -1300,23 +1282,16 @@ export class AgentHandler {
       ? {
         timeoutMs,
         startedAtMs: triggerArrivedAtMs,
-        onOverdue: () => {
-          fireAndForgetRegister() // 超期那一刻 fire-and-forget 注册到 admin
-          return sentMessage ? null : overdueReminderText
-        },
+        onOverdue: () => sentMessage ? null : overdueReminderText,
       }
       : undefined
 
-    // 4. Exit tools (supplement_task / stay_silent)
-    const activeTaskIds = activeTasks.map(t => t.task_id)
-    const exitTools = getAgentExitTools({ isGroup, activeTaskIds })
-
-    // 5. Run the full worker loop with trigger-mode opts
+    // 4. Run the full worker loop with trigger-mode opts
     let loopResult: RunWorkerLoopResult
     try {
       loopResult = await this.runWorkerLoop(task, context, traceCallback, undefined, {
         initialPrompt: triggerPrompt,
-        extraTools: exitTools,
+        extraTools: [],
         ...(overdueConfig ? { overdueConfig } : {}),
         suppressForcedSummary: () => finalSent,
         onAfterTurn: (event) => {
