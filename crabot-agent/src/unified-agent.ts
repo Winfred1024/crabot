@@ -186,13 +186,14 @@ export class UnifiedAgent extends ModuleBase {
       async () => await this.getAdminPort()
     )
     this.workerSelector = new WorkerSelector(this.rpcClient, config.module_id)
-    this.contextAssembler = new ContextAssembler(
-      this.rpcClient,
-      config.module_id,
-      this.orchestrationConfig,
-      async () => await this.getAdminPort(),
-      async () => await this.getMemoryPort()
-    )
+    this.contextAssembler = new ContextAssembler({
+      rpcClient: this.rpcClient,
+      moduleId: config.module_id,
+      config: this.orchestrationConfig,
+      getAdminPort: async () => await this.getAdminPort(),
+      getMemoryPort: async () => await this.getMemoryPort(),
+      getInflightTriggerTasks: () => this.agentHandler?.getInflightSnapshot() ?? [],
+    })
     this.memoryWriter = new MemoryWriter(
       this.rpcClient,
       config.module_id,

@@ -47,13 +47,13 @@ describe('ContextAssembler', () => {
 
   beforeEach(() => {
     mockRpc = createMockRpcClient()
-    assembler = new ContextAssembler(
-      mockRpc as any,
-      'flow-default',
-      defaultConfig,
-      () => 19100,
-      () => 19200
-    )
+    assembler = new ContextAssembler({
+      rpcClient: mockRpc as any,
+      moduleId: 'flow-default',
+      config: defaultConfig,
+      getAdminPort: () => 19100,
+      getMemoryPort: () => 19200,
+    })
   })
 
   it('should assemble worker context with all data', async () => {

@@ -698,6 +698,8 @@ export interface WorkerTaskState {
   status: string
   startedAt: string
   title?: string
+  /** task 触发类型，供 context-assembler union 时过滤 scheduled task */
+  readonly triggerType?: 'message' | 'scheduled'
   abortController: {
     signal: { aborted: boolean }
     abort: () => void

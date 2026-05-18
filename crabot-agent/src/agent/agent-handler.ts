@@ -559,6 +559,7 @@ export class AgentHandler {
       status: 'executing',
       startedAt: new Date().toISOString(),
       title: task.task_title,
+      triggerType: task.source?.trigger_type === 'scheduled' ? 'scheduled' : 'message',
       abortController: new AbortController(),
       pendingHumanMessages: [],
       taskOrigin: context.task_origin,
@@ -1839,6 +1840,22 @@ export class AgentHandler {
       started_at: t.startedAt,
       title: t.title,
     }))
+  }
+
+  /**
+   * 返回 agent 进程内 in-flight task 的轻量 summary，供 context-assembler union。
+   * Spec: 2026-05-19-prefront-dispatcher-design.md §3.2
+   */
+  getInflightSnapshot(): ReadonlyArray<{ task_id: string; title: string; trigger_type: 'message' | 'scheduled' }> {
+    const result: Array<{ task_id: string; title: string; trigger_type: 'message' | 'scheduled' }> = []
+    for (const [taskId, state] of this.activeTasks) {
+      result.push({
+        task_id: taskId,
+        title: state.title ?? taskId,
+        trigger_type: state.triggerType ?? 'message',
+      })
+    }
+    return result
   }
 
   /**

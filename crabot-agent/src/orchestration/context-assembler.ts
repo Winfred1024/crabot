@@ -60,20 +60,41 @@ function filterChannelClaimNoise(message: ChannelMessage): boolean {
   return !isClaimCommand(text) && !isClaimSystemHint(text)
 }
 
+interface ContextAssemblerDeps {
+  rpcClient: RpcClient
+  moduleId: string
+  config: OrchestrationConfig
+  getAdminPort: () => number | Promise<number>
+  getMemoryPort: () => number | Promise<number>
+  /** 可选：由 UnifiedAgent 注入，读取 agent 进程内 in-flight task 快照（避免 30s race）。
+   *  Spec: 2026-05-19-prefront-dispatcher-design.md §3.2 */
+  getInflightTriggerTasks?: () => ReadonlyArray<{ task_id: string; title: string; trigger_type: 'message' | 'scheduled' }>
+  /** 可选：由 UnifiedAgent 注入，读取 worker 实时快照（用于 Front 汇报进度）。 */
+  getLiveSnapshot?: (taskId: string) => LiveTaskSnapshot | undefined
+}
+
 export class ContextAssembler {
+  private rpcClient: RpcClient
+  private moduleId: string
+  private config: OrchestrationConfig
+  private getAdminPort: () => number | Promise<number>
+  private getMemoryPort: () => number | Promise<number>
+  private getInflightTriggerTasks?: () => ReadonlyArray<{ task_id: string; title: string; trigger_type: 'message' | 'scheduled' }>
   /**
    * 同进程读取 Worker 实时快照的回调（由 UnifiedAgent 注入）。
    * Worker 与 ContextAssembler 同属一个 Agent 进程，无需 RPC，函数引用直读 Map。
    */
   private getLiveSnapshot?: (taskId: string) => LiveTaskSnapshot | undefined
 
-  constructor(
-    private rpcClient: RpcClient,
-    private moduleId: string,
-    private config: OrchestrationConfig,
-    private getAdminPort: () => number | Promise<number>,
-    private getMemoryPort: () => number | Promise<number>
-  ) {}
+  constructor(deps: ContextAssemblerDeps) {
+    this.rpcClient = deps.rpcClient
+    this.moduleId = deps.moduleId
+    this.config = deps.config
+    this.getAdminPort = deps.getAdminPort
+    this.getMemoryPort = deps.getMemoryPort
+    this.getInflightTriggerTasks = deps.getInflightTriggerTasks
+    this.getLiveSnapshot = deps.getLiveSnapshot
+  }
 
   /**
    * 由 UnifiedAgent 在 worker handler 实例化后调用，注入 live snapshot getter。
@@ -393,6 +414,7 @@ export class ContextAssembler {
   }
 
   private async fetchActiveTasks(): Promise<TaskSummary[]> {
+    let adminItems: TaskSummary[] = []
     try {
       const adminPort = await this.getAdminPort()
       const result = await this.rpcClient.call<
@@ -422,7 +444,7 @@ export class ContextAssembler {
         { filter: { status: ['pending', 'planning', 'executing', 'waiting_human'] } },
         this.moduleId
       )
-      return result.items.map(t => ({
+      adminItems = result.items.map(t => ({
         task_id: t.id,
         title: t.title,
         status: t.status,
@@ -438,9 +460,36 @@ export class ContextAssembler {
         // 飞行中状态：worker 同进程内存表，仅 status=executing 且本进程在跑时有值
         live: t.status === 'executing' ? this.getLiveSnapshot?.(t.id) : undefined,
       }))
-    } catch {
-      return []
+    } catch (err) {
+      console.warn(
+        `[context-assembler] admin list_tasks failed, falling back to agent in-flight only:`,
+        err instanceof Error ? err.message : String(err)
+      )
     }
+
+    // Union with agent in-flight tasks (避免 30s admin 同步延迟导致 race)
+    const inflight = this.getInflightTriggerTasks?.() ?? []
+    const byId = new Map<string, TaskSummary>()
+    for (const t of inflight) {
+      byId.set(t.task_id, {
+        task_id: t.task_id,
+        title: t.title,
+        status: 'executing',
+        priority: 'normal',
+        // 'message' 不在 TaskSummary.trigger_type 联合内，归一化为 undefined（即非 scheduled）
+        trigger_type: t.trigger_type === 'scheduled' ? 'scheduled' : undefined,
+      } as TaskSummary)
+    }
+    // admin 优先覆盖 in-flight
+    for (const t of adminItems) byId.set(t.task_id, t)
+
+    // 过滤 scheduled task（dispatcher 不对 scheduled 做 supplement）
+    const filtered: TaskSummary[] = []
+    for (const t of byId.values()) {
+      if (t.trigger_type === 'scheduled') continue
+      filtered.push(t)
+    }
+    return filtered
   }
 
   private extractLatestProgress(
