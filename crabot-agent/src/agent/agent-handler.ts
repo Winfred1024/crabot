@@ -245,7 +245,7 @@ export interface AgentHandlerOptions {
   subAgentHints?: ReadonlyArray<{ readonly toolName: string; readonly workerHint: string }>
 }
 
-export interface HandleTriggerMessageParams {
+export interface ExecuteTriggerMessageParams {
   /** 触发消息列表（已合并：多条相邻同 sender 消息可能合一） */
   readonly messages: ReadonlyArray<ChannelMessage>
   /** 当前活跃任务摘要 */
@@ -270,14 +270,14 @@ export interface HandleTriggerMessageParams {
   readonly channelId: string
   readonly sessionId: string
   /**
-   * 完整的 Front Agent context（由 unified-agent 在调用 handleTriggerMessage 前装配）。
+   * 完整的 Front Agent context（由 unified-agent 在调用 executeTriggerMessage 前装配）。
    * 包含 recent_messages / time_windows / active_tasks / sender_friend / scene_profile / crab_display_name 等，
    * 用于构造 worker 风格的 user prompt（含 channel/session/聊天历史/活跃任务）。
    */
   readonly frontContext: FrontAgentContext
 }
 
-export interface HandleTriggerMessageResult {
+export interface ExecuteTriggerMessageResult {
   /** Engine 结束原因 */
   readonly outcome: 'completed' | 'failed' | 'max_turns' | 'aborted'
   /** 最终 assistant 文本（未必是发给用户的——可能仍是内部 reasoning） */
@@ -539,13 +539,13 @@ export class AgentHandler {
 
   /**
    * 共享 worker loop：构造适配器、工具集、system prompt，运行 runEngine，
-   * 返回原始结果供 executeTask（完整任务）和 handleTriggerMessage（trigger 流）分别处理收尾。
+   * 返回原始结果供 executeTask（完整任务）和 executeTriggerMessage（trigger 流）分别处理收尾。
    *
    * opts 允许 trigger 流注入 extraTools（exit 工具）、initialPrompt（user 侧 trigger prompt）、
    * overdueConfig（超期提醒），以及 onAfterTurn 回调（检测 send_message 工具调用）。
    *
    * 注意：try/finally 清理（activeTasks / humanQueues / liveSnapshots / transientShells / bgCursorMap）
-   * 在本方法内完成，对 executeTask 和 handleTriggerMessage 两个 caller 均透明。
+   * 在本方法内完成，对 executeTask 和 executeTriggerMessage 两个 caller 均透明。
    */
   private async runWorkerLoop(
     task: ExecuteTaskParams['task'],
@@ -1183,7 +1183,7 @@ export class AgentHandler {
    *
    * 与 executeTask 的区别：
    * - executeTask 处理 admin 已注册的 task（带 task_id）
-   * - handleTriggerMessage 处理新触发消息，可能早退（supplement/silent），可能自然结束
+   * - executeTriggerMessage 处理新触发消息，可能早退（supplement/silent），可能自然结束
    *
    * Caller（unified-agent）根据 result.exitToolCall 自行 dispatch：
    * - exitToolCall.name === 'supplement_task' → 路由 supplement_text 到目标 task
@@ -1192,10 +1192,10 @@ export class AgentHandler {
    *
    * Spec: crabot-docs/superpowers/specs/2026-05-15-agent-unified-loop-redesign-design.md §2.1
    */
-  async handleTriggerMessage(
-    params: HandleTriggerMessageParams,
+  async executeTriggerMessage(
+    params: ExecuteTriggerMessageParams,
     traceCallback?: TraceCallback,
-  ): Promise<HandleTriggerMessageResult> {
+  ): Promise<ExecuteTriggerMessageResult> {
     const {
       messages,
       activeTasks,
@@ -1329,7 +1329,7 @@ export class AgentHandler {
         channelId,
         sessionId,
       }).catch((err) => {
-        log(`handleTriggerMessage: overdue reflection failed (continuing): ${err instanceof Error ? err.message : String(err)}`)
+        log(`executeTriggerMessage: overdue reflection failed (continuing): ${err instanceof Error ? err.message : String(err)}`)
       })
     }
 
@@ -1436,7 +1436,7 @@ export class AgentHandler {
    * - 新增尾部提醒：用 send_message 工具回复（含 channel_id / session_id）
    * - 场景画像从 frontContext 读取（已在 system prompt 里，此处不再重复渲染）
    */
-  private buildTriggerUserPrompt(params: HandleTriggerMessageParams): string {
+  private buildTriggerUserPrompt(params: ExecuteTriggerMessageParams): string {
     const { messages, activeTasks, isGroup, senderFriend, channelId, sessionId, frontContext } = params
     const parts: string[] = []
     const timezone = this.getTimezone()

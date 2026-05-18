@@ -1,19 +1,19 @@
 import { describe, it, expect } from 'vitest'
 import { AgentHandler } from '../../src/agent/agent-handler.js'
 import type {
-  HandleTriggerMessageParams,
-  HandleTriggerMessageResult,
+  ExecuteTriggerMessageParams,
+  ExecuteTriggerMessageResult,
 } from '../../src/agent/agent-handler.js'
 
-describe('AgentHandler.handleTriggerMessage 类型契约', () => {
+describe('AgentHandler.executeTriggerMessage 类型契约', () => {
   it('方法存在于 AgentHandler 原型上', () => {
-    expect(typeof AgentHandler.prototype.handleTriggerMessage).toBe('function')
+    expect(typeof AgentHandler.prototype.executeTriggerMessage).toBe('function')
   })
 
-  it('HandleTriggerMessageParams 类型支持 minimal 字段', () => {
+  it('ExecuteTriggerMessageParams 类型支持 minimal 字段', () => {
     // 编译期类型校验——如果字段名或可选性变了，下面赋值会编译失败
     const minimal: Pick<
-      HandleTriggerMessageParams,
+      ExecuteTriggerMessageParams,
       | 'messages'
       | 'activeTasks'
       | 'isGroup'
@@ -27,18 +27,18 @@ describe('AgentHandler.handleTriggerMessage 类型契约', () => {
       messages: [],
       activeTasks: [],
       isGroup: false,
-      senderFriend: { id: 'f1' } as HandleTriggerMessageParams['senderFriend'],
+      senderFriend: { id: 'f1' } as ExecuteTriggerMessageParams['senderFriend'],
       triggerArrivedAtMs: Date.now(),
-      memoryPermissions: {} as HandleTriggerMessageParams['memoryPermissions'],
-      resolvedPermissions: {} as HandleTriggerMessageParams['resolvedPermissions'],
+      memoryPermissions: {} as ExecuteTriggerMessageParams['memoryPermissions'],
+      resolvedPermissions: {} as ExecuteTriggerMessageParams['resolvedPermissions'],
       channelId: 'ch-1',
       sessionId: 'sess-1',
     }
     expect(minimal.isGroup).toBe(false)
   })
 
-  it('HandleTriggerMessageResult 含必要字段', () => {
-    const sample: HandleTriggerMessageResult = {
+  it('ExecuteTriggerMessageResult 含必要字段', () => {
+    const sample: ExecuteTriggerMessageResult = {
       outcome: 'completed',
       finalText: 'hello',
       sentMessage: true,
@@ -47,8 +47,8 @@ describe('AgentHandler.handleTriggerMessage 类型契约', () => {
     expect(sample.outcome).toBe('completed')
   })
 
-  it('HandleTriggerMessageResult 支持 exitToolCall optional', () => {
-    const withExit: HandleTriggerMessageResult = {
+  it('ExecuteTriggerMessageResult 支持 exitToolCall optional', () => {
+    const withExit: ExecuteTriggerMessageResult = {
       outcome: 'completed',
       finalText: '',
       sentMessage: false,
@@ -58,8 +58,8 @@ describe('AgentHandler.handleTriggerMessage 类型契约', () => {
     expect(withExit.exitToolCall?.name).toBe('supplement_task')
   })
 
-  it('HandleTriggerMessageResult 支持 error optional', () => {
-    const failed: HandleTriggerMessageResult = {
+  it('ExecuteTriggerMessageResult 支持 error optional', () => {
+    const failed: ExecuteTriggerMessageResult = {
       outcome: 'failed',
       finalText: '',
       sentMessage: false,
@@ -71,7 +71,7 @@ describe('AgentHandler.handleTriggerMessage 类型契约', () => {
 
   it('outcome 字段限定为 4 个枚举值', () => {
     // 编译期校验：以下任一无效值赋值会编译失败
-    const outcomes: HandleTriggerMessageResult['outcome'][] = [
+    const outcomes: ExecuteTriggerMessageResult['outcome'][] = [
       'completed', 'failed', 'max_turns', 'aborted',
     ]
     expect(outcomes.length).toBe(4)

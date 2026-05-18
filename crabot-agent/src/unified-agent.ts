@@ -590,7 +590,7 @@ export class UnifiedAgent extends ModuleBase {
       const triggerArrivedAtMs = Date.now()
       let result
       try {
-        result = await this.agentHandler.handleTriggerMessage({
+        result = await this.agentHandler.executeTriggerMessage({
           messages: [...mergedMessages],
           activeTasks: context.active_tasks ?? [],
           isGroup: false,
@@ -679,7 +679,7 @@ export class UnifiedAgent extends ModuleBase {
     const messages = buffered.map((b) => b.message)
     const session = messages[0].session
 
-    // 检查 Worker Handler 能力（群聊统一走 handleTriggerMessage）
+    // 检查 Worker Handler 能力（群聊统一走 executeTriggerMessage）
     if (!this.agentHandler) {
       return
     }
@@ -760,7 +760,7 @@ export class UnifiedAgent extends ModuleBase {
       const triggerArrivedAtMs = Date.now()
       let result
       try {
-        result = await this.agentHandler.handleTriggerMessage({
+        result = await this.agentHandler.executeTriggerMessage({
           messages: [...messages],
           activeTasks: context.active_tasks ?? [],
           isGroup: true,
@@ -774,7 +774,7 @@ export class UnifiedAgent extends ModuleBase {
           frontContext: context,
         }, traceCallback)
       } catch (error) {
-        console.error(`[${this.config.moduleId}] processGroupBatch handleTriggerMessage error:`, error)
+        console.error(`[${this.config.moduleId}] processGroupBatch executeTriggerMessage error:`, error)
         this.clearAllBarriers(barrierTaskIds)
         this.traceStore.endTrace(trace.trace_id, 'failed', {
           summary: error instanceof Error ? error.message : String(error),
@@ -1134,7 +1134,7 @@ export class UnifiedAgent extends ModuleBase {
   }
 
   /**
-   * 把 handleTriggerMessage 的 result 收尾态转成 trace endTrace 的 summary 字符串。
+   * 把 executeTriggerMessage 的 result 收尾态转成 trace endTrace 的 summary 字符串。
    * - exitToolCall 命中 → `exit:<name>`
    * - 调过 send_message → `sent_message`
    * - 完全静默 → `silentLabel`（私聊 silent_end / 群聊 silent_discard）
@@ -1143,7 +1143,7 @@ export class UnifiedAgent extends ModuleBase {
    * silent end_turn 就是 silent，靠 trace 排查，不二次猜测。
    */
   private buildResultSummaryLabel(
-    result: import('./agent/agent-handler.js').HandleTriggerMessageResult,
+    result: import('./agent/agent-handler.js').ExecuteTriggerMessageResult,
     silentLabel: string,
   ): string {
     if (result.exitToolCall) return `exit:${result.exitToolCall.name}`
@@ -1363,7 +1363,7 @@ export class UnifiedAgent extends ModuleBase {
 
         // 调用统一 loop
         const triggerArrivedAtMs = Date.now()
-        const result = await this.agentHandler.handleTriggerMessage({
+        const result = await this.agentHandler.executeTriggerMessage({
           messages: mergedMessages,
           activeTasks: context.active_tasks ?? [],
           isGroup: message.session.type === 'group',
@@ -1554,7 +1554,7 @@ export class UnifiedAgent extends ModuleBase {
       const triggerArrivedAtMs = Date.now()
       let result
       try {
-        result = await this.agentHandler.handleTriggerMessage({
+        result = await this.agentHandler.executeTriggerMessage({
           messages: mergedMessages,
           activeTasks: context.active_tasks ?? [],
           isGroup: false,
@@ -1569,7 +1569,7 @@ export class UnifiedAgent extends ModuleBase {
         }, traceCallback)
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error)
-        console.error(`[${this.config.moduleId}] processAdminChatMessage handleTriggerMessage error:`, error)
+        console.error(`[${this.config.moduleId}] processAdminChatMessage executeTriggerMessage error:`, error)
         // 通知 admin chat 发生错误
         try {
           await this.rpcClient.call(
