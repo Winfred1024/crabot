@@ -10,6 +10,8 @@
  * 在 spawn 子 agent 工具表时统一剔除。
  *
  * Spec: crabot-docs/superpowers/specs/2026-05-17-subagent-customization-and-admin-ui-design.md §3.2
+ *
+ * TODO(phase-2b): support run_in_background for persistent subagent spawn
  */
 
 import type { ToolDefinition, ToolCallContext, ToolCallResult } from '../engine/types.js'
@@ -21,7 +23,6 @@ export interface RunSubAgentInput {
   readonly task: string
   readonly context?: string
   readonly image_paths?: string[]
-  readonly run_in_background?: boolean
 }
 
 /** 调用 subagent 的实际函数；由 caller（agent-handler）实现，注入到 createDelegateTaskTool */
@@ -96,7 +97,6 @@ export function createDelegateTaskTool(opts: CreateDelegateTaskToolOptions): Too
           items: { type: 'string' },
           description: '可选；仅当 subagent 的模型支持 vision 时生效',
         },
-        run_in_background: { type: 'boolean', description: '可选；持久化场景支持 bg spawn' },
       },
       required: ['subagent_type', 'task'],
     },

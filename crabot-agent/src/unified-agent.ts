@@ -369,11 +369,8 @@ export class UnifiedAgent extends ModuleBase {
     builtinToolConfig?: BuiltinToolConfig,
     skills?: ReadonlyArray<SkillConfig>,
   ): AgentHandler {
-    const subAgentConfigs = this.buildSubAgentConfigs(modelConfig)
-    const subAgentHints = subAgentConfigs.map(({ definition }) => ({
-      toolName: definition.toolName,
-      workerHint: definition.workerHint,
-    }))
+    // TODO(task-11): 接入 this.agentConfig?.subagents；buildSubAgentConfigs / resolveSubAgentSlot 将在 Task 11 一并删除
+    const subAgents = this.agentConfig?.subagents ?? []
     // workerPersonality 仅承载 admin personality（system_prompt）；skill listing 走独立通道，
     // 由 AgentHandler 内部 buildSkillListingSnapshot 实时从 this.skills 拼装，
     // 保证 updateSkills 后下一轮 LLM 调用即时生效。
@@ -394,12 +391,11 @@ export class UnifiedAgent extends ModuleBase {
       builtinToolConfig,
       mcpConnector: this.mcpConnector,
       digestSdkEnv: this.digestSdkEnv,
-      subAgentConfigs,
+      subAgents,
       skills: skills ?? [],
       lspManager: this.lspManager,
       memoryWriter: this.memoryWriter,
       promptManager: this.promptManager,
-      subAgentHints,
     })
     return handler
   }

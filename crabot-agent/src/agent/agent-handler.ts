@@ -56,6 +56,7 @@ import type {
   TaskSummary,
   MemoryPermissions,
   RuntimeSceneProfile,
+  AgentTrace,
 } from '../types.js'
 import type { RpcClient } from 'crabot-shared'
 import { createCrabMemoryServer } from '../mcp/crab-memory.js'
@@ -63,9 +64,13 @@ import type { MemoryTaskContext } from '../mcp/crab-memory.js'
 import { mcpServerToToolDefinitions } from './mcp-tool-bridge.js'
 import { formatMessageContent, resolveImageBlocks } from './media-resolver.js'
 import type { McpConnector } from './mcp-connector.js'
-import { createSubAgentTool } from '../engine/sub-agent.js'
-import type { SubAgentDefinition } from './subagent-prompts.js'
-import { DELEGATE_TASK_SYSTEM_PROMPT } from './subagent-prompts.js'
+import { forkEngine } from '../engine/sub-agent.js'
+import type { SubAgentTraceConfig } from '../engine/sub-agent.js'
+import { createDelegateTaskTool } from './delegate-task-tool.js'
+import type { RunSubAgentFn } from './delegate-task-tool.js'
+import { filterToolsForSubAgent } from './subagent-tool-filter.js'
+import { assembleSubAgentPrompt } from './subagent-prompt-assembler.js'
+import type { SubAgentConfig } from '../types.js'
 import { HumanMessageQueue } from '../engine/human-message-queue.js'
 import { createCodingExpertHookRegistry, createCliPermissionHook } from '../hooks/defaults.js'
 import { HookRegistry } from '../hooks/hook-registry.js'
@@ -229,7 +234,7 @@ export interface AgentHandlerOptions {
   builtinToolConfig?: BuiltinToolConfig
   mcpConnector?: McpConnector
   digestSdkEnv?: SdkEnvConfig
-  subAgentConfigs?: ReadonlyArray<{ readonly definition: SubAgentDefinition; readonly sdkEnv: SdkEnvConfig }>
+  subAgents?: ReadonlyArray<SubAgentConfig>
   skills?: ReadonlyArray<SkillConfig>
   lspManager?: import('../lsp/lsp-manager').LSPManager
   memoryWriter?: MemoryWriter
@@ -238,11 +243,6 @@ export interface AgentHandlerOptions {
    * 重新拼成 system prompt，以便 updateSkills / updateSystemPrompt 即时生效。
    */
   promptManager?: PromptManager
-  /**
-   * Sub-agent hint 列表，用于注入到 worker prompt 末尾的"可用专项 Sub-agent"段落。
-   * 来自 createWorkerHandler 解析 SUBAGENT_DEFINITIONS 后的实际可用列表。
-   */
-  subAgentHints?: ReadonlyArray<{ readonly toolName: string; readonly workerHint: string }>
 }
 
 export interface ExecuteTriggerMessageParams {
@@ -314,12 +314,11 @@ export class AgentHandler {
   private mcpConnector?: McpConnector
   private extra: Record<string, unknown>
   private digestSdkEnv?: SdkEnvConfig
-  private readonly subAgentConfigs: ReadonlyArray<{ readonly definition: SubAgentDefinition; readonly sdkEnv: SdkEnvConfig }>
+  private readonly subAgents: ReadonlyArray<SubAgentConfig>
   private skills: ReadonlyArray<SkillConfig>
   private readonly lspManager?: import('../lsp/lsp-manager').LSPManager
   private memoryWriter?: MemoryWriter
   private readonly promptManager?: PromptManager
-  private readonly subAgentHints: ReadonlyArray<{ readonly toolName: string; readonly workerHint: string }>
   private readonly getTimezone: () => string
   /** Worker-singleton bg entity registry (persistent, disk-backed) */
   private readonly bgRegistry = new BgEntityRegistry()
@@ -355,12 +354,11 @@ export class AgentHandler {
     this.mcpConnector = options?.mcpConnector
     this.extra = config.extra ?? {}
     this.digestSdkEnv = options?.digestSdkEnv
-    this.subAgentConfigs = options?.subAgentConfigs ?? []
+    this.subAgents = options?.subAgents ?? []
     this.skills = options?.skills ?? []
     this.lspManager = options?.lspManager
     this.memoryWriter = options?.memoryWriter
     this.promptManager = options?.promptManager
-    this.subAgentHints = options?.subAgentHints ?? []
     this.getTimezone = config.getTimezone ?? (() => resolveTimezone(undefined))
 
     // 确保 instance skills 目录存在；实际内容靠 admin 的 update_config 推送
@@ -735,7 +733,7 @@ export class AgentHandler {
           },
         ))
 
-        // 3f. Sub-agent delegation tools
+        // 3f. delegate_task 工具（单一入口；sub-agent 按 subagent_type 路由）
         // baseToolsPermissionConfig 仅基于 base 工具集，给 sub-agent 用：
         //   sub-agent 内部只能见 baseTools，所以它的 permissionConfig 也只需覆盖 base 工具命名。
         const baseToolsRaw = [...tools]
@@ -743,46 +741,19 @@ export class AgentHandler {
           this.deps?.getPermissionConfig?.(baseToolsRaw, context.resolved_permissions) ?? { mode: 'bypass' }
         const baseTools = filterToolsByPermission(baseToolsRaw, baseToolsPermissionConfig)
 
-        for (const { definition, sdkEnv: subSdkEnv } of this.subAgentConfigs) {
-          const hookRegistry = definition.hooks === 'coding_expert'
-            ? createCodingExpertHookRegistry()
-            : undefined
-
-          tools.push(createSubAgentTool({
-            name: definition.toolName,
-            description: definition.toolDescription,
-            adapter: adapterFromSdkEnv(subSdkEnv),
-            model: subSdkEnv.modelId,
-            ...(subSdkEnv.maxTokens !== undefined ? { maxTokens: subSdkEnv.maxTokens } : {}),
-            systemPrompt: definition.systemPrompt,
-            subTools: baseTools,
-            maxTurns: definition.maxTurns,
-            supportsVision: subSdkEnv.supportsVision,
-            parentHumanQueue: humanQueue,
-            traceConfig: subAgentTraceConfig,
-            hookRegistry,
-            lspManager: hookRegistry ? this.lspManager : undefined,
-            permissionConfig: baseToolsPermissionConfig,
-            bgContext: subAgentBgContext,
+        if (this.subAgents.length > 0) {
+          tools.push(createDelegateTaskTool({
+            subAgents: this.subAgents,
+            runSubAgent: this.makeRunSubAgent({
+              parentTools: baseTools,
+              parentTaskId: task.task_id,
+              callerLabel: 'main worker',
+              humanQueue,
+              permissionConfig: baseToolsPermissionConfig,
+              traceConfig: subAgentTraceConfig,
+            }),
           }))
         }
-
-        // 3g. Generic delegate_task tool (uses Worker's own model)
-        tools.push(createSubAgentTool({
-          name: 'delegate_task',
-          description: '将子任务委派给一个独立的执行者。执行者在独立上下文中运行，使用与你相同的模型和工具，只返回最终结果。适合：(1) 子任务的中间过程会污染你的上下文 (2) 子任务可以独立完成，不需要你的持续关注',
-          adapter,
-          model: this.sdkEnv.modelId,
-          ...(this.sdkEnv.maxTokens !== undefined ? { maxTokens: this.sdkEnv.maxTokens } : {}),
-          systemPrompt: DELEGATE_TASK_SYSTEM_PROMPT,
-          subTools: baseTools,
-          maxTurns: 30,
-          supportsVision: this.sdkEnv.supportsVision,
-          parentHumanQueue: humanQueue,
-          traceConfig: subAgentTraceConfig,
-          permissionConfig: baseToolsPermissionConfig,
-          bgContext: subAgentBgContext,
-        }))
 
         // 3h. Trace search tool
         if (traceSearchTool) {
@@ -1858,6 +1829,179 @@ export class AgentHandler {
     return `${intro}\n\n<available_skills>\n${body}\n</available_skills>`
   }
 
+  /**
+   * 构造 RunSubAgentFn，注入到 delegate_task 工具。
+   * 每次 createWorkerHandler 时调用，deps 绑定当次任务的 humanQueue / permissionConfig 等上下文。
+   */
+  private makeRunSubAgent(deps: {
+    readonly parentTools: ReadonlyArray<import('../engine/types.js').ToolDefinition>
+    readonly parentTaskId: string
+    readonly callerLabel: string
+    readonly humanQueue?: import('../engine/human-message-queue.js').HumanMessageQueue
+    readonly permissionConfig?: import('../engine/types.js').ToolPermissionConfig
+    readonly traceConfig?: SubAgentTraceConfig
+  }): RunSubAgentFn {
+    return async (subagent, input, ctx) => {
+      // 1. filter parent tools by subagent capabilities (delegate_task always excluded by filter)
+      const subTools = filterToolsForSubAgent(
+        deps.parentTools,
+        subagent.builtin_capabilities,
+        subagent.allowed_mcp_server_ids,
+        subagent.allowed_skill_ids,
+      )
+
+      // 2. assemble 5-section system prompt
+      const systemPrompt = assembleSubAgentPrompt(subagent, {
+        parentTaskId: deps.parentTaskId,
+        callerLabel: deps.callerLabel,
+      })
+
+      // 3. build adapter from subagent's resolved model
+      const subAdapter = createAdapter({
+        endpoint: subagent.model.endpoint,
+        apikey: subagent.model.apikey,
+        format: subagent.model.format,
+        ...(subagent.model.account_id ? { accountId: subagent.model.account_id } : {}),
+      })
+
+      // 4. resolve hook registry based on hook_preset
+      const hookRegistry = subagent.hook_preset === 'coding_expert'
+        ? createCodingExpertHookRegistry()
+        : undefined
+      const lspManager = hookRegistry ? this.lspManager : undefined
+
+      // 5. trace stitching: create sub-trace linked to parent trace
+      const tc = deps.traceConfig
+      let subTrace: AgentTrace | undefined
+      let subTraceCallback: ((event: EngineTurnEvent) => void) | undefined
+
+      if (tc) {
+        subTrace = tc.traceStore.startTrace({
+          module_id: 'sub-agent',
+          trigger: {
+            type: 'sub_agent_call',
+            summary: String(input.task).slice(0, 200),
+          },
+          parent_trace_id: tc.parentTraceId,
+          parent_span_id: tc.parentSpanId,
+          related_task_id: tc.relatedTaskId,
+        })
+
+        // onTurn fires post-hoc (after LLM + tools); back-date span timestamps
+        // with engine-measured ms to keep the waterfall accurate.
+        subTraceCallback = (event: EngineTurnEvent) => {
+          const llmEndedAtMs =
+            event.llmStartedAtMs !== undefined && event.llmCallMs !== undefined
+              ? event.llmStartedAtMs + event.llmCallMs
+              : undefined
+
+          const llmSpan = tc.traceStore.startSpan(subTrace!.trace_id, {
+            type: 'llm_call',
+            details: {
+              iteration: event.turnNumber,
+              input_summary: `turn ${event.turnNumber}`,
+            },
+            ...(event.llmStartedAtMs !== undefined ? { started_at_ms: event.llmStartedAtMs } : {}),
+          })
+
+          for (const toolCall of event.toolCalls) {
+            const toolEndedAtMs =
+              toolCall.startedAtMs !== undefined && toolCall.durationMs !== undefined
+                ? toolCall.startedAtMs + toolCall.durationMs
+                : undefined
+
+            const toolSpan = tc.traceStore.startSpan(subTrace!.trace_id, {
+              type: 'tool_call',
+              parent_span_id: llmSpan.span_id,
+              details: {
+                tool_name: toolCall.name,
+                input_summary: JSON.stringify(toolCall.input ?? {}).slice(0, 200),
+              },
+              ...(toolCall.startedAtMs !== undefined ? { started_at_ms: toolCall.startedAtMs } : {}),
+            })
+            tc.traceStore.endSpan(
+              subTrace!.trace_id,
+              toolSpan.span_id,
+              toolCall.isError ? 'failed' : 'completed',
+              {
+                output_summary: String(toolCall.output).slice(0, 500),
+                error: toolCall.isError ? String(toolCall.output) : undefined,
+              },
+              toolEndedAtMs,
+            )
+          }
+
+          tc.traceStore.endSpan(
+            subTrace!.trace_id,
+            llmSpan.span_id,
+            'completed',
+            {
+              stop_reason: event.stopReason ?? undefined,
+              output_summary: event.assistantText.slice(0, 200) || undefined,
+              tool_calls_count: event.toolCalls.length > 0 ? event.toolCalls.length : undefined,
+            },
+            llmEndedAtMs,
+          )
+        }
+      }
+
+      // TODO(phase-2b): image_paths support for vision subagents
+      try {
+        const result = await forkEngine({
+          prompt: input.task,
+          adapter: subAdapter,
+          model: subagent.model.model_id,
+          systemPrompt,
+          tools: subTools,
+          maxTurns: subagent.max_turns,
+          ...(subagent.model.max_tokens !== undefined ? { maxTokens: subagent.model.max_tokens } : {}),
+          ...(input.context ? { parentContext: input.context } : {}),
+          abortSignal: ctx.abortSignal,
+          onTurn: subTraceCallback,
+          supportsVision: subagent.model.supports_vision,
+          humanMessageQueue: deps.humanQueue,
+          hookRegistry,
+          lspManager,
+          permissionConfig: deps.permissionConfig,
+        })
+
+        if (subTrace && tc) {
+          const traceSummary = result.output.slice(0, 200) || result.error?.slice(0, 200) || ''
+          tc.traceStore.endTrace(
+            subTrace.trace_id,
+            result.outcome === 'failed' ? 'failed' : 'completed',
+            {
+              summary: traceSummary,
+              error:
+                result.outcome === 'failed'
+                  ? result.error?.slice(0, 200) || result.output.slice(0, 200)
+                  : undefined,
+            },
+          )
+        }
+
+        return {
+          output: JSON.stringify({
+            output: result.output,
+            outcome: result.outcome,
+            totalTurns: result.totalTurns,
+            child_trace_id: subTrace?.trace_id,
+          }),
+          isError: result.outcome === 'failed',
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (subTrace && tc) {
+          tc.traceStore.endTrace(subTrace.trace_id, 'failed', { summary: msg, error: msg })
+        }
+        return {
+          output: JSON.stringify({ outcome: 'failed', error: msg }),
+          isError: true,
+        }
+      }
+    }
+  }
+
   private buildSystemPrompt(context: WorkerAgentContext): string {
     // unified loop spec §3.1：使用 assembleAgentPrompt（12 段统一模板）。
     // isGroup 从 task_origin.session_type 推断；scheduled task 无 session 时默认 false。
@@ -1865,12 +2009,16 @@ export class AgentHandler {
     const sceneProfile = context.scene_profile
       ? { label: context.scene_profile.label, content: context.scene_profile.content }
       : undefined
+    const availableSubAgents = this.subAgents.map((s) => ({
+      toolName: s.name,
+      workerHint: s.when_to_use.split('\n')[0] || s.description || s.name,
+    }))
     const baseAssembled = this.promptManager
       ? this.promptManager.assembleAgentPrompt({
         isGroup,
         adminPersonality: this.systemPrompt || undefined,
         skillListing: this.buildSkillListingSnapshot(),
-        availableSubAgents: this.subAgentHints,
+        availableSubAgents: availableSubAgents.length > 0 ? availableSubAgents : undefined,
         ...(sceneProfile ? { sceneProfile } : {}),
       })
       : this.systemPrompt
