@@ -519,6 +519,7 @@ export const AdminErrorCode = {
   TEMPLATE_IN_USE: 'ADMIN_TEMPLATE_IN_USE',
   // Task 相关错误码
   TASK_NOT_FOUND: 'ADMIN_TASK_NOT_FOUND',
+  TASK_ALREADY_EXISTS: 'ADMIN_TASK_ALREADY_EXISTS',
   INVALID_STATUS_TRANSITION: 'ADMIN_INVALID_STATUS_TRANSITION',
   TASK_ALREADY_ASSIGNED: 'ADMIN_TASK_ALREADY_ASSIGNED',
   TASK_NOT_CANCELLABLE: 'ADMIN_TASK_NOT_CANCELLABLE',
@@ -781,6 +782,9 @@ export interface Schedule {
 
 // 创建任务
 export interface CreateTaskParams {
+  /** 可选的 task_id；若 caller 自带 id（如 trigger 超期注册），admin 直接用之；
+   *  不传走 admin 自身的 generateId()。若 admin 已存在同 id 则报 TASK_ALREADY_EXISTS。 */
+  id?: string
   priority?: TaskPriority
   title: string
   description?: string
