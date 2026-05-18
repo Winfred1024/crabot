@@ -18,6 +18,7 @@ import type {
   ListAgentImplementationsParams,
   ListAgentInstancesParams,
   ModelSlotRef,
+  ModelRole,
 } from './types.js'
 
 // ============================================================================
@@ -34,42 +35,26 @@ const DEFAULT_IMPLEMENTATION: AgentImplementation = {
   model_format: 'anthropic',
   model_roles: [
     {
-      key: 'triage',
-      description: '分诊模型，用于 Front Agent 消息意图判断和快速决策',
-      required: false,
-      recommended_capabilities: ['tool_use', 'fast'],
-      used_by: ['front'],
-      fallback: 'global_default',
-    },
-    {
-      key: 'worker',
-      description: '执行模型，用于 Worker Agent 执行实际任务',
-      required: false,
+      key: 'powerful',
+      description: '强力模型，用于主 worker / 复杂推理 / planning',
+      required: true,
       recommended_capabilities: ['tool_use', 'long_context'],
-      used_by: ['worker'],
+      used_by: ['front', 'worker'],
       fallback: 'global_default',
     },
     {
-      key: 'digest',
-      description: '摘要模型，用于生成进度汇报摘要（推荐小型快速模型）',
+      key: 'cost_effective',
+      description: '性价比模型，用于简单执行 / 摘要 / 低复杂度调用',
       required: false,
       recommended_capabilities: ['fast'],
-      used_by: ['worker'],
+      used_by: ['front', 'worker'],
       fallback: 'global_default',
     },
     {
-      key: 'vision_expert',
-      description: '视觉专家 Sub-agent，用于截图分析、UI 识别、浏览器页面理解',
+      key: 'vision',
+      description: '视觉模型，用于截图分析 / UI 识别 / 图片内容理解',
       required: false,
       recommended_capabilities: ['vision'],
-      used_by: ['worker'],
-      fallback: 'none',
-    },
-    {
-      key: 'coding_expert',
-      description: '编码专家 Sub-agent，用于代码编写、代码分析、bug 修复',
-      required: false,
-      recommended_capabilities: ['coding', 'tool_use'],
       used_by: ['worker'],
       fallback: 'none',
     },
@@ -213,6 +198,7 @@ export class AgentManager {
     await fs.mkdir(this.configsDir, { recursive: true })
     await this.loadData()
     await this.ensureDefaults()
+    await this.migrateAllModelConfigs()
   }
 
   // ============================================================================
@@ -477,25 +463,7 @@ export class AgentManager {
   // ============================================================================
 
   getConfig(instanceId: string): AgentInstanceConfig | undefined {
-    const config = this.configs.get(instanceId)
-    if (!config) return undefined
-
-    // 迁移旧 slot key: fast → triage, smart → worker, 删除 default
-    const mc = config.model_config
-    if (mc && (mc['fast'] || mc['smart'] || mc['default'])) {
-      const { fast, smart, default: _default, ...rest } = mc
-      const newMc = {
-        ...rest,
-        ...(fast && !mc['triage'] ? { triage: fast } : {}),
-        ...(smart && !mc['worker'] ? { worker: smart } : {}),
-      }
-      const migrated = { ...config, model_config: newMc }
-      this.configs.set(instanceId, migrated)
-      this.saveConfig(instanceId).catch(() => {})
-      return migrated
-    }
-
-    return config
+    return this.configs.get(instanceId)
   }
 
   async updateConfig(params: UpdateAgentConfigParams): Promise<AgentInstanceConfig> {
@@ -671,6 +639,24 @@ export class AgentManager {
     }
   }
 
+  /** 启动时遍历所有实例 model_config，迁移旧 keys 到新 ModelRole */
+  private async migrateAllModelConfigs(): Promise<void> {
+    for (const [instanceId, config] of this.configs.entries()) {
+      const oldMc = config.model_config ?? {}
+      const beforeKeys = Object.keys(oldMc).sort().join(',')
+      const migrated = migrateModelConfig(oldMc)
+      const afterKeys = Object.keys(migrated).sort().join(',')
+      if (beforeKeys !== afterKeys) {
+        console.log(
+          `[AgentManager] 实例 ${instanceId} model_config 迁移: [${beforeKeys}] → [${afterKeys}]`
+        )
+        const updatedConfig = { ...config, model_config: migrated }
+        this.configs.set(instanceId, updatedConfig)
+        await this.saveConfig(instanceId)
+      }
+    }
+  }
+
   // ============================================================================
   // 原子写入
   // ============================================================================
@@ -700,4 +686,50 @@ export class AgentManager {
     const filePath = path.join(this.configsDir, `${instanceId}.json`)
     await this.atomicWriteFile(filePath, JSON.stringify(config, null, 2))
   }
+}
+
+// ============================================================================
+// model_config migration
+// ============================================================================
+
+/** 旧 model_config slot key → 新 ModelRole 的迁移映射 */
+const LEGACY_ROLE_MIGRATION: Record<string, ModelRole> = {
+  default: 'powerful',
+  worker: 'powerful',
+  smart: 'powerful',
+  triage: 'cost_effective',
+  digest: 'cost_effective',
+  fast: 'cost_effective',
+  vision_expert: 'vision',
+  // coding_expert 不迁移：阶段 2 由 code_planner / code_writer 替代，
+  // 各自走 powerful / cost_effective role；现有 coding_expert 配置丢弃即可。
+}
+
+const KNOWN_NEW_KEYS: ReadonlySet<string> = new Set(['powerful', 'cost_effective', 'vision'])
+
+/**
+ * 迁移 model_config 旧 keys 到新 ModelRole。
+ * - 已是新 key（powerful/cost_effective/vision）直接保留
+ * - 旧 key 通过 LEGACY_ROLE_MIGRATION 映射；多个旧 key 映射到同一新 key 时不覆盖（保留先遇到的）
+ * - 不识别的 key 丢弃并 console.warn
+ */
+export function migrateModelConfig(
+  oldConfig: Record<string, ModelSlotRef>
+): Record<string, ModelSlotRef> {
+  const next: Record<string, ModelSlotRef> = {}
+  for (const [oldKey, ref] of Object.entries(oldConfig)) {
+    if (KNOWN_NEW_KEYS.has(oldKey)) {
+      if (!next[oldKey]) next[oldKey] = ref
+      continue
+    }
+    const mapped = LEGACY_ROLE_MIGRATION[oldKey]
+    if (mapped) {
+      if (!next[mapped]) {
+        next[mapped] = ref  // 不覆盖
+      }
+    } else {
+      console.warn(`[agent-manager] migration: 丢弃未知 model_config slot key "${oldKey}"`)
+    }
+  }
+  return next
 }

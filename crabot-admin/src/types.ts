@@ -1405,6 +1405,13 @@ export interface AgentInstanceConfig {
   tools_readonly?: boolean
   /** IANA 时区名（如 "Asia/Shanghai"），用于 prompt 时间感知。缺省时 fallback 到 env CRABOT_DEFAULT_TIMEZONE / Asia/Shanghai */
   timezone?: string
+  /** Front 升格 Worker 的超时秒数；缺省 30s。
+   *  超时后 agent 把会话从 front 模式提升为 worker 模式继续执行。 */
+  timeout_seconds?: number
+  /** 超时辅助提醒开关；缺省 true。
+   *  超时且 agent 尚未 send_message 时，engine 在下一轮注入一次系统提醒，
+   *  鼓励 agent 先发个进度反馈再继续。 */
+  overdue_reminder_enabled?: boolean
   /** 扩展配置（非协议固定字段，由 Agent 实现自定义，见 protocol-agent-v2 §6） */
   extra?: Record<string, unknown>
 }
@@ -1825,4 +1832,95 @@ export interface MemoryStats {
     latest_entry_at: string | null
     earliest_entry_at: string | null
   }
+}
+
+// ============================================================================
+// Subagent 注册表（Phase 5）
+// ============================================================================
+
+/** Subagent 抽象模型 role。Admin push 时按当前 agent 实例的 model_config[role] 解析为 LLMConnectionInfo。
+ *  - powerful: 主 worker / 复杂推理 / planning（如 Claude Sonnet, GPT-5）
+ *  - cost_effective: 简单执行 / 摘要 / 高频低成本调用（如 DeepSeek, Haiku）
+ *  - vision: 截图 / UI 识别 / 多模态图像理解 */
+export type ModelRole = 'powerful' | 'cost_effective' | 'vision'
+
+/** Subagent 内置能力组开关。每组 5 个 boolean 控制对应工具集是否注入 subagent 工具表。
+ *  详见 subagent-tool-filter.ts 的 classifyTool 映射。
+ *  **加新组需要写迁移函数**：admin 启动时把老数据缺失字段补 false（与 ModelRole migration 同模式）。 */
+export interface BuiltinCapabilities {
+  /** Read / Write / Edit / Glob / Grep — 文件读写检索 */
+  file_system: boolean
+  /** Bash（含 run_in_background）/ Output / Kill / ListEntities — shell + 后台进程管理 */
+  shell: boolean
+  /** search_traces / get_task_details / search_short_term — 任务情报查询 */
+  task_intel: boolean
+  /** crab-memory MCP 全部工具 — 长期记忆读写 */
+  crab_memory: boolean
+  /** crab-messaging MCP 全部工具 — channel 消息发送 */
+  crab_messaging: boolean
+}
+
+/** Subagent 的共享字段：5 段 prompt + 工具白名单 + 元运行时参数。
+ *  存储格式（SubAgentRegistryEntry）与运行时格式（SubAgentConfig）共用这部分。 */
+export interface SubAgentBase {
+  /** UUID（自动生成） */
+  id: string
+  /** subagent_type 参数值，用作 delegate_task 调用的 enum 选项；snake_case */
+  name: string
+  /** 一句话说明，给 Admin UI 列表显示 */
+  description: string
+
+  /** 触发条件：以 "Use this subagent when ..." 起头，必含 <example> 示例。
+   *  注入到 delegate_task 工具的 description 的 <available_subagents> 段，
+   *  worker LLM 用此判断何时调用本 subagent。 */
+  when_to_use: string
+  /** 角色与边界声明（persona）。运行时拼装到 system prompt 的 "—— 你的角色 ——" 段。 */
+  role: string
+  /** 工作流自然语言步骤。运行时拼装到 system prompt 的 "—— 工作流 ——" 段。 */
+  workflow: string
+  /** 交付物格式说明。运行时拼装到 system prompt 的 "—— 交付物 ——" 段。 */
+  deliverables: string
+  /** 完成前自检 / 边缘情况处理，可选。运行时拼装到 "—— 完成前自检 ——" 段。 */
+  verification?: string
+
+  /** 内置能力组开关。**加新 capability 需要写迁移函数**（参考 agent-manager.ts 的 migrateModelConfig 模式），
+   *  否则老数据反序列化后该字段缺失，TS 会报错。 */
+  builtin_capabilities: BuiltinCapabilities
+  /** 允许调用的 MCP server ID 列表；空 = 全禁。引用全局 MCPServerRegistryEntry.id */
+  allowed_mcp_server_ids: string[]
+  /** 允许加载的 Skill ID 列表；空 = 全禁，且 Skill 工具不注入 subagent 工具集 */
+  allowed_skill_ids: string[]
+
+  /** subagent engine 最大轮数。默认 20。0 表示无限制（不推荐） */
+  max_turns: number
+  /** 代码层注册的 hook bundle 名（可选）。当前唯一已知值：'coding_expert' */
+  hook_preset?: string
+}
+
+/** 注册表存储格式（data/admin/subagents.json）；model 以引用形式存储。 */
+export interface SubAgentRegistryEntry extends SubAgentBase {
+  /** Provider 引用。与 model_role 互斥：
+   *  - 自定义 subagent：必填 provider_id+model_id，model_role 为 null
+   *  - 内置 subagent：默认 model_role 非 null，provider_id+model_id 为 null（用户后续可改成具体引用）
+   *  约束：(provider_id+model_id 都非 null) 或 (model_role 非 null)，至少一组非 null。
+   *  Runtime 校验见 SubAgentManager.validateModelSpec。 */
+  provider_id: string | null
+  /** 与 provider_id 配对，二者必须同时非 null */
+  model_id: string | null
+  /** 抽象 role；admin push 时按当前 agent 实例的 model_config[role] 解析为具体连接。
+   *  与 provider_id+model_id 互斥（见上） */
+  model_role: ModelRole | null
+
+  /** 该 subagent 是否在 delegate_task 的 <available_subagents> 列表里 */
+  enabled: boolean
+  /** 内置项（is_builtin=true）可编辑可禁用不可删 */
+  is_builtin: boolean
+  created_at: string
+  updated_at: string
+}
+
+/** 运行时格式：admin push 给 agent 的 SubAgentConfig；model 已解析为连接信息。 */
+export interface SubAgentConfig extends SubAgentBase {
+  /** Admin 解析后的具体连接信息（provider+model 或 model_role 之一，由 Admin 解析时决定） */
+  model: LLMConnectionInfo
 }

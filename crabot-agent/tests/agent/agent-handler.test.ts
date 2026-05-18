@@ -264,7 +264,7 @@ describe('AgentHandler', () => {
   describe('buildToolsDynamic permission filtering', () => {
     // 回归用例：之前用 baseToolsRaw 算出来的 permissionConfig 来过滤含 delegate_* 的完整工具集，
     // 导致 delegate 工具漏过 filter 注入给 LLM，运行时又被拒（违反"无权限工具不注入 prompt"）。
-    it('filters delegate_task and delegate_to_* when their default category is denied', async () => {
+    it('filters delegate_task when their default category is denied', async () => {
       mockRunEngine.mockResolvedValue(makeEngineResult())
 
       const sdkEnv = {
@@ -272,17 +272,28 @@ describe('AgentHandler', () => {
         format: 'anthropic' as const,
         env: { ANTHROPIC_BASE_URL: 'http://localhost:4000', ANTHROPIC_API_KEY: 'test-key' },
       }
-      const subAgentDef = {
-        slotKey: 'coding_expert',
-        slotDescription: 'coding expert',
-        recommendedCapabilities: ['coding'] as const,
-        toolName: 'delegate_to_coding_expert',
-        toolDescription: 'delegate coding tasks',
-        systemPrompt: 'you are a coding expert',
-        workerHint: 'coding expert',
-        maxTurns: 30,
+      const subAgent = {
+        id: 'coding-expert',
+        name: 'coding_expert',
+        description: 'coding expert',
+        when_to_use: 'When coding tasks are needed',
+        role: 'coding expert role',
+        workflow: 'analyze → implement → verify',
+        deliverables: 'working code',
+        model: {
+          endpoint: 'http://localhost:4000',
+          apikey: 'test-key',
+          model_id: 'test-model',
+          format: 'anthropic' as const,
+        },
+        builtin_capabilities: {
+          file_system: true, shell: true, task_intel: false, crab_memory: false, crab_messaging: false,
+        },
+        allowed_mcp_server_ids: [],
+        allowed_skill_ids: [],
+        max_turns: 30,
       }
-      // mcp_skill 关闭 → tool.category（默认 'mcp_skill'）落入 denyList
+      // mcp_skill 关闭 → tool.category（默认 'mcp_skill'）落入 denyList（delegate_task 无 category 也被视为 mcp_skill）
       const getPermissionConfig = (tools: ReadonlyArray<{ name: string; category?: string }>) => {
         const deniedTools = tools
           .filter(t => (t.category ?? 'mcp_skill') === 'mcp_skill')
@@ -299,7 +310,7 @@ describe('AgentHandler', () => {
           getMemoryPort: async () => 3002,
           getPermissionConfig,
         },
-        subAgentConfigs: [{ definition: subAgentDef, sdkEnv }],
+        subAgents: [subAgent],
       })
 
       await handler.executeTask({ task: makeTask(), context: makeContext() })
@@ -310,10 +321,9 @@ describe('AgentHandler', () => {
       const toolNames = buildTools().map(t => t.name)
 
       expect(toolNames).not.toContain('delegate_task')
-      expect(toolNames).not.toContain('delegate_to_coding_expert')
     })
 
-    it('keeps delegate tools visible when mcp_skill category is allowed', async () => {
+    it('keeps delegate_task visible when mcp_skill category is allowed', async () => {
       mockRunEngine.mockResolvedValue(makeEngineResult())
 
       const sdkEnv = {
@@ -321,15 +331,26 @@ describe('AgentHandler', () => {
         format: 'anthropic' as const,
         env: { ANTHROPIC_BASE_URL: 'http://localhost:4000', ANTHROPIC_API_KEY: 'test-key' },
       }
-      const subAgentDef = {
-        slotKey: 'coding_expert',
-        slotDescription: 'coding expert',
-        recommendedCapabilities: ['coding'] as const,
-        toolName: 'delegate_to_coding_expert',
-        toolDescription: 'delegate coding tasks',
-        systemPrompt: 'you are a coding expert',
-        workerHint: 'coding expert',
-        maxTurns: 30,
+      const subAgent = {
+        id: 'coding-expert',
+        name: 'coding_expert',
+        description: 'coding expert',
+        when_to_use: 'When coding tasks are needed',
+        role: 'coding expert role',
+        workflow: 'analyze → implement → verify',
+        deliverables: 'working code',
+        model: {
+          endpoint: 'http://localhost:4000',
+          apikey: 'test-key',
+          model_id: 'test-model',
+          format: 'anthropic' as const,
+        },
+        builtin_capabilities: {
+          file_system: true, shell: true, task_intel: false, crab_memory: false, crab_messaging: false,
+        },
+        allowed_mcp_server_ids: [],
+        allowed_skill_ids: [],
+        max_turns: 30,
       }
       const getPermissionConfig = () => ({ mode: 'bypass' as const })
       const handler = new AgentHandler(sdkEnv, { systemPrompt: 'worker' }, {
@@ -340,7 +361,7 @@ describe('AgentHandler', () => {
           getMemoryPort: async () => 3002,
           getPermissionConfig,
         },
-        subAgentConfigs: [{ definition: subAgentDef, sdkEnv }],
+        subAgents: [subAgent],
       })
 
       await handler.executeTask({ task: makeTask(), context: makeContext() })
@@ -350,7 +371,6 @@ describe('AgentHandler', () => {
       const toolNames = buildTools().map(t => t.name)
 
       expect(toolNames).toContain('delegate_task')
-      expect(toolNames).toContain('delegate_to_coding_expert')
     })
   })
 

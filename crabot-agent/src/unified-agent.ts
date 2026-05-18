@@ -48,7 +48,6 @@ import { createCrabMessagingServer, type PathMapping, type TaskContext } from '.
 import { TraceStore } from './core/trace-store.js'
 import { getAgentTraceDir } from './core/data-paths.js'
 import { PromptManager } from './prompt-manager.js'
-import { SUBAGENT_DEFINITIONS, type SubAgentDefinition } from './agent/subagent-prompts.js'
 import { createLSPManager, type LSPManager } from './lsp/lsp-manager.js'
 import type { BgEntityRecord, BgEntityStatus, BgEntityType } from './engine/bg-entities/types.js'
 
@@ -99,6 +98,18 @@ const MASTER_FRIEND: Readonly<Friend> = {
   channel_identities: [],
   created_at: '1970-01-01T00:00:00.000Z',
   updated_at: '1970-01-01T00:00:00.000Z',
+}
+
+/** 解析 Front 升格 Worker 的超时秒数；缺省 30。
+ *  注：禁用超期提醒请走 overdue_reminder_enabled=false，不要用 timeout_seconds=0
+ *  （传 0 会被 engine 当 0ms 处理 = 立即超时）。 */
+export function resolveTimeoutSeconds(value: number | undefined): number {
+  return value ?? 30
+}
+
+/** 解析超时辅助提醒开关；缺省 true。 */
+export function resolveOverdueReminder(value: boolean | undefined): boolean {
+  return value ?? true
 }
 
 export class UnifiedAgent extends ModuleBase {
@@ -260,23 +271,24 @@ export class UnifiedAgent extends ModuleBase {
       }, this.sandboxPathMappingsRef),
     })
 
-    // 解析 digest 模型配置（回退链：digest → triage → worker 的配置）
-    const digestModelConfig = config.model_config?.digest ?? config.model_config?.triage ?? config.model_config?.worker
+    // 解析 digest 模型配置（回退链：cost_effective → powerful；Phase 5 ModelRole 重整后用新 keys）
+    const digestModelConfig = config.model_config?.cost_effective ?? config.model_config?.powerful
     if (digestModelConfig) {
       this.digestSdkEnv = this.buildSdkEnv(digestModelConfig)
     }
 
     // 初始化 Worker Handler（如果有 worker 角色）
     if (this.roles.has('worker')) {
-      const workerModelConfig = config.model_config?.worker
+      // Phase 5 ModelRole 重整：worker 用 powerful（强模型）
+      const workerModelConfig = config.model_config?.powerful
       if (workerModelConfig) {
         this.sdkEnvWorker = this.buildSdkEnv(workerModelConfig)
 
-        // 启动 LSP Manager（coding_expert sub-agent 使用）
+        // 启动 LSP Manager（subagent 可能需要）
         void this.lspManager.start(process.cwd())
 
         this.agentHandler = this.createWorkerHandler(
-          this.sdkEnvWorker, config.model_config, workerPersonality,
+          this.sdkEnvWorker, workerPersonality,
           createMcpConfigs, config.builtin_tool_config, config.skills)
         this.scheduledTaskRunner.setWorkerHandler(this.agentHandler)
         // 让 ContextAssembler 同进程同步读取 worker 实时快照（用于 Front 汇报进度）
@@ -304,76 +316,14 @@ export class UnifiedAgent extends ModuleBase {
     }
   }
 
-  private buildSubAgentConfigs(
-    modelConfig: Record<string, LLMConnectionInfo>
-  ): ReadonlyArray<{ readonly definition: SubAgentDefinition; readonly sdkEnv: SdkEnvConfig }> {
-    return SUBAGENT_DEFINITIONS
-      .map((def) => {
-        const connInfo = this.resolveSubAgentSlot(def, modelConfig)
-        if (!connInfo) return null
-        return {
-          definition: def,
-          sdkEnv: this.buildSdkEnv(connInfo),
-        }
-      })
-      .filter((item): item is NonNullable<typeof item> => item !== null)
-  }
-
-  /**
-   * 解析 sub-agent 的 model slot，支持 vision 降级。
-   *
-   * 优先级：
-   *  1. 显式配置的 slot（且能力匹配）
-   *  2. 对于需要 vision 的 slot，降级到任意已配且 supports_vision=true 的模型
-   *  3. 都没有 → 返回 undefined（跳过该 sub-agent）
-   */
-  private resolveSubAgentSlot(
-    def: SubAgentDefinition,
-    modelConfig: Record<string, LLMConnectionInfo>
-  ): LLMConnectionInfo | undefined {
-    const needsVision = def.recommendedCapabilities.includes('vision')
-    const explicit = modelConfig[def.slotKey]
-
-    // 显式配置且能力匹配
-    if (explicit) {
-      if (!needsVision || explicit.supports_vision) {
-        return explicit
-      }
-      console.log(`[SubAgent] Slot '${def.slotKey}' model lacks vision capability, trying fallback`)
-    }
-
-    // 需要 vision 能力：从其他 slot 中找一个 VLM
-    if (needsVision) {
-      for (const [key, connInfo] of Object.entries(modelConfig)) {
-        if (key !== def.slotKey && connInfo.supports_vision) {
-          console.log(`[SubAgent] Slot '${def.slotKey}' falling back to '${key}' model (${connInfo.model_id})`)
-          return connInfo
-        }
-      }
-      console.log(`[SubAgent] No VLM available for slot '${def.slotKey}', skipping`)
-      return undefined
-    }
-
-    // 非 vision slot，未配置则跳过
-    if (!explicit) {
-      console.log(`[SubAgent] Slot '${def.slotKey}' not configured, skipping ${def.toolName}`)
-    }
-    return explicit
-  }
-
   private createWorkerHandler(
     workerSdkEnv: SdkEnvConfig,
-    modelConfig: Record<string, LLMConnectionInfo>,
     workerPersonality: string | undefined,
     createMcpConfigs: (taskCtx?: TaskContext) => Record<string, McpServer>,
     builtinToolConfig?: BuiltinToolConfig,
     skills?: ReadonlyArray<SkillConfig>,
   ): AgentHandler {
-    const subAgentConfigs = this.buildSubAgentConfigs(modelConfig)
-    const subAgentHints = subAgentConfigs.map(({ definition }) => ({
-      toolName: definition.toolName,
-      workerHint: definition.workerHint,
-    }))
+    const subAgents = this.agentConfig?.subagents ?? []
     // workerPersonality 仅承载 admin personality（system_prompt）；skill listing 走独立通道，
     // 由 AgentHandler 内部 buildSkillListingSnapshot 实时从 this.skills 拼装，
     // 保证 updateSkills 后下一轮 LLM 调用即时生效。
@@ -394,12 +344,11 @@ export class UnifiedAgent extends ModuleBase {
       builtinToolConfig,
       mcpConnector: this.mcpConnector,
       digestSdkEnv: this.digestSdkEnv,
-      subAgentConfigs,
+      subAgents,
       skills: skills ?? [],
       lspManager: this.lspManager,
       memoryWriter: this.memoryWriter,
       promptManager: this.promptManager,
-      subAgentHints,
     })
     return handler
   }
@@ -597,6 +546,8 @@ export class UnifiedAgent extends ModuleBase {
           ...(context.scene_profile ? { sceneProfile: context.scene_profile } : {}),
           senderFriend: friend,
           triggerArrivedAtMs,
+          timeoutMs: resolveTimeoutSeconds(this.agentConfig?.timeout_seconds) * 1000,
+          overdueReminderEnabled: resolveOverdueReminder(this.agentConfig?.overdue_reminder_enabled),
           memoryPermissions: memPerms,
           resolvedPermissions: resolvedPerms as ResolvedPermissions,
           channelId: session.channel_id,
@@ -767,6 +718,8 @@ export class UnifiedAgent extends ModuleBase {
           ...(context.scene_profile ? { sceneProfile: context.scene_profile } : {}),
           senderFriend: lastEntry.friend,
           triggerArrivedAtMs,
+          timeoutMs: resolveTimeoutSeconds(this.agentConfig?.timeout_seconds) * 1000,
+          overdueReminderEnabled: resolveOverdueReminder(this.agentConfig?.overdue_reminder_enabled),
           memoryPermissions: memPerms,
           resolvedPermissions: resolvedPerms as ResolvedPermissions,
           channelId: session.channel_id,
@@ -1377,6 +1330,8 @@ export class UnifiedAgent extends ModuleBase {
             updated_at: new Date().toISOString(),
           },
           triggerArrivedAtMs,
+          timeoutMs: resolveTimeoutSeconds(this.agentConfig?.timeout_seconds) * 1000,
+          overdueReminderEnabled: resolveOverdueReminder(this.agentConfig?.overdue_reminder_enabled),
           memoryPermissions: channelMemPerms,
           resolvedPermissions: FAIL_CLOSED_TOOL_ACCESS as unknown as ResolvedPermissions,
           channelId: message.session.channel_id,
@@ -1561,6 +1516,8 @@ export class UnifiedAgent extends ModuleBase {
           ...(context.scene_profile ? { sceneProfile: context.scene_profile } : {}),
           senderFriend: masterFriend,
           triggerArrivedAtMs,
+          timeoutMs: resolveTimeoutSeconds(this.agentConfig?.timeout_seconds) * 1000,
+          overdueReminderEnabled: resolveOverdueReminder(this.agentConfig?.overdue_reminder_enabled),
           memoryPermissions: masterMemPerms,
           resolvedPermissions: (masterResolvedPerms ?? masterMemPerms) as unknown as ResolvedPermissions,
           channelId: 'admin-web',
@@ -1888,14 +1845,6 @@ export class UnifiedAgent extends ModuleBase {
           used_by: ['worker'],
           fallback: 'global_default',
         },
-        ...SUBAGENT_DEFINITIONS.map((def) => ({
-          key: def.slotKey,
-          description: def.slotDescription,
-          required: false as const,
-          used_by: ['worker'] as Array<'front' | 'worker'>,
-          recommended_capabilities: [...def.recommendedCapabilities],
-          fallback: 'none' as const,
-        })),
       ],
     }
   }
@@ -2039,6 +1988,8 @@ export class UnifiedAgent extends ModuleBase {
     const modelConfigChanged = params.model_config !== undefined
     const skillsChanged = params.skills !== undefined
     const systemPromptChanged = params.system_prompt !== undefined
+    const subagentsChanged = params.subagents !== undefined &&
+      JSON.stringify(params.subagents) !== JSON.stringify(this.agentConfig.subagents)
 
     // 更新模型配置
     if (params.model_config) {
@@ -2070,14 +2021,30 @@ export class UnifiedAgent extends ModuleBase {
       changedFields.push('skills')
     }
 
+    // 更新 Subagents（AgentHandler 在构造时接收 subAgents，无热更新 API；需重建 Worker）
+    if (params.subagents !== undefined) {
+      this.agentConfig.subagents = params.subagents
+      changedFields.push('subagents')
+    }
+
+    // 软热更：timeout_seconds / overdue_reminder_enabled 下次 executeTriggerMessage 调用时生效，不触发 worker 重建
+    if (params.timeout_seconds !== undefined) {
+      this.agentConfig.timeout_seconds = params.timeout_seconds
+      changedFields.push('timeout_seconds')
+    }
+    if (params.overdue_reminder_enabled !== undefined) {
+      this.agentConfig.overdue_reminder_enabled = params.overdue_reminder_enabled
+      changedFields.push('overdue_reminder_enabled')
+    }
+
     // 根据变更字段，按需触发 handler 重建
-    if (modelConfigChanged || skillsChanged || systemPromptChanged) {
+    if (modelConfigChanged || skillsChanged || systemPromptChanged || subagentsChanged) {
       const mergedModelConfig = this.agentConfig.model_config ?? {}
       // skills / system_prompt 变更时 Front 必须重建（Front prompt closure 在构造时绑定 personality + skill listing）；
       // Worker 已通过 updateSkills / updateSystemPrompt 热更新，无需重建（重建会让 in-flight task 的 RPC 路由
-      // 找不到原 activeTasks 条目）。仅 model_config 变化才重建 Worker。
+      // 找不到原 activeTasks 条目）。仅 model_config 或 subagents 变化才重建 Worker。
       await this.updateLlmClients(mergedModelConfig, {
-        skipWorkerRebuild: !modelConfigChanged,
+        skipWorkerRebuild: !modelConfigChanged && !subagentsChanged,
       })
     }
 
@@ -2133,18 +2100,19 @@ export class UnifiedAgent extends ModuleBase {
     })
 
     // 更新 Digest 模型（在 Worker 之前，因为 AgentHandler 构造需要 digestSdkEnv）
-    const digestConfig = modelConfig.digest ?? modelConfig.triage ?? modelConfig.worker
+    // Phase 5 ModelRole 重整后：cost_effective → powerful 回退链
+    const digestConfig = modelConfig.cost_effective ?? modelConfig.powerful
     if (digestConfig) {
       this.digestSdkEnv = this.buildSdkEnv(digestConfig)
     }
 
     // 更新 Worker Agent — 仅 model_config 真正变化时重建（skills / system_prompt 走热更新方法）
     if (this.roles.has('worker') && !options.skipWorkerRebuild) {
-      const workerConfig = modelConfig.worker
+      const workerConfig = modelConfig.powerful
       if (workerConfig) {
         this.sdkEnvWorker = this.buildSdkEnv(workerConfig)
         this.agentHandler = this.createWorkerHandler(
-          this.sdkEnvWorker, modelConfig, workerPersonality,
+          this.sdkEnvWorker, workerPersonality,
           createMcpConfigs, this.agentConfig?.builtin_tool_config, this.agentConfig?.skills)
         this.scheduledTaskRunner.setWorkerHandler(this.agentHandler)
         console.log(`[${this.config.moduleId}] Worker Agent SDK env ${this.agentHandler ? 'updated' : 'created from config push'}`)
