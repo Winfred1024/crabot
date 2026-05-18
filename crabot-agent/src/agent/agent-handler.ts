@@ -1274,7 +1274,6 @@ export class AgentHandler {
         channelId,
         sessionId,
         senderFriendId: senderFriend.id,
-        isGroup,
       }).catch((err) => {
         log(`executeTriggerMessage: registerToAdmin failed (continuing) syntheticTaskId=${syntheticTaskId}: ${err instanceof Error ? err.message : String(err)}`)
       })
@@ -1537,7 +1536,6 @@ export class AgentHandler {
     channelId: string
     sessionId: string
     senderFriendId: string
-    isGroup: boolean
   }): Promise<void> {
     if (!this.deps?.getAdminPort || !this.deps.rpcClient) {
       log(`registerTriggerTaskToAdmin: deps missing, skipping`)
