@@ -1335,13 +1335,12 @@ export class AgentHandler {
 
     const { engineResult } = loopResult
 
-    // 6. 收尾：调用统一的 finalizeTask
-    //    - 若 trigger 已超期且 register 成功 → admin update_task_status / outcome 正常落地
-    //    - 若 register 失败（admin 不认 syntheticTaskId）→ bestEffortRpc 吞 NOT_FOUND，
-    //      reflector + memory write 仍然执行（与原 runOverdueReflection 行为一致）
-    // supplement / stay_silent 早退（exitToolCall 非空）不走 finalize——保持现行行为
-    // （early-exit 路径由 caller 端 unified-agent 处理）
-    if (!engineResult.exitToolCall) {
+    // 6. 收尾：仅超期 trigger（身份已转 worker）走 finalizeTask
+    //    - 已超期 → register 成功时 admin update_task_status / outcome 正常落地；
+    //      register 失败时 bestEffortRpc 吞 NOT_FOUND
+    //    - 期限内自然 end_turn（快答任务）/ supplement / stay_silent 早退均跳过——
+    //      spec §2.4：快答任务不反思，避免每条简单 trigger 多一次 reflector LLM 调用
+    if (engineResult.overdueInjected && !engineResult.exitToolCall) {
       await this.finalizeTask(syntheticTaskId, engineResult, context)
     }
 
