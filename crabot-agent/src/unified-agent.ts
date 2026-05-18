@@ -271,19 +271,20 @@ export class UnifiedAgent extends ModuleBase {
       }, this.sandboxPathMappingsRef),
     })
 
-    // 解析 digest 模型配置（回退链：digest → triage → worker 的配置）
-    const digestModelConfig = config.model_config?.digest ?? config.model_config?.triage ?? config.model_config?.worker
+    // 解析 digest 模型配置（回退链：cost_effective → powerful；Phase 5 ModelRole 重整后用新 keys）
+    const digestModelConfig = config.model_config?.cost_effective ?? config.model_config?.powerful
     if (digestModelConfig) {
       this.digestSdkEnv = this.buildSdkEnv(digestModelConfig)
     }
 
     // 初始化 Worker Handler（如果有 worker 角色）
     if (this.roles.has('worker')) {
-      const workerModelConfig = config.model_config?.worker
+      // Phase 5 ModelRole 重整：worker 用 powerful（强模型）
+      const workerModelConfig = config.model_config?.powerful
       if (workerModelConfig) {
         this.sdkEnvWorker = this.buildSdkEnv(workerModelConfig)
 
-        // 启动 LSP Manager（coding_expert sub-agent 使用）
+        // 启动 LSP Manager（subagent 可能需要）
         void this.lspManager.start(process.cwd())
 
         this.agentHandler = this.createWorkerHandler(
@@ -2099,14 +2100,15 @@ export class UnifiedAgent extends ModuleBase {
     })
 
     // 更新 Digest 模型（在 Worker 之前，因为 AgentHandler 构造需要 digestSdkEnv）
-    const digestConfig = modelConfig.digest ?? modelConfig.triage ?? modelConfig.worker
+    // Phase 5 ModelRole 重整后：cost_effective → powerful 回退链
+    const digestConfig = modelConfig.cost_effective ?? modelConfig.powerful
     if (digestConfig) {
       this.digestSdkEnv = this.buildSdkEnv(digestConfig)
     }
 
     // 更新 Worker Agent — 仅 model_config 真正变化时重建（skills / system_prompt 走热更新方法）
     if (this.roles.has('worker') && !options.skipWorkerRebuild) {
-      const workerConfig = modelConfig.worker
+      const workerConfig = modelConfig.powerful
       if (workerConfig) {
         this.sdkEnvWorker = this.buildSdkEnv(workerConfig)
         this.agentHandler = this.createWorkerHandler(
