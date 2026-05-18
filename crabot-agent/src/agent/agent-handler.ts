@@ -1219,6 +1219,19 @@ export class AgentHandler {
       .slice(0, 100)
     const syntheticTaskId = `trigger-${randomUUID()}`
 
+    // 启动入口立即 register admin（取代旧 onOverdue 闭包内的延迟 register）
+    // 与下方 fireAndForgetRegister 共存——第二次调用拿到 TASK_ALREADY_EXISTS 被吞掉
+    // （Task 11 会彻底删 fireAndForgetRegister）
+    await this.registerTriggerTaskToAdmin({
+      syntheticTaskId,
+      triggerSummary,
+      channelId,
+      sessionId,
+      senderFriendId: senderFriend.id,
+    }).catch((err) => {
+      log(`executeTriggerMessage: startup registerToAdmin failed (continuing) syntheticTaskId=${syntheticTaskId}: ${err instanceof Error ? err.message : String(err)}`)
+    })
+
     const task: ExecuteTaskParams['task'] = {
       task_id: syntheticTaskId,
       task_title: triggerSummary,

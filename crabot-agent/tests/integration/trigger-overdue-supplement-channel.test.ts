@@ -301,7 +301,7 @@ describe('事故场景复现：trigger 超期后 supplement 通道接通（Step 
     expect(staySilent).toBeDefined()
   })
 
-  it('trigger 1 未超期（30s 内 end_turn）→ admin tasks Map 为空 → trigger 2 无 supplement_task', async () => {
+  it('trigger 1 未超期（30s 内 end_turn）→ 启动入口已注册 admin tasks → trigger 2 可用 supplement_task', async () => {
     // 快速 end_turn，不触发 onOverdue
     mockRunEngine.mockImplementation(async (_opts) => {
       // 不调 onOverdue
@@ -323,25 +323,33 @@ describe('事故场景复现：trigger 超期后 supplement 通道接通（Step 
 
     await new Promise(r => setTimeout(r, 10))
 
-    // admin tasks Map 应为空（无超期 → 无注册）
-    expect(adminTasks.size).toBe(0)
+    // Task 6 变更：启动入口立即 register admin，无论是否超期
+    // admin tasks Map 应有 1 条（startup register 注册）
+    expect(adminTasks.size).toBeGreaterThanOrEqual(1)
 
-    // create_task 不应被调用
+    // create_task 至少被调用一次
     const createTaskCalls = adminRpcStub.mock.calls.filter(c => c[1] === 'create_task')
-    expect(createTaskCalls).toHaveLength(0)
+    expect(createTaskCalls.length).toBeGreaterThanOrEqual(1)
 
-    // trigger 2 的 list_tasks 返回空 → activeTaskIds 为空 → supplement_task 不注入
+    // 注册后的 syntheticTaskId 以 'trigger-' 开头
+    const [_port, _method, ctParams] = createTaskCalls[0] as [number, string, Record<string, unknown>]
+    expect((ctParams.id as string).startsWith('trigger-')).toBe(true)
+
+    // trigger 2 的 list_tasks 返回已注册的 task → supplement_task 工具注入
     const listedResult = await adminRpcStub(19001, 'list_tasks', {
       filter: { status: ['pending', 'planning', 'executing', 'waiting_human'] },
     })
     const listedItems = (listedResult as { items: unknown[] }).items
-    expect(listedItems).toHaveLength(0)
+    // 注册后状态为 'executing'，被 list_tasks 过滤返回
+    expect(listedItems.length).toBeGreaterThanOrEqual(1)
 
-    const exitTools = getAgentExitTools({ isGroup: true, activeTaskIds: [] })
+    // 用已注册的 task_id 构造 supplement_task 工具
+    const registeredTaskId = ctParams.id as string
+    const exitTools = getAgentExitTools({ isGroup: true, activeTaskIds: [registeredTaskId] })
     const supplementTool = exitTools.find(t => t.name === 'supplement_task')
-    // 事故前的状态：没有超期注册 → supplement_task 不存在
-    expect(supplementTool).toBeUndefined()
-    // 但 stay_silent 仍在（group 场景）
+    // 启动即注册 → supplement_task 工具存在
+    expect(supplementTool).toBeDefined()
+    // stay_silent 仍在（group 场景）
     const staySilent = exitTools.find(t => t.name === 'stay_silent')
     expect(staySilent).toBeDefined()
   })
