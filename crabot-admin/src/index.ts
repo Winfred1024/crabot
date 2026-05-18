@@ -3490,8 +3490,12 @@ export class AdminModule extends ModuleBase {
 
   private async handleCreateTask(params: CreateTaskParams): Promise<{ task: Task }> {
     const now = generateTimestamp()
+    const taskId = params.id ?? generateId()
+    if (params.id && this.tasks.has(params.id)) {
+      throw new Error(AdminErrorCode.TASK_ALREADY_EXISTS)
+    }
     const task: Task = {
-      id: generateId(),
+      id: taskId,
       status: 'pending',
       priority: params.priority ?? 'normal',
       title: params.title,
