@@ -7,6 +7,7 @@
  * - stay_silent → discard（无副作用）
  *
  * 单个动作失败 / supplement_fallback 不阻塞后续动作。
+ * 若 ExecuteContext.trace 已注入，每个动作执行前后写 dispatch_action span。
  *
  * Spec: crabot-docs/superpowers/specs/2026-05-19-prefront-dispatcher-design.md §3.4 §6
  */
@@ -18,6 +19,12 @@ export async function executeDispatchActions(
   ctx: ExecuteContext,
 ): Promise<void> {
   for (const action of actions) {
+    // 写 dispatch_action span（若调用方注入了 trace callback）
+    const span = ctx.trace?.startSpan({
+      type: 'dispatch_action',
+      details: buildActionSpanDetails(action),
+    })
+
     try {
       if (action.kind === 'supplement') {
         const outcome = await ctx.pushSupplement(action.target_task_id, action.text)
@@ -26,16 +33,52 @@ export async function executeDispatchActions(
             `[dispatcher-executor] supplement_fallback: target_task_id=${action.target_task_id} not in agent activeTasks`,
           )
         }
+        if (span && ctx.trace) {
+          ctx.trace.endSpan(span.span_id, 'completed', {
+            outcome: outcome === 'fallback' ? 'supplement_fallback' : 'supplement_delivered',
+          })
+        }
       } else if (action.kind === 'new_task') {
-        await ctx.spawnAgentInstance(action.text)
+        const { spawnedTraceId } = await ctx.spawnAgentInstance(action.text)
+        if (span && ctx.trace) {
+          ctx.trace.endSpan(span.span_id, 'completed', {
+            outcome: 'new_task_spawned',
+            spawned_trace_id: spawnedTraceId,
+          })
+        }
       } else if (action.kind === 'stay_silent') {
         // 无副作用——attention scheduler 通过"是否有非 stay_silent 动作"判断退避
+        if (span && ctx.trace) {
+          ctx.trace.endSpan(span.span_id, 'completed', { outcome: 'silent_discard' })
+        }
       }
     } catch (err) {
-      console.error(
-        `[dispatcher-executor] action ${action.kind} failed (continuing):`,
-        err instanceof Error ? err.message : String(err),
-      )
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error(`[dispatcher-executor] action ${action.kind} failed (continuing):`, msg)
+      if (span && ctx.trace) {
+        ctx.trace.endSpan(span.span_id, 'failed', { error: msg })
+      }
     }
+  }
+}
+
+function buildActionSpanDetails(action: DispatchAction): Record<string, unknown> {
+  if (action.kind === 'supplement') {
+    return {
+      kind: action.kind,
+      target_task_id: action.target_task_id,
+      text_summary: action.text.slice(0, 200),
+    }
+  }
+  if (action.kind === 'new_task') {
+    return {
+      kind: action.kind,
+      text_summary: action.text.slice(0, 200),
+    }
+  }
+  // stay_silent
+  return {
+    kind: action.kind,
+    ...(action.reason != null ? { reason: action.reason } : {}),
   }
 }

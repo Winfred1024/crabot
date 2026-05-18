@@ -41,6 +41,7 @@ import { MemoryWriter } from './orchestration/memory-writer.js'
 import { AttentionScheduler, type AttentionConfig, type BufferedMessage } from './orchestration/attention-scheduler.js'
 import { AgentHandler, type SdkEnvConfig, adapterFromSdkEnv } from './agent/agent-handler.js'
 import { dispatch } from './dispatcher/dispatcher.js'
+import type { DispatchTraceCallback } from './dispatcher/dispatcher-types.js'
 import { executeDispatchActions } from './dispatcher/dispatcher-executor.js'
 import type { ToolPermissionConfig, ToolDefinition as EngineToolDefinition } from './engine/types.js'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
@@ -597,17 +598,12 @@ export class UnifiedAgent extends ModuleBase {
         }
       }
 
-      const dispatchSpan = this.traceStore.startSpan(trace.trace_id, {
-        type: 'dispatch_call' as never,
-        details: { model: this.sdkEnvWorker.modelId, session_type: 'private' } as never,
-      })
+      const traceCallbackPrivate = this.buildDispatchTraceCallback(trace.trace_id)
       const { actions } = await dispatch(dispatchCtx, {
         adapter: adapterFromSdkEnv(this.sdkEnvWorker),
         modelId: this.sdkEnvWorker.modelId,
         sendErrorToUser,
-      })
-      this.traceStore.endSpan(trace.trace_id, dispatchSpan.span_id, 'completed', {
-        output_summary: `actions=${actions.length}`,
+        trace: traceCallbackPrivate,
       })
 
       // 执行动作
@@ -651,6 +647,7 @@ export class UnifiedAgent extends ModuleBase {
           return { spawnedTraceId: (result as { traceId?: string }).traceId ?? trace.trace_id }
         },
         sendErrorToUser,
+        trace: traceCallbackPrivate,
       })
 
       this.traceStore.endTrace(trace.trace_id, 'completed', {
@@ -782,17 +779,12 @@ export class UnifiedAgent extends ModuleBase {
         }
       }
 
-      const dispatchSpan = this.traceStore.startSpan(trace.trace_id, {
-        type: 'dispatch_call' as never,
-        details: { model: this.sdkEnvWorker.modelId, session_type: 'group' } as never,
-      })
+      const traceCallbackGroup = this.buildDispatchTraceCallback(trace.trace_id)
       const { actions } = await dispatch(dispatchCtx, {
         adapter: adapterFromSdkEnv(this.sdkEnvWorker),
         modelId: this.sdkEnvWorker.modelId,
         sendErrorToUser,
-      })
-      this.traceStore.endSpan(trace.trace_id, dispatchSpan.span_id, 'completed', {
-        output_summary: `actions=${actions.length}`,
+        trace: traceCallbackGroup,
       })
 
       // 退避信号：actions 中是否含非 stay_silent 动作
@@ -837,6 +829,7 @@ export class UnifiedAgent extends ModuleBase {
           return { spawnedTraceId: (result as { traceId?: string }).traceId ?? trace.trace_id }
         },
         sendErrorToUser,
+        trace: traceCallbackGroup,
       })
 
       this.clearAllBarriers(barrierTaskIds)
@@ -1542,17 +1535,12 @@ export class UnifiedAgent extends ModuleBase {
         }
       }
 
-      const dispatchSpan = this.traceStore.startSpan(trace.trace_id, {
-        type: 'dispatch_call' as never,
-        details: { model: this.sdkEnvWorker.modelId, session_type: 'admin_chat' } as never,
-      })
+      const traceCallbackAdmin = this.buildDispatchTraceCallback(trace.trace_id)
       const { actions } = await dispatch(dispatchCtx, {
         adapter: adapterFromSdkEnv(this.sdkEnvWorker),
         modelId: this.sdkEnvWorker.modelId,
         sendErrorToUser,
-      })
-      this.traceStore.endSpan(trace.trace_id, dispatchSpan.span_id, 'completed', {
-        output_summary: `actions=${actions.length}`,
+        trace: traceCallbackAdmin,
       })
 
       // 执行动作
@@ -1632,6 +1620,7 @@ export class UnifiedAgent extends ModuleBase {
           return { spawnedTraceId: (result as { traceId?: string }).traceId ?? trace.trace_id }
         },
         sendErrorToUser,
+        trace: traceCallbackAdmin,
       })
 
       // 从 actions 推导 decision_types 和 task_ids（保持与旧接口的兼容）
@@ -2059,6 +2048,22 @@ export class UnifiedAgent extends ModuleBase {
   // ============================================================================
   // Trace 辅助方法
   // ============================================================================
+
+  /**
+   * 构建 DispatchTraceCallback，供 dispatcher 内部写 dispatch_call / dispatch_action span。
+   * 采用 minimal interface（DispatchTraceCallback），不暴露 TraceStore 全量 API。
+   */
+  private buildDispatchTraceCallback(traceId: string): DispatchTraceCallback {
+    const store = this.traceStore
+    return {
+      startSpan(params) {
+        return store.startSpan(traceId, params as never)
+      },
+      endSpan(spanId, status, details) {
+        store.endSpan(traceId, spanId, status, details as never)
+      },
+    }
+  }
 
   /**
    * 构建 TraceCallback，用于向 TraceStore 写入 Span

@@ -6,6 +6,24 @@
 
 import type { ChannelMessage, Friend, TaskSummary, RuntimeSceneProfile } from '../types.js'
 
+/**
+ * Dispatcher 的 trace 写入回调接口。
+ * 采用 minimal interface，避免 dispatcher 模块直接 import agent 内部的 TraceStoreInterface。
+ * 调用方（unified-agent）通过闭包将 traceStore 实例包装成此接口注入。
+ */
+export interface DispatchTraceCallback {
+  readonly startSpan: (params: {
+    type: string
+    details?: Record<string, unknown>
+    parent_span_id?: string
+  }) => { span_id: string }
+  readonly endSpan: (
+    spanId: string,
+    status: 'completed' | 'failed',
+    details?: Record<string, unknown>,
+  ) => void
+}
+
 /** Dispatcher 输出的单个动作。LLM 通过 structured output 约束格式。 */
 export type DispatchAction =
   | { readonly kind: 'supplement'; readonly target_task_id: string; readonly text: string }
@@ -44,6 +62,8 @@ export interface ExecuteContext {
   readonly spawnAgentInstance: (text: string) => Promise<{ readonly spawnedTraceId: string }>
   /** channel send 回调：dispatcher 失败兜底走这条向人类报错。 */
   readonly sendErrorToUser: (errorText: string) => Promise<void>
+  /** trace 写入回调（可选）。注入后 executeDispatchActions 为每个 action 写 dispatch_action span。 */
+  readonly trace?: DispatchTraceCallback
 }
 
 /** Dispatcher 失败时的 trace outcome 标记。 */

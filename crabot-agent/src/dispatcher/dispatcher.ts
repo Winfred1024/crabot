@@ -12,7 +12,7 @@
 import type { LLMAdapter } from '../engine/llm-adapter-types.js'
 import { callNonStreaming, extractText } from '../engine/llm-adapter-types.js'
 import type { EngineUserMessage } from '../engine/types.js'
-import type { DispatchContext, DispatchResult, DispatchAction } from './dispatcher-types.js'
+import type { DispatchContext, DispatchResult, DispatchAction, DispatchTraceCallback } from './dispatcher-types.js'
 import { MAX_ACTIONS_PER_DISPATCH } from './dispatcher-types.js'
 import { assembleDispatcherPrompt } from './dispatcher-prompt.js'
 
@@ -21,6 +21,8 @@ export interface DispatchDeps {
   readonly modelId: string
   readonly sendErrorToUser: (errorText: string) => Promise<void>
   readonly maxParseRetries?: number
+  /** trace 写入回调（可选）。注入后 dispatch() 在 DispatchContext 指定的 trace 下写 dispatch_call span。 */
+  readonly trace?: DispatchTraceCallback
 }
 
 const DEFAULT_MAX_PARSE_RETRIES = 3
@@ -35,6 +37,17 @@ export async function dispatch(ctx: DispatchContext, deps: DispatchDeps): Promis
     timestamp: Date.now(),
   }
 
+  // 写 dispatch_call span（若调用方注入了 trace callback）
+  const span = deps.trace?.startSpan({
+    type: 'dispatch_call',
+    parent_span_id: ctx.parentSpanId,
+    details: {
+      model: deps.modelId,
+      session_type: ctx.sessionType,
+      message_count: ctx.messages.length,
+    },
+  })
+
   let lastError = ''
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
@@ -48,7 +61,14 @@ export async function dispatch(ctx: DispatchContext, deps: DispatchDeps): Promis
       const text = extractText(response.content)
       const parsed = parseAndValidate(text, ctx)
       if (parsed.ok) {
-        return { actions: parsed.actions.slice(0, MAX_ACTIONS_PER_DISPATCH) }
+        const actions = parsed.actions.slice(0, MAX_ACTIONS_PER_DISPATCH)
+        if (span && deps.trace) {
+          deps.trace.endSpan(span.span_id, 'completed', {
+            action_count: actions.length,
+            retries: attempt,
+          })
+        }
+        return { actions }
       }
       lastError = parsed.error
     } catch (err) {
@@ -56,6 +76,12 @@ export async function dispatch(ctx: DispatchContext, deps: DispatchDeps): Promis
     }
   }
 
+  if (span && deps.trace) {
+    deps.trace.endSpan(span.span_id, 'failed', {
+      error: lastError.slice(0, 200),
+      retries: maxRetries,
+    })
+  }
   await deps.sendErrorToUser(`系统出错，未能处理刚才的消息：${lastError.slice(0, 200)}`)
   return { actions: [] }
 }
