@@ -15,7 +15,6 @@ import {
   SYSTEM_DIALOGUE_BOUNDARY,
   WORKFLOW_PRIVATE,
   WORKFLOW_GROUP,
-  PLAN_AND_EXECUTE_GUIDE,
   SEND_MESSAGE_SPEC,
   END_TURN_SELF_CHECK,
   TIME_AWARENESS,
@@ -35,7 +34,6 @@ export interface AssembleAgentPromptOptions {
     readonly toolName: string
     readonly workerHint: string
   }>
-  readonly hasCodePlanner?: boolean
 }
 
 function escapeSceneProfileContent(content: string): string {
@@ -60,11 +58,6 @@ export function assembleAgentPrompt(opts: AssembleAgentPromptOptions): string {
 
   parts.push(SYSTEM_DIALOGUE_BOUNDARY)
   parts.push(opts.isGroup ? WORKFLOW_GROUP : WORKFLOW_PRIVATE)
-
-  if (opts.hasCodePlanner) {
-    parts.push(PLAN_AND_EXECUTE_GUIDE)
-  }
-
   parts.push(SEND_MESSAGE_SPEC)
   parts.push(END_TURN_SELF_CHECK)
   parts.push(TIME_AWARENESS)
