@@ -27,9 +27,9 @@ function escapeAttr(s: string): string {
  */
 export function formatChannelMessageLine(
   msg: ChannelMessage,
-  opts: { timezone: string; now?: Date; maxLen?: number; mentionMark?: boolean; identity: SenderIdentity },
+  opts: { timezone: string; now?: Date; maxLen?: number; identity: SenderIdentity },
 ): string {
-  const { timezone, now, maxLen = 2000, mentionMark = false, identity } = opts
+  const { timezone, now, maxLen = 2000, identity } = opts
   const sender = msg.sender.platform_display_name
   const time = msg.platform_timestamp
     ? formatChannelMessageTime(msg.platform_timestamp, timezone, now ?? new Date())
@@ -38,7 +38,7 @@ export function formatChannelMessageLine(
   const truncated = fullText.length > maxLen ? fullText.slice(0, maxLen) + '...[内容截断]' : fullText
   const escaped = truncated.replace(/<\/message>/g, '&lt;/message&gt;')
   const mediaAttr = msg.content.type !== 'text' ? ` media="${msg.content.type}"` : ''
-  const mentionAttr = mentionMark && msg.features.is_mention_crab ? ' mention="@you"' : ''
+  const mentionAttr = msg.features.is_mention_crab ? ' mention="@you"' : ''
   return `<message ts="${time}" from="${escapeAttr(sender)}" identity="${identity}"${mediaAttr}${mentionAttr}>\n${escaped}\n</message>`
 }
 
