@@ -33,14 +33,16 @@ import type {
   WorkerAgentContext,
 } from './types.js'
 import { SessionManager } from './orchestration/session-manager.js'
-import { SwitchMapHandler } from './orchestration/switchmap-handler.js'
 import { PermissionChecker } from './orchestration/permission-checker.js'
 import { WorkerSelector } from './orchestration/worker-selector.js'
 import { ContextAssembler } from './orchestration/context-assembler.js'
 import { ScheduledTaskRunner } from './orchestration/scheduled-task-runner.js'
 import { MemoryWriter } from './orchestration/memory-writer.js'
 import { AttentionScheduler, type AttentionConfig, type BufferedMessage } from './orchestration/attention-scheduler.js'
-import { AgentHandler, type SdkEnvConfig } from './agent/agent-handler.js'
+import { AgentHandler, type SdkEnvConfig, adapterFromSdkEnv } from './agent/agent-handler.js'
+import { dispatch } from './dispatcher/dispatcher.js'
+import type { DispatchTraceCallback } from './dispatcher/dispatcher-types.js'
+import { executeDispatchActions } from './dispatcher/dispatcher-executor.js'
 import type { ToolPermissionConfig, ToolDefinition as EngineToolDefinition } from './engine/types.js'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { McpConnector } from './agent/mcp-connector.js'
@@ -115,7 +117,6 @@ export function resolveOverdueReminder(value: boolean | undefined): boolean {
 export class UnifiedAgent extends ModuleBase {
   // 编排层组件
   private sessionManager: SessionManager
-  private switchmapHandler: SwitchMapHandler
   private permissionChecker: PermissionChecker
   private workerSelector: WorkerSelector
   private contextAssembler: ContextAssembler
@@ -185,25 +186,20 @@ export class UnifiedAgent extends ModuleBase {
 
     // 初始化编排层组件
     this.sessionManager = new SessionManager(this.orchestrationConfig.session_state_ttl)
-    this.switchmapHandler = new SwitchMapHandler(
-      this.sessionManager,
-      this.rpcClient,
-      config.module_id,
-      async () => await this.getAdminPort()
-    )
     this.permissionChecker = new PermissionChecker(
       this.rpcClient,
       config.module_id,
       async () => await this.getAdminPort()
     )
     this.workerSelector = new WorkerSelector(this.rpcClient, config.module_id)
-    this.contextAssembler = new ContextAssembler(
-      this.rpcClient,
-      config.module_id,
-      this.orchestrationConfig,
-      async () => await this.getAdminPort(),
-      async () => await this.getMemoryPort()
-    )
+    this.contextAssembler = new ContextAssembler({
+      rpcClient: this.rpcClient,
+      moduleId: config.module_id,
+      config: this.orchestrationConfig,
+      getAdminPort: async () => await this.getAdminPort(),
+      getMemoryPort: async () => await this.getMemoryPort(),
+      getInflightTriggerTasks: () => this.agentHandler?.getInflightSnapshot() ?? [],
+    })
     this.memoryWriter = new MemoryWriter(
       this.rpcClient,
       config.module_id,
@@ -467,46 +463,38 @@ export class UnifiedAgent extends ModuleBase {
    * 私聊消息处理（SwitchMap：同 session 新消息取消旧请求）
    */
   private async processDirectMessage(message: ChannelMessage, friend: Friend): Promise<void> {
-    const { session, sender, content } = message
-
-    // 1. 更新 session 状态
+    const { session } = message
     this.sessionManager.updateLastMessageTime(session.session_id)
 
-    // 2. switchMap 处理：取消旧请求，合并被中断消息
-    const requestId = crypto.randomUUID()
-    const mergedMessages = await this.switchmapHandler.handleNewMessage(
-      session.session_id,
-      requestId,
-      message
-    )
-
-    // 3. 创建 Trace
+    // 创建 trace
     const trace = this.traceStore.startTrace({
       module_id: this.config.moduleId,
       trigger: {
         type: 'message',
-        summary: mergedMessages.length > 1
-          ? `[merged×${mergedMessages.length}] ${mergedMessages.map((m) => (m.content.text ?? '').slice(0, 50)).join(' | ').slice(0, 200)}`
-          : (content.text ?? '[非文本消息]').slice(0, 200),
+        summary: (message.content.text ?? '[非文本]').slice(0, 200),
         source: session.channel_id,
       },
     })
 
-    let barrierTaskIds: string[] = []
-
     try {
-      // 4. 检查 Worker Handler 能力
       if (!this.agentHandler) {
         this.traceStore.endTrace(trace.trace_id, 'failed', { summary: 'No worker handler configured' })
         return
       }
 
-      // 5. 解析权限
+      // 权限 + memory perm
       const resolvedPerms = await this.resolvePrincipalPermissions(friend, session.session_id, 'private')
       this.currentResolvedPerms = resolvedPerms
-      const memPerms = await this.deriveMemoryPermissions(friend, session.session_id, resolvedPerms)
+      const memPerms = resolvedPerms
+        ? {
+            write_visibility: 'internal' as const,
+            write_scopes: resolvedPerms.memory_scopes,
+            read_min_visibility: 'internal' as const,
+            read_accessible_scopes: resolvedPerms.memory_scopes,
+          }
+        : await this.buildSessionMemoryPermissions(session.session_id)
 
-      // 6. 组装上下文（带 span 追踪耗时）
+      // 上下文装配（带 span 追踪耗时）
       const ctxSpan = this.traceStore.startSpan(trace.trace_id, {
         type: 'context_assembly',
         details: {
@@ -515,13 +503,13 @@ export class UnifiedAgent extends ModuleBase {
           session_id: session.session_id,
         },
       })
-      const context = await this.contextAssembler.assembleFrontContext(
+      const frontContext = await this.contextAssembler.assembleFrontContext(
         {
           channel_id: session.channel_id,
           session_id: session.session_id,
-          sender_id: sender.platform_user_id,
-          message: mergedMessages.map((m) => m.content.text ?? '').join('\n'),
-          friend_id: sender.friend_id,
+          sender_id: message.sender.platform_user_id,
+          message: message.content.text ?? '',
+          friend_id: friend.id,
           session_type: 'private',
         },
         friend,
@@ -530,87 +518,93 @@ export class UnifiedAgent extends ModuleBase {
       )
       this.traceStore.endSpan(trace.trace_id, ctxSpan.span_id, 'completed')
 
-      // 7. 构建 TraceCallback
-      const traceCallback = this.buildTraceCallback(trace.trace_id)
-
-      barrierTaskIds = this.setupBarriers(session.channel_id, session.session_id)
-
-      // 8. 调用统一 loop
-      const triggerArrivedAtMs = Date.now()
-      let result
-      try {
-        result = await this.agentHandler.executeTriggerMessage({
-          messages: [...mergedMessages],
-          activeTasks: context.active_tasks ?? [],
-          isGroup: false,
-          ...(context.scene_profile ? { sceneProfile: context.scene_profile } : {}),
-          senderFriend: friend,
-          triggerArrivedAtMs,
-          timeoutMs: resolveTimeoutSeconds(this.agentConfig?.timeout_seconds) * 1000,
-          overdueReminderEnabled: resolveOverdueReminder(this.agentConfig?.overdue_reminder_enabled),
-          memoryPermissions: memPerms,
-          resolvedPermissions: resolvedPerms as ResolvedPermissions,
-          channelId: session.channel_id,
-          sessionId: session.session_id,
-          frontContext: context,
-        }, traceCallback, { traceStore: this.traceStore, traceId: trace.trace_id })
-      } catch (error) {
-        console.error(`[${this.config.moduleId}] processDirectMessage error:`, error)
-        this.traceStore.endTrace(trace.trace_id, 'failed', {
-          summary: error instanceof Error ? error.message : String(error),
-        })
+      // 调 dispatcher
+      if (!this.sdkEnvWorker) {
+        this.traceStore.endTrace(trace.trace_id, 'failed', { summary: 'sdkEnvWorker missing' })
         return
       }
 
-      // 9. Abort 检查
-      const currentPending = this.sessionManager.getPendingRequest(session.session_id)
-      if (currentPending !== requestId) {
-        this.traceStore.endTrace(trace.trace_id, 'completed', { summary: 'superseded by newer message' })
-        return
+      const dispatchCtx = {
+        messages: [message] as ReadonlyArray<ChannelMessage>,
+        activeTasks: frontContext.active_tasks ?? [],
+        sessionType: 'private' as const,
+        channelId: session.channel_id,
+        sessionId: session.session_id,
+        senderFriend: friend,
+        ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
+        traceId: trace.trace_id,
       }
 
-      // 10. Exit tool dispatch
-      if (result.exitToolCall) {
-        const exitName = result.exitToolCall.name
-        const exitInput = result.exitToolCall.input
-        if (exitName === 'supplement_task') {
-          const targetTaskId = exitInput['target_task_id']
-          const supplementText = exitInput['supplement_text']
-          if (typeof targetTaskId === 'string' && typeof supplementText === 'string') {
-            await this.handleLocalSupplement(
-              {
-                type: 'supplement_task',
-                task_id: targetTaskId,
-                supplement_content: supplementText,
-                immediate_reply: { type: 'text', text: '' },
-              },
-              session,
-              trace.trace_id,
-              '',
-              context.active_tasks ?? [],
-            )
-          }
-        } else if (exitName === 'stay_silent') {
-          // 群聊场景才会触发；私聊不应出现
-          console.warn(`[${this.config.moduleId}] unexpected stay_silent in private chat: ${JSON.stringify(exitInput)}`)
+      const sendErrorToUser = async (text: string) => {
+        try {
+          const channelPort = await this.getChannelPort(session.channel_id)
+          await this.rpcClient.call(channelPort, 'send_message', {
+            session_id: session.session_id,
+            content: { type: 'text', text },
+          }, this.config.moduleId)
+        } catch (err) {
+          console.error(`[${this.config.moduleId}] processDirectMessage sendErrorToUser failed:`, err instanceof Error ? err.message : String(err))
         }
-      } else if (!result.sentMessage) {
-        // unified loop 设计：交付走 send_message 工具。silent end_turn 不应出现，
-        // 出现说明 agent 没遵守 send_message 协议——用 trace 排查，不二次猜测 finalText
-        console.warn(`[${this.config.moduleId}] unified loop ended without send_message (finalText len=${result.finalText.length}, ignored)`)
       }
 
-      this.clearAllBarriers(barrierTaskIds)
-
-      this.traceStore.endTrace(trace.trace_id, result.outcome === 'completed' ? 'completed' : 'failed', {
-        summary: this.buildResultSummaryLabel(result, 'silent_end'),
+      const traceCallbackPrivate = this.buildDispatchTraceCallback(trace.trace_id)
+      const { actions } = await dispatch(dispatchCtx, {
+        adapter: adapterFromSdkEnv(this.sdkEnvWorker),
+        modelId: this.sdkEnvWorker.modelId,
+        sendErrorToUser,
+        trace: traceCallbackPrivate,
       })
-    } catch (error) {
-      this.clearAllBarriers(barrierTaskIds)
-      const msg = error instanceof Error ? error.message : String(error)
+
+      // 执行动作
+      await executeDispatchActions(actions, {
+        dispatchCtx,
+        pushSupplement: async (taskId: string, text: string): Promise<'delivered' | 'fallback'> => {
+          if (!this.agentHandler!.hasActiveTask(taskId)) return 'fallback'
+          try {
+            // deliverHumanResponse 接受 ChannelMessage[]，构造一条伪消息传递 text
+            const syntheticMessage: ChannelMessage = {
+              ...message,
+              content: { ...message.content, text },
+            }
+            this.agentHandler!.deliverHumanResponse(taskId, [syntheticMessage])
+            return 'delivered'
+          } catch {
+            return 'fallback'
+          }
+        },
+        spawnAgentInstance: async (text: string) => {
+          const triggerMessage: ChannelMessage = {
+            ...message,
+            content: { ...message.content, text },
+          }
+          const result = await this.agentHandler!.executeTriggerMessage(
+            {
+              messages: [triggerMessage],
+              activeTasks: frontContext.active_tasks ?? [],
+              isGroup: false,
+              ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
+              senderFriend: friend,
+              triggerArrivedAtMs: Date.now(),
+              memoryPermissions: memPerms,
+              resolvedPermissions: resolvedPerms as ResolvedPermissions,
+              channelId: session.channel_id,
+              sessionId: session.session_id,
+              frontContext,
+            },
+            this.buildTraceCallback(trace.trace_id),
+          )
+          return { spawnedTraceId: (result as { traceId?: string }).traceId ?? trace.trace_id }
+        },
+        sendErrorToUser,
+        trace: traceCallbackPrivate,
+      })
+
+      this.traceStore.endTrace(trace.trace_id, 'completed', {
+        summary: actions.length === 0 ? 'silent' : `dispatched (${actions.length} actions)`,
+      })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
       this.traceStore.endTrace(trace.trace_id, 'failed', { summary: msg, error: msg })
-    } finally {
-      this.switchmapHandler.completeRequest(session.session_id, requestId)
     }
   }
 
@@ -630,11 +624,6 @@ export class UnifiedAgent extends ModuleBase {
     const messages = buffered.map((b) => b.message)
     const session = messages[0].session
 
-    // 检查 Worker Handler 能力（群聊统一走 executeTriggerMessage）
-    if (!this.agentHandler) {
-      return
-    }
-
     // 创建 Trace
     const summary = messages
       .map((m) => `${m.sender.platform_display_name}: ${(m.content.text ?? '').slice(0, 50)}`)
@@ -649,9 +638,15 @@ export class UnifiedAgent extends ModuleBase {
       },
     })
 
+    let hasReply = false
     let barrierTaskIds: string[] = []
 
     try {
+      if (!this.agentHandler) {
+        this.traceStore.endTrace(trace.trace_id, 'failed', { summary: 'No worker handler configured' })
+        return
+      }
+
       // 群聊 barrier：仅在有 @bot 消息时设置（非 @bot 群聊消息不暂停 worker）
       const hasMention = messages.some(m => m.features.is_mention_crab)
       if (hasMention) {
@@ -689,7 +684,7 @@ export class UnifiedAgent extends ModuleBase {
         },
       })
       const lastMsg = messages[messages.length - 1]
-      const context = await this.contextAssembler.assembleFrontContext(
+      const frontContext = await this.contextAssembler.assembleFrontContext(
         {
           channel_id: session.channel_id,
           session_id: sessionId,
@@ -705,82 +700,96 @@ export class UnifiedAgent extends ModuleBase {
       )
       this.traceStore.endSpan(trace.trace_id, ctxSpan.span_id, 'completed')
 
-      const traceCallback = this.buildTraceCallback(trace.trace_id)
-
-      // 调用统一 loop（群聊 isGroup=true）
-      const triggerArrivedAtMs = Date.now()
-      let result
-      try {
-        result = await this.agentHandler.executeTriggerMessage({
-          messages: [...messages],
-          activeTasks: context.active_tasks ?? [],
-          isGroup: true,
-          ...(context.scene_profile ? { sceneProfile: context.scene_profile } : {}),
-          senderFriend: lastEntry.friend,
-          triggerArrivedAtMs,
-          timeoutMs: resolveTimeoutSeconds(this.agentConfig?.timeout_seconds) * 1000,
-          overdueReminderEnabled: resolveOverdueReminder(this.agentConfig?.overdue_reminder_enabled),
-          memoryPermissions: memPerms,
-          resolvedPermissions: resolvedPerms as ResolvedPermissions,
-          channelId: session.channel_id,
-          sessionId,
-          frontContext: context,
-        }, traceCallback, { traceStore: this.traceStore, traceId: trace.trace_id })
-      } catch (error) {
-        console.error(`[${this.config.moduleId}] processGroupBatch executeTriggerMessage error:`, error)
-        this.clearAllBarriers(barrierTaskIds)
-        this.traceStore.endTrace(trace.trace_id, 'failed', {
-          summary: error instanceof Error ? error.message : String(error),
-        })
+      if (!this.sdkEnvWorker) {
+        this.traceStore.endTrace(trace.trace_id, 'failed', { summary: 'sdkEnvWorker missing' })
         return
       }
 
-      // Exit tool dispatch
-      let hasReply: boolean
-      if (result.exitToolCall) {
-        const exitName = result.exitToolCall.name
-        const exitInput = result.exitToolCall.input
-        if (exitName === 'stay_silent') {
-          // 群聊 silent discard
-          hasReply = false
-        } else if (exitName === 'supplement_task') {
-          const targetTaskId = exitInput['target_task_id']
-          const supplementText = exitInput['supplement_text']
-          if (typeof targetTaskId === 'string' && typeof supplementText === 'string') {
-            await this.handleLocalSupplement(
-              {
-                type: 'supplement_task',
-                task_id: targetTaskId,
-                supplement_content: supplementText,
-                immediate_reply: { type: 'text', text: '' },
-              },
-              session,
-              trace.trace_id,
-              '',
-              context.active_tasks ?? [],
-            )
-          }
-          hasReply = true
-        } else {
-          // 其他 exit tool（理论不应出现）：以 sentMessage 为准
-          hasReply = result.sentMessage
-        }
-      } else {
-        hasReply = result.sentMessage
-        if (!hasReply) {
-          console.warn(`[${this.config.moduleId}] group unified loop ended without send_message (finalText len=${result.finalText.length}, ignored)`)
+      const dispatchCtx = {
+        messages: messages as ReadonlyArray<ChannelMessage>,
+        activeTasks: frontContext.active_tasks ?? [],
+        sessionType: 'group' as const,
+        channelId: session.channel_id,
+        sessionId,
+        senderFriend: lastEntry.friend,
+        ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
+        traceId: trace.trace_id,
+      }
+
+      const sendErrorToUser = async (text: string) => {
+        try {
+          const channelPort = await this.getChannelPort(session.channel_id)
+          await this.rpcClient.call(channelPort, 'send_message', {
+            session_id: sessionId,
+            content: { type: 'text', text },
+          }, this.config.moduleId)
+        } catch (err) {
+          console.error(`[${this.config.moduleId}] processGroupBatch sendErrorToUser failed:`, err instanceof Error ? err.message : String(err))
         }
       }
+
+      const traceCallbackGroup = this.buildDispatchTraceCallback(trace.trace_id)
+      const { actions } = await dispatch(dispatchCtx, {
+        adapter: adapterFromSdkEnv(this.sdkEnvWorker),
+        modelId: this.sdkEnvWorker.modelId,
+        sendErrorToUser,
+        trace: traceCallbackGroup,
+      })
+
+      // 退避信号：actions 中是否含非 stay_silent 动作
+      hasReply = actions.some(a => a.kind !== 'stay_silent')
+
+      await executeDispatchActions(actions, {
+        dispatchCtx,
+        pushSupplement: async (taskId: string, text: string): Promise<'delivered' | 'fallback'> => {
+          if (!this.agentHandler!.hasActiveTask(taskId)) return 'fallback'
+          try {
+            const syntheticMessage: ChannelMessage = {
+              ...lastMsg,
+              content: { ...lastMsg.content, text },
+            }
+            this.agentHandler!.deliverHumanResponse(taskId, [syntheticMessage])
+            return 'delivered'
+          } catch {
+            return 'fallback'
+          }
+        },
+        spawnAgentInstance: async (text: string) => {
+          const triggerMessage: ChannelMessage = {
+            ...lastMsg,
+            content: { ...lastMsg.content, text },
+          }
+          const result = await this.agentHandler!.executeTriggerMessage(
+            {
+              messages: [triggerMessage],
+              activeTasks: frontContext.active_tasks ?? [],
+              isGroup: true,
+              ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
+              senderFriend: lastEntry.friend,
+              triggerArrivedAtMs: Date.now(),
+              memoryPermissions: memPerms,
+              resolvedPermissions: resolvedPerms as ResolvedPermissions,
+              channelId: session.channel_id,
+              sessionId,
+              frontContext,
+            },
+            this.buildTraceCallback(trace.trace_id),
+          )
+          return { spawnedTraceId: (result as { traceId?: string }).traceId ?? trace.trace_id }
+        },
+        sendErrorToUser,
+        trace: traceCallbackGroup,
+      })
 
       this.clearAllBarriers(barrierTaskIds)
       this.attentionScheduler.reportResult(sessionId, hasReply)
 
-      this.traceStore.endTrace(trace.trace_id, result.outcome === 'completed' ? 'completed' : 'failed', {
-        summary: this.buildResultSummaryLabel(result, 'silent_discard'),
+      this.traceStore.endTrace(trace.trace_id, 'completed', {
+        summary: actions.length === 0 ? 'silent' : `dispatched (${actions.length} actions)`,
       })
-    } catch (error) {
+    } catch (err) {
       this.clearAllBarriers(barrierTaskIds)
-      const msg = error instanceof Error ? error.message : String(error)
+      const msg = err instanceof Error ? err.message : String(err)
       this.traceStore.endTrace(trace.trace_id, 'failed', { summary: msg, error: msg })
     }
   }
@@ -811,35 +820,6 @@ export class UnifiedAgent extends ModuleBase {
       )
     } catch (error) {
       console.error('Failed to send config missing reply:', error instanceof Error ? error.message : error)
-    }
-  }
-
-  /**
-   * 从 Friend 权限和 Session 配置派生记忆读写权限参数
-   *
-   * - master 权限：写入 private，读取不过滤（可见所有私有记忆）
-   * - normal 权限：写入 internal + session memory_scopes，读取限 session memory_scopes
-   *
-   * 优先从 Admin.get_session_config 读取 session.memory_scopes，
-   * fallback 到 [sessionId]（兼容未配置的场景）。
-   */
-  private async deriveMemoryPermissions(friend: Friend, sessionId: string, resolvedPerms?: ResolvedPermissions | null): Promise<MemoryPermissions> {
-    if (friend.permission === 'master') {
-      return {
-        write_visibility: 'private',
-        write_scopes: [],
-        read_min_visibility: 'private',
-        read_accessible_scopes: undefined,
-      }
-    }
-
-    // Use resolved permissions if available, otherwise fall back to RPC
-    const memoryScopes = resolvedPerms?.memory_scopes ?? await this.getSessionMemoryScopes(sessionId)
-    return {
-      write_visibility: 'internal',
-      write_scopes: memoryScopes,
-      read_min_visibility: 'internal',
-      read_accessible_scopes: memoryScopes,
     }
   }
 
@@ -1087,24 +1067,6 @@ export class UnifiedAgent extends ModuleBase {
   }
 
   /**
-   * 把 executeTriggerMessage 的 result 收尾态转成 trace endTrace 的 summary 字符串。
-   * - exitToolCall 命中 → `exit:<name>`
-   * - 调过 send_message → `sent_message`
-   * - 完全静默 → `silentLabel`（私聊 silent_end / 群聊 silent_discard）
-   *
-   * 不再用 finalText 作为兜底交付——unified loop 设计下 send_message 是唯一通道，
-   * silent end_turn 就是 silent，靠 trace 排查，不二次猜测。
-   */
-  private buildResultSummaryLabel(
-    result: import('./agent/agent-handler.js').ExecuteTriggerMessageResult,
-    silentLabel: string,
-  ): string {
-    if (result.exitToolCall) return `exit:${result.exitToolCall.name}`
-    if (result.sentMessage) return 'sent_message'
-    return silentLabel
-  }
-
-  /**
    * 处理任务状态变更事件
    */
   private async handleTaskStatusChanged(payload: {
@@ -1289,105 +1251,97 @@ export class UnifiedAgent extends ModuleBase {
       // 更新 session 状态
       this.sessionManager.updateLastMessageTime(sessionId)
 
-      // switchMap 处理
       const requestId = crypto.randomUUID()
-      const mergedMessages = await this.switchmapHandler.handleNewMessage(sessionId, requestId, message)
 
-      try {
-        // 检查是否有 Worker Handler 能力
-        if (!this.agentHandler) {
-          return { decision_types: [] }
-        }
+      // 检查是否有 Worker Handler 能力
+      if (!this.agentHandler) {
+        return { decision_types: [] }
+      }
 
-        // 组装上下文（channel 内部调用无 permResult，从 session 配置读取 memory_scopes）
-        const channelMemPerms = await this.buildSessionMemoryPermissions(sessionId)
-        const context = await this.contextAssembler.assembleFrontContext(
-          {
-            channel_id: message.session.channel_id,
-            session_id: sessionId,
-            sender_id: message.sender.platform_user_id,
-            message: mergedMessages.map((m) => m.content.text ?? '').join('\n'),
-            friend_id: message.sender.friend_id,
-            session_type: message.session.type,
-          },
-          undefined,
-          channelMemPerms
-        )
+      // 组装上下文（channel 内部调用无 permResult，从 session 配置读取 memory_scopes）
+      const channelMemPerms = await this.buildSessionMemoryPermissions(sessionId)
+      const context = await this.contextAssembler.assembleFrontContext(
+        {
+          channel_id: message.session.channel_id,
+          session_id: sessionId,
+          sender_id: message.sender.platform_user_id,
+          message: message.content.text ?? '',
+          friend_id: message.sender.friend_id,
+          session_type: message.session.type,
+        },
+        undefined,
+        channelMemPerms
+      )
 
-        // 调用统一 loop
-        const triggerArrivedAtMs = Date.now()
-        const result = await this.agentHandler.executeTriggerMessage({
-          messages: mergedMessages,
-          activeTasks: context.active_tasks ?? [],
-          isGroup: message.session.type === 'group',
-          ...(context.scene_profile ? { sceneProfile: context.scene_profile } : {}),
-          senderFriend: {
-            id: message.sender.friend_id ?? message.sender.platform_user_id,
-            display_name: message.sender.platform_display_name,
-            permission: 'normal' as const,
-            channel_identities: [],
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          },
-          triggerArrivedAtMs,
-          timeoutMs: resolveTimeoutSeconds(this.agentConfig?.timeout_seconds) * 1000,
-          overdueReminderEnabled: resolveOverdueReminder(this.agentConfig?.overdue_reminder_enabled),
-          memoryPermissions: channelMemPerms,
-          resolvedPermissions: FAIL_CLOSED_TOOL_ACCESS as unknown as ResolvedPermissions,
-          channelId: message.session.channel_id,
-          sessionId,
-          frontContext: context,
-        })
+      // 调用统一 loop
+      const triggerArrivedAtMs = Date.now()
+      const result = await this.agentHandler.executeTriggerMessage({
+        messages: [message],
+        activeTasks: context.active_tasks ?? [],
+        isGroup: message.session.type === 'group',
+        ...(context.scene_profile ? { sceneProfile: context.scene_profile } : {}),
+        senderFriend: {
+          id: message.sender.friend_id ?? message.sender.platform_user_id,
+          display_name: message.sender.platform_display_name,
+          permission: 'normal' as const,
+          channel_identities: [],
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+        triggerArrivedAtMs,
+        memoryPermissions: channelMemPerms,
+        resolvedPermissions: FAIL_CLOSED_TOOL_ACCESS as unknown as ResolvedPermissions,
+        channelId: message.session.channel_id,
+        sessionId,
+        frontContext: context,
+      })
 
-        // 检查是否已被更新消息取代
-        if (this.sessionManager.getPendingRequest(sessionId) !== requestId) {
-          return { decision_types: [] }
-        }
+      // 检查是否已被更新消息取代
+      if (this.sessionManager.getPendingRequest(sessionId) !== requestId) {
+        return { decision_types: [] }
+      }
 
-        // 映射 exitToolCall → decision_types / task_ids
-        const decisionTypes: string[] = []
-        const taskIds: TaskId[] = []
+      // 映射 exitToolCall → decision_types / task_ids
+      const decisionTypes: string[] = []
+      const taskIds: TaskId[] = []
 
-        if (result.exitToolCall) {
-          const exitName = result.exitToolCall.name
-          if (exitName === 'supplement_task') {
-            decisionTypes.push('supplement_task')
-            const exitInput = result.exitToolCall.input
-            const targetTaskId = exitInput['target_task_id']
-            const supplementText = exitInput['supplement_text']
-            if (typeof targetTaskId === 'string' && typeof supplementText === 'string') {
-              const delivered = await this.handleLocalSupplement(
-                {
-                  type: 'supplement_task',
-                  task_id: targetTaskId,
-                  supplement_content: supplementText,
-                  immediate_reply: { type: 'text', text: '' },
-                },
-                message.session,
-                '',
-                '',
-                context.active_tasks ?? [],
-              )
-              if (delivered) {
-                taskIds.push(targetTaskId)
-              }
+      if (result.exitToolCall) {
+        const exitName = result.exitToolCall.name
+        if (exitName === 'supplement_task') {
+          decisionTypes.push('supplement_task')
+          const exitInput = result.exitToolCall.input
+          const targetTaskId = exitInput['target_task_id']
+          const supplementText = exitInput['supplement_text']
+          if (typeof targetTaskId === 'string' && typeof supplementText === 'string') {
+            const delivered = await this.handleLocalSupplement(
+              {
+                type: 'supplement_task',
+                task_id: targetTaskId,
+                supplement_content: supplementText,
+                immediate_reply: { type: 'text', text: '' },
+              },
+              message.session,
+              '',
+              '',
+              context.active_tasks ?? [],
+            )
+            if (delivered) {
+              taskIds.push(targetTaskId)
             }
-          } else if (exitName === 'stay_silent') {
-            decisionTypes.push('silent')
           }
-          // 其他 exit tool（理论不应出现）：忽略
-        } else if (result.sentMessage) {
-          decisionTypes.push('direct_reply')
-        } else {
-          console.warn(`[${this.config.moduleId}] handleProcessMessage unified loop ended without send_message (finalText len=${result.finalText.length}, ignored)`)
+        } else if (exitName === 'stay_silent') {
+          decisionTypes.push('silent')
         }
+        // 其他 exit tool（理论不应出现）：忽略
+      } else if (result.sentMessage) {
+        decisionTypes.push('direct_reply')
+      } else {
+        console.warn(`[${this.config.moduleId}] handleProcessMessage unified loop ended without send_message (finalText len=${result.finalText.length}, ignored)`)
+      }
 
-        return {
-          decision_types: decisionTypes,
-          task_ids: taskIds.length > 0 ? taskIds : undefined,
-        }
-      } finally {
-        this.switchmapHandler.completeRequest(sessionId, requestId)
+      return {
+        decision_types: decisionTypes,
+        task_ids: taskIds.length > 0 ? taskIds : undefined,
       }
     }
 
@@ -1412,18 +1366,12 @@ export class UnifiedAgent extends ModuleBase {
     // 更新 session 状态
     this.sessionManager.updateLastMessageTime(sessionId)
 
-    // switchMap 处理
-    const requestId = crypto.randomUUID()
-    const mergedMessages = await this.switchmapHandler.handleNewMessage(sessionId, requestId, message)
-
     // 创建 Trace
     const trace = this.traceStore.startTrace({
       module_id: this.config.moduleId,
       trigger: {
         type: 'message',
-        summary: mergedMessages.length > 1
-          ? `[merged×${mergedMessages.length}] ${mergedMessages.map((m) => (m.content.text ?? '').slice(0, 50)).join(' | ').slice(0, 200)}`
-          : (message.content.text ?? '[非文本消息]').slice(0, 200),
+        summary: (message.content.text ?? '[非文本消息]').slice(0, 200),
         source: 'admin-web',
       },
     })
@@ -1447,7 +1395,6 @@ export class UnifiedAgent extends ModuleBase {
 
       // 检查是否有 Worker Handler 能力
       if (!this.agentHandler) {
-        // 发送错误回复
         await this.rpcClient.call(
           await this.getAdminPort(),
           'chat_callback',
@@ -1459,6 +1406,12 @@ export class UnifiedAgent extends ModuleBase {
           this.config.moduleId
         )
         this.traceStore.endTrace(trace.trace_id, 'failed', { summary: 'No worker handler configured' })
+        return { decision_types: [] }
+      }
+
+      // 检查 sdkEnvWorker
+      if (!this.sdkEnvWorker) {
+        this.traceStore.endTrace(trace.trace_id, 'failed', { summary: 'sdkEnvWorker missing' })
         return { decision_types: [] }
       }
 
@@ -1487,12 +1440,12 @@ export class UnifiedAgent extends ModuleBase {
           session_id: sessionId,
         },
       })
-      const context = await this.contextAssembler.assembleFrontContext(
+      const frontContext = await this.contextAssembler.assembleFrontContext(
         {
           channel_id: 'admin-web',
           session_id: sessionId,
           sender_id: 'master',
-          message: mergedMessages.map((m) => m.content.text ?? '').join('\n'),
+          message: message.content.text ?? '',
           friend_id: message.sender.friend_id ?? 'master',
           session_type: 'private',
         },
@@ -1502,32 +1455,19 @@ export class UnifiedAgent extends ModuleBase {
       )
       this.traceStore.endSpan(trace.trace_id, ctxSpan.span_id, 'completed')
 
-      // 构建 TraceCallback
-      const traceCallback = this.buildTraceCallback(trace.trace_id)
+      // 调 dispatcher
+      const dispatchCtx = {
+        messages: [message] as ReadonlyArray<ChannelMessage>,
+        activeTasks: frontContext.active_tasks ?? [],
+        sessionType: 'admin_chat' as const,
+        channelId: 'admin-web',
+        sessionId,
+        senderFriend: masterFriend,
+        ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
+        traceId: trace.trace_id,
+      }
 
-      // 调用统一 loop
-      const triggerArrivedAtMs = Date.now()
-      let result
-      try {
-        result = await this.agentHandler.executeTriggerMessage({
-          messages: mergedMessages,
-          activeTasks: context.active_tasks ?? [],
-          isGroup: false,
-          ...(context.scene_profile ? { sceneProfile: context.scene_profile } : {}),
-          senderFriend: masterFriend,
-          triggerArrivedAtMs,
-          timeoutMs: resolveTimeoutSeconds(this.agentConfig?.timeout_seconds) * 1000,
-          overdueReminderEnabled: resolveOverdueReminder(this.agentConfig?.overdue_reminder_enabled),
-          memoryPermissions: masterMemPerms,
-          resolvedPermissions: (masterResolvedPerms ?? masterMemPerms) as unknown as ResolvedPermissions,
-          channelId: 'admin-web',
-          sessionId,
-          frontContext: context,
-        }, traceCallback, { traceStore: this.traceStore, traceId: trace.trace_id })
-      } catch (error) {
-        const errMsg = error instanceof Error ? error.message : String(error)
-        console.error(`[${this.config.moduleId}] processAdminChatMessage executeTriggerMessage error:`, error)
-        // 通知 admin chat 发生错误
+      const sendErrorToUser = async (text: string) => {
         try {
           await this.rpcClient.call(
             await this.getAdminPort(),
@@ -1535,105 +1475,117 @@ export class UnifiedAgent extends ModuleBase {
             {
               request_id: callbackInfo.request_id,
               reply_type: 'direct_reply',
-              content: '处理消息时发生错误，请稍后重试。',
+              content: text,
             },
             this.config.moduleId
           )
-        } catch { /* best effort */ }
-        this.traceStore.endTrace(trace.trace_id, 'failed', { summary: errMsg })
-        return { decision_types: [] }
-      }
-
-      // 检查是否已被更新消息取代
-      if (this.sessionManager.getPendingRequest(sessionId) !== requestId) {
-        this.traceStore.endTrace(trace.trace_id, 'completed', { summary: 'superseded by newer message' })
-        return { decision_types: [] }
-      }
-
-      // Exit tool dispatch + admin chat 回复
-      const decisionTypes: string[] = []
-      const taskIds: TaskId[] = []
-
-      if (result.exitToolCall) {
-        const exitName = result.exitToolCall.name
-        const exitInput = result.exitToolCall.input
-
-        if (exitName === 'supplement_task') {
-          decisionTypes.push('supplement_task')
-          const targetTaskId = exitInput['target_task_id']
-          const supplementText = exitInput['supplement_text']
-          if (typeof targetTaskId === 'string' && typeof supplementText === 'string') {
-            // Admin chat supplement：用 chat_callback 发即时回复（不走 send_message）
-            const supplementDecision: import('./types.js').SupplementTaskDecision = {
-              type: 'supplement_task',
-              task_id: targetTaskId,
-              supplement_content: supplementText,
-              immediate_reply: { type: 'text', text: '' },
-            }
-            const delivered = await this.handleLocalSupplementAdminChat(
-              supplementDecision,
-              sessionId,
-              callbackInfo,
-              context.active_tasks ?? [],
-            )
-            if (delivered) {
-              taskIds.push(targetTaskId)
-            }
-          }
-        } else if (exitName === 'stay_silent') {
-          // admin chat 不应 stay_silent，但 warn 并不发任何回复
-          console.warn(`[${this.config.moduleId}] unexpected stay_silent in admin chat`)
-          decisionTypes.push('silent')
-        } else {
-          // 其他 exit tool：用 finalText 通过 chat_callback 发出
-          const replyText = result.finalText.trim()
-          if (replyText) {
-            decisionTypes.push('direct_reply')
-            try {
-              await this.rpcClient.call(
-                await this.getAdminPort(),
-                'chat_callback',
-                {
-                  request_id: callbackInfo.request_id,
-                  reply_type: 'direct_reply',
-                  content: replyText,
-                },
-                this.config.moduleId
-              )
-            } catch (err) {
-              console.error(`[${this.config.moduleId}] admin chat_callback failed:`, err)
-            }
-          }
+        } catch (err) {
+          console.error(`[${this.config.moduleId}] processAdminChatMessage sendErrorToUser failed:`, err instanceof Error ? err.message : String(err))
         }
-      } else if (result.sentMessage) {
-        // agent 成功调了 send_message（实际上 admin-web channel 没有 send_message，
-        // 这里 sentMessage=true 意味着工具调用没有 isError，视为已回复）
-        decisionTypes.push('direct_reply')
-      } else {
-        // loop 自然结束（或 send_message 调用失败）：用 finalText 通过 chat_callback 发出
-        const replyText = result.finalText.trim()
-        if (replyText) {
-          decisionTypes.push('direct_reply')
+      }
+
+      const traceCallbackAdmin = this.buildDispatchTraceCallback(trace.trace_id)
+      const { actions } = await dispatch(dispatchCtx, {
+        adapter: adapterFromSdkEnv(this.sdkEnvWorker),
+        modelId: this.sdkEnvWorker.modelId,
+        sendErrorToUser,
+        trace: traceCallbackAdmin,
+      })
+
+      // 执行动作
+      await executeDispatchActions(actions, {
+        dispatchCtx,
+        pushSupplement: async (taskId: string, text: string): Promise<'delivered' | 'fallback'> => {
+          if (!this.agentHandler!.hasActiveTask(taskId)) return 'fallback'
+
+          // scheduled task 不接受 supplement
+          const target = (frontContext.active_tasks ?? []).find(t => t.task_id === taskId)
+          if (target?.trigger_type === 'scheduled') return 'fallback'
+
           try {
-            await this.rpcClient.call(
-              await this.getAdminPort(),
-              'chat_callback',
-              {
+            const adminPort = await this.getAdminPort()
+
+            // waiting_human 状态切回 executing
+            if (target?.status === 'waiting_human') {
+              try {
+                await this.rpcClient.call(adminPort, 'update_task_status', {
+                  task_id: taskId,
+                  status: 'executing',
+                  pending_question: null,
+                }, this.config.moduleId)
+              } catch (err) {
+                console.error(`[${this.config.moduleId}] pushSupplement admin_chat: failed to transition task ${taskId}: ${err instanceof Error ? err.message : String(err)}`)
+              }
+            }
+
+            // 即时回复（通过 chat_callback）
+            const replyText = `收到，正在调整：${text.slice(0, 60)}`
+            try {
+              await this.rpcClient.call(adminPort, 'chat_callback', {
                 request_id: callbackInfo.request_id,
                 reply_type: 'direct_reply',
                 content: replyText,
-              },
-              this.config.moduleId
-            )
-          } catch (err) {
-            console.error(`[${this.config.moduleId}] admin chat_callback failed:`, err)
-          }
-        }
-        // else: 完全沉默，不发任何回复
-      }
+              }, this.config.moduleId)
+            } catch (err) {
+              console.error(`[${this.config.moduleId}] pushSupplement admin_chat: chat_callback failed: ${err instanceof Error ? err.message : String(err)}`)
+            }
 
-      this.traceStore.endTrace(trace.trace_id, result.outcome === 'completed' ? 'completed' : 'failed', {
-        summary: this.buildResultSummaryLabel(result, 'silent_end'),
+            // 投递纠偏消息
+            const syntheticMessage: ChannelMessage = {
+              platform_message_id: `supplement-${Date.now()}`,
+              session: { channel_id: 'admin-web', session_id: sessionId, type: 'private' as const },
+              sender: { friend_id: 'master', platform_user_id: 'master', platform_display_name: 'Master' },
+              content: { type: 'text' as const, text: `用户补充指示：${text}` },
+              features: { is_mention_crab: false },
+              platform_timestamp: new Date().toISOString(),
+            }
+            this.agentHandler!.deliverHumanResponse(taskId, [syntheticMessage])
+            return 'delivered'
+          } catch {
+            return 'fallback'
+          }
+        },
+        spawnAgentInstance: async (text: string) => {
+          const triggerMessage: ChannelMessage = {
+            ...message,
+            content: { ...message.content, text },
+          }
+          const result = await this.agentHandler!.executeTriggerMessage(
+            {
+              messages: [triggerMessage],
+              activeTasks: frontContext.active_tasks ?? [],
+              isGroup: false,
+              ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
+              senderFriend: masterFriend,
+              triggerArrivedAtMs: Date.now(),
+              memoryPermissions: masterMemPerms,
+              resolvedPermissions: (masterResolvedPerms ?? masterMemPerms) as unknown as ResolvedPermissions,
+              channelId: 'admin-web',
+              sessionId,
+              frontContext,
+            },
+            this.buildTraceCallback(trace.trace_id),
+          )
+          return { spawnedTraceId: (result as { traceId?: string }).traceId ?? trace.trace_id }
+        },
+        sendErrorToUser,
+        trace: traceCallbackAdmin,
+      })
+
+      // 从 actions 推导 decision_types 和 task_ids（保持与旧接口的兼容）
+      const decisionTypes: string[] = actions.length === 0
+        ? []
+        : actions.map(a => {
+            if (a.kind === 'supplement') return 'supplement_task'
+            if (a.kind === 'new_task') return 'create_task'
+            return 'silent'
+          })
+      const taskIds: TaskId[] = actions
+        .filter((a): a is Extract<typeof a, { kind: 'supplement' }> => a.kind === 'supplement')
+        .map(a => a.target_task_id)
+
+      this.traceStore.endTrace(trace.trace_id, 'completed', {
+        summary: actions.length === 0 ? 'silent' : `dispatched (${actions.length} actions)`,
       })
 
       return {
@@ -1644,74 +1596,7 @@ export class UnifiedAgent extends ModuleBase {
       const msg = error instanceof Error ? error.message : String(error)
       this.traceStore.endTrace(trace.trace_id, 'failed', { summary: msg, error: msg })
       throw error
-    } finally {
-      this.switchmapHandler.completeRequest(sessionId, requestId)
     }
-  }
-
-  /**
-   * Admin Chat 专用的 supplement 处理：用 chat_callback 发即时回复，而非 send_message。
-   */
-  private async handleLocalSupplementAdminChat(
-    decision: import('./types.js').SupplementTaskDecision,
-    sessionId: string,
-    callbackInfo: { source_module_id: string; request_id: string },
-    activeTasks: ReadonlyArray<import('./types.js').TaskSummary>,
-  ): Promise<boolean> {
-    // Step 1: 检查任务存在
-    if (!this.agentHandler?.hasActiveTask(decision.task_id)) {
-      return false
-    }
-
-    // Step 1.5: scheduled task 不接受 supplement
-    const target = activeTasks.find(t => t.task_id === decision.task_id)
-    if (target?.trigger_type === 'scheduled') {
-      return false
-    }
-
-    const adminPort = await this.getAdminPort()
-
-    // Step 1.7: waiting_human 状态切回 executing
-    if (target?.status === 'waiting_human') {
-      try {
-        await this.rpcClient.call(adminPort, 'update_task_status', {
-          task_id: decision.task_id,
-          status: 'executing',
-          pending_question: null,
-        }, this.config.moduleId)
-      } catch (err) {
-        console.error(`[handleLocalSupplementAdminChat] failed to transition task ${decision.task_id}: ${err instanceof Error ? err.message : String(err)}`)
-      }
-    }
-
-    // Step 2: 发即时回复（通过 chat_callback）
-    const replyText = decision.immediate_reply?.text
-      || `收到，正在调整：${decision.supplement_content.slice(0, 60)}`
-    try {
-      await this.rpcClient.call(adminPort, 'chat_callback', {
-        request_id: callbackInfo.request_id,
-        reply_type: 'direct_reply',
-        content: replyText,
-      }, this.config.moduleId)
-    } catch (err) {
-      console.error(`[handleLocalSupplementAdminChat] chat_callback failed: ${err instanceof Error ? err.message : String(err)}`)
-    }
-
-    // Step 3: 投递纠偏消息
-    try {
-      this.agentHandler!.deliverHumanResponse(decision.task_id, [{
-        platform_message_id: `supplement-${Date.now()}`,
-        session: { channel_id: 'admin-web', session_id: sessionId, type: 'private' as const },
-        sender: { friend_id: 'master', platform_user_id: 'master', platform_display_name: 'Master' },
-        content: { type: 'text' as const, text: `用户补充指示：${decision.supplement_content}` },
-        features: { is_mention_crab: false },
-        platform_timestamp: new Date().toISOString(),
-      }])
-    } catch (error) {
-      console.error(`[handleLocalSupplementAdminChat] deliver failed: ${error instanceof Error ? error.message : String(error)}`)
-    }
-
-    return true
   }
 
   private async handleCreateTaskFromSchedule(params: {
@@ -2123,6 +2008,22 @@ export class UnifiedAgent extends ModuleBase {
   // ============================================================================
   // Trace 辅助方法
   // ============================================================================
+
+  /**
+   * 构建 DispatchTraceCallback，供 dispatcher 内部写 dispatch_call / dispatch_action span。
+   * 采用 minimal interface（DispatchTraceCallback），不暴露 TraceStore 全量 API。
+   */
+  private buildDispatchTraceCallback(traceId: string): DispatchTraceCallback {
+    const store = this.traceStore
+    return {
+      startSpan(params) {
+        return store.startSpan(traceId, params as never)
+      },
+      endSpan(spanId, status, details) {
+        store.endSpan(traceId, spanId, status, details as never)
+      },
+    }
+  }
 
   /**
    * 构建 TraceCallback，用于向 TraceStore 写入 Span

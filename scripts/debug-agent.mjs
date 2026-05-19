@@ -239,6 +239,31 @@ async function cmdTrace(traceIdArg) {
       case 'rpc_call':
         detail = `${d.target_module ?? '?'}:${d.method} [${d.status_code ?? '?'}]`
         break
+      case 'dispatch_call': {
+        const parts = []
+        if (d.model) parts.push(`model=${d.model}`)
+        if (d.session_type) parts.push(`session=${d.session_type}`)
+        if (d.message_count != null) parts.push(`msgs=${d.message_count}`)
+        if (d.action_count != null) parts.push(c.cyan(`actions=${d.action_count}`))
+        if (d.retries) parts.push(c.yellow(`retries=${d.retries}`))
+        if (d.error) parts.push(c.red(`err=${d.error.slice(0, 60)}`))
+        detail = parts.join(' | ')
+        break
+      }
+      case 'dispatch_action': {
+        const kind = d.kind ?? '?'
+        const kindLabel = kind === 'supplement' ? c.blue(kind)
+          : kind === 'new_task' ? c.green(kind)
+          : kind === 'stay_silent' ? c.dim(kind)
+          : kind
+        const parts = [kindLabel]
+        if (d.target_task_id) parts.push(`task=${short(d.target_task_id)}`)
+        if (d.text_summary) parts.push(`"${String(d.text_summary).slice(0, 50)}"`)
+        if (d.reason) parts.push(`reason=${String(d.reason).slice(0, 40)}`)
+        if (d.spawned_trace_id) parts.push(`→trace=${short(d.spawned_trace_id)}`)
+        detail = parts.join(' | ')
+        break
+      }
       default:
         detail = JSON.stringify(span).slice(0, 60)
     }

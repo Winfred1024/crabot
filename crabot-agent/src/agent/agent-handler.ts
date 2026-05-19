@@ -83,7 +83,7 @@ import { getInstanceSkillsDir } from '../core/data-paths.js'
 import { llmUsageToTrace } from '../core/trace-usage.js'
 import { TodoStore } from './worker-todo-store.js'
 import { createTodoTool } from './worker-todo-tool.js'
-import { getAgentExitTools } from './agent-exit-tools.js'
+
 import { reflectStructuredOutcome } from '../orchestration/structured-outcome-reflector.js'
 
 import * as fs from 'fs'
@@ -200,7 +200,7 @@ export interface SdkEnvConfig {
   env: Record<string, string>
 }
 
-function adapterFromSdkEnv(sdkEnv: SdkEnvConfig) {
+export function adapterFromSdkEnv(sdkEnv: SdkEnvConfig) {
   return createAdapter({
     endpoint: sdkEnv.env.LLM_BASE_URL ?? '',
     apikey: sdkEnv.env.LLM_API_KEY ?? '',
@@ -557,6 +557,7 @@ export class AgentHandler {
       status: 'executing',
       startedAt: new Date().toISOString(),
       title: task.task_title,
+      triggerType: task.source?.trigger_type === 'scheduled' ? 'scheduled' : 'message',
       abortController: new AbortController(),
       pendingHumanMessages: [],
       taskOrigin: context.task_origin,
@@ -1190,6 +1191,17 @@ export class AgentHandler {
       .slice(0, 100)
     const syntheticTaskId = `trigger-${randomUUID()}`
 
+    // 启动入口立即 register admin
+    await this.registerTriggerTaskToAdmin({
+      syntheticTaskId,
+      triggerSummary,
+      channelId,
+      sessionId,
+      senderFriendId: senderFriend.id,
+    }).catch((err) => {
+      log(`executeTriggerMessage: startup registerToAdmin failed (continuing) syntheticTaskId=${syntheticTaskId}: ${err instanceof Error ? err.message : String(err)}`)
+    })
+
     const task: ExecuteTaskParams['task'] = {
       task_id: syntheticTaskId,
       task_title: triggerSummary,
@@ -1235,22 +1247,6 @@ export class AgentHandler {
     let sentMessage = false
     let finalSent = false
 
-    // 闭包内捕获标志：register 调用最多触发一次（防止 onOverdue 在某些 path 被多次调）
-    let registerTriggered = false
-    const fireAndForgetRegister = (): void => {
-      if (registerTriggered) return
-      registerTriggered = true
-      this.registerTriggerTaskToAdmin({
-        syntheticTaskId,
-        triggerSummary,
-        channelId,
-        sessionId,
-        senderFriendId: senderFriend.id,
-      }).catch((err) => {
-        log(`executeTriggerMessage: registerToAdmin failed (continuing) syntheticTaskId=${syntheticTaskId}: ${err instanceof Error ? err.message : String(err)}`)
-      })
-    }
-
     const overdueReminderText =
       `已处理超过 ${Math.floor(timeoutMs / 1000)} 秒，建议先 send_message ` +
       `友好告知人类正在处理 + 简要说明打算怎么干，发完继续执行。`
@@ -1258,24 +1254,17 @@ export class AgentHandler {
       ? {
         timeoutMs,
         startedAtMs: triggerArrivedAtMs,
-        onOverdue: () => {
-          fireAndForgetRegister() // 超期那一刻 fire-and-forget 注册到 admin
-          return sentMessage ? null : overdueReminderText
-        },
+        onOverdue: () => sentMessage ? null : overdueReminderText,
       }
       : undefined
 
-    // 4. Exit tools (supplement_task / stay_silent)
-    const activeTaskIds = activeTasks.map(t => t.task_id)
-    const exitTools = getAgentExitTools({ isGroup, activeTaskIds })
-
-    // 5. Run the full worker loop with trigger-mode opts
+    // 4. Run the full worker loop with trigger-mode opts
     //    traceContext 透传给 runWorkerLoop —— 用于 subagent fork 时的 sub-trace stitching
     let loopResult: RunWorkerLoopResult
     try {
       loopResult = await this.runWorkerLoop(task, context, traceCallback, traceContext, {
         initialPrompt: triggerPrompt,
-        extraTools: exitTools,
+        extraTools: [],
         ...(overdueConfig ? { overdueConfig } : {}),
         suppressForcedSummary: () => finalSent,
         onAfterTurn: (event) => {
@@ -1812,6 +1801,22 @@ export class AgentHandler {
       started_at: t.startedAt,
       title: t.title,
     }))
+  }
+
+  /**
+   * 返回 agent 进程内 in-flight task 的轻量 summary，供 context-assembler union。
+   * Spec: 2026-05-19-prefront-dispatcher-design.md §3.2
+   */
+  getInflightSnapshot(): ReadonlyArray<{ task_id: string; title: string; trigger_type: 'message' | 'scheduled' }> {
+    const result: Array<{ task_id: string; title: string; trigger_type: 'message' | 'scheduled' }> = []
+    for (const [taskId, state] of this.activeTasks) {
+      result.push({
+        task_id: taskId,
+        title: state.title ?? taskId,
+        trigger_type: state.triggerType ?? 'message',
+      })
+    }
+    return result
   }
 
   /**
