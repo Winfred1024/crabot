@@ -1,8 +1,40 @@
 # Crabot 项目进度
 
-> 最后更新：2026-05-18 — Phase 5 阶段 2b：内置 subagent + plan-and-execute 落地
+> 最后更新：2026-05-19 — Phase 5 阶段 2c：vision → research_collector + WORKFLOW 派发改 main 主动
 
-## 最新里程碑（2026-05-18 — Phase 5 阶段 2b：内置 subagent + plan-and-execute 落地）
+## 最新里程碑（2026-05-19 — Phase 5 阶段 2c：research_collector 重构 + WORKFLOW 派发改造）
+
+阶段 2b 落地后发现两个问题：① vision builtin 在多模态时代价值缩水（所有 vision-capable 模型已可直接读图）；② WORKFLOW [执行] 段预设 `[self]/[vision]/[code]` 派发标签把决策框死，自定义 subagent 没法自动接入。阶段 2c 一次性解决这两个：
+
+- **vision → research_collector**：删 vision builtin，加 `research_collector`（model_role=vision 复用多模态能力 / max_turns=20 / `file_system: false` 干净边界——只调 mcp + crab-memory 不读写本地 / `allowed_mcp_server_ids: []` 默认空 → 用户启用时手动勾选 scrapling 等 web mcp / 5 段 prompt 强制 ≤2K tokens markdown summary 输出）
+- **WORKFLOW 派发改造**：[规划] 段 todo content 不再标 `[self]/[vision]/[code]`；[执行] 段保留**唯一硬约束**（编码任务 code_planner → code_writer 串联）+ **main 自主决策**（看 `delegate_task` 工具 description 里的 `<available_subagents>` 选 when_to_use 最匹配的 subagent）+ **核心派发原则**（subagent 价值 = 消化大量 raw 输入并精炼输出，避免 main context 撑爆）。效果：用户自定义 subagent 自动出现在 `<available_subagents>` 段，main 看到就能用，无需改 prompt
+- **新 lifecycle 操作 `pruneObsoleteBuiltins`**：admin 启动时把已经从 `getBuiltinSubAgents()` 列表中移除但 registry 还在的 builtin entry 删掉 + console.warn 告知"如曾通过 Admin UI 编辑过 prompt，自定义内容将丢失"。从 2b 升级 2c 时启动日志会看到 `[SubAgentManager] 删除已废弃的 builtin subagent: vision (id=builtin-vision)...`
+
+spec：`crabot-docs/superpowers/specs/2026-05-19-subagent-phase2c-research-collector.md`
+plan：`crabot-docs/superpowers/plans/2026-05-19-subagent-phase2c-research-collector.md`
+
+主要改动（5 个代码 commit + 1 个协议文档 commit，TDD 全程）：
+
+- `crabot-admin/src/builtin-subagents.ts` 删 5 个 VISION_* 常量 + 加 5 个 RESEARCH_COLLECTOR_*；entry 第 3 项整重写（`builtin-research-collector` / model_role=vision / file_system=false / allowed_mcp_server_ids=[]）
+- `crabot-admin/src/subagent-manager.ts` `pruneObsoleteBuiltins(activeBuiltinIds)` 方法 + 5 个新单测（清理 / 保留自定义 / idempotent / 空 list / 多个废弃同清）
+- `crabot-admin/src/index.ts` `initialize()` 在 `subAgentManager.initialize()` 后 `seedBuiltin()` 前接入 `pruneObsoleteBuiltins(getBuiltinSubAgents().map(s => s.id))`
+- `crabot-admin/tests/builtin-seeding.test.ts` `vision` → `research_collector` 测试用例改写（验 model_role=vision + file_system=false + allowed_mcp_server_ids=[]）
+- `crabot-agent/src/prompts/agent-sections.ts` `WORKFLOW_PRIVATE` [规划]/[执行] 段重写：删派发标签 / 加硬约束 + 例外条款 / 加 main 自主判断三层结构 / 加核心派发原则；snapshot 自动更新 12/12 PASS
+- `crabot-docs/protocols/protocol-agent-v2.md` §11.8 表 vision → research_collector；§11.8.2 整段重写（删 `[self]/[vision]/[code]` 表 / 留硬约束 + main 自主决策 + 自定义自动可用说明）
+
+启动验证（在 e2e 验收时观测到）：
+- admin 启动日志含 `[SubAgentManager] 删除已废弃的 builtin subagent: vision (id=builtin-vision)...` + `[Admin] Seeded 3 builtin subagents`
+- `cat data/admin/subagents.json` 看到 3 个 entry：code_planner / code_writer / research_collector（无 vision）
+- `curl /api/subagents` 返回 3 个 entry，research_collector 的 model_role=vision、file_system=false
+- `curl /get_config` agent 端拿到 3 个 subagent，model 已实时解析
+
+待 master 跑端到端：
+1. 发编码诉求消息 → trace 看 main 是否走硬约束（code_planner → code_writer 串联），不应自己用 Write 改用户代码
+2. 发简单聊天消息 → trace 看 main 是否直接 send_message，不应误委派 research_collector
+3. 配 vision-capable 全局默认 model（当前实例 `research_collector` model 解析时 fallback 到 cost_effective 的 `kimi-for-coding`，应配 vision role 让其用真正多模态模型）
+4. 启用 scrapling 等 web mcp → 通过 admin UI 编辑 research_collector 的 `allowed_mcp_server_ids` 勾选
+
+## 上一里程碑（2026-05-18 — Phase 5 阶段 2b：内置 subagent + plan-and-execute 落地）
 
 阶段 2a 调研产物落地：admin 启动时 seed 3 个 builtin subagent（code_planner / code_writer / vision）+ 3 个 builtin skill（superpowers v5.0.7 MIT 的 writing-plans / systematic-debugging / verification-before-completion）+ main worker prompt 在 enabled subagents 含 code_planner 时自动注入 PLAN_AND_EXECUTE_GUIDE 引导段。
 
