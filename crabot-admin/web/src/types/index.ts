@@ -641,3 +641,43 @@ export interface Schedule {
   created_at: string
   updated_at: string
 }
+
+// ============================================================================
+// SubAgent（与 crabot-admin/src/types.ts 镜像；保持字段名 100% 一致）
+// ============================================================================
+
+export type ModelRole = 'powerful' | 'cost_effective' | 'vision'
+
+export interface BuiltinCapabilities {
+  file_system: boolean
+  shell: boolean
+  task_intel: boolean
+  crab_memory: boolean
+  crab_messaging: boolean
+}
+
+export interface SubAgentBase {
+  id: string
+  name: string
+  description: string
+  when_to_use: string
+  role: string
+  workflow: string
+  deliverables: string
+  verification?: string
+  builtin_capabilities: BuiltinCapabilities
+  allowed_mcp_server_ids: string[]
+  allowed_skill_ids: string[]
+  max_turns: number
+  hook_preset?: string
+}
+
+export interface SubAgentRegistryEntry extends SubAgentBase {
+  provider_id: string | null
+  model_id: string | null
+  model_role: ModelRole | null
+  enabled: boolean
+  is_builtin: boolean
+  created_at: string
+  updated_at: string
+}
