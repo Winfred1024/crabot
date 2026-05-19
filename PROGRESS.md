@@ -1,8 +1,38 @@
 # Crabot 项目进度
 
-> 最后更新：2026-05-19 — Phase 5 阶段 2c：vision → research_collector + WORKFLOW 派发改 main 主动
+> 最后更新：2026-05-19 — Phase 5 阶段 3a：Subagent Admin UI 落地
 
-## 最新里程碑（2026-05-19 — Phase 5 阶段 2c：research_collector 重构 + WORKFLOW 派发改造）
+## 最新里程碑（2026-05-19 — Phase 5 阶段 3a：Subagent Admin UI 落地）
+
+落地 Admin Web 的 Subagent 管理 UI：列表页 / 6-tab 编辑 dialog / Agent 配置页加 timeout_seconds + overdue_reminder_enabled。Backend REST `/api/subagents` 在阶段 1-2c 已成熟，本阶段只做 UI；可视化管理替代手动改 `data/admin/subagents.json`。
+
+spec：`crabot-docs/superpowers/specs/2026-05-19-subagent-admin-ui-design.md`
+plan：`crabot-docs/superpowers/plans/2026-05-19-subagent-admin-ui.md`
+
+主要改动（4 个代码 commit，TDD 全程，subagent-driven-development 流程）：
+- `crabot-admin/web/src/types/index.ts`：加 `ModelRole` / `BuiltinCapabilities` / `SubAgentBase` / `SubAgentRegistryEntry`（与后端 admin/src/types.ts 字段 100% 镜像）+ `AgentInstanceConfig` 加 `timeout_seconds?` / `overdue_reminder_enabled?`
+- `crabot-admin/web/src/services/subagent.ts`：CRUD 5 个 method（list/get/create/update/remove，沿 skillService pattern）+ 5 测全过
+- `crabot-admin/web/src/pages/Subagents/SubagentList.tsx`：列表 + enabled toggle + 删除（builtin 不可删，可禁用）+ 4 测全过
+- `crabot-admin/web/src/pages/Subagents/SubagentEditor.tsx`：6-tab dialog（基本 / 触发条件 / 角色与工作流 / 模型 / 内置能力 / MCP + Skill 白名单）+ 7 测全过；研究角色 file_system 默认关在「内置能力」tab 直接展示
+- `crabot-admin/web/src/pages/Agents/AgentConfig.tsx`：末尾追加「触发处理」section（2 字段）+ 7 测全过（含 2 新）
+- `crabot-admin/web/src/App.tsx`：加 `/subagents` 路由
+- `crabot-admin/web/src/components/Layout/Sidebar.tsx`：「模型与 Agent」section 加菜单「Subagent 管理」
+
+验收：tsc 0 errors（admin + web） / 全 web 测试 162/162 PASS / 全 admin 测试 411/411 PASS / `./dev.sh build` 完整成功（Vite 31 modules / dist/web/assets/index-*.js 1.0MB gzip 284KB）。
+
+待 master 跑端到端：
+1. 浏览器打开 `/subagents` → 看到 3 个 builtin 行（code_planner / code_writer / research_collector）+ 「+ 新建」按钮 / 「编辑」「删除」按钮的禁用态
+2. 编辑 research_collector → 6 tab 切换 + Tab 5 file_system 默认未勾 + Tab 6 勾上 scrapling → 保存 → `cat data/admin/subagents.json` 验证 allowed_mcp_server_ids 已更新
+3. 新建一个自定义 subagent（如 test_helper），保存 → 列表显示「自定义」chip + 删除按钮可用
+4. 切到 `/agents/config` → 看到「触发处理」section → 改 timeout_seconds=60 + 保存 → `data/admin/agent-instances.json` 验证
+
+Follow-up（不阻塞，留待后续 commit）：
+- SubagentList badge 颜色与 SkillList 不一致（灰 vs 紫）— 视觉一致性
+- `subagentService.create` 类型签名（`Omit<...>`）与 `formToPayload` 返回（`Partial<...>`）不严格匹配，editor 用 `as never` 绕过；建议精确两者类型
+- `SubagentEditor.WhitelistTab` provider/mcp/skill 加载失败无 toast，静默 fallback 空数组
+- `SubagentEditor.ModelTab` 从 role 切到 specific 时 hardcode `model_role='cost_effective'`，round-trip 丢原值
+
+## 上一里程碑（2026-05-19 — Phase 5 阶段 2c：research_collector 重构 + WORKFLOW 派发改造）
 
 阶段 2b 落地后发现两个问题：① vision builtin 在多模态时代价值缩水（所有 vision-capable 模型已可直接读图）；② WORKFLOW [执行] 段预设 `[self]/[vision]/[code]` 派发标签把决策框死，自定义 subagent 没法自动接入。阶段 2c 一次性解决这两个：
 

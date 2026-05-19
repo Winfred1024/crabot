@@ -1,8 +1,9 @@
 import React from 'react'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentConfig } from './AgentConfig'
+import { agentService } from '../../services/agent'
 
 vi.mock('../../components/Layout/MainLayout', () => ({
   MainLayout: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -131,11 +132,12 @@ describe('AgentConfig — read-only MCP/Skill display', () => {
     expect(screen.queryByText('mcp-c')).toBeNull()
   })
 
-  it('没有勾选框（read-only）', async () => {
+  it('MCP/Skill 区域没有勾选框（read-only）', async () => {
     const { container } = renderAgentConfig()
     await screen.findByText('mcp-a')
+    // 只有触发处理 section 的 overdue_reminder_enabled checkbox，MCP/Skill 区域无 checkbox
     const checkboxes = container.querySelectorAll('input[type="checkbox"]')
-    expect(checkboxes.length).toBe(0)
+    expect(checkboxes.length).toBe(1)
   })
 
   it('"前往 MCP 管理" 链接 href=/mcp-servers', async () => {
@@ -156,5 +158,35 @@ describe('AgentConfig — read-only MCP/Skill display', () => {
     renderAgentConfig()
     expect(await screen.findByText('skill-foo')).toBeDefined()
     expect(screen.queryByText('skill-bar')).toBeNull()
+  })
+})
+
+describe('AgentConfig — 触发处理 section', () => {
+  it('renders timeout_seconds + overdue_reminder fields', async () => {
+    render(
+      <MemoryRouter>
+        <AgentConfig />
+      </MemoryRouter>,
+    )
+    expect(await screen.findByLabelText(/Front 升格超时/)).toBeInTheDocument()
+    expect(screen.getByLabelText(/启用超时辅助提醒/)).toBeInTheDocument()
+  })
+
+  it('saving with edited timeout_seconds calls updateConfig with new value', async () => {
+    render(
+      <MemoryRouter>
+        <AgentConfig />
+      </MemoryRouter>,
+    )
+    const timeoutInput = (await screen.findByLabelText(/Front 升格超时/)) as HTMLInputElement
+    fireEvent.change(timeoutInput, { target: { value: '60' } })
+    fireEvent.click(screen.getByRole('button', { name: /保存/ }))
+    await waitFor(() => {
+      expect(agentService.updateConfig).toHaveBeenCalledWith(
+        expect.objectContaining({
+          timeout_seconds: 60,
+        }),
+      )
+    })
   })
 })

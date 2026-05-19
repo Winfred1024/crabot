@@ -223,6 +223,10 @@ export interface AgentInstanceConfig {
   tools_readonly?: boolean
   timezone?: string
   extra?: Record<string, unknown>
+  /** Front 升格超时（秒）；默认 30；超过此时长后 agent 自动注入超时辅助提醒 */
+  timeout_seconds?: number
+  /** 是否启用超时辅助提醒；默认 true */
+  overdue_reminder_enabled?: boolean
 }
 
 // ============================================================================
@@ -638,6 +642,46 @@ export interface Schedule {
   next_trigger_at?: string
   execution_count: number
   last_task_id?: string
+  created_at: string
+  updated_at: string
+}
+
+// ============================================================================
+// SubAgent（与 crabot-admin/src/types.ts 镜像；保持字段名 100% 一致）
+// ============================================================================
+
+export type ModelRole = 'powerful' | 'cost_effective' | 'vision'
+
+export interface BuiltinCapabilities {
+  file_system: boolean
+  shell: boolean
+  task_intel: boolean
+  crab_memory: boolean
+  crab_messaging: boolean
+}
+
+export interface SubAgentBase {
+  id: string
+  name: string
+  description: string
+  when_to_use: string
+  role: string
+  workflow: string
+  deliverables: string
+  verification?: string
+  builtin_capabilities: BuiltinCapabilities
+  allowed_mcp_server_ids: string[]
+  allowed_skill_ids: string[]
+  max_turns: number
+  hook_preset?: string
+}
+
+export interface SubAgentRegistryEntry extends SubAgentBase {
+  provider_id: string | null
+  model_id: string | null
+  model_role: ModelRole | null
+  enabled: boolean
+  is_builtin: boolean
   created_at: string
   updated_at: string
 }
