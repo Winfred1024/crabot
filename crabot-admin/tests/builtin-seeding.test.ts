@@ -90,7 +90,7 @@ describe('getBuiltinSubAgents', () => {
     expect(list.map((s) => s.id).sort()).toEqual([
       BUILTIN_SUBAGENT_IDS.codePlanner,
       BUILTIN_SUBAGENT_IDS.codeWriter,
-      BUILTIN_SUBAGENT_IDS.vision,
+      BUILTIN_SUBAGENT_IDS.researchCollector,
     ].sort())
   })
 
@@ -114,9 +114,12 @@ describe('getBuiltinSubAgents', () => {
     expect(w.allowed_skill_ids).toContain(BUILTIN_SKILL_IDS.verificationBeforeCompletion)
   })
 
-  it('vision 使用 vision role', () => {
-    const v = getBuiltinSubAgents().find((s) => s.name === 'vision')!
-    expect(v.model_role).toBe('vision')
+  it('research_collector 使用 vision role + builtin_capabilities.file_system=false', () => {
+    const r = getBuiltinSubAgents().find((s) => s.name === 'research_collector')!
+    expect(r.model_role).toBe('vision')
+    expect(r.builtin_capabilities.file_system).toBe(false)
+    expect(r.builtin_capabilities.crab_memory).toBe(true)
+    expect(r.allowed_mcp_server_ids).toEqual([])
   })
 })
 

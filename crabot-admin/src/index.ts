@@ -599,9 +599,13 @@ export class AdminModule extends ModuleBase {
     // 初始化 SubAgent 管理器
     await this.subAgentManager.initialize()
 
-    // Seed builtin subagents（幂等）
-    await this.subAgentManager.seedBuiltin(getBuiltinSubAgents())
-    console.log(`[Admin] Seeded ${getBuiltinSubAgents().length} builtin subagents`)
+    // Prune 已下线的 builtin subagents，再 seed 当前版本（幂等）
+    const builtinSubAgents = getBuiltinSubAgents()
+    await this.subAgentManager.pruneObsoleteBuiltins(
+      builtinSubAgents.map((s) => s.id)
+    )
+    await this.subAgentManager.seedBuiltin(builtinSubAgents)
+    console.log(`[Admin] Seeded ${builtinSubAgents.length} builtin subagents`)
 
     // 初始化 Browser 管理器
     await this.browserManager.loadConfig()
