@@ -38,6 +38,7 @@ export const SpanRow: React.FC<SpanRowProps> = ({ span, spans, depth, expandedDe
 
   const toggleChildTrace = useCallback(async () => {
     if (!childTraceId) return
+    if (childTrace.status === 'loading') return
     if (childTrace.status === 'loaded') {
       setChildTrace({ status: 'idle' })
       return
@@ -175,12 +176,12 @@ export const SpanRow: React.FC<SpanRowProps> = ({ span, spans, depth, expandedDe
         />
       )}
       {childTrace.status === 'loading' && (
-        <div style={{ paddingLeft: (depth + 1) * 18 + 8, color: '#888', fontSize: 11, padding: '4px 8px' }}>
+        <div style={{ paddingLeft: (depth + 1) * 18 + 8, color: '#888', fontSize: 11, paddingTop: 4, paddingBottom: 4, paddingRight: 8 }}>
           加载子 trace…
         </div>
       )}
       {childTrace.status === 'error' && (
-        <div style={{ paddingLeft: (depth + 1) * 18 + 8, color: '#cf1322', fontSize: 11, padding: '4px 8px' }}>
+        <div style={{ paddingLeft: (depth + 1) * 18 + 8, color: '#cf1322', fontSize: 11, paddingTop: 4, paddingBottom: 4, paddingRight: 8 }}>
           子 trace 加载失败：{childTrace.error}
         </div>
       )}
@@ -191,7 +192,9 @@ export const SpanRow: React.FC<SpanRowProps> = ({ span, spans, depth, expandedDe
             style={{
               paddingLeft: (depth + 1) * 18 + 8,
               background: '#fafafa',
-              padding: '6px 12px',
+              paddingTop: 6,
+              paddingBottom: 6,
+              paddingRight: 12,
               fontSize: 12,
               color: '#555',
               borderBottom: '1px solid var(--border)',
