@@ -1192,15 +1192,21 @@ export class AgentHandler {
     const syntheticTaskId = `trigger-${randomUUID()}`
 
     // 启动入口立即 register admin
-    await this.registerTriggerTaskToAdmin({
-      syntheticTaskId,
-      triggerSummary,
-      channelId,
-      sessionId,
-      senderFriendId: senderFriend.id,
-    }).catch((err) => {
+    // registered 标志位：register 成功时置 true，end_turn 后用它判断是否走 finalize
+    //（register 与 finalize 必须配对，否则 admin task status 永远停在 pending → phantom 污染下一条 trigger 的 activeTasks）
+    let registered = false
+    try {
+      await this.registerTriggerTaskToAdmin({
+        syntheticTaskId,
+        triggerSummary,
+        channelId,
+        sessionId,
+        senderFriendId: senderFriend.id,
+      })
+      registered = true
+    } catch (err) {
       log(`executeTriggerMessage: startup registerToAdmin failed (continuing) syntheticTaskId=${syntheticTaskId}: ${err instanceof Error ? err.message : String(err)}`)
-    })
+    }
 
     const task: ExecuteTaskParams['task'] = {
       task_id: syntheticTaskId,
@@ -1296,13 +1302,14 @@ export class AgentHandler {
 
     const { engineResult } = loopResult
 
-    // 6. 收尾：仅超期 trigger（身份已转 worker）走 finalizeTask
-    //    - 已超期 → register 成功时 admin update_task_status / outcome 正常落地；
-    //      register 失败时 bestEffortRpc 吞 NOT_FOUND
-    //    - 期限内自然 end_turn（快答任务）/ supplement / stay_silent 早退均跳过——
-    //      spec §2.4：快答任务不反思，避免每条简单 trigger 多一次 reflector LLM 调用
-    if (engineResult.overdueInjected && !engineResult.exitToolCall) {
-      await this.finalizeTask(syntheticTaskId, engineResult, context)
+    // 6. 收尾：register 跑过就一定要 finalize（切 admin status），否则 admin task 永留 pending
+    //    → 下一条 trigger 的 fetchActiveTasks 会拉到这条 phantom，LLM 拿它当 supplement target
+    //    - register 成功 → finalize 必跑（切 status + drain humanQueue + 必要时写 outcome）
+    //    - skipReflection：快答任务（30s 内自然 end_turn）/ 早退（supplement/stay_silent）跳过
+    //      reflectFn 的 LLM 调用——spec §2.4 不反思，但 status 切换不能省
+    if (registered) {
+      const skipReflection = !engineResult.overdueInjected || !!engineResult.exitToolCall
+      await this.finalizeTask(syntheticTaskId, engineResult, context, { skipReflection })
     }
 
     // 7. Build result
@@ -1524,11 +1531,16 @@ export class AgentHandler {
    *
    * 失败容忍：reflector / memory 任一步抛错都不回滚 task 状态——用户视角下任务已完成，
    * lesson 质量降级是可接受的二阶损失。
+   *
+   * opts.skipReflection（快答 / 早退路径）：跳过 reflectFn 的 LLM 调用，用 finalText 兜底
+   * 当 outcome_brief；但 status 切换 / humanQueue drain / outcome 落地仍然要做——不可省，
+   * 否则 admin task 永远 pending 变 phantom（这是 register/finalize 不配对 bug 的修复点）。
    */
   private async finalizeTask(
     taskId: TaskId,
     engineResult: EngineResult,
     context: import('../types.js').WorkerAgentContext,
+    opts: { skipReflection?: boolean } = {},
   ): Promise<void> {
     if (!this.deps?.getAdminPort) {
       log(`finalize: getAdminPort missing, skipping admin patch + reflector`)
@@ -1571,23 +1583,36 @@ export class AgentHandler {
 
     // completed 路径：reflectFn 内部已有 retry + fallback 不抛错；这层 try 兜的是 LLM 不可达
     // / adapter 异常等外层错误，构造 fallback 反思继续写入，保证 outcome_brief 不留空。
+    //
+    // skipReflection：快答 / 早退路径跳过 reflectFn 的 LLM 调用（spec §2.4 不反思），
+    // 但仍走 writeOutcome 把 finalText 当 brief 写入——保留 outcome 落地与 status 配对。
     let reflection: Awaited<ReturnType<typeof reflectStructuredOutcome>>
-    try {
-      const reflectFn = this.deps.reflectFn ?? reflectStructuredOutcome
-      reflection = await reflectFn({
-        messages: engineResult.finalMessages,
-        adapter: adapterFromSdkEnv(this.sdkEnv),
-        model: this.sdkEnv.modelId,
-        lastAssistantText: engineResult.finalText,
-      })
-      log(`finalize: reflection produced (retries=${reflection.retries}, fallback=${reflection.fellBackToLastText})`)
-    } catch (err) {
-      log(`finalize: reflectFn threw, using lastAssistantText fallback: ${err instanceof Error ? err.message : String(err)}`)
+    if (opts.skipReflection) {
       reflection = {
         outcome_brief: engineResult.finalText.slice(0, 200),
         process_highlights: [],
         retries: 0,
         fellBackToLastText: true,
+      }
+      log(`finalize: skipReflection (快答/早退) — using lastAssistantText brief`)
+    } else {
+      try {
+        const reflectFn = this.deps.reflectFn ?? reflectStructuredOutcome
+        reflection = await reflectFn({
+          messages: engineResult.finalMessages,
+          adapter: adapterFromSdkEnv(this.sdkEnv),
+          model: this.sdkEnv.modelId,
+          lastAssistantText: engineResult.finalText,
+        })
+        log(`finalize: reflection produced (retries=${reflection.retries}, fallback=${reflection.fellBackToLastText})`)
+      } catch (err) {
+        log(`finalize: reflectFn threw, using lastAssistantText fallback: ${err instanceof Error ? err.message : String(err)}`)
+        reflection = {
+          outcome_brief: engineResult.finalText.slice(0, 200),
+          process_highlights: [],
+          retries: 0,
+          fellBackToLastText: true,
+        }
       }
     }
 
@@ -1805,15 +1830,31 @@ export class AgentHandler {
 
   /**
    * 返回 agent 进程内 in-flight task 的轻量 summary，供 context-assembler union。
+   * 携带 taskOrigin（channel_id / session_id）让调用方按 spec §3.2 做 session 过滤
+   * （"当前 session 的活跃任务"——protocol-agent-v2.md §5.1 line 329）。
    * Spec: 2026-05-19-prefront-dispatcher-design.md §3.2
    */
-  getInflightSnapshot(): ReadonlyArray<{ task_id: string; title: string; trigger_type: 'message' | 'scheduled' }> {
-    const result: Array<{ task_id: string; title: string; trigger_type: 'message' | 'scheduled' }> = []
+  getInflightSnapshot(): ReadonlyArray<{
+    task_id: string
+    title: string
+    trigger_type: 'message' | 'scheduled'
+    source_channel_id?: string
+    source_session_id?: string
+  }> {
+    const result: Array<{
+      task_id: string
+      title: string
+      trigger_type: 'message' | 'scheduled'
+      source_channel_id?: string
+      source_session_id?: string
+    }> = []
     for (const [taskId, state] of this.activeTasks) {
       result.push({
         task_id: taskId,
         title: state.title ?? taskId,
         trigger_type: state.triggerType ?? 'message',
+        source_channel_id: state.taskOrigin?.channel_id,
+        source_session_id: state.taskOrigin?.session_id,
       })
     }
     return result

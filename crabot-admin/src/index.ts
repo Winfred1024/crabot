@@ -3644,6 +3644,9 @@ export class AdminModule extends ModuleBase {
       if (filter.source_channel_id) {
         tasks = tasks.filter((t) => t.source.channel_id === filter.source_channel_id)
       }
+      if (filter.source_session_id) {
+        tasks = tasks.filter((t) => t.source.session_id === filter.source_session_id)
+      }
       if (filter.source_friend_id) {
         tasks = tasks.filter((t) => t.source.friend_id === filter.source_friend_id)
       }

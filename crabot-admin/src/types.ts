@@ -813,6 +813,7 @@ export interface TaskFilter {
   priority?: TaskPriority | TaskPriority[]
   worker_agent_id?: ModuleId
   source_channel_id?: ModuleId
+  source_session_id?: SessionId
   source_friend_id?: FriendId
   tags?: string[]
   search?: string

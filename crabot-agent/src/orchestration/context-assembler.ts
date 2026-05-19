@@ -68,7 +68,13 @@ interface ContextAssemblerDeps {
   getMemoryPort: () => number | Promise<number>
   /** 可选：由 UnifiedAgent 注入，读取 agent 进程内 in-flight task 快照（避免 30s race）。
    *  Spec: 2026-05-19-prefront-dispatcher-design.md §3.2 */
-  getInflightTriggerTasks?: () => ReadonlyArray<{ task_id: string; title: string; trigger_type: 'message' | 'scheduled' }>
+  getInflightTriggerTasks?: () => ReadonlyArray<{
+    task_id: string
+    title: string
+    trigger_type: 'message' | 'scheduled'
+    source_channel_id?: string
+    source_session_id?: string
+  }>
   /** 可选：由 UnifiedAgent 注入，读取 worker 实时快照（用于 Front 汇报进度）。 */
   getLiveSnapshot?: (taskId: string) => LiveTaskSnapshot | undefined
 }
@@ -79,7 +85,13 @@ export class ContextAssembler {
   private config: OrchestrationConfig
   private getAdminPort: () => number | Promise<number>
   private getMemoryPort: () => number | Promise<number>
-  private getInflightTriggerTasks?: () => ReadonlyArray<{ task_id: string; title: string; trigger_type: 'message' | 'scheduled' }>
+  private getInflightTriggerTasks?: () => ReadonlyArray<{
+    task_id: string
+    title: string
+    trigger_type: 'message' | 'scheduled'
+    source_channel_id?: string
+    source_session_id?: string
+  }>
   /**
    * 同进程读取 Worker 实时快照的回调（由 UnifiedAgent 注入）。
    * Worker 与 ContextAssembler 同属一个 Agent 进程，无需 RPC，函数引用直读 Map。
@@ -151,7 +163,7 @@ export class ContextAssembler {
         this.config.front_context_recent_messages_max_cap,
         sessionType
       )),
-      this.withSubSpan(traceCtx, 'fetch_active_tasks', () => this.fetchActiveTasks()),
+      this.withSubSpan(traceCtx, 'fetch_active_tasks', () => this.fetchActiveTasks(params.channel_id, params.session_id)),
       this.withSubSpan(traceCtx, 'resolve_scene_profile', () => this.resolveSceneProfile(params.channel_id, params.session_id, sessionType, params.friend_id)),
     ])
 
@@ -413,12 +425,21 @@ export class ContextAssembler {
     }
   }
 
-  private async fetchActiveTasks(): Promise<TaskSummary[]> {
+  /**
+   * 取"当前 session 的活跃任务清单"——dispatcher / front 视野里能 supplement 的候选。
+   *
+   * 过滤规则（spec 2026-05-19 §3.2 + protocol-agent-v2.md §5.1）：
+   * - status ∈ {pending, planning, executing, waiting_human}（admin 侧）
+   * - source_channel_id + source_session_id 完全匹配当前 session（admin 侧 + in-flight 侧都过滤）
+   * - 排除 trigger_type='scheduled'（最终 union 后过滤）
+   * - 来源 = admin list_tasks ∪ agent 进程内 in-flight，按 task_id 去重（避免 admin 同步延迟 race）
+   */
+  private async fetchActiveTasks(channelId: string, sessionId: string): Promise<TaskSummary[]> {
     let adminItems: TaskSummary[] = []
     try {
       const adminPort = await this.getAdminPort()
       const result = await this.rpcClient.call<
-        { filter: { status: string[] } },
+        { filter: { status: string[]; source_channel_id: string; source_session_id: string } },
         {
           items: Array<{
             id: string
@@ -441,7 +462,13 @@ export class ContextAssembler {
       >(
         adminPort,
         'list_tasks',
-        { filter: { status: ['pending', 'planning', 'executing', 'waiting_human'] } },
+        {
+          filter: {
+            status: ['pending', 'planning', 'executing', 'waiting_human'],
+            source_channel_id: channelId,
+            source_session_id: sessionId,
+          },
+        },
         this.moduleId
       )
       adminItems = result.items.map(t => ({
@@ -468,9 +495,11 @@ export class ContextAssembler {
     }
 
     // Union with agent in-flight tasks (避免 30s admin 同步延迟导致 race)
+    // in-flight 侧按 session 过滤——只保留 channel_id + session_id 完全匹配当前 session 的
     const inflight = this.getInflightTriggerTasks?.() ?? []
     const byId = new Map<string, TaskSummary>()
     for (const t of inflight) {
+      if (t.source_channel_id !== channelId || t.source_session_id !== sessionId) continue
       byId.set(t.task_id, {
         task_id: t.task_id,
         title: t.title,
@@ -478,6 +507,8 @@ export class ContextAssembler {
         priority: 'normal',
         // 'message' 不在 TaskSummary.trigger_type 联合内，归一化为 undefined（即非 scheduled）
         trigger_type: t.trigger_type === 'scheduled' ? 'scheduled' : undefined,
+        source_channel_id: t.source_channel_id,
+        source_session_id: t.source_session_id,
       } as TaskSummary)
     }
     // admin 优先覆盖 in-flight
