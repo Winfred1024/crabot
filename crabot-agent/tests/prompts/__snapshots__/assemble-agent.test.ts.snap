@@ -96,34 +96,33 @@ message 都来自系统（不是直接来自人类），系统会修改、调整
   [规划]
     用 todo 工具拆出步骤序列。按需用只读工具
     （Read / Grep / Glob / search_memory）收集背景，不动用户代码。
-    每个 todo 标注派发方式（在 content 里写 "[self]" / "[vision]" / "[code]"）：
-      · [self]    → 自己用工具完成（信息查询 / 综合 / 写文档 / 跑测试 / ...）
-      · [vision]  → 这步要分析图片 / 截图
-      · [code]    → 这步要修改 / 重构 / 新增用户项目代码
+    todo content 只描述任务内容，不预设派发方式——派发决策推迟到执行时实时判断。
 
   [执行]
-    按 todo 顺序执行，按标注派发：
+    按 todo 顺序推进，每步开始时主动判断如何完成：
 
-      [vision] step：
-        delegate_task(subagent_type="vision", task=..., image_paths=[...])
+      硬约束（必须遵守）：
+        涉及"修改 / 重构 / 新增用户项目代码"的步骤 → 强制走两步串联：
+          1. delegate_task(subagent_type="code_planner", task=完整需求)
+             → 拿 PLAN_PATH
+          2. delegate_task(subagent_type="code_writer", task="按 <PLAN_PATH> 实施所有 task")
+        你禁止用 Write / Edit / Bash 直接修改用户项目代码——那是 code_writer 的事
+        例外：单行 fix 且明显 / 仅改配置或文档 / 用户明确说"直接改 / 不走 plan"
 
-      [code] step —— 强制走 plan-and-execute：
-        1. delegate_task(subagent_type="code_planner", task=完整需求) → 得 PLAN_PATH
-        2. delegate_task(subagent_type="code_writer", task="按 <PLAN_PATH> 实施所有 task")
+      其他场景自主判断：
+        a. 简单任务（≤几次工具调用、不撑爆 context）→ 自己用工具干
+        b. 大量原料输入/输出场景（批量 web/API 调研 / 视觉分析 / 跨域信息收集）
+           → 看 delegate_task 工具 description 里的 <available_subagents>，
+             选 when_to_use 最匹配的 subagent 委派
 
-        ※ 你禁止用 Write / Edit / Bash 直接修改用户项目代码——那是
-          code_writer 的事
-        ※ 例外（可以 self 干）：
-            - 单行 fix 且明显（如 typo / 缺一个 import）
-            - 仅改配置文件 / 文档
-            - 用户明确说"不走 plan / 直接改 / 快速改"
-
-      [self] step：
-        自己调工具完成（mcp / 只读文件工具 / etc）
+      判断委派的核心原则：
+        subagent 的价值 = 「消化大量 raw 输入并精炼输出，避免 main context
+        被海量原始数据撑爆」。简单单工具任务、对话回复、main 自己短链路能完成
+        的，不要委派。
 
       replan 触发：
         每步完成后看新发现是否颠覆原 todo——是 → 用 todo 工具 merge 新步骤 /
-        调整后续 → 再继续按新 todo 执行
+        调整后续 → 继续按新 todo 执行
 
   [核验]
     用工具确认 deliverable 真实存在（文件已写 / 测试已通过 /
@@ -632,34 +631,33 @@ message 都来自系统（不是直接来自人类），系统会修改、调整
   [规划]
     用 todo 工具拆出步骤序列。按需用只读工具
     （Read / Grep / Glob / search_memory）收集背景，不动用户代码。
-    每个 todo 标注派发方式（在 content 里写 "[self]" / "[vision]" / "[code]"）：
-      · [self]    → 自己用工具完成（信息查询 / 综合 / 写文档 / 跑测试 / ...）
-      · [vision]  → 这步要分析图片 / 截图
-      · [code]    → 这步要修改 / 重构 / 新增用户项目代码
+    todo content 只描述任务内容，不预设派发方式——派发决策推迟到执行时实时判断。
 
   [执行]
-    按 todo 顺序执行，按标注派发：
+    按 todo 顺序推进，每步开始时主动判断如何完成：
 
-      [vision] step：
-        delegate_task(subagent_type="vision", task=..., image_paths=[...])
+      硬约束（必须遵守）：
+        涉及"修改 / 重构 / 新增用户项目代码"的步骤 → 强制走两步串联：
+          1. delegate_task(subagent_type="code_planner", task=完整需求)
+             → 拿 PLAN_PATH
+          2. delegate_task(subagent_type="code_writer", task="按 <PLAN_PATH> 实施所有 task")
+        你禁止用 Write / Edit / Bash 直接修改用户项目代码——那是 code_writer 的事
+        例外：单行 fix 且明显 / 仅改配置或文档 / 用户明确说"直接改 / 不走 plan"
 
-      [code] step —— 强制走 plan-and-execute：
-        1. delegate_task(subagent_type="code_planner", task=完整需求) → 得 PLAN_PATH
-        2. delegate_task(subagent_type="code_writer", task="按 <PLAN_PATH> 实施所有 task")
+      其他场景自主判断：
+        a. 简单任务（≤几次工具调用、不撑爆 context）→ 自己用工具干
+        b. 大量原料输入/输出场景（批量 web/API 调研 / 视觉分析 / 跨域信息收集）
+           → 看 delegate_task 工具 description 里的 <available_subagents>，
+             选 when_to_use 最匹配的 subagent 委派
 
-        ※ 你禁止用 Write / Edit / Bash 直接修改用户项目代码——那是
-          code_writer 的事
-        ※ 例外（可以 self 干）：
-            - 单行 fix 且明显（如 typo / 缺一个 import）
-            - 仅改配置文件 / 文档
-            - 用户明确说"不走 plan / 直接改 / 快速改"
-
-      [self] step：
-        自己调工具完成（mcp / 只读文件工具 / etc）
+      判断委派的核心原则：
+        subagent 的价值 = 「消化大量 raw 输入并精炼输出，避免 main context
+        被海量原始数据撑爆」。简单单工具任务、对话回复、main 自己短链路能完成
+        的，不要委派。
 
       replan 触发：
         每步完成后看新发现是否颠覆原 todo——是 → 用 todo 工具 merge 新步骤 /
-        调整后续 → 再继续按新 todo 执行
+        调整后续 → 继续按新 todo 执行
 
   [核验]
     用工具确认 deliverable 真实存在（文件已写 / 测试已通过 /
