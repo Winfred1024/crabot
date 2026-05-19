@@ -22,6 +22,7 @@ import { DialogObjectsPage } from './pages/DialogObjects'
 import { MCPServerList } from './pages/MCPServers/MCPServerList'
 import { PermissionTemplateList } from './pages/Permissions/PermissionTemplateList'
 import { SkillList } from './pages/Skills/SkillList'
+import { SubagentList } from './pages/Subagents/SubagentList'
 import { Traces } from './pages/Traces'
 import { ScheduleList } from './pages/Schedules/ScheduleList'
 import BgEntitiesPage from './pages/BgEntities'
@@ -181,6 +182,14 @@ const AppRoutes: React.FC = () => {
         element={
           <PrivateRoute>
             <SkillList />
+          </PrivateRoute>
+        }
+      />
+      <Route
+        path="/subagents"
+        element={
+          <PrivateRoute>
+            <SubagentList />
           </PrivateRoute>
         }
       />

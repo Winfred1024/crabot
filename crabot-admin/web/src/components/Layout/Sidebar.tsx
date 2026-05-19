@@ -28,6 +28,7 @@ const navSections: NavSection[] = [
       { to: '/agents/config', label: 'Agent 配置', match: '/agents' },
       { to: '/mcp-servers', label: 'MCP Servers', match: '/mcp-servers' },
       { to: '/skills', label: 'Skills', match: '/skills' },
+      { to: '/subagents', label: 'Subagent 管理', match: '/subagents' },
     ],
   },
   {
