@@ -1166,6 +1166,7 @@ export class AgentHandler {
   async executeTriggerMessage(
     params: ExecuteTriggerMessageParams,
     traceCallback?: TraceCallback,
+    traceContext?: WorkerTraceContext,
   ): Promise<ExecuteTriggerMessageResult> {
     const {
       messages,
@@ -1269,9 +1270,10 @@ export class AgentHandler {
     const exitTools = getAgentExitTools({ isGroup, activeTaskIds })
 
     // 5. Run the full worker loop with trigger-mode opts
+    //    traceContext 透传给 runWorkerLoop —— 用于 subagent fork 时的 sub-trace stitching
     let loopResult: RunWorkerLoopResult
     try {
-      loopResult = await this.runWorkerLoop(task, context, traceCallback, undefined, {
+      loopResult = await this.runWorkerLoop(task, context, traceCallback, traceContext, {
         initialPrompt: triggerPrompt,
         extraTools: exitTools,
         ...(overdueConfig ? { overdueConfig } : {}),

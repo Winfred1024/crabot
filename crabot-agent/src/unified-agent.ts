@@ -553,7 +553,7 @@ export class UnifiedAgent extends ModuleBase {
           channelId: session.channel_id,
           sessionId: session.session_id,
           frontContext: context,
-        }, traceCallback)
+        }, traceCallback, { traceStore: this.traceStore, traceId: trace.trace_id })
       } catch (error) {
         console.error(`[${this.config.moduleId}] processDirectMessage error:`, error)
         this.traceStore.endTrace(trace.trace_id, 'failed', {
@@ -725,7 +725,7 @@ export class UnifiedAgent extends ModuleBase {
           channelId: session.channel_id,
           sessionId,
           frontContext: context,
-        }, traceCallback)
+        }, traceCallback, { traceStore: this.traceStore, traceId: trace.trace_id })
       } catch (error) {
         console.error(`[${this.config.moduleId}] processGroupBatch executeTriggerMessage error:`, error)
         this.clearAllBarriers(barrierTaskIds)
@@ -1523,7 +1523,7 @@ export class UnifiedAgent extends ModuleBase {
           channelId: 'admin-web',
           sessionId,
           frontContext: context,
-        }, traceCallback)
+        }, traceCallback, { traceStore: this.traceStore, traceId: trace.trace_id })
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error)
         console.error(`[${this.config.moduleId}] processAdminChatMessage executeTriggerMessage error:`, error)
