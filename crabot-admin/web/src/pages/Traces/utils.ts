@@ -64,6 +64,8 @@ export function spanTypeLabel(type: AgentSpanType): string {
     bg_entity_output: 'bg-out',
     bg_entity_kill: 'bg-kill',
     llm_retry: 'retry',
+    dispatch_call: 'dispatch',
+    dispatch_action: 'dispatch-act',
   }
   return map[type] ?? type
 }
@@ -84,6 +86,8 @@ export function spanTypeBg(type: AgentSpanType): string {
     bg_entity_output: '#84cc16',
     bg_entity_kill: '#84cc16',
     llm_retry: '#fb923c',
+    dispatch_call: '#a855f7',
+    dispatch_action: '#c084fc',
   }
   return map[type] ?? '#6b7280'
 }
@@ -309,6 +313,18 @@ export function detailSummary(span: AgentSpan): string {
     const max = d.max_attempts ?? '?'
     const reason = String(d.error ?? '').slice(0, 80)
     return `attempt ${attempt}/${max}: ${reason}`
+  }
+  if (span.type === 'dispatch_call') {
+    const model = d.model ? String(d.model).split('/').pop() ?? String(d.model) : ''
+    const count = d.message_count != null ? ` ${d.message_count} msgs` : ''
+    const actions = d.action_count != null ? ` → ${d.action_count} actions` : ''
+    return `${model}${count}${actions}`.trim()
+  }
+  if (span.type === 'dispatch_action') {
+    const kind = String(d.kind ?? '')
+    const summary = d.text_summary ? ` "${String(d.text_summary).slice(0, 60)}"` : ''
+    const outcome = d.outcome ? ` [${d.outcome}]` : ''
+    return `${kind}${summary}${outcome}`
   }
   return ''
 }

@@ -138,6 +138,30 @@ export const SpanDetailPanel: React.FC<{
     if (d.error) rows.push({ label: 'Error', value: String(d.error), monospace: true })
   }
 
+  if (span.type === 'dispatch_call') {
+    if (d.model) rows.push({ label: '模型', value: String(d.model), monospace: true })
+    if (d.session_type) rows.push({ label: '会话类型', value: String(d.session_type) })
+    if (d.message_count != null) rows.push({ label: '消息批次', value: String(d.message_count) })
+    if (d.action_count != null) rows.push({ label: '决策动作数', value: String(d.action_count) })
+    if (d.retries != null) rows.push({ label: '重试次数', value: String(d.retries) })
+    if (d.error) rows.push({ label: '错误', value: String(d.error), monospace: true })
+  }
+
+  if (span.type === 'dispatch_action') {
+    if (d.kind) rows.push({ label: '动作类型', value: String(d.kind), monospace: true })
+    if (d.target_task_id) rows.push({ label: '目标 Task', value: String(d.target_task_id), monospace: true })
+    if (d.text_summary) rows.push({ label: '摘要', value: String(d.text_summary) })
+    if (d.reason) rows.push({ label: '原因', value: String(d.reason) })
+    if (d.outcome) rows.push({ label: '结果', value: String(d.outcome) })
+    if (d.spawned_trace_id) {
+      rows.push({
+        label: '派生 Trace',
+        value: <TraceLink traceId={String(d.spawned_trace_id)} onNavigate={onNavigateTrace} />,
+      })
+    }
+    if (d.error) rows.push({ label: '错误', value: String(d.error), monospace: true })
+  }
+
   rows.push({ label: 'Started', value: formatDateTimeLocal(span.started_at) })
   if (span.ended_at) {
     rows.push({ label: 'Ended', value: formatDateTimeLocal(span.ended_at) })

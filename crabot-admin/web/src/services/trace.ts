@@ -46,6 +46,8 @@ export type AgentSpanType =
   | 'bg_entity_kill'
   | 'bg_entity_exit'
   | 'llm_retry'
+  | 'dispatch_call'
+  | 'dispatch_action'
 
 export interface AgentSpan {
   span_id: string
