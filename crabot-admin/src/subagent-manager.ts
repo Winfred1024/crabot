@@ -155,6 +155,33 @@ export class SubAgentManager {
     if (changed) await this.save()
   }
 
+  /**
+   * 删除已废弃的内置 subagent entry。
+   *
+   * 调用方传当前活动的内置 id 列表（来自 getBuiltinSubAgents().map(s => s.id)）；
+   * 本方法把所有 is_builtin=true 但不在该列表的 entry 删除，并 warn 日志。
+   *
+   * 用途：builtin subagent 在版本演进中被替换（如 vision → research_collector）时，
+   * admin 启动 seed 之前调本方法清理旧 entry。
+   */
+  async pruneObsoleteBuiltins(activeBuiltinIds: string[]): Promise<void> {
+    const obsolete: SubAgentRegistryEntry[] = []
+    for (const entry of this.entries.values()) {
+      if (entry.is_builtin && !activeBuiltinIds.includes(entry.id)) {
+        obsolete.push(entry)
+      }
+    }
+    if (obsolete.length === 0) return
+    for (const e of obsolete) {
+      console.warn(
+        `[SubAgentManager] 删除已废弃的 builtin subagent: ${e.name} (id=${e.id}). ` +
+        `如曾通过 Admin UI 编辑过 prompt，自定义内容将丢失。`
+      )
+      this.entries.delete(e.id)
+    }
+    await this.save()
+  }
+
   private validateModelSpec(entry: Pick<SubAgentRegistryEntry, 'provider_id' | 'model_id' | 'model_role'>): void {
     const hasSpecific = entry.provider_id !== null && entry.model_id !== null
     const hasRole = entry.model_role !== null

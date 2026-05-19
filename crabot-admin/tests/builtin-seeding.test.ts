@@ -145,3 +145,92 @@ describe('SubAgentManager.seedBuiltin via getBuiltinSubAgents', () => {
     expect(mgr2.list()).toHaveLength(3)
   })
 })
+
+describe('SubAgentManager.pruneObsoleteBuiltins', () => {
+  let tmpDir3: string
+  let mgr3: SubAgentManager
+
+  beforeEach(async () => {
+    tmpDir3 = mkdtempSync(join(tmpdir(), 'subagent-prune-'))
+    mgr3 = new SubAgentManager(tmpDir3)
+    await mgr3.initialize()
+  })
+
+  afterEach(() => {
+    rmSync(tmpDir3, { recursive: true, force: true })
+  })
+
+  it('删除 is_builtin=true 但不在 active list 的 entry', async () => {
+    const seedTs = '2026-05-19T00:00:00.000Z'
+    await mgr3.seedBuiltin([
+      {
+        id: 'builtin-obsolete', name: 'obsolete', description: '', when_to_use: '', role: '', workflow: '', deliverables: '',
+        provider_id: null, model_id: null, model_role: 'vision',
+        builtin_capabilities: { file_system: false, shell: false, task_intel: false, crab_memory: false, crab_messaging: false },
+        allowed_mcp_server_ids: [], allowed_skill_ids: [], max_turns: 10,
+        enabled: true, is_builtin: true, created_at: seedTs, updated_at: seedTs,
+      },
+      {
+        id: 'builtin-active', name: 'active', description: '', when_to_use: '', role: '', workflow: '', deliverables: '',
+        provider_id: null, model_id: null, model_role: 'powerful',
+        builtin_capabilities: { file_system: false, shell: false, task_intel: false, crab_memory: false, crab_messaging: false },
+        allowed_mcp_server_ids: [], allowed_skill_ids: [], max_turns: 10,
+        enabled: true, is_builtin: true, created_at: seedTs, updated_at: seedTs,
+      },
+    ])
+    expect(mgr3.list()).toHaveLength(2)
+
+    await mgr3.pruneObsoleteBuiltins(['builtin-active'])
+    expect(mgr3.list().map((e) => e.id)).toEqual(['builtin-active'])
+  })
+
+  it('不删除非 builtin 项（即使不在 active list）', async () => {
+    await mgr3.create({
+      name: 'user-custom', description: '', when_to_use: 'x', role: 'r', workflow: 'w', deliverables: 'd',
+      provider_id: 'p', model_id: 'm', model_role: null,
+      builtin_capabilities: { file_system: false, shell: false, task_intel: false, crab_memory: false, crab_messaging: false },
+      allowed_mcp_server_ids: [], allowed_skill_ids: [], max_turns: 10,
+    })
+    const userId = mgr3.list()[0].id
+
+    await mgr3.pruneObsoleteBuiltins(['builtin-active'])
+    expect(mgr3.list()).toHaveLength(1)
+    expect(mgr3.list()[0].id).toBe(userId)
+  })
+
+  it('active list 为空时仍正常工作（删全部 builtin）', async () => {
+    const seedTs = '2026-05-19T00:00:00.000Z'
+    await mgr3.seedBuiltin([
+      {
+        id: 'builtin-a', name: 'a', description: '', when_to_use: '', role: '', workflow: '', deliverables: '',
+        provider_id: null, model_id: null, model_role: 'vision',
+        builtin_capabilities: { file_system: false, shell: false, task_intel: false, crab_memory: false, crab_messaging: false },
+        allowed_mcp_server_ids: [], allowed_skill_ids: [], max_turns: 10,
+        enabled: true, is_builtin: true, created_at: seedTs, updated_at: seedTs,
+      },
+    ])
+
+    await mgr3.pruneObsoleteBuiltins([])
+    expect(mgr3.list()).toHaveLength(0)
+  })
+
+  it('空 registry 不报错', async () => {
+    await expect(mgr3.pruneObsoleteBuiltins(['builtin-a'])).resolves.not.toThrow()
+  })
+
+  it('无需删除时不调 save（活动状态不变）', async () => {
+    const seedTs = '2026-05-19T00:00:00.000Z'
+    await mgr3.seedBuiltin([
+      {
+        id: 'builtin-x', name: 'x', description: '', when_to_use: '', role: '', workflow: '', deliverables: '',
+        provider_id: null, model_id: null, model_role: 'vision',
+        builtin_capabilities: { file_system: false, shell: false, task_intel: false, crab_memory: false, crab_messaging: false },
+        allowed_mcp_server_ids: [], allowed_skill_ids: [], max_turns: 10,
+        enabled: true, is_builtin: true, created_at: seedTs, updated_at: seedTs,
+      },
+    ])
+
+    await mgr3.pruneObsoleteBuiltins(['builtin-x'])
+    expect(mgr3.list().map((e) => e.id)).toEqual(['builtin-x'])
+  })
+})
