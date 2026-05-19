@@ -6,6 +6,7 @@ import { Loading } from '../../components/Common/Loading'
 import { subagentService } from '../../services/subagent'
 import type { SubAgentRegistryEntry } from '../../types'
 import { useToast } from '../../contexts/ToastContext'
+import { SubagentEditor } from './SubagentEditor'
 
 export const SubagentList: React.FC = () => {
   const toast = useToast()
@@ -139,12 +140,16 @@ export const SubagentList: React.FC = () => {
         )}
       </Card>
 
-      {/* TODO Task 3: 这里接入 SubagentEditor dialog，editingId 控制开关 */}
       {editingId !== null && (
-        <div style={{ marginTop: 20, padding: 16, background: '#fffbe6', borderRadius: 4 }}>
-          编辑器待 Task 3 接入。当前 editingId = {editingId}
-          <Button onClick={() => setEditingId(null)} style={{ marginLeft: 12, fontSize: '0.8rem', padding: '0.3rem 0.75rem' }}>关闭</Button>
-        </div>
+        <SubagentEditor
+          mode={editingId === 'new' ? 'create' : 'edit'}
+          entry={editingId === 'new' ? null : (entries.find((e) => e.id === editingId) ?? null)}
+          onClose={() => setEditingId(null)}
+          onSaved={async () => {
+            setEditingId(null)
+            await reload()
+          }}
+        />
       )}
     </MainLayout>
   )
