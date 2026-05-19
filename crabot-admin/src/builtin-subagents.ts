@@ -20,19 +20,23 @@ export const BUILTIN_SUBAGENT_IDS = {
 } as const
 
 const CODE_PLANNER_WHEN_TO_USE = `Use this subagent when:
-- 用户提出编码需求，需要多个步骤/文件实现的功能
-- 需要对现有代码库做较大改动（涉及 2 个以上文件）
-- main agent 判断任务复杂度超出 writer 可直接执行的范围
+- 用户提出"修改 / 重构 / 新增功能"类编码需求，且涉及用户项目代码（不是 Crabot 自身配置/文档）
+- main agent 准备进入编码动作前——本 subagent 是 plan-and-execute 模式的第一步
 
-不要在以下情况使用：
-- 简单的单行 fix（直接让 writer 做）
-- 仅修改配置或文档（不需要 TDD 流程）
+产出契约：返回 plan markdown 文件的绝对路径（格式 \`PLAN_PATH: /tmp/plan_xxx.md\`）。
+后续必须由 code_writer 按此 plan 实施，main 不能自己用 Write/Edit/Bash 改用户代码。
+
+不要在以下情况使用（直接 main self 干即可，不走任何 subagent）：
+- 单行 fix 且明显（如 typo / 缺一个 import）
+- 仅修改配置文件 / 文档
+- 用户明确说"不走 plan / 直接改 / 快速改"
 
 <example>
 Context: 用户说"帮我给 API 加一个 rate limiting 功能"
 user: 给用户认证 API 加上 rate limiting，每 IP 每分钟最多 60 次请求
 assistant: 调用 delegate_task(subagent_type="code_planner") 分析代码库并制定 rate limiting 实现计划
-<commentary>多文件改动 + 需要选型（哪个库）+ 需要拆分多个 task，适合 code_planner</commentary>
+<commentary>多文件改动 + 需要选型（哪个库）+ 需要拆分多个 task，适合 code_planner。
+拿到 PLAN_PATH 后下一步派 code_writer 实施。</commentary>
 </example>`
 
 const CODE_PLANNER_ROLE = `你是 Crabot 的代码规划专家（code_planner）。你的职责是分析需求、理解现有代码库、产出详细的实现计划（plan markdown 文件），使得 code_writer——一个对代码库一无所知的弱模型——能够仅凭 plan 文件独立完成每个 task，不需要做任何架构决策、不需要额外查代码、不需要与任何人沟通。
@@ -85,17 +89,22 @@ const CODE_PLANNER_VERIFICATION = `交付 plan 之前，执行以下自检，发
    如果回答是「不确定」→ 这个 task 需要补充信息`
 
 const CODE_WRITER_WHEN_TO_USE = `Use this subagent when:
-- code_planner 已产出 plan 文件，需要执行具体 task
-- task 已明确到：知道改哪个文件、写什么代码、怎么测试
+- code_planner 已产出 plan 文件，需要按 plan 实施编码任务
+- 通常的派发方式：拿 PLAN_PATH 一次性派 code_writer 实施整个 plan（不必逐 task 单独派）
+
+输入契约：task 中传完整的 PLAN_PATH（如 "按 /tmp/plan_xxx.md 实施所有 task"），
+writer 会自己按 plan 顺序逐 task 执行，并在每个 task 完成后跑 verification。
 
 不要在以下情况使用：
-- 没有 plan 文件时（先调 code_planner）
-- task 里有「TBD」或模糊描述（先让 code_planner 修正 plan）
+- 没有 plan 文件时——先调 code_planner 产 plan，再派 writer
+- plan 里有「TBD」/「TODO」/ 模糊描述——让 code_planner 修订 plan 再派 writer
+- 非编码任务（视觉 / 调研 / 信息查询）——选其他 subagent 或 main 自干
 
 <example>
-Context: code_planner 已产出 plan，Task 2 是「给 User model 加 rateLimit 字段」
-assistant: 调用 delegate_task(subagent_type="code_writer", task="按 /tmp/plan_xxx.md 的 Task 2 实施")
-<commentary>有明确的文件路径、代码和测试命令，适合 code_writer 执行</commentary>
+Context: code_planner 刚返回 PLAN_PATH=/tmp/plan_xxx.md（含 3 个 task）
+assistant: 调用 delegate_task(subagent_type="code_writer", task="按 /tmp/plan_xxx.md 实施所有 task，每个完成后跑 verification")
+<commentary>一次派整个 plan 给 writer，writer 自己按序逐 task 执行 + verification。
+仅在 writer 上报 BLOCKED 时 main 才介入（按 BLOCKER_TYPE 决定回 planner 修订 plan 或自己修环境）。</commentary>
 </example>`
 
 const CODE_WRITER_ROLE = `你是 Crabot 的代码执行专家（code_writer）。你接收一个 plan markdown 文件中的**单个 task**，严格按照 task 的步骤执行，不做任何超出 task 范围的决策。
