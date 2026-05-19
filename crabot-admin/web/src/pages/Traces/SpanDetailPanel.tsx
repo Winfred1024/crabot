@@ -5,7 +5,7 @@ import {
   totalPromptTokens,
   cacheHitRate,
 } from '../../services/trace'
-import { formatDateTimeLocal, formatDuration, formatTokens } from './utils'
+import { formatDateTimeLocal, formatDuration, formatTokens, agentLoopLabel } from './utils'
 import { TraceLink } from './TraceTable'
 
 // ============================================================================
@@ -20,7 +20,8 @@ export const SpanDetailPanel: React.FC<{
   const rows: { label: string; value: string | React.ReactNode; monospace?: boolean }[] = []
 
   if (span.type === 'agent_loop') {
-    if (d.loop_label) rows.push({ label: 'Label', value: String(d.loop_label) })
+    const loopLabelText = agentLoopLabel({ loop_label: d.loop_label as string | undefined })
+    if (loopLabelText) rows.push({ label: 'Label', value: loopLabelText })
     if (d.model) rows.push({ label: 'Model', value: String(d.model) })
     if (d.iteration_count !== undefined) rows.push({ label: 'Iterations', value: String(d.iteration_count) })
     if (Array.isArray(d.tools) && d.tools.length > 0) {

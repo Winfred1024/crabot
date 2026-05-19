@@ -272,13 +272,29 @@ export function groupEntries(entries: TraceIndexEntry[]): TraceGroup[] {
 }
 
 // ============================================================================
+// agentLoopLabel — 把 loop_label 渲染为用户可见 label
+// ============================================================================
+
+/**
+ * 把 agent_loop span 的 loop_label 渲染为用户可见 label。
+ * 兼容旧 trace 中 front/worker 字面值；新数据中 loop_label 会是 subagent name。
+ */
+export function agentLoopLabel(details: { loop_label?: string }): string {
+  const label = details.loop_label
+  if (!label) return 'Agent Loop'
+  if (label === 'front') return 'Front Loop (legacy)'
+  if (label === 'worker') return 'Worker Loop'
+  return label
+}
+
+// ============================================================================
 // detailSummary — SpanRow 显示用的一行摘要
 // ============================================================================
 
 export function detailSummary(span: AgentSpan): string {
   const d = span.details as Record<string, unknown>
   if (span.type === 'agent_loop') {
-    const label = d.loop_label ? `"${d.loop_label}"` : ''
+    const label = agentLoopLabel({ loop_label: d.loop_label as string | undefined })
     const iters = d.iteration_count ? ` ${d.iteration_count} iters` : ''
     return `${label}${iters}`.trim()
   }
@@ -290,7 +306,10 @@ export function detailSummary(span: AgentSpan): string {
   if (span.type === 'tool_call') return String(d.tool_name ?? '')
   if (span.type === 'sub_agent_call') return `→ ${d.target_module_id ?? ''}`
   if (span.type === 'decision') return String(d.decision_type ?? '')
-  if (span.type === 'context_assembly' || span.type === 'context_fetch') return `${d.context_type ?? ''} context`
+  if (span.type === 'context_assembly' || span.type === 'context_fetch') {
+    const ctx = d.context_type ? ` (${d.context_type})` : ''
+    return `Context Assembly${ctx}`
+  }
   if (span.type === 'memory_write') return `→ ${d.channel_id ?? ''}`
   if (span.type === 'rpc_call') return `${d.target_module ?? ''}::${d.method ?? ''}`
   if (span.type === 'bg_entity_exit') {

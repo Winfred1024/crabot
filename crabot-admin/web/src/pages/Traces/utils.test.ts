@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { spanTypeLabel, spanTypeBg, detailSummary } from './utils'
+import { spanTypeLabel, spanTypeBg, detailSummary, agentLoopLabel } from './utils'
 import type { AgentSpan } from '../../services/trace'
 
 describe('spanTypeLabel', () => {
@@ -100,5 +100,20 @@ describe('detailSummary for dispatch_action', () => {
     const summary = detailSummary(span)
     expect(summary).toContain('new_task')
     expect(summary).toContain('new_task_spawned')
+  })
+})
+
+describe('agentLoopLabel', () => {
+  it('legacy front label 显示 Front Loop (legacy)', () => {
+    expect(agentLoopLabel({ loop_label: 'front' })).toBe('Front Loop (legacy)')
+  })
+  it('worker label 显示 Worker Loop', () => {
+    expect(agentLoopLabel({ loop_label: 'worker' })).toBe('Worker Loop')
+  })
+  it('subagent name 原样显示', () => {
+    expect(agentLoopLabel({ loop_label: 'code_planner' })).toBe('code_planner')
+  })
+  it('空 label 显示 Agent Loop fallback', () => {
+    expect(agentLoopLabel({})).toBe('Agent Loop')
   })
 })
