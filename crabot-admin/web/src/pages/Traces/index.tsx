@@ -9,7 +9,6 @@ import {
   cacheHitRate,
   type AgentTrace,
   type TraceIndexEntry,
-  type TokenUsage,
   type SearchTracesParams,
 } from '../../services/trace'
 import {
