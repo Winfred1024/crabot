@@ -24,6 +24,13 @@ plan：`crabot-docs/superpowers/plans/2026-05-19-trace-page-redesign.md`
 - `crabot-admin/web/src/pages/Traces/`：utils.ts + 8 个组件文件 + 多个测试文件
 - `crabot-docs/protocols/`：§8.2 表 + §3.24 REST 表 + AdminGlobalModelConfig 字段
 
+**已记录的 follow-up（不阻塞本里程碑）：**
+- agent 端 `unified-agent.ts:2286-2304` 有独立每日清理（默认 30 天，用 `TRACE_RETENTION_DAYS` env 控制），与 admin cron 并行运行。后续应删除 agent 自清理，让 admin cron 是唯一入口。
+- admin cron 实际是「启动后每 24h」一次，protocol §3.24 描述为「每天 03:00」——需要要么改 impl 算到下一个 03:00，要么把 protocol 改成「每 24h」。
+- `cleanupOldFiles` 在 trace-store.ts:555 标 @deprecated 但暂未删除；上面项落地后可一起清。
+- `SpanDetailPanel` 老 span type label 仍英文（Model/Iterations/Tool 等），新 dispatch 已中文化。下次顺手统一。
+- web 端 `services/trace.ts` 与 agent 端 `types.ts` 双写 `AgentSpanType`/details union，存在 drift（如 web 有 llm_retry 但 agent 没有）。后续移到 `crabot-shared` 统一。
+
 ---
 
 ## 上一里程碑（2026-05-19 — Phase 5 阶段 2c：research_collector 重构 + WORKFLOW 派发改造）
