@@ -255,6 +255,71 @@ describe('executeTriggerMessage 超期注册到 admin', () => {
     expect(result!.overdueInjected).toBe(true)
   })
 
+  it('startup register 后立刻把 admin task 推到 executing（pending→planning→executing），避免后续 ask_human 因状态机非法 transition 被拒', async () => {
+    // Trace 4751612f 复现：trigger 路径从来不切 admin 状态机，
+    // admin 上 task 长期停在 pending，导致：
+    // ① 历史 trigger task 永远 pending → Front 看到的 active_tasks 累积 phantom
+    // ② worker 调 ask_human → admin pending→waiting_human 状态机拒 → setBarrier 跳过 → loop 不阻塞
+    mockRunEngine.mockImplementation(async () => makeEngineResult({ overdueInjected: false }))
+
+    const params = makeTriggerParams()
+    await handler.executeTriggerMessage(params)
+
+    // wait for any best-effort RPC chains to settle
+    await new Promise(r => setTimeout(r, 20))
+
+    // 收集所有 status transition 调用
+    const statusCalls = mockRpcCall.mock.calls.filter(
+      (call: unknown[]) => call[1] === 'update_task_status',
+    ) as Array<[number, string, Record<string, unknown>, string]>
+
+    const createTaskCalls = mockRpcCall.mock.calls.filter(
+      (call: unknown[]) => call[1] === 'create_task',
+    ) as Array<[number, string, Record<string, unknown>, string]>
+    expect(createTaskCalls.length).toBeGreaterThanOrEqual(1)
+    const syntheticTaskId = createTaskCalls[0][2].id as string
+
+    // 至少应该有两次 status transition：planning 和 executing
+    const targetedTransitions = statusCalls.filter(c => c[2].task_id === syntheticTaskId)
+    const planningCall = targetedTransitions.find(c => c[2].status === 'planning')
+    const executingCall = targetedTransitions.find(c => c[2].status === 'executing')
+
+    expect(planningCall).toBeDefined()
+    expect(executingCall).toBeDefined()
+
+    // 顺序：create_task → planning → executing
+    const allCallsForTask = mockRpcCall.mock.calls.filter(
+      (call: unknown[]) => (call[2] as Record<string, unknown>)?.id === syntheticTaskId
+        || (call[2] as Record<string, unknown>)?.task_id === syntheticTaskId,
+    )
+    const createIdx = allCallsForTask.findIndex(c => c[1] === 'create_task')
+    const planningIdx = allCallsForTask.findIndex(c =>
+      c[1] === 'update_task_status' && (c[2] as Record<string, unknown>).status === 'planning',
+    )
+    const executingIdx = allCallsForTask.findIndex(c =>
+      c[1] === 'update_task_status' && (c[2] as Record<string, unknown>).status === 'executing',
+    )
+    expect(createIdx).toBeLessThan(planningIdx)
+    expect(planningIdx).toBeLessThan(executingIdx)
+  })
+
+  it('register 阶段的 planning/executing transition 失败时不阻塞主 loop（best-effort）', async () => {
+    // 状态机切换是 best-effort——admin 不可用时只 log 不抛
+    mockRunEngine.mockImplementation(async () => makeEngineResult())
+
+    mockRpcCall.mockImplementation(async (_port: number, method: string) => {
+      if (method === 'update_task_status') {
+        throw new Error('admin RPC unavailable')
+      }
+      return {}
+    })
+
+    const params = makeTriggerParams()
+    // 直接 await——不抛即视为不阻塞主 loop；抛了 vitest 自然 fail
+    const result = await handler.executeTriggerMessage(params)
+    expect(result.outcome).toBe('completed')
+  })
+
   it('onOverdue 被多次调用しても create_task は startup の 1 回のみ（fireAndForgetRegister 削除済み）', async () => {
     // Engine calls onOverdue twice (edge case: timer fires multiple times)
     // Since fireAndForgetRegister is gone, onOverdue is a pure string callback — no side effects.

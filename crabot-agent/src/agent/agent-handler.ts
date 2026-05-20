@@ -1547,6 +1547,22 @@ export class AgentHandler {
       },
       priority: 'normal',
     }, this.deps.moduleId)
+
+    // create_task 默认建在 pending；trigger 路径必须立即推到 executing 与 worker 内存状态对齐：
+    // ① 让后续 ask_human 的 executing→waiting_human transition 合法（否则 admin 状态机拒）
+    // ② 让 finalizeTask 的 executing→completed/failed transition 合法（否则 bestEffortRpc 静默吞错、admin 任务永远 pending → phantom 累积）
+    // 两步 transition 是 best-effort：失败只 log 不抛，主流程继续——task 已存在不必回滚 create。
+    for (const status of ['planning', 'executing'] as const) {
+      try {
+        await this.deps.rpcClient.call(adminPort, 'update_task_status', {
+          task_id: params.syntheticTaskId,
+          status,
+        }, this.deps.moduleId)
+      } catch (err) {
+        log(`registerTriggerTaskToAdmin: transition to ${status} failed (continuing): ${err instanceof Error ? err.message : String(err)}`)
+        return
+      }
+    }
   }
 
   /**

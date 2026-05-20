@@ -587,24 +587,59 @@ export function buildMessagingTools(
         if (intent === 'ask_human') {
           // getTaskContext 在入口已校验过非 null，此处直接取
           const taskCtx = deps.getTaskContext!()!
+          const adminPort = await getAdminPort()
+          const pendingQuestion = content.slice(0, ASK_HUMAN_PENDING_QUESTION_MAX_LEN)
 
-          // Step 2: update_task_status（admin 同进程 RPC，几乎不会失败；
-          // 即使失败，消息已发，worker 看到 error 字段会自行处理，不会卡 barrier）
-          try {
-            const adminPort = await getAdminPort()
+          const transitionToWaitingHuman = async () => {
             await rpcClient.call<
               { task_id: string; status: string; pending_question: string },
               { task: unknown }
             >(adminPort, 'update_task_status', {
               task_id: taskCtx.taskId,
               status: 'waiting_human',
-              pending_question: content.slice(0, ASK_HUMAN_PENDING_QUESTION_MAX_LEN),
+              pending_question: pendingQuestion,
             }, moduleId)
+          }
+
+          // Step 2: update_task_status（admin 同进程 RPC，几乎不会失败；
+          // 即使失败，消息已发，worker 看到 error 字段会自行处理，不会卡 barrier）
+          let stateError: string | undefined
+          try {
+            await transitionToWaitingHuman()
           } catch (rpcErr) {
-            // admin RPC 失败：消息已发但状态没切。
-            // 返回含 ask_human_state_error 的结果，worker 看到 error 字段会自己处理，不设 barrier 防止卡死。
             const msg = rpcErr instanceof Error ? rpcErr.message : String(rpcErr)
-            return wrapText({ ...sendResult, ask_human_state_error: `update_task_status 失败：${msg}` })
+            // 区分两类失败：
+            //  - persistent（状态机非法 transition，常因 trigger 路径未把 task 推到 executing）→ 尝试补齐状态机后重试
+            //  - transient（admin 不健康 / 网络）→ 按 spec §5.3 直接兜底，不暂停 worker
+            if (msg.includes('INVALID_STATUS_TRANSITION')) {
+              // 无脑 try planning → executing；当前 status 若已在某档位，相应的 transition 会被 admin 拒，
+              // 这里 catch 吞掉继续——目标是把 task 推到 executing 作为 waiting_human 的合法前继。
+              for (const status of ['planning', 'executing'] as const) {
+                try {
+                  await rpcClient.call<
+                    { task_id: string; status: string },
+                    { task: unknown }
+                  >(adminPort, 'update_task_status', {
+                    task_id: taskCtx.taskId,
+                    status,
+                  }, moduleId)
+                } catch { /* 状态机已在更高档位时同 status 转换会被拒，吞掉继续 */ }
+              }
+              try {
+                await transitionToWaitingHuman()
+              } catch (retryErr) {
+                const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr)
+                stateError = `update_task_status 重试仍失败：${retryMsg}`
+              }
+            } else {
+              stateError = `update_task_status 失败：${msg}`
+            }
+          }
+
+          if (stateError !== undefined) {
+            // 补齐失败 / transient admin 故障：消息已发但状态没切。
+            // 返回含 ask_human_state_error 的结果，worker 看到 error 字段会自己处理，不设 barrier 防止卡死。
+            return wrapText({ ...sendResult, ask_human_state_error: stateError })
           }
 
           // Step 3: setBarrier（本地内存操作，从不失败）
