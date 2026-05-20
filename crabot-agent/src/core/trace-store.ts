@@ -435,6 +435,114 @@ export class TraceStore {
     return { task_id: taskId, tree: { fronts, worker, subagents } }
   }
 
+  getDiskUsage(): {
+    total_bytes: number
+    trace_count: number
+    oldest_iso?: string
+    newest_iso?: string
+  } {
+    if (!this.persistDir || !fs.existsSync(this.persistDir)) {
+      return { total_bytes: 0, trace_count: 0 }
+    }
+    let totalBytes = 0
+    let traceCount = 0
+    let oldestMtime: number | null = null
+    let newestMtime: number | null = null
+    try {
+      const files = fs.readdirSync(this.persistDir)
+        .filter(f => f.startsWith('traces-') && f.endsWith('.jsonl'))
+      for (const file of files) {
+        const filePath = path.join(this.persistDir, file)
+        const stat = fs.statSync(filePath)
+        totalBytes += stat.size
+        const mtime = stat.mtimeMs
+        if (oldestMtime === null || mtime < oldestMtime) oldestMtime = mtime
+        if (newestMtime === null || mtime > newestMtime) newestMtime = mtime
+        const content = fs.readFileSync(filePath, 'utf-8')
+        for (const line of content.split('\n')) {
+          if (line.trim()) traceCount++
+        }
+      }
+    } catch (err) {
+      console.warn('[TraceStore] getDiskUsage failed:', err instanceof Error ? err.message : err)
+    }
+    return {
+      total_bytes: totalBytes,
+      trace_count: traceCount,
+      ...(oldestMtime !== null ? { oldest_iso: new Date(oldestMtime).toISOString() } : {}),
+      ...(newestMtime !== null ? { newest_iso: new Date(newestMtime).toISOString() } : {}),
+    }
+  }
+
+  /**
+   * 按日级粒度清理 JSONL 文件：找 traces-<date>.jsonl 中 date < (today - retentionDays) 的整个文件删除。
+   * dryRun=true 时只返回统计不实删。
+   */
+  cleanupOldTraces(retentionDays: number, dryRun: boolean): {
+    affected_count: number
+    affected_bytes: number
+    deleted_trace_ids: string[]
+  } {
+    if (!this.persistDir || retentionDays <= 0 || !fs.existsSync(this.persistDir)) {
+      return { affected_count: 0, affected_bytes: 0, deleted_trace_ids: [] }
+    }
+    const cutoff = new Date()
+    cutoff.setDate(cutoff.getDate() - retentionDays)
+    const cutoffStr = cutoff.toISOString().slice(0, 10)
+
+    let affectedTraces = 0
+    let affectedBytes = 0
+    const deletedIds: string[] = []
+    const toDelete: string[] = []
+
+    try {
+      const files = fs.readdirSync(this.persistDir)
+        .filter(f => f.startsWith('traces-') && f.endsWith('.jsonl'))
+      for (const file of files) {
+        const dateStr = file.slice('traces-'.length, 'traces-'.length + 10)
+        if (dateStr >= cutoffStr) continue
+        const filePath = path.join(this.persistDir, file)
+        const stat = fs.statSync(filePath)
+        affectedBytes += stat.size
+        const content = fs.readFileSync(filePath, 'utf-8')
+        const ids: string[] = []
+        for (const line of content.split('\n')) {
+          if (!line.trim()) continue
+          try {
+            const trace = JSON.parse(line) as { trace_id?: string }
+            if (trace.trace_id) ids.push(trace.trace_id)
+          } catch { /* skip malformed */ }
+        }
+        affectedTraces += ids.length
+        if (!dryRun) {
+          toDelete.push(file)
+          deletedIds.push(...ids)
+        }
+      }
+      if (!dryRun) {
+        for (const file of toDelete) {
+          try {
+            fs.unlinkSync(path.join(this.persistDir, file))
+            this.traceIndex = this.traceIndex.filter(e => e.file !== file)
+          } catch (err) {
+            console.warn(`[TraceStore] cleanupOldTraces delete failed for ${file}:`, err instanceof Error ? err.message : err)
+          }
+        }
+        if (toDelete.length > 0) {
+          this.rebuildTaskIndex()
+        }
+      }
+    } catch (err) {
+      console.warn('[TraceStore] cleanupOldTraces failed:', err instanceof Error ? err.message : err)
+    }
+
+    return {
+      affected_count: affectedTraces,
+      affected_bytes: affectedBytes,
+      deleted_trace_ids: deletedIds,
+    }
+  }
+
   cleanupOldFiles(retentionDays: number): number {
     if (!this.persistDir) return 0
 
