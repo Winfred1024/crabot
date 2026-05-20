@@ -95,16 +95,18 @@ export function formatWechatContent(
     }
 
     // ── 文件 (9, 1090519089) ──
+    // wechat-connector 协议（FileMessageContent 见 connector packages/shared/src/types/message.ts:109）：
+    //   完整字段：file_name (string) / file_url (string) / file_size (number)
+    // 实测 FILE_9 (type=9) Puppet 上报的 raw 当前只有：
+    //   text     = 文件名（如 "陈敏的家庭保障分析报告.pdf"）— 不是文本正文
+    //   describe = 文件大小字节数字符串（如 "5440092" ≈ 5.2MB）
+    //   file_url 缺失 — connector 入站文件不主动下载（参 event.handler.ts:163-185 只下载 APP_MSG 聊天记录图 / LINK 缩略图）
+    // 这里同时兼容两种命名：connector 修好后会直接给 file_url + file_size，本代码无需变动。
     case 9:
     case 1090519089: {
-      // wechat-connector 协议（实际抓包确认 2026-05）：
-      //   text     = 文件名（如 "刘希红的家庭保障分析报告.pdf"），不是文本正文
-      //   describe = 文件大小字节数字符串（如 "5903629" ≈ 5.6MB）
-      //   file_url / file_name / resource_url 等字段不存在
-      // 历史 / 其他 connector 版本可能填 file_name / filename / file_url，做候选兜底。
       const fileName =
-        s('text')
-        ?? s('file_name')
+        s('file_name')
+        ?? s('text')         // FILE_9 实测命名
         ?? s('filename')
         ?? s('title')
         ?? s('name')
@@ -115,8 +117,15 @@ export function formatWechatContent(
         ?? s('url')
         ?? s('resource_url')
         ?? s('download_url')
-      const fileSizeStr = s('describe')  // wechat-connector 把文件大小（字节数）放这里
-      const fileSize = fileSizeStr && /^\d+$/.test(fileSizeStr) ? Number(fileSizeStr) : undefined
+      // file_size 优先（connector 完整字段名，number 类型）；fallback 到 describe（FILE_9 实测命名，string 类型）
+      const rawFileSize = raw.file_size ?? raw.fileSize
+      const fileSize: number | undefined =
+        typeof rawFileSize === 'number' && Number.isFinite(rawFileSize)
+          ? rawFileSize
+          : (() => {
+              const d = s('describe')
+              return d && /^\d+$/.test(d) ? Number(d) : undefined
+            })()
       if (!fileName) {
         console.warn(
           `[format-wechat-content] case ${fieldType} 文件消息字段未识别，raw=${dumpRawForDebug(raw)}`
