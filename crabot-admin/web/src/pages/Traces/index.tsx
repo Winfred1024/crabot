@@ -28,6 +28,8 @@ import { FilterBar } from './FilterBar'
 import { PaginationBar } from './PaginationBar'
 import { StatusDot, TriggerBadge, TraceTableRow, GroupedTableRow, TraceChip, TraceLink } from './TraceTable'
 import { SpanTree } from './SpanTree'
+import { StatusBar } from './StatusBar'
+import { ManualCleanupDialog, AutoCleanupSettingsDialog } from './CleanupDialogs'
 
 // ============================================================================
 // 本地 type（仅主组件用）
@@ -409,6 +411,10 @@ export const Traces: React.FC = () => {
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [clearing, setClearing] = useState(false)
 
+  const [manualCleanupOpen, setManualCleanupOpen] = useState(false)
+  const [autoCleanupOpen, setAutoCleanupOpen] = useState(false)
+  const [statusRefreshKey, setStatusRefreshKey] = useState(0)
+
   const isFiltered =
     filter.keyword !== '' || filter.status !== '' || filter.range !== 'all' || filter.taskId !== ''
 
@@ -580,6 +586,25 @@ export const Traces: React.FC = () => {
             {clearing ? '清理中...' : '清理内存'}
           </Button>
         </div>
+
+        {/* 磁盘占用状态栏 */}
+        <StatusBar
+          refreshKey={statusRefreshKey}
+          onOpenManualCleanup={() => setManualCleanupOpen(true)}
+          onOpenAutoCleanupSettings={() => setAutoCleanupOpen(true)}
+        />
+        <ManualCleanupDialog
+          open={manualCleanupOpen}
+          onClose={() => setManualCleanupOpen(false)}
+          onDeleted={() => {
+            setStatusRefreshKey((k) => k + 1)
+            void loadList()
+          }}
+        />
+        <AutoCleanupSettingsDialog
+          open={autoCleanupOpen}
+          onClose={() => setAutoCleanupOpen(false)}
+        />
 
         {/* 视图切换 + 筛选栏 */}
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>

@@ -160,4 +160,12 @@ export const traceService = {
   }): Promise<{ cleared_count: number }> {
     return api.delete(`/agent/traces`)
   },
+
+  async getDiskUsage(): Promise<{ total_bytes: number; trace_count: number; oldest_iso?: string; newest_iso?: string }> {
+    return api.get('/agent/traces/disk-usage')
+  },
+
+  async cleanupOld(days: number, dryRun: boolean): Promise<{ affected_count: number; affected_bytes: number; deleted_trace_ids: string[] }> {
+    return api.delete(`/agent/traces/old?days=${days}&dry_run=${dryRun}`)
+  },
 }
