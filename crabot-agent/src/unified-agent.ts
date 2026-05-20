@@ -2142,6 +2142,14 @@ export class UnifiedAgent extends ModuleBase {
       related_task_id: pre.taskId,
     })
     const traceCb = this.buildTraceCallback(taskTrace.trace_id)
+    // traceContext 必须传：runWorkerLoop 用它给 delegate_task 注入 subAgentTraceConfig，
+    // subagent 实际跑时会用 traceStore.startTrace(type='sub_agent_call', parent_trace_id=taskTrace.trace_id,
+    // related_task_id=pre.taskId) 建独立 sub trace，UI 上才能看到 subagent 行 + 父子关系跳转。
+    const traceContext: import('./agent/agent-handler').WorkerTraceContext = {
+      traceStore: this.traceStore,
+      traceId: taskTrace.trace_id,
+      relatedTaskId: pre.taskId,
+    }
 
     const finalize = (result: ExecuteTriggerMessageResult) => {
       this.traceStore.endTrace(
@@ -2160,13 +2168,13 @@ export class UnifiedAgent extends ModuleBase {
 
     if (opts.awaitWorker) {
       try {
-        const result = await this.agentHandler!.runTriggerWorkerLoop(opts.params, pre, traceCb)
+        const result = await this.agentHandler!.runTriggerWorkerLoop(opts.params, pre, traceCb, traceContext)
         finalize(result)
       } catch (err) {
         finalizeError(err)
       }
     } else {
-      void this.agentHandler!.runTriggerWorkerLoop(opts.params, pre, traceCb)
+      void this.agentHandler!.runTriggerWorkerLoop(opts.params, pre, traceCb, traceContext)
         .then(finalize)
         .catch(err => {
           finalizeError(err)
