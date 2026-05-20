@@ -4,10 +4,13 @@
  * 将 wechat-connector 结构化 content 转为 Crabot MessageContent + MessageFeatures。
  * 入站消息处理和 get_history/get_message 代理共用此逻辑。
  *
- * wechat-connector MessageType 枚举值参考:
- *   0=TEXT, 1=IMAGE, 2=VOICE, 3=CARD, 4=TRANSFER, 5=RED_PACKET,
- *   9=FILE, 10=VIDEO, 11=LINK, 15=MINI_PROGRAM, 17=PAT_PAT,
- *   18=QUOTE, 20=APP_MSG, 34=VOICE, 42=CARD, 43=VIDEO, 47=EMOJI
+ * 主路径——connector 推送的 `message.type` 是 MessageType 枚举（参 BOT_INTEGRATION.md §消息类型）：
+ *   0=TEXT, 1=IMAGE, 2=VOICE_2, 3=CARD_3, 4=TRANSFER, 5=RED_PACKET, 6=SYSTEM,
+ *   9=FILE_9, 10=VIDEO_10, 11=LINK, 15=MINI_PROGRAM, 17=PAT_PAT, 18=QUOTE, 20=APP_MSG
+ *
+ * 兼容路径——历史上 puppet 上报时可能直接传微信原始 field_type，下面 case 里多出来的
+ *   34=VOICE / 42=CARD / 43=VIDEO / 47=EMOJI / 1090519089=FILE / 10000/10002=SYSTEM
+ * 都是这种兼容性兜底，主路径不会走到。
  */
 
 import type { MessageContent, MessageFeatures, MessageType } from './types.js'
@@ -95,30 +98,19 @@ export function formatWechatContent(
     }
 
     // ── 文件 (9, 1090519089) ──
-    // wechat-connector 协议（FileMessageContent 见 connector packages/shared/src/types/message.ts:109）：
-    //   完整字段：file_name (string) / file_url (string) / file_size (number)
-    // 实测 FILE_9 (type=9) Puppet 上报的 raw 当前只有：
-    //   text     = 文件名（如 "陈敏的家庭保障分析报告.pdf"）— 不是文本正文
-    //   describe = 文件大小字节数字符串（如 "5440092" ≈ 5.2MB）
-    //   file_url 缺失 — connector 入站文件不主动下载（参 event.handler.ts:163-185 只下载 APP_MSG 聊天记录图 / LINK 缩略图）
-    // 这里同时兼容两种命名：connector 修好后会直接给 file_url + file_size，本代码无需变动。
+    // 参 BOT_INTEGRATION.md §「入站文件消息（type=9）的字段保证与降级」：
+    //   - 主路径：connector 在 emit 前会主动下发 down_file 任务让 puppet 下载并上传图床，
+    //     ack 回来后 emit，此时 content 含 file_url (string) + file_name (string) + file_size (number)
+    //   - envelope 兜底：file_name 优先 ack 回执，否则取 puppet 原始上报的 `text`（文件名）；
+    //                    file_size 优先 ack 回执，否则从 `describe`（字节数字符串）转 number
+    //   - 60s 超时降级：file_url 缺失，但 file_name + file_size 会被 connector 主动回填
+    // type=1090519089 (FILE) 是历史微信原始 type，connector 走同一套字段补齐流程。
     case 9:
     case 1090519089: {
-      const fileName =
-        s('file_name')
-        ?? s('text')         // FILE_9 实测命名
-        ?? s('filename')
-        ?? s('title')
-        ?? s('name')
-        ?? s('display_name')
-      const fileUrl =
-        s('file_url')
-        ?? s('fileurl')
-        ?? s('url')
-        ?? s('resource_url')
-        ?? s('download_url')
-      // file_size 优先（connector 完整字段名，number 类型）；fallback 到 describe（FILE_9 实测命名，string 类型）
-      const rawFileSize = raw.file_size ?? raw.fileSize
+      const fileName = s('file_name') ?? s('text')
+      const fileUrl = s('file_url')
+      // file_size 是 number 类型（ack 回执填的），envelope 兜底从 describe 字符串转
+      const rawFileSize = raw.file_size
       const fileSize: number | undefined =
         typeof rawFileSize === 'number' && Number.isFinite(rawFileSize)
           ? rawFileSize

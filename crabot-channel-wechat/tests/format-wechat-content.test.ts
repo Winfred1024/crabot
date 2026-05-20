@@ -81,3 +81,75 @@ describe('formatWechatContent quote (type=18) with quoted_resource_url', () => {
     expect(content.text).toContain('> 张三: [消息]')
   })
 })
+
+describe('formatWechatContent file (type=9 / 1090519089)', () => {
+  // 文档参考：wechat-connector/docs/BOT_INTEGRATION.md
+  // "入站文件消息（type=9）的字段保证与降级"
+
+  it('ack 成功路径：file_url + file_name + file_size 完整', () => {
+    const { content } = formatWechatContent(9, {
+      type: 9,
+      text: '陈敏的家庭保障分析报告.pdf',
+      describe: '5440092',
+      file_url: 'http://p.wcssq.cn/idwxid_xxxxxxxxx',
+      file_name: '陈敏的家庭保障分析报告.pdf',
+      file_size: 5440092,
+    })
+
+    expect(content.type).toBe('file')
+    expect(content.media_url).toBe('http://p.wcssq.cn/idwxid_xxxxxxxxx')
+    expect(content.filename).toBe('陈敏的家庭保障分析报告.pdf')
+    expect(content.size).toBe(5440092)
+  })
+
+  it('envelope 兜底：仅 text + describe（ack 字段缺失时取 puppet 原始上报）', () => {
+    const { content } = formatWechatContent(9, {
+      type: 9,
+      text: '报告.pdf',
+      describe: '102400',
+    })
+
+    expect(content.type).toBe('file')
+    expect(content.filename).toBe('报告.pdf')
+    expect(content.size).toBe(102400)
+    expect(content.media_url).toBeUndefined()
+  })
+
+  it('60s 超时降级：有 file_name + file_size 但缺 file_url', () => {
+    const { content } = formatWechatContent(9, {
+      type: 9,
+      text: '报告.pdf',
+      describe: '5440092',
+      file_name: '报告.pdf',
+      file_size: 5440092,
+    })
+
+    expect(content.type).toBe('file')
+    expect(content.filename).toBe('报告.pdf')
+    expect(content.size).toBe(5440092)
+    expect(content.media_url).toBeUndefined()
+  })
+
+  it('兼容 type=1090519089 (FILE)：与 type=9 走同一路径', () => {
+    const { content } = formatWechatContent(1090519089, {
+      type: 1090519089,
+      file_url: 'https://cdn.example.com/a.zip',
+      file_name: 'a.zip',
+      file_size: 1024,
+    })
+
+    expect(content.type).toBe('file')
+    expect(content.media_url).toBe('https://cdn.example.com/a.zip')
+    expect(content.filename).toBe('a.zip')
+    expect(content.size).toBe(1024)
+  })
+
+  it('完全缺字段：filename 回退到「未知文件」，不抛错', () => {
+    const { content } = formatWechatContent(9, { type: 9 })
+
+    expect(content.type).toBe('file')
+    expect(content.filename).toBe('未知文件')
+    expect(content.media_url).toBeUndefined()
+    expect(content.size).toBeUndefined()
+  })
+})
