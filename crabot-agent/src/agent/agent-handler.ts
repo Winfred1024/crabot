@@ -552,18 +552,23 @@ export class AgentHandler {
     traceContext?: WorkerTraceContext,
     opts?: RunWorkerLoopOptions,
   ): Promise<RunWorkerLoopResult> {
-    const taskState: WorkerTaskState = {
-      taskId: task.task_id,
-      status: 'executing',
-      startedAt: new Date().toISOString(),
-      title: task.task_title,
-      triggerType: task.source?.trigger_type === 'scheduled' ? 'scheduled' : 'message',
-      abortController: new AbortController(),
-      pendingHumanMessages: [],
-      taskOrigin: context.task_origin,
-      todoStore: new TodoStore(),
+    // idempotent：trigger 路径已由 registerTriggerAndActivate 提前 set；
+    // executeTask 路径仍由本方法新建。
+    let taskState = this.activeTasks.get(task.task_id)
+    if (!taskState) {
+      taskState = {
+        taskId: task.task_id,
+        status: 'executing',
+        startedAt: new Date().toISOString(),
+        title: task.task_title,
+        triggerType: task.source?.trigger_type === 'scheduled' ? 'scheduled' : 'message',
+        abortController: new AbortController(),
+        pendingHumanMessages: [],
+        taskOrigin: context.task_origin,
+        todoStore: new TodoStore(),
+      }
+      this.activeTasks.set(task.task_id, taskState)
     }
-    this.activeTasks.set(task.task_id, taskState)
 
     // Init live snapshot（query-loop 的 onLiveProgress 会逐步填充）
     this.liveSnapshots.set(task.task_id, {
@@ -1151,49 +1156,36 @@ export class AgentHandler {
   }
 
   /**
-   * 处理新到 trigger message——统一 loop 入口。
+   * Trigger 流的同步段：生成 taskId → register admin → activeTasks.set。
+   * 返回后下一批 dispatcher 的 fetchActiveTasks 必然能拉到这个 task，
+   * SessionLane handler 可以解锁处理下一批。
    *
-   * 与 executeTask 的区别：
-   * - executeTask 处理 admin 已注册的 task（带 task_id）
-   * - executeTriggerMessage 处理新触发消息，可能早退（supplement/silent），可能自然结束
+   * 与 runTriggerWorkerLoop 配对使用。executeTriggerMessage 是两者的薄壳。
    *
-   * Caller（unified-agent）根据 result.exitToolCall 自行 dispatch：
-   * - exitToolCall.name === 'supplement_task' → 路由 supplement_text 到目标 task
-   * - exitToolCall.name === 'stay_silent' → 忽略
-   * - undefined → loop 自然结束（agent 已通过 send_message 工具回复人类，或没回复）
+   * ⚠️ 调用方必须在 await 后立即调 runTriggerWorkerLoop（或在自身 try/catch 异常时
+   * `this.activeTasks.delete(pre.taskId)`），否则 register 成功但 run 未启动会留下
+   * phantom 条目，下次 dispatcher 看到错位的 activeTasks。
    *
-   * Spec: crabot-docs/superpowers/specs/2026-05-15-agent-unified-loop-redesign-design.md §2.1
+   * Spec: 2026-05-20-session-lane-dispatcher-design.md §3.3
    */
-  async executeTriggerMessage(
+  async registerTriggerAndActivate(
     params: ExecuteTriggerMessageParams,
-    traceCallback?: TraceCallback,
-    traceContext?: WorkerTraceContext,
-  ): Promise<ExecuteTriggerMessageResult> {
-    const {
-      messages,
-      activeTasks,
-      isGroup,
-      senderFriend,
-      triggerArrivedAtMs,
-      timeoutMs = 30_000,
-      overdueReminderEnabled = true,
-      memoryPermissions,
-      resolvedPermissions,
-      channelId,
-      sessionId,
-      frontContext,
-    } = params
+  ): Promise<{
+    taskId: TaskId
+    registered: boolean
+    task: ExecuteTaskParams['task']
+    context: WorkerAgentContext
+    triggerSummary: string
+  }> {
+    const { messages, isGroup, senderFriend, memoryPermissions, resolvedPermissions,
+      channelId, sessionId, frontContext } = params
 
-    // 1. Build synthetic task + WorkerAgentContext from trigger params
     const triggerSummary = messages
       .map(m => m.content.type === 'text' ? (m.content.text ?? '') : '[非文本]')
       .join(' ')
       .slice(0, 100)
-    const syntheticTaskId = `trigger-${randomUUID()}`
+    const syntheticTaskId = `trigger-${randomUUID()}` as TaskId
 
-    // 启动入口立即 register admin
-    // registered 标志位：register 成功时置 true，end_turn 后用它判断是否走 finalize
-    //（register 与 finalize 必须配对，否则 admin task status 永远停在 pending → phantom 污染下一条 trigger 的 activeTasks）
     let registered = false
     try {
       await this.registerTriggerTaskToAdmin({
@@ -1205,7 +1197,7 @@ export class AgentHandler {
       })
       registered = true
     } catch (err) {
-      log(`executeTriggerMessage: startup registerToAdmin failed (continuing) syntheticTaskId=${syntheticTaskId}: ${err instanceof Error ? err.message : String(err)}`)
+      log(`registerTriggerAndActivate: registerToAdmin failed (continuing) syntheticTaskId=${syntheticTaskId}: ${err instanceof Error ? err.message : String(err)}`)
     }
 
     const task: ExecuteTaskParams['task'] = {
@@ -1222,10 +1214,6 @@ export class AgentHandler {
       session_type: isGroup ? 'group' : 'private',
     }
 
-    // Build minimal WorkerAgentContext that satisfies the type.
-    // admin_endpoint / memory_endpoint / channel_endpoints are used by tools
-    // that runWorkerLoop wires up via this.deps and mcpConfigFactory; the context
-    // fields themselves are not directly read by runWorkerLoop's core loop.
     const placeholderEndpoint = { module_id: '', port: 0, host: 'localhost' }
     const context: WorkerAgentContext = {
       task_origin: taskOrigin,
@@ -1244,12 +1232,41 @@ export class AgentHandler {
       scene_profile: frontContext.scene_profile,
     }
 
-    // 2. Build trigger user prompt (worker-style, with channel/session/chat history)
+    // 提前 set 到 activeTasks —— 让下一批 dispatcher fetchActiveTasks 立即可见。
+    // runWorkerLoop 入口已 idempotent，会复用本 taskState。
+    this.activeTasks.set(syntheticTaskId, {
+      taskId: syntheticTaskId,
+      status: 'executing',
+      startedAt: new Date().toISOString(),
+      title: triggerSummary,
+      triggerType: 'message',
+      abortController: new AbortController(),
+      pendingHumanMessages: [],
+      taskOrigin,
+      todoStore: new TodoStore(),
+    })
+
+    return { taskId: syntheticTaskId, registered, task, context, triggerSummary }
+  }
+
+  /**
+   * Trigger 流的异步段：buildTriggerUserPrompt → runWorkerLoop → finalizeTask。
+   * 由 SessionLane handler 调 spawn 时 void 化（fire-and-forget）。
+   * 内部已 try/catch，异常自己写 trace + log，不抛回上游。
+   *
+   * Spec: 2026-05-20-session-lane-dispatcher-design.md §3.3
+   */
+  async runTriggerWorkerLoop(
+    params: ExecuteTriggerMessageParams,
+    pre: Awaited<ReturnType<AgentHandler['registerTriggerAndActivate']>>,
+    traceCallback?: TraceCallback,
+    traceContext?: WorkerTraceContext,
+  ): Promise<ExecuteTriggerMessageResult> {
+    const { triggerArrivedAtMs, timeoutMs = 30_000, overdueReminderEnabled = true } = params
+    const { taskId, registered, task, context } = pre
+
     const triggerPrompt = this.buildTriggerUserPrompt(params)
 
-    // 3. Track sent_message + finalSent + build overdue
-    // sentMessage: 任一 send_message / send_private_message 调用都置 true（用于 overdue 跳过）
-    // finalSent: 显式 intent='final' 调用才置 true（用于 silent end_turn 视为完成）
     let sentMessage = false
     let finalSent = false
 
@@ -1264,8 +1281,6 @@ export class AgentHandler {
       }
       : undefined
 
-    // 4. Run the full worker loop with trigger-mode opts
-    //    traceContext 透传给 runWorkerLoop —— 用于 subagent fork 时的 sub-trace stitching
     let loopResult: RunWorkerLoopResult
     try {
       loopResult = await this.runWorkerLoop(task, context, traceCallback, traceContext, {
@@ -1275,22 +1290,19 @@ export class AgentHandler {
         suppressForcedSummary: () => finalSent,
         onAfterTurn: (event) => {
           for (const tc of event.toolCalls) {
-            // MCP 工具名带 namespace 前缀（mcp__crab-messaging__send_message）；
-            // 裸名形式（send_message）作为同名直连工具的 fallback 也支持。
             const bare = tc.name.replace(/^mcp__[^_]+__/, '')
             if ((bare === 'send_message' || bare === 'send_private_message') && !tc.isError) {
               sentMessage = true
-              // 显式 intent='final' → finalSent，silent end_turn 之后视为完成
               const intent = (tc.input as { intent?: string } | undefined)?.intent
-              if (intent === 'final') {
-                finalSent = true
-              }
+              if (intent === 'final') finalSent = true
             }
           }
         },
       })
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error)
+      // 清理 activeTasks（runWorkerLoop 通常自己清，但本路径异常时兜底）
+      this.activeTasks.delete(taskId)
       return {
         outcome: 'failed' as const,
         finalText: '',
@@ -1302,25 +1314,43 @@ export class AgentHandler {
 
     const { engineResult } = loopResult
 
-    // 6. 收尾：register 跑过就一定要 finalize（切 admin status），否则 admin task 永留 pending
-    //    → 下一条 trigger 的 fetchActiveTasks 会拉到这条 phantom，LLM 拿它当 supplement target
-    //    - register 成功 → finalize 必跑（切 status + drain humanQueue + 必要时写 outcome）
-    //    - skipReflection：快答任务（30s 内自然 end_turn）/ 早退（supplement/stay_silent）跳过
-    //      reflectFn 的 LLM 调用——spec §2.4 不反思，但 status 切换不能省
     if (registered) {
       const skipReflection = !engineResult.overdueInjected || !!engineResult.exitToolCall
-      await this.finalizeTask(syntheticTaskId, engineResult, context, { skipReflection })
+      await this.finalizeTask(taskId, engineResult, context, { skipReflection })
     }
 
-    // 7. Build result
     return {
       outcome: engineResult.outcome,
-      finalText: engineResult.finalText,
-      ...(engineResult.exitToolCall ? { exitToolCall: engineResult.exitToolCall } : {}),
-      overdueInjected: engineResult.overdueInjected,
+      finalText: engineResult.finalText ?? '',
       sentMessage,
+      overdueInjected: engineResult.overdueInjected,
+      ...(engineResult.exitToolCall ? { exitToolCall: engineResult.exitToolCall } : {}),
       ...(engineResult.error ? { error: engineResult.error } : {}),
     }
+  }
+
+  /**
+   * 薄壳兼容入口：内部顺序调 registerTriggerAndActivate + runTriggerWorkerLoop。
+   *
+   * 与 executeTask 的区别：
+   * - executeTask 处理 admin 已注册的 task（带 task_id）
+   * - executeTriggerMessage 处理新触发消息，可能早退（supplement/silent），可能自然结束
+   *
+   * Caller（unified-agent）根据 result.exitToolCall 自行 dispatch：
+   * - exitToolCall.name === 'supplement_task' → 路由 supplement_text 到目标 task
+   * - exitToolCall.name === 'stay_silent' → 忽略
+   * - undefined → loop 自然结束（agent 已通过 send_message 工具回复人类，或没回复）
+   *
+   * 新代码（SessionLane handler）应直接调 register + run 分步接口。
+   * Spec: 2026-05-20-session-lane-dispatcher-design.md §3.3 §7
+   */
+  async executeTriggerMessage(
+    params: ExecuteTriggerMessageParams,
+    traceCallback?: TraceCallback,
+    traceContext?: WorkerTraceContext,
+  ): Promise<ExecuteTriggerMessageResult> {
+    const pre = await this.registerTriggerAndActivate(params)
+    return this.runTriggerWorkerLoop(params, pre, traceCallback, traceContext)
   }
 
   /**
