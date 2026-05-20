@@ -24,6 +24,8 @@ export interface DispatchDeps {
   readonly maxParseRetries?: number
   /** trace 写入回调（可选）。注入后 dispatch() 在 DispatchContext 指定的 trace 下写 dispatch_call span。 */
   readonly trace?: DispatchTraceCallback
+  /** 调用方注入的 batch 大小（SessionLane take 整批时传入）。仅用于 dispatch_call span 观测。 */
+  readonly laneBatchSize?: number
 }
 
 const DEFAULT_MAX_PARSE_RETRIES = 3
@@ -42,6 +44,7 @@ export async function dispatch(ctx: DispatchContext, deps: DispatchDeps): Promis
       session_type: ctx.sessionType,
       message_count: ctx.messages.length,
       active_task_count: ctx.activeTasks.length,
+      ...(deps.laneBatchSize != null ? { lane_batch_size: deps.laneBatchSize } : {}),
     },
   })
 

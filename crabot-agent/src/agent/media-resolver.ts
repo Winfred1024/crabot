@@ -11,6 +11,10 @@ import type { ChannelMessage } from '../types'
 
 const MAX_IMAGE_SIZE = 20 * 1024 * 1024 // 20MB
 const SUPPORTED_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
+
+/** formatMessageContent 在 text + mediaRef 都空时的兜底返回值。
+ *  调用方过滤"空消息"时应 import 这个常量做 sentinel 比较，避免字符串字面量耦合。 */
+export const EMPTY_MESSAGE_PLACEHOLDER = '[非文本消息]'
 type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'
 
 export function inferMediaType(mimeType?: string, filePath?: string): ImageMediaType {
@@ -73,7 +77,7 @@ export function formatMessageContent(msg: ChannelMessage): string {
   if (text && mediaRef) return `${text}\n${mediaRef}`
   if (text) return text
   if (mediaRef) return mediaRef
-  return '[非文本消息]'
+  return EMPTY_MESSAGE_PLACEHOLDER
 }
 
 /**
