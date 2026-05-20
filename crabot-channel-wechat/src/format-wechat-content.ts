@@ -78,13 +78,31 @@ export function formatWechatContent(
     // ── 文件 (9, 1090519089) ──
     case 9:
     case 1090519089: {
-      const fileName = s('file_name') ?? '未知文件'
-      const fileUrl = s('file_url')
+      // wechat-connector 不同版本对 PDF / Office 文件字段命名不统一；按观察过的命名顺序兜底。
+      // 任一字段未命中且最终落到 "未知文件" 时打 raw 字段日志，便于回查 connector 协议。
+      const fileName =
+        s('file_name')
+        ?? s('filename')
+        ?? s('title')
+        ?? s('name')
+        ?? s('display_name')
+      const fileUrl =
+        s('file_url')
+        ?? s('fileurl')
+        ?? s('url')
+        ?? s('resource_url')
+        ?? s('download_url')
+      if (!fileName) {
+        console.warn(
+          `[format-wechat-content] case ${fieldType} 文件消息字段未识别，raw keys=${JSON.stringify(Object.keys(raw))}`
+        )
+      }
+      const resolvedName = fileName ?? '未知文件'
       const content: MessageContent = {
         type: 'file',
-        text: fileName,
+        text: resolvedName,
         ...(fileUrl ? { media_url: fileUrl } : {}),
-        filename: fileName,
+        filename: resolvedName,
       }
       return { content, features: {} }
     }
@@ -202,6 +220,9 @@ export function formatWechatContent(
     default: {
       const text = s('text')
       if (text) return textMsg(text)
+      console.warn(
+        `[format-wechat-content] 未识别消息类型 fieldType=${fieldType}, raw keys=${JSON.stringify(Object.keys(raw))}`
+      )
       return textMsg(`[未知消息类型: ${fieldType}]`)
     }
   }
