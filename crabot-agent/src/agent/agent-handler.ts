@@ -91,6 +91,26 @@ import * as path from 'path'
 import { createHash, randomBytes, randomUUID } from 'crypto'
 import * as os from 'os'
 
+/**
+ * 从 tool 输出 JSON 中提取 `child_trace_id`。
+ * delegate_task 等派生子 trace 的工具会在返回 JSON 里带 `child_trace_id`，
+ * 抓出来挂在 tool_call span.details 上，让 Admin UI 能内联展开子 trace。
+ * 非 JSON / 无该字段 → 返回 undefined。
+ * @internal exported for testing
+ */
+export function extractChildTraceIdFromOutput(output: string | undefined): string | undefined {
+  if (!output) return undefined
+  try {
+    const parsed = JSON.parse(output) as { child_trace_id?: unknown }
+    if (typeof parsed.child_trace_id === 'string' && parsed.child_trace_id.length > 0) {
+      return parsed.child_trace_id
+    }
+  } catch {
+    // 非 JSON output（如普通文本工具返回），忽略
+  }
+  return undefined
+}
+
 /** 已过时长的中文格式化（用于 trigger prompt 活跃任务渲染） */
 function formatElapsedMs(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '?'
@@ -1061,11 +1081,15 @@ export class AgentHandler {
                 tc.startedAtMs,
               )
               if (toolSpanId) {
+                // tool 若返回 JSON 且含 child_trace_id（如 delegate_task），抓出来挂到 span.details
+                // 让 Admin UI 能从这个 tool_call span 内联展开子 trace。
+                const childTraceId = extractChildTraceIdFromOutput(tc.output)
                 traceCallback?.onToolCallEnd(
                   toolSpanId,
                   tc.output?.slice(0, 500) || '(no output)',
                   tc.isError ? tc.output : undefined,
                   toolEndedAtMs,
+                  childTraceId,
                 )
               }
             }

@@ -1032,7 +1032,11 @@ export interface TraceCallback {
   onLlmCallStart(iteration: number, inputSummary: string, attempt?: number, startedAtMs?: number): string
   onLlmCallEnd(spanId: string, result: { stopReason?: string; outputSummary?: string; toolCallsCount?: number; fullInput?: string; fullOutput?: string; error?: string; forcedSummaryAttempt?: number; usage?: TokenUsage }, endedAtMs?: number): void
   onToolCallStart(toolName: string, inputSummary: string, startedAtMs?: number): string
-  onToolCallEnd(spanId: string, outputSummary: string, error?: string, endedAtMs?: number): void
+  /**
+   * `childTraceId` 标识由本次工具调用派生出的子 trace（如 `delegate_task` 派 subagent）。
+   * 写入后 Admin UI 可从该 tool_call span 内联展开子 trace span 树。
+   */
+  onToolCallEnd(spanId: string, outputSummary: string, error?: string, endedAtMs?: number, childTraceId?: string): void
 }
 
 // ============================================================================

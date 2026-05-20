@@ -29,12 +29,35 @@ export const SpanRow: React.FC<SpanRowProps> = ({ span, spans, depth, expandedDe
   const showDetail = expandedDetails.has(span.span_id)
 
   const usage = (span.details as Record<string, unknown>).usage as TokenUsage | undefined
+  // 子 trace 展开能力对任何带 child_trace_id 的 span 生效：
+  //   - sub_agent_call：details.target_module_id 标注 subagent 名
+  //   - tool_call（如 delegate_task）：从 input_summary 里提取 subagent_type 作为名字
+  const spanDetails = span.details as {
+    child_trace_id?: string
+    target_module_id?: string
+    tool_name?: string
+    input_summary?: string
+  }
+  const childTraceId = spanDetails.child_trace_id
+  // 展开按钮的可见条件：
+  //   - sub_agent_call 类型（即使缺 child_trace_id 也显示 disabled 按钮，提示用户数据未关联）
+  //   - 其他 span 类型（如 tool_call/delegate_task）必须真有 child_trace_id 才显示
   const isSubAgentCall = span.type === 'sub_agent_call'
-  const subAgentDetails = isSubAgentCall
-    ? (span.details as { child_trace_id?: string; target_module_id?: string })
-    : null
-  const childTraceId = subAgentDetails?.child_trace_id
-  const subagentName = subAgentDetails?.target_module_id ?? 'unknown'
+  const showExpandButton = isSubAgentCall || Boolean(childTraceId)
+  const subagentName = (() => {
+    if (spanDetails.target_module_id) return spanDetails.target_module_id
+    if (span.type === 'tool_call' && spanDetails.input_summary) {
+      try {
+        const parsed = JSON.parse(spanDetails.input_summary) as { subagent_type?: unknown }
+        if (typeof parsed.subagent_type === 'string' && parsed.subagent_type.length > 0) {
+          return parsed.subagent_type
+        }
+      } catch {
+        // input_summary 可能被截断或非 JSON，忽略
+      }
+    }
+    return 'unknown'
+  })()
 
   const toggleChildTrace = useCallback(async () => {
     if (!childTraceId) return
@@ -113,7 +136,7 @@ export const SpanRow: React.FC<SpanRowProps> = ({ span, spans, depth, expandedDe
           {detailSummary(span)}
           {showDetail && <span style={{ marginLeft: 6, color: '#9ca3af' }}>▲ 收起</span>}
         </span>
-        {isSubAgentCall && (
+        {showExpandButton && (
           <button
             aria-label="展开子 trace"
             disabled={!childTraceId}

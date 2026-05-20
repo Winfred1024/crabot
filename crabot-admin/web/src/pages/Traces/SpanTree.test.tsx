@@ -98,3 +98,72 @@ describe('SpanTree sub_agent_call expansion', () => {
     expect(btn).toHaveAttribute('title', expect.stringContaining('无子 trace'))
   })
 })
+
+describe('SpanTree tool_call child_trace_id expansion (delegate_task)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+  })
+
+  it('tool_call 带 child_trace_id 时显示展开按钮', () => {
+    const spans: AgentSpan[] = [
+      span({
+        span_id: 's1',
+        type: 'tool_call',
+        details: {
+          tool_name: 'delegate_task',
+          input_summary: '{"subagent_type":"code_planner"}',
+          child_trace_id: 'child-tc-1',
+        } as never,
+      }),
+    ]
+    render(<SpanTree spans={spans} expandedDetails={new Set()} toggleDetail={() => {}} />)
+    expect(screen.getByRole('button', { name: /展开子 trace/ })).toBeInTheDocument()
+  })
+
+  it('tool_call 无 child_trace_id 时不显示展开按钮', () => {
+    const spans: AgentSpan[] = [
+      span({
+        span_id: 's1',
+        type: 'tool_call',
+        details: { tool_name: 'Read', input_summary: '{}' } as never,
+      }),
+    ]
+    render(<SpanTree spans={spans} expandedDetails={new Set()} toggleDetail={() => {}} />)
+    expect(screen.queryByRole('button', { name: /展开子 trace/ })).not.toBeInTheDocument()
+  })
+
+  it('点击 tool_call 的展开按钮加载并渲染子 trace', async () => {
+    ;(traceService.getTrace as ReturnType<typeof vi.fn>).mockResolvedValue({
+      trace: {
+        trace_id: 'child-tc-1',
+        spans: [
+          span({
+            span_id: 'cs1',
+            trace_id: 'child-tc-1',
+            type: 'tool_call',
+            details: { tool_name: 'Bash', input_summary: 'ls' } as never,
+          }),
+        ],
+      },
+    })
+    const spans: AgentSpan[] = [
+      span({
+        span_id: 's1',
+        type: 'tool_call',
+        details: {
+          tool_name: 'delegate_task',
+          input_summary: '{"subagent_type":"researcher"}',
+          child_trace_id: 'child-tc-1',
+        } as never,
+      }),
+    ]
+    render(<SpanTree spans={spans} expandedDetails={new Set()} toggleDetail={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: /展开子 trace/ }))
+    await waitFor(() => {
+      expect(traceService.getTrace).toHaveBeenCalledWith('child-tc-1')
+    })
+    const banner = await screen.findByTestId('child-trace-banner')
+    // delegate_task 没有 target_module_id，banner 应该回退到工具名或 unknown
+    expect(banner.textContent).toMatch(/subagent:/i)
+  })
+})

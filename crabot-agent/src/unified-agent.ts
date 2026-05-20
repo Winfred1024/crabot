@@ -2115,7 +2115,7 @@ export class UnifiedAgent extends ModuleBase {
         return span.span_id
       },
 
-      onToolCallEnd(spanId: string, outputSummary: string, error?: string, endedAtMs?: number): void {
+      onToolCallEnd(spanId: string, outputSummary: string, error?: string, endedAtMs?: number, childTraceId?: string): void {
         store.endSpan(
           traceId,
           spanId,
@@ -2123,6 +2123,7 @@ export class UnifiedAgent extends ModuleBase {
           {
             output_summary: outputSummary,
             error,
+            ...(childTraceId !== undefined ? { child_trace_id: childTraceId } : {}),
           } as Partial<import('./types.js').ToolCallDetails>,
           endedAtMs,
         )
