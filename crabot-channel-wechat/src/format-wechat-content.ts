@@ -12,6 +12,25 @@
 
 import type { MessageContent, MessageFeatures, MessageType } from './types.js'
 
+/**
+ * 调试用：把 raw object 里的非空 string 字段 (key=value) 列出来，截断每个 value 到 200 字符避免日志爆。
+ * 用于 console.warn 「未识别字段」场景，方便回查 wechat-connector 协议字段名。
+ */
+function dumpRawForDebug(raw: Record<string, unknown>): string {
+  const lines: string[] = []
+  for (const [k, v] of Object.entries(raw)) {
+    if (typeof v === 'string' && v.trim()) {
+      const val = v.length > 200 ? v.slice(0, 200) + '...[截断]' : v
+      lines.push(`${k}=${JSON.stringify(val)}`)
+    } else if (typeof v === 'number' || typeof v === 'boolean') {
+      lines.push(`${k}=${v}`)
+    } else if (v && typeof v === 'object') {
+      lines.push(`${k}=<${Array.isArray(v) ? `array(${v.length})` : `object(keys=${Object.keys(v).join(',')})`}>`)
+    }
+  }
+  return `{ ${lines.join(', ')} }`
+}
+
 export interface FormattedMessage {
   content: MessageContent
   features: Partial<MessageFeatures>
@@ -79,7 +98,8 @@ export function formatWechatContent(
     case 9:
     case 1090519089: {
       // wechat-connector 不同版本对 PDF / Office 文件字段命名不统一；按观察过的命名顺序兜底。
-      // 任一字段未命中且最终落到 "未知文件" 时打 raw 字段日志，便于回查 connector 协议。
+      // 任一字段未命中且最终落到 "未知文件" 时把 raw 全部非空 string 字段值打出来，
+      // 便于回查 connector 协议（PDF 可能塞在 text / describe / 子对象里）。
       const fileName =
         s('file_name')
         ?? s('filename')
@@ -94,7 +114,7 @@ export function formatWechatContent(
         ?? s('download_url')
       if (!fileName) {
         console.warn(
-          `[format-wechat-content] case ${fieldType} 文件消息字段未识别，raw keys=${JSON.stringify(Object.keys(raw))}`
+          `[format-wechat-content] case ${fieldType} 文件消息字段未识别，raw=${dumpRawForDebug(raw)}`
         )
       }
       const resolvedName = fileName ?? '未知文件'
@@ -221,7 +241,7 @@ export function formatWechatContent(
       const text = s('text')
       if (text) return textMsg(text)
       console.warn(
-        `[format-wechat-content] 未识别消息类型 fieldType=${fieldType}, raw keys=${JSON.stringify(Object.keys(raw))}`
+        `[format-wechat-content] 未识别消息类型 fieldType=${fieldType}, raw=${dumpRawForDebug(raw)}`
       )
       return textMsg(`[未知消息类型: ${fieldType}]`)
     }
