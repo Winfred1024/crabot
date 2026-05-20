@@ -1621,6 +1621,9 @@ export class UnifiedAgent extends ModuleBase {
         },
         spawnAgentInstance: async (_actionText: string) => {
           // admin_chat：把当前 trigger + recent_messages 去重后整批传给 worker，保留媒体上下文。
+          // 注：admin chat 由 admin REST 串行串发（前端 fetch 等响应才会发下一条），天然单线，
+          //     不走 SessionLane；spawn 仍 await 整个 worker loop（不需要 register+run 拆分）。
+          //     私聊 / 群聊已走 lane（spec §3.4），admin chat 维持现状是有意为之。
           const triggerIds = new Set([message.platform_message_id])
           const history = (frontContext.recent_messages ?? []).filter(
             (m) => !triggerIds.has(m.platform_message_id)
