@@ -99,8 +99,8 @@ export function statusColor(status: string): string {
 }
 
 export const triggerTypeLabel: Record<string, string> = {
-  message: 'Front',
-  task: 'Worker',
+  message: 'Dispatch',
+  task: 'Task',
   sub_agent_call: 'Sub-agent',
   schedule: 'Schedule',
 }
@@ -277,13 +277,13 @@ export function groupEntries(entries: TraceIndexEntry[]): TraceGroup[] {
 
 /**
  * 把 agent_loop span 的 loop_label 渲染为用户可见 label。
- * 兼容旧 trace 中 front/worker 字面值；新数据中 loop_label 会是 subagent name。
+ * 兼容旧 trace 字面值：'front' / 'worker' / 'task'；新数据中 loop_label 会是 'task' 或 subagent name。
  */
 export function agentLoopLabel(details: { loop_label?: string }): string {
   const label = details.loop_label
   if (!label) return 'Agent Loop'
-  if (label === 'front') return 'Front Loop (legacy)'
-  if (label === 'worker') return 'Worker Loop'
+  if (label === 'front') return 'Dispatch Loop (legacy)'
+  if (label === 'worker' || label === 'task') return 'Task Loop'
   return label
 }
 

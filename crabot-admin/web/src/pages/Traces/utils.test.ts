@@ -104,11 +104,14 @@ describe('detailSummary for dispatch_action', () => {
 })
 
 describe('agentLoopLabel', () => {
-  it('legacy front label 显示 Front Loop (legacy)', () => {
-    expect(agentLoopLabel({ loop_label: 'front' })).toBe('Front Loop (legacy)')
+  it('legacy front label 显示 Dispatch Loop (legacy)', () => {
+    expect(agentLoopLabel({ loop_label: 'front' })).toBe('Dispatch Loop (legacy)')
   })
-  it('worker label 显示 Worker Loop', () => {
-    expect(agentLoopLabel({ loop_label: 'worker' })).toBe('Worker Loop')
+  it('legacy worker label 兼容映射到 Task Loop', () => {
+    expect(agentLoopLabel({ loop_label: 'worker' })).toBe('Task Loop')
+  })
+  it('task label 显示 Task Loop', () => {
+    expect(agentLoopLabel({ loop_label: 'task' })).toBe('Task Loop')
   })
   it('subagent name 原样显示', () => {
     expect(agentLoopLabel({ loop_label: 'code_planner' })).toBe('code_planner')

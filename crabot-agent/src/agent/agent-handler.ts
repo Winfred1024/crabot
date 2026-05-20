@@ -849,8 +849,8 @@ export class AgentHandler {
 
       log(`Starting worker engine: model=${this.sdkEnv.modelId}, task=${task.task_title}, tools=${initialTools.length}`)
 
-      // Start loop span
-      loopSpanId = traceCallback?.onLoopStart('worker', {
+      // Start loop span — loop_label='task'（旧值 'worker' 由 UI agentLoopLabel 兼容映射）
+      loopSpanId = traceCallback?.onLoopStart('task', {
         system_prompt: undefined,
         model: this.sdkEnv.modelId,
         tools: initialTools.map(t => t.name),

@@ -146,8 +146,8 @@ function RelatedTraceTree({
         </span>
         <span style={{ color: '#9ca3af', fontWeight: 400 }}>· 共 {total} trace</span>
       </div>
-      {renderRole('Front', '#3b82f6', tree.fronts)}
-      {tree.worker && renderRole('Worker', '#8b5cf6', [tree.worker])}
+      {renderRole('Dispatch', '#3b82f6', tree.fronts)}
+      {tree.worker && renderRole('Task', '#8b5cf6', [tree.worker])}
       {renderRole('Sub-agent', '#ec4899', tree.subagents)}
     </div>
   )
@@ -555,7 +555,7 @@ export const Traces: React.FC = () => {
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>Agent Traces</h2>
           <span style={{ fontSize: 12, color: '#9ca3af' }}>
-            观察 Front / Worker / Sub-agent 的执行链路与 Token 用量
+            观察 Dispatch / Task / Sub-agent 的执行链路与 Token 用量
           </span>
           <span style={{ flex: 1 }} />
           <span

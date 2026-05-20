@@ -40,7 +40,7 @@ import { ScheduledTaskRunner } from './orchestration/scheduled-task-runner.js'
 import { MemoryWriter } from './orchestration/memory-writer.js'
 import { AttentionScheduler, type AttentionConfig, type BufferedMessage } from './orchestration/attention-scheduler.js'
 import { SessionLaneRegistry } from './orchestration/session-lane.js'
-import { AgentHandler, type SdkEnvConfig, adapterFromSdkEnv } from './agent/agent-handler.js'
+import { AgentHandler, type SdkEnvConfig, type ExecuteTriggerMessageParams, type ExecuteTriggerMessageResult, adapterFromSdkEnv } from './agent/agent-handler.js'
 import { dispatch } from './dispatcher/dispatcher.js'
 import type { DispatchTraceCallback } from './dispatcher/dispatcher-types.js'
 import { executeDispatchActions } from './dispatcher/dispatcher-executor.js'
@@ -609,6 +609,8 @@ export class UnifiedAgent extends ModuleBase {
           try {
             // 传整批 ChannelMessage（保留媒体，Task 3 已让 deliverHumanResponse 渲染媒体）
             this.agentHandler!.deliverHumanResponse(taskId, messages)
+            // 把本次 dispatch trace 关联到目标 task，"按任务聚合" 视图把多次 dispatch + task trace 合并到同一组
+            this.traceStore.updateTrace(trace.trace_id, { related_task_id: taskId })
             return 'delivered'
           } catch {
             return 'fallback'
@@ -620,7 +622,7 @@ export class UnifiedAgent extends ModuleBase {
             (m) => !triggerIds.has(m.platform_message_id)
           )
           const allMessages = [...history, ...messages]
-          const params = {
+          const params: ExecuteTriggerMessageParams = {
             messages: allMessages,
             activeTasks: frontContext.active_tasks ?? [],
             isGroup: false,
@@ -633,17 +635,13 @@ export class UnifiedAgent extends ModuleBase {
             sessionId: session.session_id,
             frontContext,
           }
-          // 同步段：register admin + activeTasks.set —— 返回后 lane 可以解锁下一批
-          const pre = await this.agentHandler!.registerTriggerAndActivate(params)
-          // 异步段：fire-and-forget runWorkerLoop（内部已 try/catch + 写 trace）
-          void this.agentHandler!.runTriggerWorkerLoop(
+          const taskTraceId = await this.spawnTaskTrace({
+            dispatchTraceId: trace.trace_id,
             params,
-            pre,
-            this.buildTraceCallback(trace.trace_id),
-          ).catch(err => {
-            console.error(`[${this.config.moduleId}] runTriggerWorkerLoop crashed for ${pre.taskId}:`, err instanceof Error ? err.message : String(err))
+            source: session.channel_id,
+            awaitWorker: false,
           })
-          return { spawnedTraceId: trace.trace_id }
+          return { spawnedTraceId: taskTraceId }
         },
         sendErrorToUser,
         trace: traceCallbackPrivate,
@@ -809,6 +807,8 @@ export class UnifiedAgent extends ModuleBase {
           try {
             // 传整批 ChannelMessage（保留媒体，Task 3 已让 deliverHumanResponse 渲染媒体）
             this.agentHandler!.deliverHumanResponse(taskId, messages)
+            // 把本次 dispatch trace 关联到目标 task，"按任务聚合" 视图把多次 dispatch + task trace 合并到同一组
+            this.traceStore.updateTrace(trace.trace_id, { related_task_id: taskId })
             return 'delivered'
           } catch {
             return 'fallback'
@@ -822,7 +822,7 @@ export class UnifiedAgent extends ModuleBase {
             (m) => !currentIds.has(m.platform_message_id)
           )
           const allMessages = [...history, ...messages]
-          const params = {
+          const params: ExecuteTriggerMessageParams = {
             messages: allMessages,
             activeTasks: frontContext.active_tasks ?? [],
             isGroup: true,
@@ -835,17 +835,13 @@ export class UnifiedAgent extends ModuleBase {
             sessionId,
             frontContext,
           }
-          // 同步段：register admin + activeTasks.set —— 返回后 lane 可以解锁下一批
-          const pre = await this.agentHandler!.registerTriggerAndActivate(params)
-          // 异步段：fire-and-forget runWorkerLoop（内部已 try/catch + 写 trace）
-          void this.agentHandler!.runTriggerWorkerLoop(
+          const taskTraceId = await this.spawnTaskTrace({
+            dispatchTraceId: trace.trace_id,
             params,
-            pre,
-            this.buildTraceCallback(trace.trace_id),
-          ).catch(err => {
-            console.error(`[${this.config.moduleId}] runTriggerWorkerLoop crashed for ${pre.taskId}:`, err instanceof Error ? err.message : String(err))
+            source: session.channel_id,
+            awaitWorker: false,
           })
-          return { spawnedTraceId: trace.trace_id }
+          return { spawnedTraceId: taskTraceId }
         },
         sendErrorToUser,
         trace: traceCallbackGroup,
@@ -1614,6 +1610,8 @@ export class UnifiedAgent extends ModuleBase {
               platform_timestamp: new Date().toISOString(),
             }
             this.agentHandler!.deliverHumanResponse(taskId, [syntheticMessage])
+            // 把本次 dispatch trace 关联到目标 task
+            this.traceStore.updateTrace(trace.trace_id, { related_task_id: taskId })
             return 'delivered'
           } catch {
             return 'fallback'
@@ -1622,30 +1620,34 @@ export class UnifiedAgent extends ModuleBase {
         spawnAgentInstance: async (_actionText: string) => {
           // admin_chat：把当前 trigger + recent_messages 去重后整批传给 worker，保留媒体上下文。
           // 注：admin chat 由 admin REST 串行串发（前端 fetch 等响应才会发下一条），天然单线，
-          //     不走 SessionLane；spawn 仍 await 整个 worker loop（不需要 register+run 拆分）。
-          //     私聊 / 群聊已走 lane（spec §3.4），admin chat 维持现状是有意为之。
+          //     不走 SessionLane；这里 awaitWorker=true 同步等 worker 完成，便于把错误反映到 HTTP 响应。
+          //     trace 模型仍拆分 dispatch / task：dispatch trace 标 completed 与 worker 完成对齐，
+          //     task trace 由 spawnTaskTrace 独立 endTrace。
           const triggerIds = new Set([message.platform_message_id])
           const history = (frontContext.recent_messages ?? []).filter(
             (m) => !triggerIds.has(m.platform_message_id)
           )
           const allMessages = [...history, message]
-          const result = await this.agentHandler!.executeTriggerMessage(
-            {
-              messages: allMessages,
-              activeTasks: frontContext.active_tasks ?? [],
-              isGroup: false,
-              ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
-              senderFriend: masterFriend,
-              triggerArrivedAtMs: Date.now(),
-              memoryPermissions: masterMemPerms,
-              resolvedPermissions: (masterResolvedPerms ?? masterMemPerms) as unknown as ResolvedPermissions,
-              channelId: 'admin-web',
-              sessionId,
-              frontContext,
-            },
-            this.buildTraceCallback(trace.trace_id),
-          )
-          return { spawnedTraceId: (result as { traceId?: string }).traceId ?? trace.trace_id }
+          const params: ExecuteTriggerMessageParams = {
+            messages: allMessages,
+            activeTasks: frontContext.active_tasks ?? [],
+            isGroup: false,
+            ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
+            senderFriend: masterFriend,
+            triggerArrivedAtMs: Date.now(),
+            memoryPermissions: masterMemPerms,
+            resolvedPermissions: (masterResolvedPerms ?? masterMemPerms) as unknown as ResolvedPermissions,
+            channelId: 'admin-web',
+            sessionId,
+            frontContext,
+          }
+          const taskTraceId = await this.spawnTaskTrace({
+            dispatchTraceId: trace.trace_id,
+            params,
+            source: 'admin-web',
+            awaitWorker: true,
+          })
+          return { spawnedTraceId: taskTraceId }
         },
         sendErrorToUser,
         trace: traceCallbackAdmin,
@@ -2102,6 +2104,79 @@ export class UnifiedAgent extends ModuleBase {
         store.endSpan(traceId, spanId, status, details as never)
       },
     }
+  }
+
+  /**
+   * 为单次 spawn 启动一条独立 task trace 并跑 worker loop。
+   *
+   * 设计要点：
+   * - dispatch（含 context_assembly + dispatcher LLM）和 task（agent loop）是两类语义不同的 trace。
+   *   SessionLane fire-and-forget 后 dispatch 可在 worker 还在跑时就完成；若复用同一 trace，
+   *   UI 列表会显示 completed 绿点但 worker 还在跑（误导）。
+   * - 这里给 worker 单独建一条 trace（trigger.type='task'），所有 worker span（agent_loop /
+   *   llm_call / tool_call）写到这条 trace；同时给 dispatch trace 反向标记 related_task_id，
+   *   让 "按任务聚合" 视图把 dispatch 和 task 两条 trace 合并到同一组。
+   * - awaitWorker=false：fire-and-forget（私聊 / 群聊 lane handler 用），lane 同步段拿到 pre 后
+   *   即可解锁下一批；worker 完成后由 .then 写 endTrace。
+   * - awaitWorker=true：admin chat 用，dispatcher 内串行 await，便于把 worker 错误反映到 HTTP 响应。
+   *
+   * @returns task trace_id，作为 spawnedTraceId 回给 dispatcher_executor 写到 dispatch_action span
+   *          的 spawned_trace_id 字段，供 Admin UI 做 cross-trace link 跳转。
+   */
+  private async spawnTaskTrace(opts: {
+    dispatchTraceId: string
+    params: ExecuteTriggerMessageParams
+    source: string
+    awaitWorker: boolean
+  }): Promise<string> {
+    const pre = await this.agentHandler!.registerTriggerAndActivate(opts.params)
+    this.traceStore.updateTrace(opts.dispatchTraceId, { related_task_id: pre.taskId })
+
+    const taskTrace = this.traceStore.startTrace({
+      module_id: this.config.moduleId,
+      trigger: {
+        type: 'task',
+        summary: pre.triggerSummary,
+        source: opts.source,
+      },
+      related_task_id: pre.taskId,
+    })
+    const traceCb = this.buildTraceCallback(taskTrace.trace_id)
+
+    const finalize = (result: ExecuteTriggerMessageResult) => {
+      this.traceStore.endTrace(
+        taskTrace.trace_id,
+        result.outcome === 'completed' ? 'completed' : 'failed',
+        {
+          summary: (result.finalText || result.outcome).slice(0, 200),
+          ...(result.error ? { error: result.error } : {}),
+        },
+      )
+    }
+    const finalizeError = (err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err)
+      this.traceStore.endTrace(taskTrace.trace_id, 'failed', { summary: msg, error: msg })
+    }
+
+    if (opts.awaitWorker) {
+      try {
+        const result = await this.agentHandler!.runTriggerWorkerLoop(opts.params, pre, traceCb)
+        finalize(result)
+      } catch (err) {
+        finalizeError(err)
+      }
+    } else {
+      void this.agentHandler!.runTriggerWorkerLoop(opts.params, pre, traceCb)
+        .then(finalize)
+        .catch(err => {
+          finalizeError(err)
+          console.error(
+            `[${this.config.moduleId}] runTriggerWorkerLoop crashed for ${pre.taskId}:`,
+            err instanceof Error ? err.message : String(err),
+          )
+        })
+    }
+    return taskTrace.trace_id
   }
 
   /**
