@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { startTraceCleanupCron } from './trace-cleanup-cron.js'
+import { startTraceCleanupCron, parseCleanupParams } from './trace-cleanup-cron.js'
 
 describe('startTraceCleanupCron', () => {
   beforeEach(() => vi.clearAllMocks())
@@ -63,5 +63,44 @@ describe('startTraceCleanupCron', () => {
     })
     stop()
     expect(clearIntervalFn).toHaveBeenCalledWith('fake-timer')
+  })
+})
+
+describe('parseCleanupParams', () => {
+  const url = (qs: string) => new URL(`http://localhost/p${qs ? '?' + qs : ''}`)
+
+  it('rejects missing days', () => {
+    const r = parseCleanupParams(url(''))
+    expect('error' in r).toBe(true)
+  })
+
+  it('rejects days=0', () => {
+    const r = parseCleanupParams(url('days=0'))
+    expect('error' in r).toBe(true)
+  })
+
+  it('rejects non-numeric days', () => {
+    const r = parseCleanupParams(url('days=abc'))
+    expect('error' in r).toBe(true)
+  })
+
+  it('accepts days=30 with dry_run default true', () => {
+    const r = parseCleanupParams(url('days=30'))
+    expect(r).toEqual({ days: 30, dryRun: true })
+  })
+
+  it('accepts days=30 with dry_run=false', () => {
+    const r = parseCleanupParams(url('days=30&dry_run=false'))
+    expect(r).toEqual({ days: 30, dryRun: false })
+  })
+
+  it('accepts days=30 with dry_run=true (explicit)', () => {
+    const r = parseCleanupParams(url('days=30&dry_run=true'))
+    expect(r).toEqual({ days: 30, dryRun: true })
+  })
+
+  it('rejects days=NaN (e.g. days=abc)', () => {
+    const r = parseCleanupParams(url('days=abc'))
+    expect('error' in r).toBe(true)
   })
 })

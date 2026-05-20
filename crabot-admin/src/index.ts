@@ -145,6 +145,7 @@ import { tailLogFile } from './module-log-tail.js'
 import { buildRecoveryTask } from './recovery-handler.js'
 import { getBuiltinSkills } from './builtin-skills.js'
 import { getBuiltinSubAgents } from './builtin-subagents.js'
+import { parseCleanupParams } from './trace-cleanup-cron.js'
 
 // ============================================================================
 // JWT 工具函数
@@ -7426,13 +7427,12 @@ export class AdminModule extends ModuleBase {
     res: ServerResponse,
     url: URL,
   ): Promise<void> {
-    const days = Number(url.searchParams.get('days') ?? '0')
-    const dryRunParam = url.searchParams.get('dry_run')
-    const dryRun = dryRunParam !== 'false' // 默认 dry_run=true 安全
-    if (!Number.isFinite(days) || days < 1) {
-      sendJson(res, 400, { error: 'days must be >= 1' })
+    const parsed = parseCleanupParams(url)
+    if ('error' in parsed) {
+      sendJson(res, 400, { error: parsed.error })
       return
     }
+    const { days, dryRun } = parsed
     try {
       const result = await this.callAgentRpc<
         { days: number; dry_run: boolean },

@@ -229,8 +229,10 @@ describe('TraceStore cleanupOldFiles', () => {
   it('removes JSONL files older than retention days', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-cleanup-'))
     try {
-      fs.writeFileSync(path.join(dir, 'traces-2026-03-01.jsonl'), JSON.stringify({ trace_id: 'old', module_id: 'a', started_at: '2026-03-01T00:00:00Z', status: 'completed', trigger: { type: 'message', summary: 'old' }, spans: [] }) + '\n')
-      fs.writeFileSync(path.join(dir, 'traces-2026-04-13.jsonl'), JSON.stringify({ trace_id: 'new', module_id: 'a', started_at: '2026-04-13T00:00:00Z', status: 'completed', trigger: { type: 'message', summary: 'new' }, spans: [] }) + '\n')
+      const oldDateStr = new Date(Date.now() - 86400_000 * 60).toISOString().slice(0, 10)
+      const newDateStr = new Date(Date.now() - 86400_000 * 5).toISOString().slice(0, 10)
+      fs.writeFileSync(path.join(dir, `traces-${oldDateStr}.jsonl`), JSON.stringify({ trace_id: 'old', module_id: 'a', started_at: `${oldDateStr}T00:00:00Z`, status: 'completed', trigger: { type: 'message', summary: 'old' }, spans: [] }) + '\n')
+      fs.writeFileSync(path.join(dir, `traces-${newDateStr}.jsonl`), JSON.stringify({ trace_id: 'new', module_id: 'a', started_at: `${newDateStr}T00:00:00Z`, status: 'completed', trigger: { type: 'message', summary: 'new' }, spans: [] }) + '\n')
 
       const store = new TraceStore(10, dir)
       // Both should be in index
@@ -238,8 +240,8 @@ describe('TraceStore cleanupOldFiles', () => {
 
       const removed = store.cleanupOldFiles(30)
       expect(removed).toBe(1)
-      expect(fs.existsSync(path.join(dir, 'traces-2026-03-01.jsonl'))).toBe(false)
-      expect(fs.existsSync(path.join(dir, 'traces-2026-04-13.jsonl'))).toBe(true)
+      expect(fs.existsSync(path.join(dir, `traces-${oldDateStr}.jsonl`))).toBe(false)
+      expect(fs.existsSync(path.join(dir, `traces-${newDateStr}.jsonl`))).toBe(true)
 
       // Index should be updated
       expect(store.searchTraces({}).total).toBe(1)
@@ -251,7 +253,8 @@ describe('TraceStore cleanupOldFiles', () => {
   it('returns 0 when no files are expired', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-cleanup-'))
     try {
-      fs.writeFileSync(path.join(dir, 'traces-2026-04-13.jsonl'), JSON.stringify({ trace_id: 'new', module_id: 'a', started_at: '2026-04-13T00:00:00Z', status: 'completed', trigger: { type: 'message', summary: 'new' }, spans: [] }) + '\n')
+      const newDateStr = new Date(Date.now() - 86400_000 * 5).toISOString().slice(0, 10)
+      fs.writeFileSync(path.join(dir, `traces-${newDateStr}.jsonl`), JSON.stringify({ trace_id: 'new', module_id: 'a', started_at: `${newDateStr}T00:00:00Z`, status: 'completed', trigger: { type: 'message', summary: 'new' }, spans: [] }) + '\n')
 
       const store = new TraceStore(10, dir)
       const removed = store.cleanupOldFiles(30)

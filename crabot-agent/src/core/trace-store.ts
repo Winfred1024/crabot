@@ -445,32 +445,37 @@ export class TraceStore {
       return { total_bytes: 0, trace_count: 0 }
     }
     let totalBytes = 0
-    let traceCount = 0
-    let oldestMtime: number | null = null
-    let newestMtime: number | null = null
     try {
       const files = fs.readdirSync(this.persistDir)
         .filter(f => f.startsWith('traces-') && f.endsWith('.jsonl'))
       for (const file of files) {
-        const filePath = path.join(this.persistDir, file)
-        const stat = fs.statSync(filePath)
+        const stat = fs.statSync(path.join(this.persistDir, file))
         totalBytes += stat.size
-        const mtime = stat.mtimeMs
-        if (oldestMtime === null || mtime < oldestMtime) oldestMtime = mtime
-        if (newestMtime === null || mtime > newestMtime) newestMtime = mtime
-        const content = fs.readFileSync(filePath, 'utf-8')
-        for (const line of content.split('\n')) {
-          if (line.trim()) traceCount++
-        }
       }
     } catch (err) {
       console.warn('[TraceStore] getDiskUsage failed:', err instanceof Error ? err.message : err)
     }
+    const traceCount = this.traceIndex.length
+    let oldestIso: string | undefined
+    let newestIso: string | undefined
+    if (traceCount > 0) {
+      let oldest = Infinity
+      let newest = -Infinity
+      for (const e of this.traceIndex) {
+        const t = new Date(e.started_at).getTime()
+        if (Number.isFinite(t)) {
+          if (t < oldest) oldest = t
+          if (t > newest) newest = t
+        }
+      }
+      if (Number.isFinite(oldest)) oldestIso = new Date(oldest).toISOString()
+      if (Number.isFinite(newest)) newestIso = new Date(newest).toISOString()
+    }
     return {
       total_bytes: totalBytes,
       trace_count: traceCount,
-      ...(oldestMtime !== null ? { oldest_iso: new Date(oldestMtime).toISOString() } : {}),
-      ...(newestMtime !== null ? { newest_iso: new Date(newestMtime).toISOString() } : {}),
+      ...(oldestIso ? { oldest_iso: oldestIso } : {}),
+      ...(newestIso ? { newest_iso: newestIso } : {}),
     }
   }
 
@@ -483,7 +488,7 @@ export class TraceStore {
     affected_bytes: number
     deleted_trace_ids: string[]
   } {
-    if (!this.persistDir || retentionDays <= 0 || !fs.existsSync(this.persistDir)) {
+    if (!this.persistDir || !Number.isFinite(retentionDays) || retentionDays < 1 || !fs.existsSync(this.persistDir)) {
       return { affected_count: 0, affected_bytes: 0, deleted_trace_ids: [] }
     }
     const cutoff = new Date()
@@ -543,32 +548,23 @@ export class TraceStore {
     }
   }
 
+  /**
+   * @deprecated 用 cleanupOldTraces 替代；保留是为了不破坏现有调用方。
+   * 返回被删文件数（估算：通过会被清理的文件数预计算）。
+   */
   cleanupOldFiles(retentionDays: number): number {
-    if (!this.persistDir) return 0
-
+    if (!this.persistDir || !Number.isFinite(retentionDays) || retentionDays < 1 || !fs.existsSync(this.persistDir)) return 0
     const cutoff = new Date()
     cutoff.setDate(cutoff.getDate() - retentionDays)
     const cutoffStr = cutoff.toISOString().slice(0, 10)
-
-    let removed = 0
+    let fileCount = 0
     try {
       const files = fs.readdirSync(this.persistDir)
         .filter(f => f.startsWith('traces-') && f.endsWith('.jsonl'))
-
-      for (const file of files) {
-        const dateStr = file.slice('traces-'.length, 'traces-'.length + 10)
-        if (dateStr < cutoffStr) {
-          fs.unlinkSync(path.join(this.persistDir, file))
-          this.traceIndex = this.traceIndex.filter(e => e.file !== file)
-          removed++
-        }
-      }
-      if (removed > 0) {
-        this.rebuildTaskIndex()
-      }
+      fileCount = files.filter(f => f.slice('traces-'.length, 'traces-'.length + 10) < cutoffStr).length
     } catch { /* best effort */ }
-
-    return removed
+    this.cleanupOldTraces(retentionDays, false)
+    return fileCount
   }
 
   private addToTaskIndex(taskId: string, traceId: string): void {

@@ -1,5 +1,18 @@
 import type { GlobalModelConfig } from './types.js'
 
+/**
+ * 解析 /api/agent/traces/old 的 query 参数，返回解析结果或错误对象。
+ * 纯函数，方便单测。
+ */
+export function parseCleanupParams(url: URL): { days: number; dryRun: boolean } | { error: string } {
+  const days = Number(url.searchParams.get('days') ?? '0')
+  const dryRun = url.searchParams.get('dry_run') !== 'false' // 默认 dry_run=true 安全
+  if (!Number.isFinite(days) || days < 1) {
+    return { error: 'days must be >= 1' }
+  }
+  return { days, dryRun }
+}
+
 export interface TraceCleanupCronDeps {
   getGlobalConfig: () => GlobalModelConfig
   callCleanup: (days: number) => Promise<{ affected_count: number; affected_bytes: number }>
