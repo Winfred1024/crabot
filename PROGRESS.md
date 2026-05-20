@@ -1,8 +1,32 @@
 # Crabot 项目进度
 
-> 最后更新：2026-05-19 — Phase 5 阶段 2c：vision → research_collector + WORKFLOW 派发改 main 主动
+> 最后更新：2026-05-20 — Phase 5 阶段 3b：Trace 页面优化（StatusBar + CleanupDialogs + 协议同步）
 
-## 最新里程碑（2026-05-19 — Phase 5 阶段 2c：research_collector 重构 + WORKFLOW 派发改造）
+## 最新里程碑（2026-05-20 — Phase 5 阶段 3b：Trace 页面优化）
+
+Trace 页面四块优化 + 文件拆分：
+- dispatch_call / dispatch_action span 类型补全（agent union + admin web 渲染）
+- sub_agent_call 内联嵌套展开（点击展开子 trace span 树，banner 显示 subagent name）
+- 去 front/worker 二分 UI 文案（保留代码层兼容旧 trace 数据）
+- 顶部 StatusBar（磁盘占用 + trace 数） + 手动清理 dialog + 自动清理 retention 设置 + daily cron
+- 2002 行 pages/Traces/index.tsx 拆 9 个聚焦文件
+
+spec：`crabot-docs/superpowers/specs/2026-05-19-trace-page-redesign-design.md`
+plan：`crabot-docs/superpowers/plans/2026-05-19-trace-page-redesign.md`
+
+主要改动：
+- `crabot-agent/src/types.ts`：AgentSpanType union + DispatchCallDetails/ActionDetails
+- `crabot-agent/src/core/trace-store.ts`：getDiskUsage + cleanupOldTraces(dryRun)
+- `crabot-agent/src/unified-agent.ts`：注册 2 个新 RPC handler
+- `crabot-admin/src/types.ts`：GlobalModelConfig.trace_retention_days
+- `crabot-admin/src/index.ts`：/api/agent/traces/disk-usage GET + /api/agent/traces/old DELETE
+- `crabot-admin/src/trace-cleanup-cron.ts`：daily cron + retention 检查 + parseCleanupParams
+- `crabot-admin/web/src/pages/Traces/`：utils.ts + 8 个组件文件 + 多个测试文件
+- `crabot-docs/protocols/`：§8.2 表 + §3.24 REST 表 + AdminGlobalModelConfig 字段
+
+---
+
+## 上一里程碑（2026-05-19 — Phase 5 阶段 2c：research_collector 重构 + WORKFLOW 派发改造）
 
 阶段 2b 落地后发现两个问题：① vision builtin 在多模态时代价值缩水（所有 vision-capable 模型已可直接读图）；② WORKFLOW [执行] 段预设 `[self]/[vision]/[code]` 派发标签把决策框死，自定义 subagent 没法自动接入。阶段 2c 一次性解决这两个：
 
