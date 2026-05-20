@@ -2,7 +2,16 @@ import { describe, it, expect, vi } from 'vitest'
 import { dispatch, buildUserPrompt } from '../../src/dispatcher/dispatcher.js'
 import type { DispatchContext, DispatchAction } from '../../src/dispatcher/dispatcher-types.js'
 import type { LLMAdapter, LLMStreamParams, LLMCallResponse } from '../../src/engine/llm-adapter-types.js'
-import type { ChannelMessage } from '../../src/types.js'
+import type { ChannelMessage, TaskSummary } from '../../src/types.js'
+
+function makeTask(id: string): TaskSummary {
+  return {
+    task_id: id as never,
+    title: `t-${id}`,
+    status: 'executing',
+    priority: 'normal',
+  }
+}
 
 function makeCtx(overrides: Partial<DispatchContext> = {}): DispatchContext {
   return {
@@ -41,7 +50,10 @@ describe('dispatch', () => {
     const adapter = makeMockAdapter(JSON.stringify({
       actions: [{ kind: 'supplement', target_task_id: 'task-A', text: '只看红米' }],
     }))
-    const { actions } = await dispatch(makeCtx(), { adapter, modelId: 'm', sendErrorToUser: vi.fn() })
+    const { actions } = await dispatch(
+      makeCtx({ activeTasks: [makeTask('task-A')] }),
+      { adapter, modelId: 'm', sendErrorToUser: vi.fn() },
+    )
     expect(actions).toEqual<DispatchAction[]>([
       { kind: 'supplement', target_task_id: 'task-A', text: '只看红米' },
     ])
@@ -54,7 +66,10 @@ describe('dispatch', () => {
         { kind: 'supplement', target_task_id: 'task-A', text: '对比 CPU' },
       ],
     }))
-    const { actions } = await dispatch(makeCtx(), { adapter, modelId: 'm', sendErrorToUser: vi.fn() })
+    const { actions } = await dispatch(
+      makeCtx({ activeTasks: [makeTask('task-A')] }),
+      { adapter, modelId: 'm', sendErrorToUser: vi.fn() },
+    )
     expect(actions).toHaveLength(2)
     expect(actions[0].kind).toBe('new_task')
     expect(actions[1].kind).toBe('supplement')
@@ -149,6 +164,82 @@ describe('dispatch', () => {
     const prompt = buildUserPrompt(ctx)
     expect(prompt).not.toMatch(/## 最近聊天历史/)
     expect(prompt).toMatch(/## 当前消息批次/)
+  })
+
+  // ============================================================================
+  // Regression: trace db206eaf — 空 activeTasks 时 LLM 凭空输出 supplement +
+  // 编造 trigger-<uuid> 形式的 target_task_id。schema 白名单校验在这里兜底。
+  // ============================================================================
+
+  it('LLM 输出 supplement 但 target_task_id 不在 activeTasks → 校验失败触发 retry', async () => {
+    let callCount = 0
+    const adapter: LLMAdapter = {
+      stream: async function* () { /* not used */ },
+      complete: vi.fn().mockImplementation(async (_p: LLMStreamParams): Promise<LLMCallResponse> => {
+        callCount++
+        const text = callCount === 1
+          ? JSON.stringify({ actions: [{ kind: 'supplement', target_task_id: 'task-NONEXISTENT', text: 'x' }] })
+          : JSON.stringify({ actions: [{ kind: 'new_task', text: '查 X' }] })
+        return { content: [{ type: 'text', text }], stopReason: 'end_turn' }
+      }),
+      updateConfig: () => {},
+    }
+    const { actions } = await dispatch(
+      makeCtx({ activeTasks: [makeTask('task-REAL')] }),
+      { adapter, modelId: 'm', sendErrorToUser: vi.fn(), maxParseRetries: 3 },
+    )
+    expect(callCount).toBe(2)
+    expect(actions).toEqual([{ kind: 'new_task', text: '查 X' }])
+  })
+
+  it('空 activeTasks + LLM 编造 supplement → 校验失败 retry → LLM 改输出 new_task', async () => {
+    let callCount = 0
+    const adapter: LLMAdapter = {
+      stream: async function* () { /* not used */ },
+      complete: vi.fn().mockImplementation(async (_p: LLMStreamParams): Promise<LLMCallResponse> => {
+        callCount++
+        const text = callCount === 1
+          ? JSON.stringify({ actions: [{ kind: 'supplement', target_task_id: 'trigger-fake', text: 'x' }] })
+          : JSON.stringify({ actions: [{ kind: 'new_task', text: 'hi' }] })
+        return { content: [{ type: 'text', text }], stopReason: 'end_turn' }
+      }),
+      updateConfig: () => {},
+    }
+    const { actions } = await dispatch(
+      makeCtx({ activeTasks: [] }),
+      { adapter, modelId: 'm', sendErrorToUser: vi.fn(), maxParseRetries: 3 },
+    )
+    expect(callCount).toBe(2)
+    expect(actions[0].kind).toBe('new_task')
+  })
+
+  it('retry 时把上一次错误回灌进 user message，让 LLM 看到错在哪', async () => {
+    const seenMessages: string[] = []
+    let callCount = 0
+    const adapter: LLMAdapter = {
+      stream: async function* () { /* not used */ },
+      complete: vi.fn().mockImplementation(async (p: LLMStreamParams): Promise<LLMCallResponse> => {
+        const last = p.messages[p.messages.length - 1]
+        const c = 'content' in last ? last.content : ''
+        seenMessages.push(typeof c === 'string' ? c : JSON.stringify(c))
+        callCount++
+        const text = callCount === 1
+          ? JSON.stringify({ actions: [{ kind: 'supplement', target_task_id: 'bogus', text: 'x' }] })
+          : JSON.stringify({ actions: [{ kind: 'new_task', text: 'ok' }] })
+        return { content: [{ type: 'text', text }], stopReason: 'end_turn' }
+      }),
+      updateConfig: () => {},
+    }
+    await dispatch(
+      makeCtx({ activeTasks: [makeTask('task-A')] }),
+      { adapter, modelId: 'm', sendErrorToUser: vi.fn(), maxParseRetries: 3 },
+    )
+    expect(seenMessages.length).toBe(2)
+    expect(seenMessages[0]).not.toMatch(/上一次输出被校验拒绝/)
+    expect(seenMessages[1]).toMatch(/上一次输出被校验拒绝/)
+    // 错误内容应提到 bogus 与可见 task_id 列表
+    expect(seenMessages[1]).toMatch(/bogus/)
+    expect(seenMessages[1]).toMatch(/task-A/)
   })
 
   it('私聊场景下 LLM 误输出 stay_silent → 校验失败 retry', async () => {

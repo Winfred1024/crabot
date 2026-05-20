@@ -944,10 +944,25 @@ export interface DispatchActionDetails {
   text_summary?: string
   /** stay_silent 专用：原因（当 action.reason 存在时写入） */
   reason?: string
-  /** 完成后追加：动作结果 */
-  outcome?: 'supplement_fallback' | 'supplement_delivered' | 'new_task_spawned' | 'silent_discard'
-  /** new_task 完成后追加：spawn 出的子 trace id */
+  /** 完成后追加：动作结果。
+   *  - supplement_delivered: pushSupplement 成功
+   *  - supplement_fallback_recovered: pushSupplement 返回 fallback → 自动降级 new_task（attempted_target_task_id 记录原 LLM 输出）
+   *  - new_task_spawned: 直接 spawn
+   *  - silent_discard: 群聊 stay_silent
+   *  注：supplement_fallback 这个旧 outcome 已不再产生（被 supplement_fallback_recovered 取代），保留枚举值仅为兼容历史 trace 数据。 */
+  outcome?:
+    | 'supplement_fallback'
+    | 'supplement_fallback_recovered'
+    | 'supplement_delivered'
+    | 'new_task_spawned'
+    | 'silent_discard'
+  /** new_task 完成后追加：spawn 出的子 trace id；
+   *  supplement_fallback_recovered 时也可填（降级到 new_task 后的子 trace）。 */
   spawned_trace_id?: string
+  /** supplement_fallback_recovered 专用：原 LLM 输出的（不存在的）target_task_id，便于排查 LLM 编造行为。 */
+  attempted_target_task_id?: string
+  /** supplement_fallback_recovered 专用：降级路径标记。 */
+  recovered_via?: 'new_task'
   /** 失败时追加：错误信息 */
   error?: string
 }

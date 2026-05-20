@@ -31,12 +31,7 @@ const DEFAULT_MAX_PARSE_RETRIES = 3
 export async function dispatch(ctx: DispatchContext, deps: DispatchDeps): Promise<DispatchResult> {
   const maxRetries = deps.maxParseRetries ?? DEFAULT_MAX_PARSE_RETRIES
   const systemPrompt = assembleDispatcherPrompt(ctx)
-  const userMessage: EngineUserMessage = {
-    id: `dispatch-${Date.now()}`,
-    role: 'user',
-    content: buildUserPrompt(ctx),
-    timestamp: Date.now(),
-  }
+  const baseUserContent = buildUserPrompt(ctx)
 
   // 写 dispatch_call span（若调用方注入了 trace callback）
   const span = deps.trace?.startSpan({
@@ -46,11 +41,22 @@ export async function dispatch(ctx: DispatchContext, deps: DispatchDeps): Promis
       model: deps.modelId,
       session_type: ctx.sessionType,
       message_count: ctx.messages.length,
+      active_task_count: ctx.activeTasks.length,
     },
   })
 
   let lastError = ''
   for (let attempt = 0; attempt < maxRetries; attempt++) {
+    // 把上一次失败原因回灌进 user message 末尾，让 LLM 看到错在哪里再 retry
+    const userContent = attempt === 0
+      ? baseUserContent
+      : `${baseUserContent}\n\n## 上一次输出被校验拒绝\n${lastError}\n请按规则重新输出 JSON，**不要解释**。`
+    const userMessage: EngineUserMessage = {
+      id: `dispatch-${Date.now()}-${attempt}`,
+      role: 'user',
+      content: userContent,
+      timestamp: Date.now(),
+    }
     try {
       const response = await callNonStreaming(deps.adapter, {
         messages: [userMessage],
@@ -147,6 +153,17 @@ function parseAndValidate(text: string, ctx: DispatchContext): ValidationResult 
     if (a.kind === 'supplement') {
       if (typeof a.target_task_id !== 'string' || typeof a.text !== 'string') {
         return { ok: false, error: `action[${i}] supplement 缺 target_task_id 或 text` }
+      }
+      // 白名单校验：target_task_id 必须实际存在于本次输入的 activeTasks 中。
+      // 防止 LLM 编造 / 截断 / 拼造前缀（典型反例：编出 trigger-<uuid> 这种 syntheticTaskId 形态）。
+      if (!ctx.activeTasks.some((t) => t.task_id === a.target_task_id)) {
+        const visible = ctx.activeTasks.length === 0
+          ? '（无活跃任务，本次禁止使用 supplement，请改用 new_task）'
+          : ctx.activeTasks.map((t) => t.task_id).join(', ')
+        return {
+          ok: false,
+          error: `action[${i}] supplement.target_task_id="${a.target_task_id}" 不在活跃任务清单中。当前可见 task_id：${visible}`,
+        }
       }
       validated.push({ kind: 'supplement', target_task_id: a.target_task_id, text: a.text })
     } else if (a.kind === 'new_task') {
