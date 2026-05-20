@@ -1343,6 +1343,9 @@ export class AgentHandler {
    *
    * 新代码（SessionLane handler）应直接调 register + run 分步接口。
    * Spec: 2026-05-20-session-lane-dispatcher-design.md §3.3 §7
+   *
+   * @deprecated 调用方应直接调 registerTriggerAndActivate + runTriggerWorkerLoop。
+   *             本薄壳仅为过渡兼容，预计在 SessionLane 完整落地后（Task 7/8）删除。
    */
   async executeTriggerMessage(
     params: ExecuteTriggerMessageParams,

@@ -1,10 +1,16 @@
 import { describe, it, expect } from 'vitest'
 
 describe('Phase 3e: 统一 loop 已完全合并（无 feature flag，无旧路径）', () => {
-  it('UnifiedAgent.prototype 含 processDirectMessage（已合并为统一 loop）', async () => {
+  it('UnifiedAgent.prototype 含 processDirectBatch（私聊 lane handler）', async () => {
     const mod = await import('../../src/unified-agent.js')
     const proto = mod.UnifiedAgent.prototype as unknown as Record<string, unknown>
-    expect(typeof proto.processDirectMessage).toBe('function')
+    expect(typeof proto.processDirectBatch).toBe('function')
+  })
+
+  it('UnifiedAgent.prototype 不再含 processDirectMessage（已替换为 processDirectBatch）', async () => {
+    const mod = await import('../../src/unified-agent.js')
+    const proto = mod.UnifiedAgent.prototype as unknown as Record<string, unknown>
+    expect(proto.processDirectMessage).toBeUndefined()
   })
 
   it('UnifiedAgent.prototype 不再含 processDirectMessageUnified（已合并删除）', async () => {

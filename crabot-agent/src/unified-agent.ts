@@ -39,6 +39,7 @@ import { ContextAssembler } from './orchestration/context-assembler.js'
 import { ScheduledTaskRunner } from './orchestration/scheduled-task-runner.js'
 import { MemoryWriter } from './orchestration/memory-writer.js'
 import { AttentionScheduler, type AttentionConfig, type BufferedMessage } from './orchestration/attention-scheduler.js'
+import { SessionLaneRegistry } from './orchestration/session-lane.js'
 import { AgentHandler, type SdkEnvConfig, adapterFromSdkEnv } from './agent/agent-handler.js'
 import { dispatch } from './dispatcher/dispatcher.js'
 import type { DispatchTraceCallback } from './dispatcher/dispatcher-types.js'
@@ -123,6 +124,12 @@ export class UnifiedAgent extends ModuleBase {
   private scheduledTaskRunner: ScheduledTaskRunner
   private memoryWriter: MemoryWriter
   private attentionScheduler: AttentionScheduler
+  // SessionLane 入口：per-(channel_id, session_id) 串行
+  // - direct lane：私聊每条消息独立 item
+  // - group lane：每个 attention scheduler batch 是一个 item（多条消息）
+  // Spec: 2026-05-20-session-lane-dispatcher-design.md §3.4
+  private directLaneRegistry!: SessionLaneRegistry<{ message: ChannelMessage; friend: Friend }>
+  private groupLaneRegistry!: SessionLaneRegistry<{ messages: BufferedMessage[]; sessionId: string }>
 
   // 智能体层组件（可选，取决于配置）
   private agentHandler?: AgentHandler
@@ -222,6 +229,9 @@ export class UnifiedAgent extends ModuleBase {
       attentionConfig,
       (sessionId, messages) => this.processGroupBatch(sessionId, messages)
     )
+
+    this.directLaneRegistry = new SessionLaneRegistry((batch) => this.processDirectBatch(batch))
+    this.groupLaneRegistry = new SessionLaneRegistry((batch) => this.processGroupLaneBatch(batch))
 
     // 初始化智能体层组件（如果有配置）
     if (this.agentConfig) {
@@ -457,23 +467,37 @@ export class UnifiedAgent extends ModuleBase {
       return
     }
 
-    // 私聊消息直接处理（带 SwitchMap）
-    await this.processDirectMessage(message, friend)
+    // 私聊：进 SessionLane（串行化同 session 连发消息，合并到一次 dispatcher）
+    // Spec: 2026-05-20-session-lane-dispatcher-design.md §3.4
+    const laneKey = `${session.channel_id}::${session.session_id}`
+    this.directLaneRegistry.getOrCreate(laneKey).enqueue({ message, friend })
   }
 
   /**
-   * 私聊消息处理（SwitchMap：同 session 新消息取消旧请求）
+   * 私聊 lane handler。
+   * 同 session 连发消息合并为一个 batch；用最后一条的 friend 作为 senderFriend
+   * （私聊一般同一人；个别 friend 切换的边缘情况按最新一条处理）。
+   *
+   * Spec: 2026-05-20-session-lane-dispatcher-design.md §3.4
    */
-  private async processDirectMessage(message: ChannelMessage, friend: Friend): Promise<void> {
-    const { session } = message
+  private async processDirectBatch(
+    batch: ReadonlyArray<{ message: ChannelMessage; friend: Friend }>,
+  ): Promise<void> {
+    if (batch.length === 0) return
+    const messages = batch.map(b => b.message)
+    const friend = batch[batch.length - 1].friend
+    const session = messages[0].session
     this.sessionManager.updateLastMessageTime(session.session_id)
 
-    // 创建 trace
+    // 创建 trace —— summary 拼接 batch 内每条消息的前缀
     const trace = this.traceStore.startTrace({
       module_id: this.config.moduleId,
       trigger: {
         type: 'message',
-        summary: (message.content.text ?? '[非文本]').slice(0, 200),
+        summary: `[private×${messages.length}] ` + messages
+          .map(m => (m.content.text ?? '[非文本]').slice(0, 80))
+          .join(' | ')
+          .slice(0, 200),
         source: session.channel_id,
       },
     })
@@ -484,7 +508,6 @@ export class UnifiedAgent extends ModuleBase {
         return
       }
 
-      // 权限 + memory perm
       const resolvedPerms = await this.resolvePrincipalPermissions(friend, session.session_id, 'private')
       this.currentResolvedPerms = resolvedPerms
       const memPerms = resolvedPerms
@@ -496,21 +519,25 @@ export class UnifiedAgent extends ModuleBase {
           }
         : await this.buildSessionMemoryPermissions(session.session_id)
 
-      // 上下文装配（带 span 追踪耗时）
       const ctxSpan = this.traceStore.startSpan(trace.trace_id, {
         type: 'context_assembly',
         details: {
           context_type: 'front',
           channel_id: session.channel_id,
           session_id: session.session_id,
+          message_batch: messages.map(m => ({
+            sender: m.sender.platform_display_name,
+            text: m.content.text ?? '',
+            is_mention_crab: m.features.is_mention_crab ?? false,
+          })),
         },
       })
       const frontContext = await this.contextAssembler.assembleFrontContext(
         {
           channel_id: session.channel_id,
           session_id: session.session_id,
-          sender_id: message.sender.platform_user_id,
-          message: message.content.text ?? '',
+          sender_id: messages[messages.length - 1].sender.platform_user_id,
+          message: messages.map(m => m.content.text ?? '').filter(Boolean).join('\n'),
           friend_id: friend.id,
           session_type: 'private',
         },
@@ -520,14 +547,13 @@ export class UnifiedAgent extends ModuleBase {
       )
       this.traceStore.endSpan(trace.trace_id, ctxSpan.span_id, 'completed')
 
-      // 调 dispatcher
       if (!this.sdkEnvWorker) {
         this.traceStore.endTrace(trace.trace_id, 'failed', { summary: 'sdkEnvWorker missing' })
         return
       }
 
       const dispatchCtx = {
-        messages: [message] as ReadonlyArray<ChannelMessage>,
+        messages: messages as ReadonlyArray<ChannelMessage>,
         recentMessages: (frontContext.recent_messages ?? []) as ReadonlyArray<ChannelMessage>,
         activeTasks: frontContext.active_tasks ?? [],
         sessionType: 'private' as const,
@@ -546,7 +572,7 @@ export class UnifiedAgent extends ModuleBase {
             content: { type: 'text', text },
           }, this.config.moduleId)
         } catch (err) {
-          console.error(`[${this.config.moduleId}] processDirectMessage sendErrorToUser failed:`, err instanceof Error ? err.message : String(err))
+          console.error(`[${this.config.moduleId}] processDirectBatch sendErrorToUser failed:`, err instanceof Error ? err.message : String(err))
         }
       }
 
@@ -556,51 +582,51 @@ export class UnifiedAgent extends ModuleBase {
         modelId: this.sdkEnvWorker.modelId,
         sendErrorToUser,
         trace: traceCallbackPrivate,
+        laneBatchSize: messages.length,
       })
 
-      // 执行动作
       await executeDispatchActions(actions, {
         dispatchCtx,
-        pushSupplement: async (taskId: string, text: string): Promise<'delivered' | 'fallback'> => {
+        pushSupplement: async (taskId: string, _text: string): Promise<'delivered' | 'fallback'> => {
           if (!this.agentHandler!.hasActiveTask(taskId)) return 'fallback'
           try {
-            // deliverHumanResponse 接受 ChannelMessage[]，构造一条伪消息传递 text
-            const syntheticMessage: ChannelMessage = {
-              ...message,
-              content: { ...message.content, text },
-            }
-            this.agentHandler!.deliverHumanResponse(taskId, [syntheticMessage])
+            // 传整批 ChannelMessage（保留媒体，Task 3 已让 deliverHumanResponse 渲染媒体）
+            this.agentHandler!.deliverHumanResponse(taskId, messages)
             return 'delivered'
           } catch {
             return 'fallback'
           }
         },
         spawnAgentInstance: async (_actionText: string) => {
-          // 把 dispatcher 看到的完整批次（recent_messages 历史 + 当前 trigger 消息）传给 worker。
-          // dispatcher 的 action.text 是它对 task 的总结，不再用来覆盖 trigger 的 content.text —
-          // worker 直接读完整消息（含 media_url / filename）效率更高且保真。
-          const triggerIds = new Set([message.platform_message_id])
+          const triggerIds = new Set(messages.map(m => m.platform_message_id))
           const history = (frontContext.recent_messages ?? []).filter(
             (m) => !triggerIds.has(m.platform_message_id)
           )
-          const allMessages = [...history, message]
-          const result = await this.agentHandler!.executeTriggerMessage(
-            {
-              messages: allMessages,
-              activeTasks: frontContext.active_tasks ?? [],
-              isGroup: false,
-              ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
-              senderFriend: friend,
-              triggerArrivedAtMs: Date.now(),
-              memoryPermissions: memPerms,
-              resolvedPermissions: resolvedPerms as ResolvedPermissions,
-              channelId: session.channel_id,
-              sessionId: session.session_id,
-              frontContext,
-            },
+          const allMessages = [...history, ...messages]
+          const params = {
+            messages: allMessages,
+            activeTasks: frontContext.active_tasks ?? [],
+            isGroup: false,
+            ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
+            senderFriend: friend,
+            triggerArrivedAtMs: Date.now(),
+            memoryPermissions: memPerms,
+            resolvedPermissions: resolvedPerms as ResolvedPermissions,
+            channelId: session.channel_id,
+            sessionId: session.session_id,
+            frontContext,
+          }
+          // 同步段：register admin + activeTasks.set —— 返回后 lane 可以解锁下一批
+          const pre = await this.agentHandler!.registerTriggerAndActivate(params)
+          // 异步段：fire-and-forget runWorkerLoop（内部已 try/catch + 写 trace）
+          void this.agentHandler!.runTriggerWorkerLoop(
+            params,
+            pre,
             this.buildTraceCallback(trace.trace_id),
-          )
-          return { spawnedTraceId: (result as { traceId?: string }).traceId ?? trace.trace_id }
+          ).catch(err => {
+            console.error(`[${this.config.moduleId}] runTriggerWorkerLoop crashed for ${pre.taskId}:`, err instanceof Error ? err.message : String(err))
+          })
+          return { spawnedTraceId: trace.trace_id }
         },
         sendErrorToUser,
         trace: traceCallbackPrivate,
@@ -613,6 +639,13 @@ export class UnifiedAgent extends ModuleBase {
       const msg = err instanceof Error ? err.message : String(err)
       this.traceStore.endTrace(trace.trace_id, 'failed', { summary: msg, error: msg })
     }
+  }
+
+  /** 群聊 lane handler stub（Task 5 替换为真实实现） */
+  private async processGroupLaneBatch(
+    _batch: ReadonlyArray<{ messages: BufferedMessage[]; sessionId: string }>,
+  ): Promise<void> {
+    // Task 5 实现
   }
 
   /**
