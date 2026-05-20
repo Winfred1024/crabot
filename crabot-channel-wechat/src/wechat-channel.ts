@@ -11,9 +11,11 @@
 import http from 'node:http'
 import crypto from 'node:crypto'
 import { ModuleBase, type ModuleConfig, generateId, generateTimestamp, type Event } from 'crabot-shared'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { WechatClient } from './wechat-client.js'
 import { formatWechatContent } from './format-wechat-content.js'
 import { SessionManager } from './session-manager.js'
+import { splitLongText } from './split-long-text.js'
 import type {
   WechatRawEvent,
   WebhookEnvelope,
@@ -433,7 +435,7 @@ export class WechatChannel extends ModuleBase {
     } else if (params.content.type === 'file' && params.content.media_url) {
       await this.client.sendFile(wxid, params.content.media_url, params.content.filename)
     } else {
-      await this.client.sendText(wxid, text)
+      await this.sendTextSegmented(wxid, text)
     }
 
     const messageId = generateId()
@@ -441,6 +443,28 @@ export class WechatChannel extends ModuleBase {
 
     return { platform_message_id: messageId, sent_at: sentAt }
   }
+
+  /**
+   * 长文本主动拆段 + 串行发送，把发送顺序握在 channel-wechat 层。
+   *
+   * 背景：一次 POST 整段长文本给 wechat-connector 后，下游会自行拆分并异步推到
+   * MQTT/Puppet，Puppet 并发处理就会让接收方看到的多条消息乱序。把拆分前置
+   * 到这里后串行 await，并在段间留出 INTER_SEGMENT_DELAY_MS 让下游不至于把
+   * 相邻两次请求并发处理。
+   */
+  private async sendTextSegmented(wxid: string, text: string): Promise<void> {
+    const segments = splitLongText(text, WechatChannel.MAX_TEXT_SEGMENT_LEN)
+    for (let i = 0; i < segments.length; i++) {
+      if (i > 0) await sleep(WechatChannel.INTER_SEGMENT_DELAY_MS)
+      await this.client.sendText(wxid, segments[i])
+    }
+  }
+
+  /** 单条文本上限（字符）。超过即在本层拆段。 */
+  private static readonly MAX_TEXT_SEGMENT_LEN = 1500
+
+  /** 段间发送间隔（毫秒）。给下游 connector → MQTT → Puppet 留串行处理窗口。 */
+  private static readonly INTER_SEGMENT_DELAY_MS = 400
 
   private handleGetCapabilities(): ChannelCapabilities {
     return {
