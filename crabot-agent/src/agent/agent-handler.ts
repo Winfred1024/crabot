@@ -62,7 +62,7 @@ import type { RpcClient } from 'crabot-shared'
 import { createCrabMemoryServer } from '../mcp/crab-memory.js'
 import type { MemoryTaskContext } from '../mcp/crab-memory.js'
 import { mcpServerToToolDefinitions } from './mcp-tool-bridge.js'
-import { formatMessageContent, resolveImageBlocks } from './media-resolver.js'
+import { formatMessageContent, resolveImageBlocks, EMPTY_MESSAGE_PLACEHOLDER } from './media-resolver.js'
 import type { McpConnector } from './mcp-connector.js'
 import { forkEngine } from '../engine/sub-agent.js'
 import type { SubAgentTraceConfig } from '../engine/sub-agent.js'
@@ -1772,10 +1772,10 @@ export class AgentHandler {
 
     log(`[supplement] deliverHumanResponse: queued ${messages.length} messages for task ${taskId} (status: ${taskState.status})`)
 
-    // Build supplement text from messages
+    // 渲染含媒体的消息（文件名 / 图片 url）—— 与 dispatcher buildUserPrompt 对齐
     const supplement = messages
-      .map(m => m.content.text ?? '')
-      .filter(t => t.length > 0)
+      .map(m => formatMessageContent(m))
+      .filter(t => t !== EMPTY_MESSAGE_PLACEHOLDER)
       .join('\n')
 
     if (supplement) {
