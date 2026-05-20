@@ -141,7 +141,13 @@ export class UnifiedAgent extends ModuleBase {
   private digestSdkEnv?: SdkEnvConfig
   /** Worker sandbox 路径映射（每次 executeTask 时更新） */
   private sandboxPathMappingsRef: { current: PathMapping[] } = { current: [] }
-  /** 当前 session 的解析后权限（模板 + Session 覆盖） */
+  /** Front 处理消息时残留的会话级权限解析。
+   *
+   * ⚠️ Race risk（2026-05-20 Task 5 标识，未修）：fire-and-forget spawn 后，
+   *    同一 instance 多个并发 lane 会顺序覆盖此字段；worker loop 跑期间 fallback
+   *    读取（line ~933）可能拿到错位权限。
+   *    Follow-up: 把权限改 per-task 持有（传给 runTriggerWorkerLoop / runWorkerLoop），
+   *    删除此字段。 */
   private currentResolvedPerms?: ResolvedPermissions | null
 
   // 配置
@@ -227,7 +233,15 @@ export class UnifiedAgent extends ModuleBase {
     }
     this.attentionScheduler = new AttentionScheduler(
       attentionConfig,
-      (sessionId, messages) => this.processGroupBatch(sessionId, messages)
+      async (sessionId, messages) => {
+        // 进群聊 lane（与私聊一致的串行兜底）
+        // 大多数情况下 attention scheduler 已经控了节奏，lane 不会积压
+        // Spec: 2026-05-20-session-lane-dispatcher-design.md §3.4
+        const channelId = messages[0]?.message.session.channel_id
+        if (!channelId) return
+        const key = `${channelId}::${sessionId}`
+        this.groupLaneRegistry.getOrCreate(key).enqueue({ messages, sessionId })
+      },
     )
 
     this.directLaneRegistry = new SessionLaneRegistry((batch) => this.processDirectBatch(batch))
@@ -588,6 +602,9 @@ export class UnifiedAgent extends ModuleBase {
       await executeDispatchActions(actions, {
         dispatchCtx,
         pushSupplement: async (taskId: string, _text: string): Promise<'delivered' | 'fallback'> => {
+          // 故意忽略 _text：dispatcher LLM 摘要不如原始消息保真。
+          // Task 3 后 deliverHumanResponse 已能渲染含媒体的 ChannelMessage[]，传整批 messages。
+          // Spec §3.5
           if (!this.agentHandler!.hasActiveTask(taskId)) return 'fallback'
           try {
             // 传整批 ChannelMessage（保留媒体，Task 3 已让 deliverHumanResponse 渲染媒体）
@@ -641,22 +658,23 @@ export class UnifiedAgent extends ModuleBase {
     }
   }
 
-  /** 群聊 lane handler stub（Task 5 替换为真实实现） */
-  private async processGroupLaneBatch(
-    _batch: ReadonlyArray<{ messages: BufferedMessage[]; sessionId: string }>,
-  ): Promise<void> {
-    // Task 5 实现
-  }
-
   /**
-   * 群聊批量消息处理（注意力调度巡检回调）
+   * 群聊 lane handler。
+   * 极罕见情况下 attention scheduler 在 lane 还在处理上一批时连续吐出多个 batch，
+   * 这里 flatMap 合并；正常情况每次只一个 attention batch。
    *
-   * 巡检间隔到期后调用，传入该周期内积累的所有消息。
-   * Agent 判断是否需要回复：有回复 → 重置间隔；无关消息 → 退避间隔。
-   *
-   * @see protocol-agent-v2.md §5.2
+   * Spec: 2026-05-20-session-lane-dispatcher-design.md §3.4
    */
-  private async processGroupBatch(sessionId: string, buffered: BufferedMessage[]): Promise<void> {
+  private async processGroupLaneBatch(
+    batch: ReadonlyArray<{ messages: BufferedMessage[]; sessionId: string }>,
+  ): Promise<void> {
+    if (batch.length === 0) return
+    const buffered: BufferedMessage[] = batch.flatMap(b => b.messages)
+    const sessionId = batch[0].sessionId
+    // dev-assert: lane key 保证同 lane 内 sessionId 一致；不一致是 lane 误用
+    if (batch.some(b => b.sessionId !== sessionId)) {
+      console.error(`[${this.config.moduleId}] processGroupLaneBatch sessionId mismatch: ${batch.map(b => b.sessionId).join(',')}`)
+    }
     if (buffered.length === 0) return
 
     // 使用最后一条消息的 friend 信息作为代表
@@ -765,7 +783,7 @@ export class UnifiedAgent extends ModuleBase {
             content: { type: 'text', text },
           }, this.config.moduleId)
         } catch (err) {
-          console.error(`[${this.config.moduleId}] processGroupBatch sendErrorToUser failed:`, err instanceof Error ? err.message : String(err))
+          console.error(`[${this.config.moduleId}] processGroupLaneBatch sendErrorToUser failed:`, err instanceof Error ? err.message : String(err))
         }
       }
 
@@ -775,6 +793,7 @@ export class UnifiedAgent extends ModuleBase {
         modelId: this.sdkEnvWorker.modelId,
         sendErrorToUser,
         trace: traceCallbackGroup,
+        laneBatchSize: batch.length,
       })
 
       // 退避信号：actions 中是否含非 stay_silent 动作
@@ -782,14 +801,14 @@ export class UnifiedAgent extends ModuleBase {
 
       await executeDispatchActions(actions, {
         dispatchCtx,
-        pushSupplement: async (taskId: string, text: string): Promise<'delivered' | 'fallback'> => {
+        pushSupplement: async (taskId: string, _text: string): Promise<'delivered' | 'fallback'> => {
+          // 故意忽略 _text：dispatcher LLM 摘要不如原始消息保真。
+          // Task 3 后 deliverHumanResponse 已能渲染含媒体的 ChannelMessage[]，传整批 messages。
+          // Spec §3.5
           if (!this.agentHandler!.hasActiveTask(taskId)) return 'fallback'
           try {
-            const syntheticMessage: ChannelMessage = {
-              ...lastMsg,
-              content: { ...lastMsg.content, text },
-            }
-            this.agentHandler!.deliverHumanResponse(taskId, [syntheticMessage])
+            // 传整批 ChannelMessage（保留媒体，Task 3 已让 deliverHumanResponse 渲染媒体）
+            this.agentHandler!.deliverHumanResponse(taskId, messages)
             return 'delivered'
           } catch {
             return 'fallback'
@@ -803,28 +822,38 @@ export class UnifiedAgent extends ModuleBase {
             (m) => !currentIds.has(m.platform_message_id)
           )
           const allMessages = [...history, ...messages]
-          const result = await this.agentHandler!.executeTriggerMessage(
-            {
-              messages: allMessages,
-              activeTasks: frontContext.active_tasks ?? [],
-              isGroup: true,
-              ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
-              senderFriend: lastEntry.friend,
-              triggerArrivedAtMs: Date.now(),
-              memoryPermissions: memPerms,
-              resolvedPermissions: resolvedPerms as ResolvedPermissions,
-              channelId: session.channel_id,
-              sessionId,
-              frontContext,
-            },
+          const params = {
+            messages: allMessages,
+            activeTasks: frontContext.active_tasks ?? [],
+            isGroup: true,
+            ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
+            senderFriend: lastEntry.friend,
+            triggerArrivedAtMs: Date.now(),
+            memoryPermissions: memPerms,
+            resolvedPermissions: resolvedPerms as ResolvedPermissions,
+            channelId: session.channel_id,
+            sessionId,
+            frontContext,
+          }
+          // 同步段：register admin + activeTasks.set —— 返回后 lane 可以解锁下一批
+          const pre = await this.agentHandler!.registerTriggerAndActivate(params)
+          // 异步段：fire-and-forget runWorkerLoop（内部已 try/catch + 写 trace）
+          void this.agentHandler!.runTriggerWorkerLoop(
+            params,
+            pre,
             this.buildTraceCallback(trace.trace_id),
-          )
-          return { spawnedTraceId: (result as { traceId?: string }).traceId ?? trace.trace_id }
+          ).catch(err => {
+            console.error(`[${this.config.moduleId}] runTriggerWorkerLoop crashed for ${pre.taskId}:`, err instanceof Error ? err.message : String(err))
+          })
+          return { spawnedTraceId: trace.trace_id }
         },
         sendErrorToUser,
         trace: traceCallbackGroup,
       })
 
+      // 注：spawn 改 fire-and-forget 后 clearAllBarriers 看似时机变早（早于 worker 跑完），
+      //     但 barrier 实际被 pushSupplement(humanQueue.push) 或 8s 超时自动 clear，
+      //     这里只是兜底——语义未变。
       this.clearAllBarriers(barrierTaskIds)
       this.attentionScheduler.reportResult(sessionId, hasReply)
 
