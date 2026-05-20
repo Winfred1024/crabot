@@ -926,6 +926,10 @@ export interface DispatchCallDetails {
   session_type?: string
   /** 本轮处理的消息批次大小 */
   message_count?: number
+  /** dispatcher 看到的活跃任务数（fetchActiveTasks 结果，已过滤 scheduled） */
+  active_task_count?: number
+  /** SessionLane take 整批的大小；> 1 表示有合并发生（私聊 = 消息条数；群聊 = attention batch 数） */
+  lane_batch_size?: number
   /** completed 后追加：本次解析到的动作数 */
   action_count?: number
   /** completed/failed 后追加：解析重试次数（0 = 首次成功） */
