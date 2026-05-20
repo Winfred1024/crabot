@@ -97,11 +97,14 @@ export function formatWechatContent(
     // ── 文件 (9, 1090519089) ──
     case 9:
     case 1090519089: {
-      // wechat-connector 不同版本对 PDF / Office 文件字段命名不统一；按观察过的命名顺序兜底。
-      // 任一字段未命中且最终落到 "未知文件" 时把 raw 全部非空 string 字段值打出来，
-      // 便于回查 connector 协议（PDF 可能塞在 text / describe / 子对象里）。
+      // wechat-connector 协议（实际抓包确认 2026-05）：
+      //   text     = 文件名（如 "刘希红的家庭保障分析报告.pdf"），不是文本正文
+      //   describe = 文件大小字节数字符串（如 "5903629" ≈ 5.6MB）
+      //   file_url / file_name / resource_url 等字段不存在
+      // 历史 / 其他 connector 版本可能填 file_name / filename / file_url，做候选兜底。
       const fileName =
-        s('file_name')
+        s('text')
+        ?? s('file_name')
         ?? s('filename')
         ?? s('title')
         ?? s('name')
@@ -112,6 +115,8 @@ export function formatWechatContent(
         ?? s('url')
         ?? s('resource_url')
         ?? s('download_url')
+      const fileSizeStr = s('describe')  // wechat-connector 把文件大小（字节数）放这里
+      const fileSize = fileSizeStr && /^\d+$/.test(fileSizeStr) ? Number(fileSizeStr) : undefined
       if (!fileName) {
         console.warn(
           `[format-wechat-content] case ${fieldType} 文件消息字段未识别，raw=${dumpRawForDebug(raw)}`
@@ -123,6 +128,7 @@ export function formatWechatContent(
         text: resolvedName,
         ...(fileUrl ? { media_url: fileUrl } : {}),
         filename: resolvedName,
+        ...(fileSize !== undefined ? { size: fileSize } : {}),
       }
       return { content, features: {} }
     }

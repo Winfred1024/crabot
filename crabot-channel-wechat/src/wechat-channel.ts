@@ -249,6 +249,25 @@ export class WechatChannel extends ModuleBase {
     // 格式化消息内容（所有消息类型统一通过 formatWechatContent 处理）
     const msgType = event.message.type
     const rawContent = event.message.content as Record<string, unknown>
+
+    // === DEBUG（追排 PDF 没 file_url 的原因）===
+    // 入站 socket.io 推送的 envelope 缺 file_url 时，单独调 GET /messages/:id 看 connector
+    // 单条消息 API 是否返回更完整的 raw（含 file_url）。仅 case 9 / 1090519089 触发，避免每条消息都 fetch。
+    if ((msgType === 9 || msgType === 1090519089) && !rawContent.file_url && !rawContent.fileurl && !rawContent.url) {
+      try {
+        const fullMsg = await this.client.getMessageById(event.message.id)
+        const fullContent = fullMsg?.content as Record<string, unknown> | undefined
+        console.warn(
+          `[WechatChannel] DEBUG case=${msgType} 入站缺 file_url，调 getMessageById(${event.message.id}) 返回 content keys=`,
+          fullContent ? Object.keys(fullContent) : '<null>',
+          fullContent
+        )
+      } catch (err) {
+        console.warn(`[WechatChannel] DEBUG getMessageById failed:`, err instanceof Error ? err.message : err)
+      }
+    }
+    // === /DEBUG ===
+
     const { content: formattedContent, features: extraFeatures } = formatWechatContent(msgType, rawContent)
 
     // 检测 @Crabot
