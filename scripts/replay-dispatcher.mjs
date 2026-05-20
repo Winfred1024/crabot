@@ -167,13 +167,15 @@ for (const prefix of TRACE_PREFIXES) {
   }
 
   let sendErrorCalled = false
+  let sendErrorText = ''
   try {
     const { actions } = await dispatch(dispatchCtx, {
       adapter,
       modelId: defaultModelId,
-      sendErrorToUser: async () => { sendErrorCalled = true },
+      sendErrorToUser: async (text) => { sendErrorCalled = true; sendErrorText = text },
       maxParseRetries: 3,
       trace: traceCb,
+      laneBatchSize: messages.length,
     })
 
     const dispatchCall = events.find(e => e.phase === 'endSpan' && e.spanId === 'sp-1')
@@ -186,6 +188,7 @@ for (const prefix of TRACE_PREFIXES) {
     console.log(`    actions: ${JSON.stringify(actions, null, 2).split('\n').join('\n      ').slice(0, 600)}`)
     console.log(`    retries: ${retries}  ${retries > 0 ? '✓ schema 白名单拦了一次以上' : ''}`)
     console.log(`    sendErrorToUser called: ${sendErrorCalled}`)
+    if (sendErrorCalled) console.log(`    sendErrorText: ${sendErrorText}`)
     console.log(`    ${passed ? '✅ PASS' : '❌ FAIL'} — 预期 kind ∈ [${expectedKind.join(',')}]，实际 ${firstKind}`)
 
     results.push({
