@@ -5,7 +5,7 @@ import type { ExecuteContext, DispatchAction } from '../../src/dispatcher/dispat
 function makeExecCtx(overrides: Partial<ExecuteContext> = {}): ExecuteContext {
   return {
     dispatchCtx: {
-      messages: [], activeTasks: [], sessionType: 'private',
+      messages: [], recentMessages: [], activeTasks: [], sessionType: 'private',
       channelId: 'ch', sessionId: 'sess',
       senderFriend: {} as never, traceId: 'trace-1',
     },

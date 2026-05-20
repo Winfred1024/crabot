@@ -32,7 +32,15 @@ export type DispatchAction =
 
 /** Dispatcher 调用上下文。 */
 export interface DispatchContext {
+  /** 当前触发批次：私聊单条 / 群聊 attention 批次。dispatcher 决策的直接对象。 */
   readonly messages: ReadonlyArray<ChannelMessage>
+  /**
+   * 最近聊天历史（不含当前 messages）。
+   * dispatcher 需要它判断 supplement 时引用的「那个 PDF」「那个手机调研」是否指向当前活跃任务，
+   * 并把媒体上下文（文件 / 图片）传递给 spawn 出来的 worker。
+   * 由 contextAssembler 填充（参 FrontAgentContext.recent_messages）。
+   */
+  readonly recentMessages: ReadonlyArray<ChannelMessage>
   /** 已 union 去重 + 过滤 schedule task 的 active_tasks。dispatcher 直接信任。 */
   readonly activeTasks: ReadonlyArray<TaskSummary>
   readonly sessionType: 'private' | 'group' | 'admin_chat'

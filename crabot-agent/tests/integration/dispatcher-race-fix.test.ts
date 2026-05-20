@@ -28,6 +28,7 @@ function makeMockAdapter(responseText: string): LLMAdapter {
 function makeCtx(overrides: Partial<DispatchContext> = {}): DispatchContext {
   return {
     messages: [],
+    recentMessages: [],
     activeTasks: [],
     sessionType: 'private',
     channelId: 'test-channel',

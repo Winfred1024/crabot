@@ -12,6 +12,7 @@
 import type { LLMAdapter } from '../engine/llm-adapter-types.js'
 import { callNonStreaming, extractText } from '../engine/llm-adapter-types.js'
 import type { EngineUserMessage } from '../engine/types.js'
+import { formatMessageContent } from '../agent/media-resolver.js'
 import type { DispatchContext, DispatchResult, DispatchAction, DispatchTraceCallback } from './dispatcher-types.js'
 import { MAX_ACTIONS_PER_DISPATCH } from './dispatcher-types.js'
 import { assembleDispatcherPrompt } from './dispatcher-prompt.js'
@@ -86,12 +87,25 @@ export async function dispatch(ctx: DispatchContext, deps: DispatchDeps): Promis
   return { actions: [] }
 }
 
-function buildUserPrompt(ctx: DispatchContext): string {
+/** Exported for regression tests; renders file / image media as `[文件: name]` / `[图片: url]`
+ *  and includes recent_messages chat history for indirect-reference judgments. */
+export function buildUserPrompt(ctx: DispatchContext): string {
   const lines: string[] = []
+
+  // 最近聊天历史：剔除当前批次已含的消息（contextAssembler 拉的 recent_messages 通常会包含 trigger）
+  const currentIds = new Set(ctx.messages.map((m) => m.platform_message_id))
+  const history = ctx.recentMessages.filter((m) => !currentIds.has(m.platform_message_id))
+  if (history.length > 0) {
+    lines.push('## 最近聊天历史')
+    for (const m of history) {
+      lines.push(`[${m.sender.platform_display_name}] ${formatMessageContent(m).slice(0, 2000)}`)
+    }
+    lines.push('')
+  }
+
   lines.push('## 当前消息批次')
   for (const m of ctx.messages) {
-    const text = (m.content.text ?? '[非文本]').slice(0, 2000)
-    lines.push(`[${m.sender.platform_display_name}] ${text}`)
+    lines.push(`[${m.sender.platform_display_name}] ${formatMessageContent(m).slice(0, 2000)}`)
   }
   if (ctx.activeTasks.length > 0) {
     lines.push('\n## 活跃任务')

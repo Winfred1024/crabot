@@ -528,6 +528,7 @@ export class UnifiedAgent extends ModuleBase {
 
       const dispatchCtx = {
         messages: [message] as ReadonlyArray<ChannelMessage>,
+        recentMessages: (frontContext.recent_messages ?? []) as ReadonlyArray<ChannelMessage>,
         activeTasks: frontContext.active_tasks ?? [],
         sessionType: 'private' as const,
         channelId: session.channel_id,
@@ -574,14 +575,18 @@ export class UnifiedAgent extends ModuleBase {
             return 'fallback'
           }
         },
-        spawnAgentInstance: async (text: string) => {
-          const triggerMessage: ChannelMessage = {
-            ...message,
-            content: { ...message.content, text },
-          }
+        spawnAgentInstance: async (_actionText: string) => {
+          // 把 dispatcher 看到的完整批次（recent_messages 历史 + 当前 trigger 消息）传给 worker。
+          // dispatcher 的 action.text 是它对 task 的总结，不再用来覆盖 trigger 的 content.text —
+          // worker 直接读完整消息（含 media_url / filename）效率更高且保真。
+          const triggerIds = new Set([message.platform_message_id])
+          const history = (frontContext.recent_messages ?? []).filter(
+            (m) => !triggerIds.has(m.platform_message_id)
+          )
+          const allMessages = [...history, message]
           const result = await this.agentHandler!.executeTriggerMessage(
             {
-              messages: [triggerMessage],
+              messages: allMessages,
               activeTasks: frontContext.active_tasks ?? [],
               isGroup: false,
               ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
@@ -709,6 +714,7 @@ export class UnifiedAgent extends ModuleBase {
 
       const dispatchCtx = {
         messages: messages as ReadonlyArray<ChannelMessage>,
+        recentMessages: (frontContext.recent_messages ?? []) as ReadonlyArray<ChannelMessage>,
         activeTasks: frontContext.active_tasks ?? [],
         sessionType: 'group' as const,
         channelId: session.channel_id,
@@ -756,14 +762,17 @@ export class UnifiedAgent extends ModuleBase {
             return 'fallback'
           }
         },
-        spawnAgentInstance: async (text: string) => {
-          const triggerMessage: ChannelMessage = {
-            ...lastMsg,
-            content: { ...lastMsg.content, text },
-          }
+        spawnAgentInstance: async (_actionText: string) => {
+          // 群聊：把 attention 批次 messages（已含群成员发的文件/图片）+ recent_messages 历史去重后整批传给 worker。
+          // 不用 action.text 覆盖触发消息的 content.text，让 worker 拿到完整保真的消息上下文。
+          const currentIds = new Set(messages.map((m) => m.platform_message_id))
+          const history = (frontContext.recent_messages ?? []).filter(
+            (m) => !currentIds.has(m.platform_message_id)
+          )
+          const allMessages = [...history, ...messages]
           const result = await this.agentHandler!.executeTriggerMessage(
             {
-              messages: [triggerMessage],
+              messages: allMessages,
               activeTasks: frontContext.active_tasks ?? [],
               isGroup: true,
               ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
@@ -1460,6 +1469,7 @@ export class UnifiedAgent extends ModuleBase {
       // 调 dispatcher
       const dispatchCtx = {
         messages: [message] as ReadonlyArray<ChannelMessage>,
+        recentMessages: (frontContext.recent_messages ?? []) as ReadonlyArray<ChannelMessage>,
         activeTasks: frontContext.active_tasks ?? [],
         sessionType: 'admin_chat' as const,
         channelId: 'admin-web',
@@ -1547,14 +1557,16 @@ export class UnifiedAgent extends ModuleBase {
             return 'fallback'
           }
         },
-        spawnAgentInstance: async (text: string) => {
-          const triggerMessage: ChannelMessage = {
-            ...message,
-            content: { ...message.content, text },
-          }
+        spawnAgentInstance: async (_actionText: string) => {
+          // admin_chat：把当前 trigger + recent_messages 去重后整批传给 worker，保留媒体上下文。
+          const triggerIds = new Set([message.platform_message_id])
+          const history = (frontContext.recent_messages ?? []).filter(
+            (m) => !triggerIds.has(m.platform_message_id)
+          )
+          const allMessages = [...history, message]
           const result = await this.agentHandler!.executeTriggerMessage(
             {
-              messages: [triggerMessage],
+              messages: allMessages,
               activeTasks: frontContext.active_tasks ?? [],
               isGroup: false,
               ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),

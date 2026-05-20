@@ -1,11 +1,13 @@
 import { describe, it, expect, vi } from 'vitest'
-import { dispatch } from '../../src/dispatcher/dispatcher.js'
+import { dispatch, buildUserPrompt } from '../../src/dispatcher/dispatcher.js'
 import type { DispatchContext, DispatchAction } from '../../src/dispatcher/dispatcher-types.js'
 import type { LLMAdapter, LLMStreamParams, LLMCallResponse } from '../../src/engine/llm-adapter-types.js'
+import type { ChannelMessage } from '../../src/types.js'
 
 function makeCtx(overrides: Partial<DispatchContext> = {}): DispatchContext {
   return {
     messages: [],
+    recentMessages: [],
     activeTasks: [],
     sessionType: 'private',
     channelId: 'ch-test',
@@ -82,6 +84,71 @@ describe('dispatch', () => {
     expect(actions).toEqual([])
     expect(sendErrorToUser).toHaveBeenCalledTimes(1)
     expect(sendErrorToUser.mock.calls[0][0]).toContain('系统出错')
+  })
+
+  // ============================================================================
+  // Regression: dispatcher 必须能看到文件名 + 最近聊天历史
+  // 修复来源：用户在 wechat 群里发 PDF + @棉花糖 "把人名隐去"，dispatcher 看到 [非文本] 失明
+  // ============================================================================
+
+  function makeFileMsg(over: Partial<ChannelMessage> = {}): ChannelMessage {
+    return {
+      platform_message_id: 'msg-pdf-1',
+      session: { session_id: 'sess', channel_id: 'ch', type: 'private' },
+      sender: { friend_id: 'fr-1', platform_user_id: 'u1', platform_display_name: '灰灰老师' },
+      content: { type: 'file', text: '刘希红的家庭保障分析报告.pdf', media_url: 'https://example/file.pdf', filename: '刘希红的家庭保障分析报告.pdf' },
+      features: { is_mention_crab: false },
+      platform_timestamp: '2026-05-20T08:00:00Z',
+      ...over,
+    }
+  }
+
+  function makeTextMsg(text: string, over: Partial<ChannelMessage> = {}): ChannelMessage {
+    return {
+      platform_message_id: 'msg-text-1',
+      session: { session_id: 'sess', channel_id: 'ch', type: 'private' },
+      sender: { friend_id: 'fr-1', platform_user_id: 'u1', platform_display_name: '灰灰老师' },
+      content: { type: 'text', text },
+      features: { is_mention_crab: true },
+      platform_timestamp: '2026-05-20T08:01:00Z',
+      ...over,
+    }
+  }
+
+  it('userPrompt 在 recent_messages 含 file 时渲染 [文件: filename]', () => {
+    const fileMsg = makeFileMsg()
+    const trigger = makeTextMsg('@棉花糖 把以上文件里的人名全隐去')
+    const ctx = makeCtx({
+      messages: [trigger],
+      recentMessages: [fileMsg, trigger], // contextAssembler 拉的 recent 通常含 trigger
+    })
+    const prompt = buildUserPrompt(ctx)
+    expect(prompt).toMatch(/## 最近聊天历史/)
+    expect(prompt).toMatch(/\[文件: 刘希红的家庭保障分析报告\.pdf\]/)
+    expect(prompt).toMatch(/## 当前消息批次/)
+    // trigger 同时在 recentMessages 内，应该被去重，仅出现在「当前消息批次」
+    expect((prompt.match(/把以上文件里的人名全隐去/g) ?? []).length).toBe(1)
+  })
+
+  it('userPrompt 在 messages 当前批次含 file 时也渲染 filename（群聊场景）', () => {
+    const fileMsg = makeFileMsg()
+    const ctx = makeCtx({
+      messages: [fileMsg, makeTextMsg('@棉花糖 把以上文件里的人名全隐去', { platform_message_id: 'msg-text-2' })],
+      recentMessages: [],
+      sessionType: 'group',
+    })
+    const prompt = buildUserPrompt(ctx)
+    expect(prompt).toMatch(/\[文件: 刘希红的家庭保障分析报告\.pdf\]/)
+  })
+
+  it('userPrompt 中 recent_messages 为空时不显示「最近聊天历史」段', () => {
+    const ctx = makeCtx({
+      messages: [makeTextMsg('你好')],
+      recentMessages: [],
+    })
+    const prompt = buildUserPrompt(ctx)
+    expect(prompt).not.toMatch(/## 最近聊天历史/)
+    expect(prompt).toMatch(/## 当前消息批次/)
   })
 
   it('私聊场景下 LLM 误输出 stay_silent → 校验失败 retry', async () => {

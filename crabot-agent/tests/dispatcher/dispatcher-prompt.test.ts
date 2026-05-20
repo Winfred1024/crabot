@@ -4,7 +4,7 @@ import type { DispatchContext } from '../../src/dispatcher/dispatcher-types.js'
 
 function ctx(overrides: Partial<DispatchContext> = {}): DispatchContext {
   return {
-    messages: [], activeTasks: [], sessionType: 'private',
+    messages: [], recentMessages: [], activeTasks: [], sessionType: 'private',
     channelId: 'c', sessionId: 's',
     senderFriend: { id: 'f', display_name: 'u', permission: 'master' } as never,
     traceId: 't', ...overrides,
