@@ -350,3 +350,19 @@ export function detailSummary(span: AgentSpan): string {
 
 // Re-export service helpers used in sub-components
 export { totalPromptTokens, cacheHitRate }
+
+// ============================================================================
+// formatBytes
+// ============================================================================
+
+/**
+ * 把字节数转人类可读字符串（B / KB / MB / GB）。
+ */
+export function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let v = bytes
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++ }
+  return `${v.toFixed(1)} ${units[i]}`
+}

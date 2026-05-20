@@ -1,18 +1,10 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useId, useState } from 'react'
 import { Card } from '../../components/Common/Card'
 import { Button } from '../../components/Common/Button'
 import { traceService } from '../../services/trace'
 import { providerService } from '../../services/provider'
 import { useToast } from '../../contexts/ToastContext'
-
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB']
-  let v = bytes
-  let i = 0
-  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++ }
-  return `${v.toFixed(1)} ${units[i]}`
-}
+import { formatBytes } from './utils'
 
 const overlayStyle: React.CSSProperties = {
   position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
@@ -26,9 +18,17 @@ export const ManualCleanupDialog: React.FC<{
   onDeleted: () => void
 }> = ({ open, onClose, onDeleted }) => {
   const toast = useToast()
+  const titleId = useId()
   const [days, setDays] = useState(30)
   const [preview, setPreview] = useState<{ count: number; bytes: number } | null>(null)
   const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, onClose])
 
   if (!open) return null
 
@@ -59,10 +59,17 @@ export const ManualCleanupDialog: React.FC<{
   }
 
   return (
-    <div style={overlayStyle} role="dialog" aria-label="manual-cleanup">
+    <div
+      style={overlayStyle}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={titleId}
+      onClick={onClose}
+    >
+      <div onClick={(e) => e.stopPropagation()}>
       <Card>
         <div style={{ width: 480 }}>
-          <h3 style={{ marginTop: 0 }}>手动清理 trace</h3>
+          <h3 id={titleId} style={{ marginTop: 0 }}>手动清理 trace</h3>
           <label style={{ display: 'block', marginBottom: 12 }}>
             删除
             <input
@@ -91,6 +98,7 @@ export const ManualCleanupDialog: React.FC<{
           </div>
         </div>
       </Card>
+      </div>
     </div>
   )
 }
@@ -100,6 +108,7 @@ export const AutoCleanupSettingsDialog: React.FC<{
   onClose: () => void
 }> = ({ open, onClose }) => {
   const toast = useToast()
+  const titleId = useId()
   const [enabled, setEnabled] = useState(false)
   const [days, setDays] = useState(30)
   const [loaded, setLoaded] = useState(false)
@@ -115,6 +124,13 @@ export const AutoCleanupSettingsDialog: React.FC<{
       setLoaded(true)
     }).catch(() => setLoaded(true))
   }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, onClose])
 
   if (!open) return null
 
@@ -133,10 +149,17 @@ export const AutoCleanupSettingsDialog: React.FC<{
   }
 
   return (
-    <div style={overlayStyle} role="dialog" aria-label="auto-cleanup-settings">
+    <div
+      style={overlayStyle}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={titleId}
+      onClick={onClose}
+    >
+      <div onClick={(e) => e.stopPropagation()}>
       <Card>
         <div style={{ width: 480 }}>
-          <h3 style={{ marginTop: 0 }}>自动清理设置</h3>
+          <h3 id={titleId} style={{ marginTop: 0 }}>自动清理设置</h3>
           {!loaded ? <div>加载中…</div> : (
             <>
               <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
@@ -172,6 +195,7 @@ export const AutoCleanupSettingsDialog: React.FC<{
           </div>
         </div>
       </Card>
+      </div>
     </div>
   )
 }
