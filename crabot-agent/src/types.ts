@@ -832,6 +832,9 @@ export type AgentSpanType =
   | 'bg_entity_output'
   | 'bg_entity_kill'
   | 'bg_entity_exit'
+  // Dispatcher span types（2026-05-19 引入）
+  | 'dispatch_call'
+  | 'dispatch_action'
 
 export interface AgentLoopDetails {
   loop_label?: string
@@ -915,6 +918,40 @@ export interface RpcCallDetails {
   error?: string
 }
 
+/** dispatch_call span details（对齐 dispatcher.ts emit 字段） */
+export interface DispatchCallDetails {
+  /** Dispatcher 使用的 LLM 模型 ID */
+  model?: string
+  /** 触发本次 dispatch 的会话类型（master/regular 等） */
+  session_type?: string
+  /** 本轮处理的消息批次大小 */
+  message_count?: number
+  /** completed 后追加：本次解析到的动作数 */
+  action_count?: number
+  /** completed/failed 后追加：解析重试次数（0 = 首次成功） */
+  retries?: number
+  /** failed 后追加：最后错误信息（截断 200 字符） */
+  error?: string
+}
+
+/** dispatch_action span details（对齐 dispatcher-executor.ts buildActionSpanDetails + endSpan 字段） */
+export interface DispatchActionDetails {
+  /** 动作类型 */
+  kind: 'supplement' | 'new_task' | 'stay_silent'
+  /** supplement 专用：目标 task id */
+  target_task_id?: string
+  /** supplement / new_task 专用：文本摘要（截断 200 字符） */
+  text_summary?: string
+  /** stay_silent 专用：原因（当 action.reason 存在时写入） */
+  reason?: string
+  /** 完成后追加：动作结果 */
+  outcome?: 'supplement_fallback' | 'supplement_delivered' | 'new_task_spawned' | 'silent_discard'
+  /** new_task 完成后追加：spawn 出的子 trace id */
+  spawned_trace_id?: string
+  /** 失败时追加：错误信息 */
+  error?: string
+}
+
 export type AgentSpanDetails =
   | AgentLoopDetails
   | LlmCallDetails
@@ -924,6 +961,8 @@ export type AgentSpanDetails =
   | ContextAssemblyDetails
   | MemoryWriteDetails
   | RpcCallDetails
+  | DispatchCallDetails
+  | DispatchActionDetails
 
 export interface AgentSpan {
   span_id: string

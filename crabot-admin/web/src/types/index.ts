@@ -57,6 +57,8 @@ export interface PresetVendor {
 export interface GlobalModelConfig {
   default_llm_provider_id?: string
   default_llm_model_id?: string
+  /** 自动清理 trace 的保留天数；null = 不自动清理 */
+  trace_retention_days?: number | null
 }
 
 export interface ModelConnectionInfo {

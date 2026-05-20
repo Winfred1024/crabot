@@ -229,8 +229,10 @@ describe('TraceStore cleanupOldFiles', () => {
   it('removes JSONL files older than retention days', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-cleanup-'))
     try {
-      fs.writeFileSync(path.join(dir, 'traces-2026-03-01.jsonl'), JSON.stringify({ trace_id: 'old', module_id: 'a', started_at: '2026-03-01T00:00:00Z', status: 'completed', trigger: { type: 'message', summary: 'old' }, spans: [] }) + '\n')
-      fs.writeFileSync(path.join(dir, 'traces-2026-04-13.jsonl'), JSON.stringify({ trace_id: 'new', module_id: 'a', started_at: '2026-04-13T00:00:00Z', status: 'completed', trigger: { type: 'message', summary: 'new' }, spans: [] }) + '\n')
+      const oldDateStr = new Date(Date.now() - 86400_000 * 60).toISOString().slice(0, 10)
+      const newDateStr = new Date(Date.now() - 86400_000 * 5).toISOString().slice(0, 10)
+      fs.writeFileSync(path.join(dir, `traces-${oldDateStr}.jsonl`), JSON.stringify({ trace_id: 'old', module_id: 'a', started_at: `${oldDateStr}T00:00:00Z`, status: 'completed', trigger: { type: 'message', summary: 'old' }, spans: [] }) + '\n')
+      fs.writeFileSync(path.join(dir, `traces-${newDateStr}.jsonl`), JSON.stringify({ trace_id: 'new', module_id: 'a', started_at: `${newDateStr}T00:00:00Z`, status: 'completed', trigger: { type: 'message', summary: 'new' }, spans: [] }) + '\n')
 
       const store = new TraceStore(10, dir)
       // Both should be in index
@@ -238,8 +240,8 @@ describe('TraceStore cleanupOldFiles', () => {
 
       const removed = store.cleanupOldFiles(30)
       expect(removed).toBe(1)
-      expect(fs.existsSync(path.join(dir, 'traces-2026-03-01.jsonl'))).toBe(false)
-      expect(fs.existsSync(path.join(dir, 'traces-2026-04-13.jsonl'))).toBe(true)
+      expect(fs.existsSync(path.join(dir, `traces-${oldDateStr}.jsonl`))).toBe(false)
+      expect(fs.existsSync(path.join(dir, `traces-${newDateStr}.jsonl`))).toBe(true)
 
       // Index should be updated
       expect(store.searchTraces({}).total).toBe(1)
@@ -251,11 +253,126 @@ describe('TraceStore cleanupOldFiles', () => {
   it('returns 0 when no files are expired', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-cleanup-'))
     try {
-      fs.writeFileSync(path.join(dir, 'traces-2026-04-13.jsonl'), JSON.stringify({ trace_id: 'new', module_id: 'a', started_at: '2026-04-13T00:00:00Z', status: 'completed', trigger: { type: 'message', summary: 'new' }, spans: [] }) + '\n')
+      const newDateStr = new Date(Date.now() - 86400_000 * 5).toISOString().slice(0, 10)
+      fs.writeFileSync(path.join(dir, `traces-${newDateStr}.jsonl`), JSON.stringify({ trace_id: 'new', module_id: 'a', started_at: `${newDateStr}T00:00:00Z`, status: 'completed', trigger: { type: 'message', summary: 'new' }, spans: [] }) + '\n')
 
       const store = new TraceStore(10, dir)
       const removed = store.cleanupOldFiles(30)
       expect(removed).toBe(0)
+    } finally {
+      fs.rmSync(dir, { recursive: true })
+    }
+  })
+})
+
+describe('TraceStore.getDiskUsage', () => {
+  it('returns total bytes + trace count + mtime range', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-disk-'))
+    try {
+      const store = new TraceStore(10, dir)
+      const t1 = store.startTrace({ module_id: 'a', trigger: { type: 'message', summary: 'msg2' } })
+      store.endTrace(t1.trace_id, 'completed')
+
+      const usage = store.getDiskUsage()
+      expect(usage.total_bytes).toBeGreaterThan(0)
+      expect(usage.trace_count).toBeGreaterThanOrEqual(1)
+      expect(usage.oldest_iso).toBeTruthy()
+      expect(usage.newest_iso).toBeTruthy()
+    } finally {
+      fs.rmSync(dir, { recursive: true })
+    }
+  })
+
+  it('returns zero stats when directory empty', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-disk-empty-'))
+    try {
+      const store = new TraceStore(10, dir)
+      const usage = store.getDiskUsage()
+      expect(usage.total_bytes).toBe(0)
+      expect(usage.trace_count).toBe(0)
+      expect(usage.oldest_iso).toBeUndefined()
+      expect(usage.newest_iso).toBeUndefined()
+    } finally {
+      fs.rmSync(dir, { recursive: true })
+    }
+  })
+})
+
+describe('TraceStore.cleanupOldTraces', () => {
+  it('dryRun=true returns stats without deleting', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-clean-dry-'))
+    try {
+      const oldDate = new Date(Date.now() - 86400_000 * 60)
+      const oldDateStr = oldDate.toISOString().slice(0, 10)
+      const fname = `traces-${oldDateStr}.jsonl`
+      fs.writeFileSync(path.join(dir, fname), JSON.stringify({
+        trace_id: 'old1', module_id: 'a', started_at: oldDate.toISOString(),
+        status: 'completed', trigger: { type: 'message', summary: 'old' }, spans: []
+      }) + '\n')
+
+      const store = new TraceStore(10, dir)
+      const result = store.cleanupOldTraces(30, true)
+      expect(result.affected_count).toBe(1)
+      expect(result.affected_bytes).toBeGreaterThan(0)
+      expect(result.deleted_trace_ids).toEqual([]) // dryRun 不删
+
+      // 文件仍在
+      expect(fs.existsSync(path.join(dir, fname))).toBe(true)
+    } finally {
+      fs.rmSync(dir, { recursive: true })
+    }
+  })
+
+  it('dryRun=false actually deletes + returns trace ids', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-clean-real-'))
+    try {
+      const oldDate = new Date(Date.now() - 86400_000 * 60)
+      const oldDateStr = oldDate.toISOString().slice(0, 10)
+      const fname = `traces-${oldDateStr}.jsonl`
+      fs.writeFileSync(path.join(dir, fname), JSON.stringify({
+        trace_id: 'old1', module_id: 'a', started_at: oldDate.toISOString(),
+        status: 'completed', trigger: { type: 'message', summary: 'old' }, spans: []
+      }) + '\n' + JSON.stringify({
+        trace_id: 'old2', module_id: 'a', started_at: oldDate.toISOString(),
+        status: 'completed', trigger: { type: 'message', summary: 'old' }, spans: []
+      }) + '\n')
+
+      const store = new TraceStore(10, dir)
+      const result = store.cleanupOldTraces(30, false)
+      expect(result.affected_count).toBe(2) // 一文件含 2 trace
+      expect(result.deleted_trace_ids).toEqual(expect.arrayContaining(['old1', 'old2']))
+      expect(fs.existsSync(path.join(dir, fname))).toBe(false)
+    } finally {
+      fs.rmSync(dir, { recursive: true })
+    }
+  })
+
+  it('returns zero when no file older than days', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-clean-none-'))
+    try {
+      const todayStr = new Date().toISOString().slice(0, 10)
+      const fname = `traces-${todayStr}.jsonl`
+      fs.writeFileSync(path.join(dir, fname), JSON.stringify({
+        trace_id: 'new1', module_id: 'a', started_at: new Date().toISOString(),
+        status: 'completed', trigger: { type: 'message', summary: 'new' }, spans: []
+      }) + '\n')
+
+      const store = new TraceStore(10, dir)
+      const result = store.cleanupOldTraces(30, false)
+      expect(result.affected_count).toBe(0)
+      expect(result.deleted_trace_ids).toEqual([])
+      expect(fs.existsSync(path.join(dir, fname))).toBe(true)
+    } finally {
+      fs.rmSync(dir, { recursive: true })
+    }
+  })
+
+  it('returns zero when retentionDays <= 0', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-clean-zero-'))
+    try {
+      const store = new TraceStore(10, dir)
+      const result = store.cleanupOldTraces(0, false)
+      expect(result.affected_count).toBe(0)
     } finally {
       fs.rmSync(dir, { recursive: true })
     }

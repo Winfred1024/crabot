@@ -792,6 +792,7 @@ export class ModelProviderManager {
         default_llm_provider_id: raw.default_llm_provider_id,
         default_llm_model_id: raw.default_llm_model_id,
         proxy: raw.proxy,
+        trace_retention_days: raw.trace_retention_days ?? null,
       }
       console.log('[ModelProviderManager] Loaded global config')
     } catch {

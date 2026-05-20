@@ -8,1253 +8,34 @@ import {
   totalPromptTokens,
   cacheHitRate,
   type AgentTrace,
-  type AgentSpan,
-  type AgentSpanType,
   type TraceIndexEntry,
-  type TokenUsage,
   type SearchTracesParams,
 } from '../../services/trace'
+import {
+  PAGE_SIZE,
+  LIST_REFRESH_MS,
+  DETAIL_REFRESH_MS,
+  rangeToISO,
+  groupEntries,
+  formatDateTimeLocal,
+  formatDuration,
+  formatTokens,
+  statusColor,
+  DEFAULT_FILTER,
+  type FilterState,
+} from './utils'
+import { FilterBar } from './FilterBar'
+import { PaginationBar } from './PaginationBar'
+import { StatusDot, TriggerBadge, TraceTableRow, GroupedTableRow, TraceChip, TraceLink } from './TraceTable'
+import { SpanTree } from './SpanTree'
+import { StatusBar } from './StatusBar'
+import { ManualCleanupDialog, AutoCleanupSettingsDialog } from './CleanupDialogs'
 
 // ============================================================================
-// 常量与格式化
-// ============================================================================
-
-const PAGE_SIZE = 20
-const LIST_REFRESH_MS = 10_000      // 列表轮询：10s
-const DETAIL_REFRESH_MS = 3_000     // 详情轮询（仅 running trace）：3s
-
-function formatDuration(ms?: number): string {
-  if (ms === undefined || ms === null) return '-'
-  if (ms < 1000) return `${ms}ms`
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
-  const totalSec = Math.floor(ms / 1000)
-  const m = Math.floor(totalSec / 60)
-  const s = totalSec % 60
-  return `${m}m${s}s`
-}
-
-function formatTokens(n?: number): string {
-  if (n === undefined || n === null || n === 0) return '0'
-  if (n < 1000) return String(n)
-  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}K`
-  return `${(n / 1_000_000).toFixed(2)}M`
-}
-
-function formatTime(iso?: string): string {
-  if (!iso) return '-'
-  const d = new Date(iso)
-  const today = new Date()
-  const sameDay = d.toDateString() === today.toDateString()
-  if (sameDay) {
-    return d.toLocaleTimeString('zh-CN', { hour12: false })
-  }
-  return d.toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
-}
-
-function formatDateTimeLocal(iso?: string): string {
-  if (!iso) return '-'
-  return new Date(iso).toLocaleString('zh-CN', { hour12: false })
-}
-
-function spanTypeLabel(type: AgentSpanType): string {
-  const map: Record<AgentSpanType, string> = {
-    agent_loop: 'loop',
-    llm_call: 'llm',
-    tool_call: 'tool',
-    sub_agent_call: 'sub-agent',
-    decision: 'decision',
-    context_assembly: 'ctx',
-    context_fetch: 'fetch',
-    memory_write: 'mem-w',
-    rpc_call: 'rpc',
-    bg_entity_exit: 'bg-exit',
-    bg_entity_spawn: 'bg-spawn',
-    bg_entity_output: 'bg-out',
-    bg_entity_kill: 'bg-kill',
-    llm_retry: 'retry',
-  }
-  return map[type] ?? type
-}
-
-function spanTypeBg(type: AgentSpanType): string {
-  const map: Record<AgentSpanType, string> = {
-    agent_loop: '#3b82f6',
-    llm_call: '#8b5cf6',
-    tool_call: '#f59e0b',
-    sub_agent_call: '#ec4899',
-    decision: '#10b981',
-    context_assembly: '#0ea5e9',
-    context_fetch: '#06b6d4',
-    memory_write: '#14b8a6',
-    rpc_call: '#6366f1',
-    bg_entity_exit: '#84cc16',
-    bg_entity_spawn: '#84cc16',
-    bg_entity_output: '#84cc16',
-    bg_entity_kill: '#84cc16',
-    llm_retry: '#fb923c',
-  }
-  return map[type] ?? '#6b7280'
-}
-
-function statusColor(status: string): string {
-  if (status === 'completed') return '#10b981'
-  if (status === 'failed') return '#ef4444'
-  return '#f59e0b'
-}
-
-const triggerTypeLabel: Record<string, string> = {
-  message: 'Front',
-  task: 'Worker',
-  sub_agent_call: 'Sub-agent',
-  schedule: 'Schedule',
-}
-
-const triggerTypeColor: Record<string, string> = {
-  message: '#3b82f6',
-  task: '#8b5cf6',
-  sub_agent_call: '#ec4899',
-  schedule: '#10b981',
-}
-
-// ============================================================================
-// 子组件：TokenUsageBadge — 紧凑显示 token 用量
-// ============================================================================
-
-function TokenUsageCell({ usage }: { usage?: TokenUsage }) {
-  if (!usage || (usage.input_tokens === 0 && usage.output_tokens === 0 && !usage.cache_read_tokens && !usage.cache_creation_tokens)) {
-    return <span style={{ color: '#9ca3af' }}>-</span>
-  }
-  const cacheRead = usage.cache_read_tokens ?? 0
-  const cacheCreate = usage.cache_creation_tokens ?? 0
-  const promptTotal = totalPromptTokens(usage)
-  const hitRate = cacheHitRate(usage)
-  const hasCache = cacheRead > 0 || cacheCreate > 0
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 1, lineHeight: 1.25 }}>
-      <div
-        style={{ fontSize: 12, color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}
-        title={`未命中输入 ${usage.input_tokens} → 输出 ${usage.output_tokens}`}
-      >
-        <span>{formatTokens(usage.input_tokens)}</span>
-        <span style={{ color: '#9ca3af', margin: '0 3px' }}>→</span>
-        <span>{formatTokens(usage.output_tokens)}</span>
-      </div>
-      {hasCache ? (
-        <div
-          style={{ fontSize: 10, color: '#10b981', fontVariantNumeric: 'tabular-nums', display: 'flex', gap: 4, alignItems: 'center' }}
-          title={`全量 prompt ${promptTotal}，缓存命中率 ${(hitRate * 100).toFixed(0)}%`}
-        >
-          <span>●</span>
-          {cacheRead > 0 && <span>命中 {formatTokens(cacheRead)} ({(hitRate * 100).toFixed(0)}%)</span>}
-          {cacheRead === 0 && cacheCreate > 0 && <span>写入 {formatTokens(cacheCreate)}</span>}
-          {cacheRead > 0 && cacheCreate > 0 && <span style={{ color: '#0ea5e9' }}>+ 写入 {formatTokens(cacheCreate)}</span>}
-        </div>
-      ) : (
-        <div style={{ fontSize: 10, color: '#9ca3af' }} title="无缓存命中">
-          <span>○ 无缓存</span>
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ============================================================================
-// 子组件：StatusDot
-// ============================================================================
-
-function StatusDot({ status, size = 8 }: { status: string; size?: number }) {
-  return (
-    <span
-      style={{
-        display: 'inline-block',
-        width: size,
-        height: size,
-        borderRadius: '50%',
-        background: statusColor(status),
-        flexShrink: 0,
-      }}
-    />
-  )
-}
-
-// ============================================================================
-// 子组件：TriggerBadge
-// ============================================================================
-
-function TriggerBadge({ type }: { type: string }) {
-  const label = triggerTypeLabel[type] ?? type
-  const color = triggerTypeColor[type] ?? '#6b7280'
-  return (
-    <span
-      style={{
-        background: color,
-        color: '#fff',
-        fontSize: 10,
-        padding: '1px 6px',
-        borderRadius: 3,
-        fontWeight: 500,
-        letterSpacing: 0.2,
-        flexShrink: 0,
-      }}
-    >
-      {label}
-    </span>
-  )
-}
-
-// ============================================================================
-// 子组件：FilterBar
-// ============================================================================
-
-interface FilterState {
-  keyword: string
-  status: '' | 'running' | 'completed' | 'failed'
-  range: 'all' | 'today' | '24h' | '7d' | 'custom'
-  customStart: string
-  customEnd: string
-  /** 仅看某个任务的所有 trace（fronts / worker / sub-agents） */
-  taskId: string
-}
-
-const DEFAULT_FILTER: FilterState = {
-  keyword: '',
-  status: '',
-  range: 'all',
-  customStart: '',
-  customEnd: '',
-  taskId: '',
-}
-
-function rangeToISO(range: FilterState['range'], customStart: string, customEnd: string): { start?: string; end?: string } {
-  const now = new Date()
-  if (range === 'today') {
-    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-    return { start: start.toISOString() }
-  }
-  if (range === '24h') {
-    return { start: new Date(now.getTime() - 24 * 3600_000).toISOString() }
-  }
-  if (range === '7d') {
-    return { start: new Date(now.getTime() - 7 * 24 * 3600_000).toISOString() }
-  }
-  if (range === 'custom') {
-    return {
-      ...(customStart ? { start: new Date(customStart).toISOString() } : {}),
-      ...(customEnd ? { end: new Date(customEnd).toISOString() } : {}),
-    }
-  }
-  return {}
-}
-
-function FilterBar({
-  filter,
-  onChange,
-  onReset,
-}: {
-  filter: FilterState
-  onChange: (next: FilterState) => void
-  onReset: () => void
-}) {
-  const isFiltered =
-    filter.keyword !== '' ||
-    filter.status !== '' ||
-    filter.range !== 'all' ||
-    filter.taskId !== ''
-
-  return (
-    <div
-      style={{
-        display: 'flex',
-        gap: 8,
-        alignItems: 'center',
-        padding: '8px 12px',
-        background: 'var(--bg-secondary, #f9fafb)',
-        border: '1px solid var(--border)',
-        borderRadius: 6,
-        flexWrap: 'wrap',
-      }}
-    >
-      {filter.taskId && (
-        <span
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 4,
-            padding: '4px 8px',
-            background: 'rgba(99,102,241,0.12)',
-            color: '#6366f1',
-            borderRadius: 4,
-            fontSize: 12,
-            fontFamily: 'monospace',
-          }}
-        >
-          🔗 task: {filter.taskId.slice(0, 12)}
-          <button
-            onClick={() => onChange({ ...filter, taskId: '' })}
-            title="移除任务筛选"
-            style={{ marginLeft: 4, background: 'transparent', border: 'none', cursor: 'pointer', color: '#6366f1', fontSize: 14, lineHeight: 1, padding: 0 }}
-          >
-            ×
-          </button>
-        </span>
-      )}
-      <input
-        type="text"
-        placeholder="🔍 关键字（trigger / outcome）"
-        value={filter.keyword}
-        onChange={(e) => onChange({ ...filter, keyword: e.target.value })}
-        style={{
-          flex: '1 1 240px',
-          minWidth: 200,
-          padding: '6px 10px',
-          border: '1px solid var(--border)',
-          borderRadius: 4,
-          fontSize: 13,
-          background: 'var(--bg-primary, #fff)',
-        }}
-      />
-      <select
-        value={filter.status}
-        onChange={(e) => onChange({ ...filter, status: e.target.value as FilterState['status'] })}
-        style={{
-          padding: '6px 10px',
-          border: '1px solid var(--border)',
-          borderRadius: 4,
-          fontSize: 13,
-          background: 'var(--bg-primary, #fff)',
-          cursor: 'pointer',
-        }}
-      >
-        <option value="">全部状态</option>
-        <option value="running">运行中</option>
-        <option value="completed">完成</option>
-        <option value="failed">失败</option>
-      </select>
-      <select
-        value={filter.range}
-        onChange={(e) => onChange({ ...filter, range: e.target.value as FilterState['range'] })}
-        style={{
-          padding: '6px 10px',
-          border: '1px solid var(--border)',
-          borderRadius: 4,
-          fontSize: 13,
-          background: 'var(--bg-primary, #fff)',
-          cursor: 'pointer',
-        }}
-      >
-        <option value="all">所有时间</option>
-        <option value="today">今天</option>
-        <option value="24h">最近 24 小时</option>
-        <option value="7d">最近 7 天</option>
-        <option value="custom">自定义</option>
-      </select>
-      {filter.range === 'custom' && (
-        <>
-          <input
-            type="datetime-local"
-            value={filter.customStart}
-            onChange={(e) => onChange({ ...filter, customStart: e.target.value })}
-            style={{
-              padding: '6px 8px',
-              border: '1px solid var(--border)',
-              borderRadius: 4,
-              fontSize: 13,
-            }}
-          />
-          <span style={{ color: '#9ca3af', fontSize: 13 }}>至</span>
-          <input
-            type="datetime-local"
-            value={filter.customEnd}
-            onChange={(e) => onChange({ ...filter, customEnd: e.target.value })}
-            style={{
-              padding: '6px 8px',
-              border: '1px solid var(--border)',
-              borderRadius: 4,
-              fontSize: 13,
-            }}
-          />
-        </>
-      )}
-      {isFiltered && (
-        <button
-          onClick={onReset}
-          style={{
-            padding: '6px 12px',
-            border: '1px solid var(--border)',
-            borderRadius: 4,
-            fontSize: 12,
-            background: 'transparent',
-            cursor: 'pointer',
-            color: 'var(--text-secondary)',
-          }}
-        >
-          清除筛选
-        </button>
-      )}
-    </div>
-  )
-}
-
-// ============================================================================
-// 子组件：PaginationBar
-// ============================================================================
-
-function PaginationBar({
-  page,
-  pageSize,
-  total,
-  onChange,
-}: {
-  page: number
-  pageSize: number
-  total: number
-  onChange: (page: number) => void
-}) {
-  const totalPages = Math.max(1, Math.ceil(total / pageSize))
-  const canPrev = page > 1
-  const canNext = page < totalPages
-  const from = total === 0 ? 0 : (page - 1) * pageSize + 1
-  const to = Math.min(page * pageSize, total)
-
-  const btn = (label: string, onClick: () => void, disabled = false) => (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      style={{
-        padding: '4px 10px',
-        border: '1px solid var(--border)',
-        borderRadius: 4,
-        background: disabled ? 'var(--bg-secondary, #f3f4f6)' : 'var(--bg-primary, #fff)',
-        color: disabled ? '#9ca3af' : 'var(--text-primary)',
-        cursor: disabled ? 'not-allowed' : 'pointer',
-        fontSize: 12,
-      }}
-    >
-      {label}
-    </button>
-  )
-
-  return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
-        padding: '8px 12px',
-        borderTop: '1px solid var(--border)',
-        background: 'var(--bg-secondary, #f9fafb)',
-        fontSize: 12,
-      }}
-    >
-      <span style={{ color: 'var(--text-secondary)' }}>
-        {total === 0 ? '无数据' : `${from}-${to} / 共 ${total} 条`}
-      </span>
-      <span style={{ flex: 1 }} />
-      {btn('« 首页', () => onChange(1), !canPrev)}
-      {btn('‹ 上一页', () => onChange(page - 1), !canPrev)}
-      <span style={{ color: 'var(--text-primary)', padding: '0 6px', fontVariantNumeric: 'tabular-nums' }}>
-        第 {page} / {totalPages} 页
-      </span>
-      {btn('下一页 ›', () => onChange(page + 1), !canNext)}
-      {btn('末页 »', () => onChange(totalPages), !canNext)}
-    </div>
-  )
-}
-
-// ============================================================================
-// 子组件：TraceTableRow
-// ============================================================================
-
-function TraceTableRow({
-  entry,
-  isSelected,
-  onClick,
-  onFilterByTask,
-  onJumpToTrace,
-}: {
-  entry: TraceIndexEntry
-  isSelected: boolean
-  onClick: () => void
-  onFilterByTask?: (taskId: string) => void
-  onJumpToTrace?: (traceId: string) => void
-}) {
-  const taskId = entry.related_task_id
-  const parentTraceId = entry.parent_trace_id
-
-  return (
-    <tr
-      onClick={onClick}
-      style={{
-        cursor: 'pointer',
-        background: isSelected ? 'var(--bg-highlight, rgba(59,130,246,0.08))' : undefined,
-        borderBottom: '1px solid var(--border)',
-        transition: 'background 0.1s',
-      }}
-      onMouseEnter={(e) => {
-        if (!isSelected) (e.currentTarget as HTMLTableRowElement).style.background = 'var(--bg-hover, rgba(0,0,0,0.02))'
-      }}
-      onMouseLeave={(e) => {
-        if (!isSelected) (e.currentTarget as HTMLTableRowElement).style.background = ''
-      }}
-    >
-      <td style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>
-        <StatusDot status={entry.status} />
-      </td>
-      <td style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>
-        <TriggerBadge type={entry.trigger_type} />
-      </td>
-      <td
-        style={{
-          padding: '8px 10px',
-          maxWidth: 320,
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-          fontSize: 13,
-        }}
-        title={entry.trigger_summary}
-      >
-        {entry.trigger_summary || <span style={{ color: '#9ca3af' }}>(空)</span>}
-      </td>
-      <td style={{ padding: '8px 6px', whiteSpace: 'nowrap' }}>
-        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-          {taskId && onFilterByTask && (
-            <span
-              onClick={(e) => { e.stopPropagation(); onFilterByTask(taskId) }}
-              title={`属于任务 ${taskId}\n点击：仅看此任务的所有 trace`}
-              style={{
-                fontSize: 10,
-                padding: '1px 5px',
-                background: 'rgba(99,102,241,0.12)',
-                color: '#6366f1',
-                borderRadius: 3,
-                fontFamily: 'monospace',
-                cursor: 'pointer',
-              }}
-            >
-              🔗 {taskId.slice(0, 6)}
-            </span>
-          )}
-          {parentTraceId && onJumpToTrace && (
-            <span
-              onClick={(e) => { e.stopPropagation(); onJumpToTrace(parentTraceId) }}
-              title={`父 trace ${parentTraceId}\n点击：跳转到父 trace`}
-              style={{
-                fontSize: 10,
-                padding: '1px 5px',
-                background: 'rgba(236,72,153,0.12)',
-                color: '#ec4899',
-                borderRadius: 3,
-                cursor: 'pointer',
-              }}
-            >
-              ↑ parent
-            </span>
-          )}
-        </div>
-      </td>
-      <td style={{ padding: '8px 10px', fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
-        {formatTime(entry.started_at)}
-      </td>
-      <td style={{ padding: '8px 10px', fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
-        {formatDuration(entry.duration_ms)}
-      </td>
-      <td style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>
-        <TokenUsageCell usage={entry.total_usage} />
-      </td>
-      <td style={{ padding: '8px 10px', fontSize: 12, color: 'var(--text-secondary)', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-        {entry.span_count}
-      </td>
-    </tr>
-  )
-}
-
-// ============================================================================
-// 子组件：SpanDetailPanel — 单个 span 的详情展开
-// ============================================================================
-
-function TraceLink({ traceId, onNavigate }: { traceId: string; onNavigate?: (id: string) => void }) {
-  return (
-    <span
-      style={{ color: '#3b82f6', cursor: 'pointer', textDecoration: 'underline' }}
-      onClick={() => onNavigate?.(traceId)}
-    >
-      {traceId.slice(0, 8)}... →
-    </span>
-  )
-}
-
-const SpanDetailPanel: React.FC<{
-  span: AgentSpan
-  onNavigateTrace?: (traceId: string) => void
-}> = ({ span, onNavigateTrace }) => {
-  const d = span.details as Record<string, unknown>
-  const rows: { label: string; value: string | React.ReactNode; monospace?: boolean }[] = []
-
-  if (span.type === 'agent_loop') {
-    if (d.loop_label) rows.push({ label: 'Label', value: String(d.loop_label) })
-    if (d.model) rows.push({ label: 'Model', value: String(d.model) })
-    if (d.iteration_count !== undefined) rows.push({ label: 'Iterations', value: String(d.iteration_count) })
-    if (Array.isArray(d.tools) && d.tools.length > 0) {
-      rows.push({ label: 'Tools', value: (d.tools as string[]).join(', ') })
-    }
-    if (Array.isArray(d.mcp_servers) && d.mcp_servers.length > 0) {
-      rows.push({
-        label: 'MCP Servers',
-        value: (d.mcp_servers as Array<{ name: string; status: string }>)
-          .map(s => `${s.name}(${s.status})`).join(', '),
-      })
-    }
-    if (Array.isArray(d.skills) && d.skills.length > 0) {
-      rows.push({ label: 'Skills', value: (d.skills as string[]).join(', ') })
-    }
-    if (d.system_prompt) rows.push({ label: 'System Prompt', value: String(d.system_prompt), monospace: true })
-  }
-
-  if (span.type === 'llm_call') {
-    if (d.iteration !== undefined) rows.push({ label: 'Iteration', value: String(d.iteration) })
-    if (d.attempt !== undefined) rows.push({ label: 'Attempt', value: String(d.attempt) })
-    if (d.stop_reason) rows.push({ label: 'Stop Reason', value: String(d.stop_reason) })
-    if (d.tool_calls_count !== undefined) rows.push({ label: 'Tool Calls', value: String(d.tool_calls_count) })
-    const usage = d.usage as TokenUsage | undefined
-    if (usage) {
-      const cacheRead = usage.cache_read_tokens ?? 0
-      const cacheCreate = usage.cache_creation_tokens ?? 0
-      const total = totalPromptTokens(usage)
-      const hitPct = Math.round(cacheHitRate(usage) * 100)
-      rows.push({
-        label: 'Tokens',
-        value: (
-          <div style={{ fontFamily: 'monospace', fontSize: 12, lineHeight: 1.6 }}>
-            <div>
-              <span title="未命中输入">{formatTokens(usage.input_tokens)}</span>
-              <span style={{ color: '#9ca3af', margin: '0 4px' }}>未命中 in →</span>
-              <span title="输出">{formatTokens(usage.output_tokens)}</span>
-              <span style={{ color: '#9ca3af', marginLeft: 4 }}>out</span>
-            </div>
-            {(cacheRead > 0 || cacheCreate > 0) && (
-              <div style={{ color: '#6b7280' }}>
-                {cacheRead > 0 && (
-                  <span style={{ color: '#10b981' }} title="缓存命中（享受折扣）">
-                    cache 命中 {formatTokens(cacheRead)}
-                  </span>
-                )}
-                {cacheRead > 0 && cacheCreate > 0 && <span> · </span>}
-                {cacheCreate > 0 && (
-                  <span style={{ color: '#0ea5e9' }} title="本次写入缓存">
-                    写入 {formatTokens(cacheCreate)}
-                  </span>
-                )}
-                <span style={{ marginLeft: 8, color: '#9ca3af' }}>
-                  全量 {formatTokens(total)}
-                  {cacheRead > 0 && ` · 命中 ${hitPct}%`}
-                </span>
-              </div>
-            )}
-          </div>
-        ),
-      })
-    }
-    if (d.input_summary) rows.push({ label: 'Input', value: String(d.input_summary), monospace: true })
-    if (d.output_summary) rows.push({ label: 'Output', value: String(d.output_summary), monospace: true })
-  }
-
-  if (span.type === 'tool_call') {
-    if (d.tool_name) rows.push({ label: 'Tool', value: String(d.tool_name) })
-    if (d.input_summary) rows.push({ label: 'Input', value: String(d.input_summary), monospace: true })
-    if (d.output_summary) rows.push({ label: 'Output', value: String(d.output_summary), monospace: true })
-    if (d.error) rows.push({ label: 'Error', value: String(d.error), monospace: true })
-    if (d.child_trace_id) {
-      rows.push({
-        label: 'Sub Trace',
-        value: <TraceLink traceId={String(d.child_trace_id)} onNavigate={onNavigateTrace} />,
-      })
-    }
-  }
-
-  if (span.type === 'decision') {
-    if (d.decision_type) rows.push({ label: 'Type', value: String(d.decision_type) })
-    if (d.summary) rows.push({ label: 'Summary', value: String(d.summary) })
-  }
-
-  if (span.type === 'sub_agent_call') {
-    if (d.target_module_id) rows.push({ label: 'Target', value: String(d.target_module_id) })
-    if (d.method) rows.push({ label: 'Method', value: String(d.method) })
-    if (d.task_id) rows.push({ label: 'Task ID', value: String(d.task_id) })
-    if (d.child_trace_id) {
-      rows.push({
-        label: 'Child Trace',
-        value: <TraceLink traceId={String(d.child_trace_id)} onNavigate={onNavigateTrace} />,
-      })
-    }
-  }
-
-  if (span.type === 'context_assembly' || span.type === 'context_fetch') {
-    if (d.context_type) rows.push({ label: 'Context Type', value: String(d.context_type) })
-    if (d.channel_id) rows.push({ label: 'Channel', value: String(d.channel_id) })
-    if (d.session_id) rows.push({ label: 'Session', value: String(d.session_id) })
-  }
-
-  if (span.type === 'memory_write') {
-    if (d.friend_id) rows.push({ label: 'Friend', value: String(d.friend_id) })
-    if (d.channel_id) rows.push({ label: 'Channel', value: String(d.channel_id) })
-  }
-
-  if (span.type === 'rpc_call') {
-    if (d.target_module) rows.push({ label: 'Target', value: String(d.target_module) })
-    if (d.method) rows.push({ label: 'Method', value: String(d.method) })
-    if (d.target_port) rows.push({ label: 'Port', value: String(d.target_port) })
-    if (d.request_summary) rows.push({ label: 'Request', value: String(d.request_summary), monospace: true })
-    if (d.response_summary) rows.push({ label: 'Response', value: String(d.response_summary), monospace: true })
-    if (d.status_code) rows.push({ label: 'Status Code', value: String(d.status_code) })
-    if (d.error) rows.push({ label: 'Error', value: String(d.error), monospace: true })
-  }
-
-  rows.push({ label: 'Started', value: formatDateTimeLocal(span.started_at) })
-  if (span.ended_at) {
-    rows.push({ label: 'Ended', value: formatDateTimeLocal(span.ended_at) })
-    rows.push({ label: 'Duration', value: formatDuration(span.duration_ms) })
-  }
-  rows.push({ label: 'Status', value: span.status })
-
-  return (
-    <div
-      style={{
-        padding: '10px 14px 10px 36px',
-        background: 'var(--bg-secondary, #f9fafb)',
-        borderBottom: '1px solid var(--border)',
-        fontSize: 12,
-      }}
-    >
-      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-        <tbody>
-          {rows.map((row, i) => (
-            <tr key={i}>
-              <td
-                style={{
-                  width: 110,
-                  padding: '2px 8px 2px 0',
-                  color: '#6b7280',
-                  verticalAlign: 'top',
-                  fontWeight: 500,
-                }}
-              >
-                {row.label}:
-              </td>
-              <td
-                style={{
-                  padding: '2px 0',
-                  color: 'var(--text-primary)',
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word',
-                  fontFamily: row.monospace ? 'monospace' : undefined,
-                  maxWidth: 600,
-                }}
-              >
-                {row.value}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
-// ============================================================================
-// 子组件：SpanRow / SpanTree
-// ============================================================================
-
-function detailSummary(span: AgentSpan): string {
-  const d = span.details as Record<string, unknown>
-  if (span.type === 'agent_loop') {
-    const label = d.loop_label ? `"${d.loop_label}"` : ''
-    const iters = d.iteration_count ? ` ${d.iteration_count} iters` : ''
-    return `${label}${iters}`.trim()
-  }
-  if (span.type === 'llm_call') {
-    const iter = d.iteration ? `iter=${d.iteration}` : ''
-    const stop = d.stop_reason ? ` stop:${d.stop_reason}` : ''
-    return `${iter}${stop}`
-  }
-  if (span.type === 'tool_call') return String(d.tool_name ?? '')
-  if (span.type === 'sub_agent_call') return `→ ${d.target_module_id ?? ''}`
-  if (span.type === 'decision') return String(d.decision_type ?? '')
-  if (span.type === 'context_assembly' || span.type === 'context_fetch') return `${d.context_type ?? ''} context`
-  if (span.type === 'memory_write') return `→ ${d.channel_id ?? ''}`
-  if (span.type === 'rpc_call') return `${d.target_module ?? ''}::${d.method ?? ''}`
-  if (span.type === 'bg_entity_exit') {
-    const id = String(d.entity_id ?? '?')
-    const status = String(d.status ?? '?')
-    const exitCode = d.exit_code !== undefined ? `, exit=${d.exit_code}` : ''
-    const runtimeMs = typeof d.runtime_ms === 'number' ? d.runtime_ms : 0
-    return `${id} → ${status}${exitCode}, ran ${formatDuration(runtimeMs)}`
-  }
-  if (span.type === 'bg_entity_spawn') {
-    const id = String(d.entity_id ?? '?')
-    const mode = d.mode ? ` (${d.mode})` : ''
-    return `${id}${mode}`
-  }
-  if (span.type === 'bg_entity_output' || span.type === 'bg_entity_kill') {
-    return String(d.entity_id ?? '?')
-  }
-  if (span.type === 'llm_retry') {
-    const attempt = d.attempt ?? '?'
-    const max = d.max_attempts ?? '?'
-    const reason = String(d.error ?? '').slice(0, 80)
-    return `attempt ${attempt}/${max}: ${reason}`
-  }
-  return ''
-}
-
-interface SpanRowProps {
-  span: AgentSpan
-  spans: AgentSpan[]
-  depth: number
-  expandedDetails: Set<string>
-  toggleDetail: (spanId: string) => void
-  onNavigateTrace?: (traceId: string) => void
-}
-
-const SpanRow: React.FC<SpanRowProps> = ({ span, spans, depth, expandedDetails, toggleDetail, onNavigateTrace }) => {
-  const [expanded, setExpanded] = useState(depth < 2)
-  const hasChildren = spans.some((s) => s.parent_span_id === span.span_id)
-  const showDetail = expandedDetails.has(span.span_id)
-
-  const usage = (span.details as Record<string, unknown>).usage as TokenUsage | undefined
-
-  return (
-    <>
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          padding: '4px 0',
-          paddingLeft: `${depth * 18 + 8}px`,
-          borderBottom: '1px solid var(--border)',
-          fontSize: 12,
-          fontFamily: 'monospace',
-        }}
-      >
-        <span
-          style={{
-            width: 14,
-            color: '#9ca3af',
-            marginRight: 4,
-            cursor: hasChildren ? 'pointer' : 'default',
-            userSelect: 'none',
-          }}
-          onClick={() => hasChildren && setExpanded(!expanded)}
-        >
-          {hasChildren ? (expanded ? '▼' : '▶') : ' '}
-        </span>
-        <span
-          style={{
-            background: spanTypeBg(span.type),
-            color: '#fff',
-            borderRadius: 3,
-            padding: '1px 5px',
-            fontSize: 10,
-            marginRight: 6,
-            minWidth: 56,
-            textAlign: 'center',
-            flexShrink: 0,
-          }}
-        >
-          {spanTypeLabel(span.type)}
-        </span>
-        <span
-          style={{
-            flex: 1,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            color: 'var(--text-primary)',
-            cursor: 'pointer',
-          }}
-          onClick={(e) => { e.stopPropagation(); toggleDetail(span.span_id) }}
-          title="点击查看详情"
-        >
-          {detailSummary(span)}
-          {showDetail && <span style={{ marginLeft: 6, color: '#9ca3af' }}>▲ 收起</span>}
-        </span>
-        {usage && (
-          <span style={{ marginLeft: 8, fontSize: 10, color: '#6b7280', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
-            {formatTokens(usage.input_tokens)}↦{formatTokens(usage.output_tokens)}
-          </span>
-        )}
-        <span
-          style={{
-            marginLeft: 8,
-            color: span.duration_ms === undefined ? '#9ca3af' : 'var(--text-secondary)',
-            fontVariantNumeric: 'tabular-nums',
-            flexShrink: 0,
-            minWidth: 50,
-            textAlign: 'right',
-          }}
-        >
-          {formatDuration(span.duration_ms)}
-        </span>
-        <span
-          style={{
-            marginLeft: 8,
-            color: statusColor(span.status),
-            fontWeight: 600,
-            flexShrink: 0,
-          }}
-        >
-          {span.status === 'completed' ? '✓' : span.status === 'failed' ? '✗' : '…'}
-        </span>
-      </div>
-      {showDetail && <SpanDetailPanel span={span} onNavigateTrace={onNavigateTrace} />}
-      {expanded && hasChildren && (
-        <SpanTree
-          spans={spans}
-          parentSpanId={span.span_id}
-          depth={depth + 1}
-          expandedDetails={expandedDetails}
-          toggleDetail={toggleDetail}
-          onNavigateTrace={onNavigateTrace}
-        />
-      )}
-    </>
-  )
-}
-
-const SpanTree: React.FC<{
-  spans: AgentSpan[]
-  parentSpanId?: string
-  depth?: number
-  expandedDetails: Set<string>
-  toggleDetail: (spanId: string) => void
-  onNavigateTrace?: (traceId: string) => void
-}> = ({ spans, parentSpanId, depth = 0, expandedDetails, toggleDetail, onNavigateTrace }) => {
-  const children = spans.filter((s) => s.parent_span_id === parentSpanId)
-  if (children.length === 0) return null
-  return (
-    <>
-      {children.map((span) => (
-        <SpanRow
-          key={span.span_id}
-          span={span}
-          spans={spans}
-          depth={depth}
-          expandedDetails={expandedDetails}
-          toggleDetail={toggleDetail}
-          onNavigateTrace={onNavigateTrace}
-        />
-      ))}
-    </>
-  )
-}
-
-// ============================================================================
-// 子组件：TraceDetail
-// ============================================================================
-
-// ============================================================================
-// 列表分组：按 related_task_id 把 fronts/worker/sub-agents 归到同一组
+// 本地 type（仅主组件用）
 // ============================================================================
 
 type ViewMode = 'flat' | 'grouped'
-
-interface TraceGroup {
-  taskId: string | null            // null = 孤儿（无 related_task_id）
-  primary: TraceIndexEntry         // 首行用的 trace（fronts[0] > worker > 任意）
-  members: TraceIndexEntry[]       // 包含 primary，按时间排
-  status: 'running' | 'completed' | 'failed'
-  earliestStartedAt: string
-  latestEndedAt?: string
-  totalDurationMs?: number
-  totalSpans: number
-  totalUsage?: TokenUsage
-}
-
-function aggregateGroupUsage(members: TraceIndexEntry[]): TokenUsage | undefined {
-  let any = false
-  let input = 0, output = 0, cacheR = 0, cacheC = 0
-  let anyCacheR = false, anyCacheC = false
-  for (const m of members) {
-    const u = m.total_usage
-    if (!u) continue
-    any = true
-    input += u.input_tokens
-    output += u.output_tokens
-    if (u.cache_read_tokens !== undefined) { cacheR += u.cache_read_tokens; anyCacheR = true }
-    if (u.cache_creation_tokens !== undefined) { cacheC += u.cache_creation_tokens; anyCacheC = true }
-  }
-  if (!any) return undefined
-  return {
-    input_tokens: input,
-    output_tokens: output,
-    ...(anyCacheR ? { cache_read_tokens: cacheR } : {}),
-    ...(anyCacheC ? { cache_creation_tokens: cacheC } : {}),
-  }
-}
-
-function aggregateGroupStatus(members: TraceIndexEntry[]): TraceGroup['status'] {
-  if (members.some((m) => m.status === 'running')) return 'running'
-  if (members.some((m) => m.status === 'failed')) return 'failed'
-  return 'completed'
-}
-
-function groupEntries(entries: TraceIndexEntry[]): TraceGroup[] {
-  const buckets = new Map<string, TraceIndexEntry[]>()
-  const orphans: TraceIndexEntry[] = []
-
-  for (const e of entries) {
-    if (e.related_task_id) {
-      const list = buckets.get(e.related_task_id)
-      if (list) list.push(e)
-      else buckets.set(e.related_task_id, [e])
-    } else {
-      orphans.push(e)
-    }
-  }
-
-  const triggerOrder: Record<string, number> = { message: 0, task: 1, sub_agent_call: 2, schedule: 3 }
-  const groups: TraceGroup[] = []
-
-  for (const [taskId, members] of buckets) {
-    const sorted = [...members].sort((a, b) => {
-      const orderDiff = (triggerOrder[a.trigger_type] ?? 9) - (triggerOrder[b.trigger_type] ?? 9)
-      if (orderDiff !== 0) return orderDiff
-      return new Date(a.started_at).getTime() - new Date(b.started_at).getTime()
-    })
-    const fronts = sorted.filter((m) => m.trigger_type === 'message')
-    const worker = sorted.find((m) => m.trigger_type === 'task')
-    const primary = fronts[0] ?? worker ?? sorted[0]
-    const earliest = sorted.reduce((min, m) =>
-      new Date(m.started_at).getTime() < new Date(min).getTime() ? m.started_at : min,
-      sorted[0].started_at,
-    )
-    const ends = sorted.map((m) => m.ended_at).filter((x): x is string => Boolean(x))
-    const latestEnd = ends.length > 0
-      ? ends.reduce((max, x) => new Date(x).getTime() > new Date(max).getTime() ? x : max)
-      : undefined
-    groups.push({
-      taskId,
-      primary,
-      members: sorted,
-      status: aggregateGroupStatus(sorted),
-      earliestStartedAt: earliest,
-      ...(latestEnd ? { latestEndedAt: latestEnd } : {}),
-      ...(latestEnd ? { totalDurationMs: new Date(latestEnd).getTime() - new Date(earliest).getTime() } : {}),
-      totalSpans: sorted.reduce((sum, m) => sum + m.span_count, 0),
-      ...(aggregateGroupUsage(sorted) ? { totalUsage: aggregateGroupUsage(sorted) } : {}),
-    })
-  }
-
-  for (const orphan of orphans) {
-    groups.push({
-      taskId: null,
-      primary: orphan,
-      members: [orphan],
-      status: orphan.status,
-      earliestStartedAt: orphan.started_at,
-      ...(orphan.ended_at ? { latestEndedAt: orphan.ended_at } : {}),
-      ...(orphan.duration_ms !== undefined ? { totalDurationMs: orphan.duration_ms } : {}),
-      totalSpans: orphan.span_count,
-      ...(orphan.total_usage ? { totalUsage: orphan.total_usage } : {}),
-    })
-  }
-
-  // 按"组内最新活动时间"倒序
-  groups.sort((a, b) => {
-    const aT = new Date(a.latestEndedAt ?? a.earliestStartedAt).getTime()
-    const bT = new Date(b.latestEndedAt ?? b.earliestStartedAt).getTime()
-    return bT - aT
-  })
-
-  return groups
-}
-
-// ============================================================================
-// 子组件：GroupedTableRow — 聚合视图的折叠组
-// ============================================================================
-
-function GroupedTableRow({
-  group,
-  selectedTraceId,
-  onSelectTrace,
-  onFilterByTask,
-  onJumpToTrace,
-  defaultExpanded,
-}: {
-  group: TraceGroup
-  selectedTraceId: string | null
-  onSelectTrace: (traceId: string) => void
-  onFilterByTask: (taskId: string) => void
-  onJumpToTrace: (traceId: string) => void
-  defaultExpanded: boolean
-}) {
-  const [expanded, setExpanded] = useState(defaultExpanded)
-  const groupContainsSelected = group.members.some((m) => m.trace_id === selectedTraceId)
-
-  // 单成员组：直接当扁平行渲染（不折叠）
-  if (group.members.length === 1) {
-    return (
-      <TraceTableRow
-        entry={group.primary}
-        isSelected={selectedTraceId === group.primary.trace_id}
-        onClick={() => onSelectTrace(group.primary.trace_id)}
-        onFilterByTask={group.taskId ? onFilterByTask : undefined}
-        onJumpToTrace={onJumpToTrace}
-      />
-    )
-  }
-
-  return (
-    <>
-      <tr
-        onClick={() => setExpanded((v) => !v)}
-        style={{
-          cursor: 'pointer',
-          background: groupContainsSelected ? 'var(--bg-highlight, rgba(99,102,241,0.06))' : 'rgba(99,102,241,0.03)',
-          borderBottom: '1px solid var(--border)',
-          borderTop: '1px solid rgba(99,102,241,0.2)',
-        }}
-      >
-        <td style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ width: 12, color: '#6366f1', fontSize: 10 }}>
-              {expanded ? '▼' : '▶'}
-            </span>
-            <StatusDot status={group.status} />
-          </span>
-        </td>
-        <td style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>
-          <span
-            style={{
-              fontSize: 10,
-              padding: '1px 6px',
-              background: '#6366f1',
-              color: '#fff',
-              borderRadius: 3,
-              fontWeight: 600,
-              letterSpacing: 0.3,
-            }}
-          >
-            TASK · {group.members.length}
-          </span>
-        </td>
-        <td
-          style={{
-            padding: '8px 10px',
-            maxWidth: 320,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            fontSize: 13,
-            fontWeight: 500,
-          }}
-          title={group.primary.trigger_summary}
-        >
-          {group.primary.trigger_summary || <span style={{ color: '#9ca3af' }}>(空)</span>}
-        </td>
-        <td style={{ padding: '8px 6px', whiteSpace: 'nowrap' }}>
-          {group.taskId && (
-            <span
-              onClick={(e) => { e.stopPropagation(); onFilterByTask(group.taskId!) }}
-              title={`仅看此任务`}
-              style={{
-                fontSize: 10,
-                padding: '1px 5px',
-                background: 'rgba(99,102,241,0.12)',
-                color: '#6366f1',
-                borderRadius: 3,
-                fontFamily: 'monospace',
-                cursor: 'pointer',
-              }}
-            >
-              🔗 {group.taskId.slice(0, 6)}
-            </span>
-          )}
-        </td>
-        <td style={{ padding: '8px 10px', fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
-          {formatTime(group.earliestStartedAt)}
-        </td>
-        <td style={{ padding: '8px 10px', fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
-          {formatDuration(group.totalDurationMs)}
-        </td>
-        <td style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>
-          <TokenUsageCell usage={group.totalUsage} />
-        </td>
-        <td style={{ padding: '8px 10px', fontSize: 12, color: 'var(--text-secondary)', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-          {group.totalSpans}
-        </td>
-      </tr>
-      {expanded && group.members.map((m) => (
-        <tr
-          key={m.trace_id}
-          onClick={() => onSelectTrace(m.trace_id)}
-          style={{
-            cursor: 'pointer',
-            background: selectedTraceId === m.trace_id ? 'var(--bg-highlight, rgba(59,130,246,0.08))' : undefined,
-            borderBottom: '1px solid var(--border)',
-          }}
-        >
-          <td style={{ padding: '6px 10px', paddingLeft: 28, whiteSpace: 'nowrap' }}>
-            <span style={{ color: '#9ca3af', marginRight: 4 }}>└</span>
-            <StatusDot status={m.status} />
-          </td>
-          <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>
-            <TriggerBadge type={m.trigger_type} />
-          </td>
-          <td
-            style={{
-              padding: '6px 10px',
-              maxWidth: 320,
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              fontSize: 12,
-              color: 'var(--text-secondary)',
-            }}
-            title={m.trigger_summary}
-          >
-            {m.trigger_summary || <span style={{ color: '#9ca3af' }}>(空)</span>}
-          </td>
-          <td style={{ padding: '6px 6px', whiteSpace: 'nowrap' }}>
-            {m.parent_trace_id && (
-              <span
-                onClick={(e) => { e.stopPropagation(); onJumpToTrace(m.parent_trace_id!) }}
-                title={`父 trace ${m.parent_trace_id}`}
-                style={{
-                  fontSize: 10,
-                  padding: '1px 5px',
-                  background: 'rgba(236,72,153,0.12)',
-                  color: '#ec4899',
-                  borderRadius: 3,
-                  cursor: 'pointer',
-                }}
-              >
-                ↑ parent
-              </span>
-            )}
-          </td>
-          <td style={{ padding: '6px 10px', fontSize: 11, color: '#9ca3af', whiteSpace: 'nowrap' }}>
-            {formatTime(m.started_at)}
-          </td>
-          <td style={{ padding: '6px 10px', fontSize: 11, color: '#9ca3af', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
-            {formatDuration(m.duration_ms)}
-          </td>
-          <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>
-            <TokenUsageCell usage={m.total_usage} />
-          </td>
-          <td style={{ padding: '6px 10px', fontSize: 11, color: '#9ca3af', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-            {m.span_count}
-          </td>
-        </tr>
-      ))}
-    </>
-  )
-}
-
-// ============================================================================
-// 子组件：RelatedTraceTree — 同 task_id 的 fronts/worker/sub-agents 关联视图
-// ============================================================================
 
 interface TraceTreeData {
   fronts: TraceIndexEntry[]
@@ -1262,39 +43,9 @@ interface TraceTreeData {
   subagents: TraceIndexEntry[]
 }
 
-function TraceChip({
-  entry,
-  current,
-  onClick,
-}: {
-  entry: TraceIndexEntry
-  current: boolean
-  onClick: () => void
-}) {
-  return (
-    <span
-      onClick={current ? undefined : onClick}
-      title={`${entry.trigger_summary || '(空)'}\n状态：${entry.status}\n${entry.trace_id}`}
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 4,
-        padding: '2px 7px',
-        background: current ? statusColor(entry.status) : 'transparent',
-        color: current ? '#fff' : statusColor(entry.status),
-        border: `1px solid ${statusColor(entry.status)}`,
-        borderRadius: 10,
-        fontSize: 11,
-        fontFamily: 'monospace',
-        cursor: current ? 'default' : 'pointer',
-        fontWeight: current ? 600 : 500,
-      }}
-    >
-      {entry.trace_id.slice(0, 6)}
-      {current && <span style={{ fontSize: 9 }}>● 当前</span>}
-    </span>
-  )
-}
+// ============================================================================
+// 子组件：RelatedTraceTree — 同 task_id 的 fronts/worker/sub-agents 关联视图
+// ============================================================================
 
 function RelatedTraceTree({
   taskId,
@@ -1401,6 +152,39 @@ function RelatedTraceTree({
     </div>
   )
 }
+
+// ============================================================================
+// 子组件：UsageStat
+// ============================================================================
+
+function UsageStat({
+  label,
+  value,
+  color,
+  hint,
+  suffix,
+}: {
+  label: string
+  value: number
+  color: string
+  hint?: string
+  suffix?: string
+}) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }} title={hint}>
+      <span style={{ fontSize: 10, color: '#9ca3af', letterSpacing: 0.3 }}>
+        {label}
+      </span>
+      <span style={{ fontSize: 16, color, fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
+        {suffix ? `${value}${suffix}` : formatTokens(value)}
+      </span>
+    </div>
+  )
+}
+
+// ============================================================================
+// 子组件：TraceDetailPanel
+// ============================================================================
 
 function TraceDetailPanel({
   trace,
@@ -1592,34 +376,21 @@ function TraceDetailPanel({
   )
 }
 
-function UsageStat({
-  label,
-  value,
-  color,
-  hint,
-  suffix,
-}: {
-  label: string
-  value: number
-  color: string
-  hint?: string
-  suffix?: string
-}) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }} title={hint}>
-      <span style={{ fontSize: 10, color: '#9ca3af', letterSpacing: 0.3 }}>
-        {label}
-      </span>
-      <span style={{ fontSize: 16, color, fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
-        {suffix ? `${value}${suffix}` : formatTokens(value)}
-      </span>
-    </div>
-  )
-}
-
 // ============================================================================
 // 主页面
 // ============================================================================
+
+const thStyle: React.CSSProperties = {
+  padding: '8px 10px',
+  textAlign: 'left',
+  fontSize: 11,
+  fontWeight: 600,
+  color: 'var(--text-secondary)',
+  textTransform: 'uppercase',
+  letterSpacing: 0.4,
+  borderBottom: '1px solid var(--border)',
+  whiteSpace: 'nowrap',
+}
 
 export const Traces: React.FC = () => {
   const toast = useToast()
@@ -1639,6 +410,10 @@ export const Traces: React.FC = () => {
 
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [clearing, setClearing] = useState(false)
+
+  const [manualCleanupOpen, setManualCleanupOpen] = useState(false)
+  const [autoCleanupOpen, setAutoCleanupOpen] = useState(false)
+  const [statusRefreshKey, setStatusRefreshKey] = useState(0)
 
   const isFiltered =
     filter.keyword !== '' || filter.status !== '' || filter.range !== 'all' || filter.taskId !== ''
@@ -1811,6 +586,25 @@ export const Traces: React.FC = () => {
             {clearing ? '清理中...' : '清理内存'}
           </Button>
         </div>
+
+        {/* 磁盘占用状态栏 */}
+        <StatusBar
+          refreshKey={statusRefreshKey}
+          onOpenManualCleanup={() => setManualCleanupOpen(true)}
+          onOpenAutoCleanupSettings={() => setAutoCleanupOpen(true)}
+        />
+        <ManualCleanupDialog
+          open={manualCleanupOpen}
+          onClose={() => setManualCleanupOpen(false)}
+          onDeleted={() => {
+            setStatusRefreshKey((k) => k + 1)
+            void loadList()
+          }}
+        />
+        <AutoCleanupSettingsDialog
+          open={autoCleanupOpen}
+          onClose={() => setAutoCleanupOpen(false)}
+        />
 
         {/* 视图切换 + 筛选栏 */}
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -1987,16 +781,4 @@ export const Traces: React.FC = () => {
       </div>
     </MainLayout>
   )
-}
-
-const thStyle: React.CSSProperties = {
-  padding: '8px 10px',
-  textAlign: 'left',
-  fontSize: 11,
-  fontWeight: 600,
-  color: 'var(--text-secondary)',
-  textTransform: 'uppercase',
-  letterSpacing: 0.4,
-  borderBottom: '1px solid var(--border)',
-  whiteSpace: 'nowrap',
 }

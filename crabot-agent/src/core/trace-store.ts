@@ -435,32 +435,136 @@ export class TraceStore {
     return { task_id: taskId, tree: { fronts, worker, subagents } }
   }
 
-  cleanupOldFiles(retentionDays: number): number {
-    if (!this.persistDir) return 0
+  getDiskUsage(): {
+    total_bytes: number
+    trace_count: number
+    oldest_iso?: string
+    newest_iso?: string
+  } {
+    if (!this.persistDir || !fs.existsSync(this.persistDir)) {
+      return { total_bytes: 0, trace_count: 0 }
+    }
+    let totalBytes = 0
+    try {
+      const files = fs.readdirSync(this.persistDir)
+        .filter(f => f.startsWith('traces-') && f.endsWith('.jsonl'))
+      for (const file of files) {
+        const stat = fs.statSync(path.join(this.persistDir, file))
+        totalBytes += stat.size
+      }
+    } catch (err) {
+      console.warn('[TraceStore] getDiskUsage failed:', err instanceof Error ? err.message : err)
+    }
+    const traceCount = this.traceIndex.length
+    let oldestIso: string | undefined
+    let newestIso: string | undefined
+    if (traceCount > 0) {
+      let oldest = Infinity
+      let newest = -Infinity
+      for (const e of this.traceIndex) {
+        const t = new Date(e.started_at).getTime()
+        if (Number.isFinite(t)) {
+          if (t < oldest) oldest = t
+          if (t > newest) newest = t
+        }
+      }
+      if (Number.isFinite(oldest)) oldestIso = new Date(oldest).toISOString()
+      if (Number.isFinite(newest)) newestIso = new Date(newest).toISOString()
+    }
+    return {
+      total_bytes: totalBytes,
+      trace_count: traceCount,
+      ...(oldestIso ? { oldest_iso: oldestIso } : {}),
+      ...(newestIso ? { newest_iso: newestIso } : {}),
+    }
+  }
 
+  /**
+   * 按日级粒度清理 JSONL 文件：找 traces-<date>.jsonl 中 date < (today - retentionDays) 的整个文件删除。
+   * dryRun=true 时只返回统计不实删。
+   */
+  cleanupOldTraces(retentionDays: number, dryRun: boolean): {
+    affected_count: number
+    affected_bytes: number
+    deleted_trace_ids: string[]
+  } {
+    if (!this.persistDir || !Number.isFinite(retentionDays) || retentionDays < 1 || !fs.existsSync(this.persistDir)) {
+      return { affected_count: 0, affected_bytes: 0, deleted_trace_ids: [] }
+    }
     const cutoff = new Date()
     cutoff.setDate(cutoff.getDate() - retentionDays)
     const cutoffStr = cutoff.toISOString().slice(0, 10)
 
-    let removed = 0
+    let affectedTraces = 0
+    let affectedBytes = 0
+    const deletedIds: string[] = []
+    const toDelete: string[] = []
+
     try {
       const files = fs.readdirSync(this.persistDir)
         .filter(f => f.startsWith('traces-') && f.endsWith('.jsonl'))
-
       for (const file of files) {
         const dateStr = file.slice('traces-'.length, 'traces-'.length + 10)
-        if (dateStr < cutoffStr) {
-          fs.unlinkSync(path.join(this.persistDir, file))
-          this.traceIndex = this.traceIndex.filter(e => e.file !== file)
-          removed++
+        if (dateStr >= cutoffStr) continue
+        const filePath = path.join(this.persistDir, file)
+        const stat = fs.statSync(filePath)
+        affectedBytes += stat.size
+        const content = fs.readFileSync(filePath, 'utf-8')
+        const ids: string[] = []
+        for (const line of content.split('\n')) {
+          if (!line.trim()) continue
+          try {
+            const trace = JSON.parse(line) as { trace_id?: string }
+            if (trace.trace_id) ids.push(trace.trace_id)
+          } catch { /* skip malformed */ }
+        }
+        affectedTraces += ids.length
+        if (!dryRun) {
+          toDelete.push(file)
+          deletedIds.push(...ids)
         }
       }
-      if (removed > 0) {
-        this.rebuildTaskIndex()
+      if (!dryRun) {
+        for (const file of toDelete) {
+          try {
+            fs.unlinkSync(path.join(this.persistDir, file))
+            this.traceIndex = this.traceIndex.filter(e => e.file !== file)
+          } catch (err) {
+            console.warn(`[TraceStore] cleanupOldTraces delete failed for ${file}:`, err instanceof Error ? err.message : err)
+          }
+        }
+        if (toDelete.length > 0) {
+          this.rebuildTaskIndex()
+        }
       }
-    } catch { /* best effort */ }
+    } catch (err) {
+      console.warn('[TraceStore] cleanupOldTraces failed:', err instanceof Error ? err.message : err)
+    }
 
-    return removed
+    return {
+      affected_count: affectedTraces,
+      affected_bytes: affectedBytes,
+      deleted_trace_ids: deletedIds,
+    }
+  }
+
+  /**
+   * @deprecated 用 cleanupOldTraces 替代；保留是为了不破坏现有调用方。
+   * 返回被删文件数（估算：通过会被清理的文件数预计算）。
+   */
+  cleanupOldFiles(retentionDays: number): number {
+    if (!this.persistDir || !Number.isFinite(retentionDays) || retentionDays < 1 || !fs.existsSync(this.persistDir)) return 0
+    const cutoff = new Date()
+    cutoff.setDate(cutoff.getDate() - retentionDays)
+    const cutoffStr = cutoff.toISOString().slice(0, 10)
+    let fileCount = 0
+    try {
+      const files = fs.readdirSync(this.persistDir)
+        .filter(f => f.startsWith('traces-') && f.endsWith('.jsonl'))
+      fileCount = files.filter(f => f.slice('traces-'.length, 'traces-'.length + 10) < cutoffStr).length
+    } catch { /* best effort */ }
+    this.cleanupOldTraces(retentionDays, false)
+    return fileCount
   }
 
   private addToTaskIndex(taskId: string, traceId: string): void {

@@ -1,8 +1,39 @@
 # Crabot 项目进度
 
-> 最后更新：2026-05-19 — Phase 5 阶段 3a：Subagent Admin UI 落地
+> 最后更新：2026-05-20 — Phase 5 阶段 3b：Trace 页面优化（StatusBar + CleanupDialogs + 协议同步）
 
-## 最新里程碑（2026-05-19 — Phase 5 阶段 3a：Subagent Admin UI 落地）
+## 最新里程碑（2026-05-20 — Phase 5 阶段 3b：Trace 页面优化）
+
+Trace 页面四块优化 + 文件拆分：
+- dispatch_call / dispatch_action span 类型补全（agent union + admin web 渲染）
+- sub_agent_call 内联嵌套展开（点击展开子 trace span 树，banner 显示 subagent name）
+- 去 front/worker 二分 UI 文案（保留代码层兼容旧 trace 数据）
+- 顶部 StatusBar（磁盘占用 + trace 数） + 手动清理 dialog + 自动清理 retention 设置 + daily cron
+- 2002 行 pages/Traces/index.tsx 拆 9 个聚焦文件
+
+spec：`crabot-docs/superpowers/specs/2026-05-19-trace-page-redesign-design.md`
+plan：`crabot-docs/superpowers/plans/2026-05-19-trace-page-redesign.md`
+
+主要改动：
+- `crabot-agent/src/types.ts`：AgentSpanType union + DispatchCallDetails/ActionDetails
+- `crabot-agent/src/core/trace-store.ts`：getDiskUsage + cleanupOldTraces(dryRun)
+- `crabot-agent/src/unified-agent.ts`：注册 2 个新 RPC handler
+- `crabot-admin/src/types.ts`：GlobalModelConfig.trace_retention_days
+- `crabot-admin/src/index.ts`：/api/agent/traces/disk-usage GET + /api/agent/traces/old DELETE
+- `crabot-admin/src/trace-cleanup-cron.ts`：daily cron + retention 检查 + parseCleanupParams
+- `crabot-admin/web/src/pages/Traces/`：utils.ts + 8 个组件文件 + 多个测试文件
+- `crabot-docs/protocols/`：§8.2 表 + §3.24 REST 表 + AdminGlobalModelConfig 字段
+
+**已记录的 follow-up（不阻塞本里程碑）：**
+- agent 端 `unified-agent.ts:2286-2304` 有独立每日清理（默认 30 天，用 `TRACE_RETENTION_DAYS` env 控制），与 admin cron 并行运行。后续应删除 agent 自清理，让 admin cron 是唯一入口。
+- admin cron 实际是「启动后每 24h」一次，protocol §3.24 描述为「每天 03:00」——需要要么改 impl 算到下一个 03:00，要么把 protocol 改成「每 24h」。
+- `cleanupOldFiles` 在 trace-store.ts:555 标 @deprecated 但暂未删除；上面项落地后可一起清。
+- `SpanDetailPanel` 老 span type label 仍英文（Model/Iterations/Tool 等），新 dispatch 已中文化。下次顺手统一。
+- web 端 `services/trace.ts` 与 agent 端 `types.ts` 双写 `AgentSpanType`/details union，存在 drift（如 web 有 llm_retry 但 agent 没有）。后续移到 `crabot-shared` 统一。
+
+---
+
+## 上一里程碑（2026-05-19 — Phase 5 阶段 3a：Subagent Admin UI 落地）
 
 落地 Admin Web 的 Subagent 管理 UI：列表页 / 6-tab 编辑 dialog / Agent 配置页加 timeout_seconds + overdue_reminder_enabled。Backend REST `/api/subagents` 在阶段 1-2c 已成熟，本阶段只做 UI；可视化管理替代手动改 `data/admin/subagents.json`。
 

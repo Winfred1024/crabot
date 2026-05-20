@@ -145,6 +145,7 @@ import { tailLogFile } from './module-log-tail.js'
 import { buildRecoveryTask } from './recovery-handler.js'
 import { getBuiltinSkills } from './builtin-skills.js'
 import { getBuiltinSubAgents } from './builtin-subagents.js'
+import { parseCleanupParams } from './trace-cleanup-cron.js'
 
 // ============================================================================
 // JWT 工具函数
@@ -346,6 +347,7 @@ export class AdminModule extends ModuleBase {
   private static readonly WAITING_HUMAN_TIMEOUT_MS = 24 * 60 * 60 * 1000  // 24h
   private static readonly WAITING_HUMAN_SCAN_INTERVAL_MS = 5 * 60 * 1000  // 5min
   private waitingHumanScanTimer?: NodeJS.Timeout
+  private stopTraceCleanupCron?: () => void
 
   // 数据加载完成前 saveData 必须拒绝，否则会用空内存覆盖磁盘真实数据
   private dataLoaded = false
@@ -642,11 +644,27 @@ export class AdminModule extends ModuleBase {
       () => { this.runWaitingHumanTimeoutScan().catch((err) => console.error('[Admin] waiting_human scan error:', err)) },
       AdminModule.WAITING_HUMAN_SCAN_INTERVAL_MS,
     )
+
+    // 启动 trace 自动清理 cron（每日）
+    const { startTraceCleanupCron } = await import('./trace-cleanup-cron.js')
+    this.stopTraceCleanupCron = startTraceCleanupCron({
+      getGlobalConfig: () => this.modelProviderManager.getGlobalConfig(),
+      callCleanup: async (days: number) => {
+        return this.callAgentRpc<
+          { days: number; dry_run: boolean },
+          { affected_count: number; affected_bytes: number; deleted_trace_ids: string[] }
+        >('cleanup_old_traces', { days, dry_run: false })
+      },
+    })
+    console.log('[Admin] Trace cleanup cron started')
   }
 
   protected override async onStop(): Promise<void> {
     // 停止 waiting_human 超时扫描器
     if (this.waitingHumanScanTimer) clearInterval(this.waitingHumanScanTimer)
+
+    // 停止 trace 自动清理 cron
+    this.stopTraceCleanupCron?.()
 
     // 停止调度引擎
     this.scheduleEngine.stop()
@@ -1748,6 +1766,15 @@ export class AdminModule extends ModuleBase {
       }
       if (pathname === '/api/agent/traces' && req.method === 'DELETE') {
         await this.handleClearAgentTracesApi(req, res)
+        return
+      }
+
+      if (pathname === '/api/agent/traces/disk-usage' && req.method === 'GET') {
+        await this.handleGetTraceDiskUsageApi(req, res)
+        return
+      }
+      if (pathname === '/api/agent/traces/old' && req.method === 'DELETE') {
+        await this.handleCleanupOldTracesApi(req, res, url)
         return
       }
 
@@ -7377,6 +7404,43 @@ export class AdminModule extends ModuleBase {
         msg.includes('connect failed')
       res.writeHead(isUnreachable ? 503 : 500, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: isUnreachable ? 'Agent not available' : msg }))
+    }
+  }
+
+  private async handleGetTraceDiskUsageApi(
+    _req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    try {
+      const result = await this.callAgentRpc<
+        Record<string, never>,
+        { total_bytes: number; trace_count: number; oldest_iso?: string; newest_iso?: string }
+      >('get_trace_disk_usage', {})
+      sendJson(res, 200, result)
+    } catch (err) {
+      sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) })
+    }
+  }
+
+  private async handleCleanupOldTracesApi(
+    _req: IncomingMessage,
+    res: ServerResponse,
+    url: URL,
+  ): Promise<void> {
+    const parsed = parseCleanupParams(url)
+    if ('error' in parsed) {
+      sendJson(res, 400, { error: parsed.error })
+      return
+    }
+    const { days, dryRun } = parsed
+    try {
+      const result = await this.callAgentRpc<
+        { days: number; dry_run: boolean },
+        { affected_count: number; affected_bytes: number; deleted_trace_ids: string[] }
+      >('cleanup_old_traces', { days, dry_run: dryRun })
+      sendJson(res, 200, result)
+    } catch (err) {
+      sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) })
     }
   }
 
