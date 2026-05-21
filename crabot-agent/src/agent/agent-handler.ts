@@ -291,6 +291,13 @@ export interface ExecuteTriggerMessageParams {
   readonly channelId: string
   readonly sessionId: string
   /**
+   * Dispatch LLM 生成的任务摘要（dispatchAction.text）。
+   * 用作 task title / description；缺省时回退到 triggerSummary（原始消息切片）。
+   * 仅影响 task 元数据展示（Admin UI / Front supplement_task 决策清单 / Worker prompt 任务信息段），
+   * worker 拿到的 trigger_messages 仍是原始保真消息。
+   */
+  readonly dispatchActionText?: string
+  /**
    * 完整的 Front Agent context（由 unified-agent 在调用 executeTriggerMessage 前装配）。
    * 包含 recent_messages / time_windows / active_tasks / sender_friend / scene_profile / crab_display_name 等，
    * 用于构造 worker 风格的 user prompt（含 channel/session/聊天历史/活跃任务）。
@@ -1256,19 +1263,24 @@ export class AgentHandler {
     triggerSummary: string
   }> {
     const { messages, isGroup, senderFriend, memoryPermissions, resolvedPermissions,
-      channelId, sessionId, frontContext } = params
+      channelId, sessionId, frontContext, dispatchActionText } = params
 
     const triggerSummary = messages
       .map(m => m.content.type === 'text' ? (m.content.text ?? '') : '[非文本]')
       .join(' ')
       .slice(0, 100)
+    // 优先用 Dispatch LLM 生成的任务摘要（清晰、抽象到任务层面），缺省时才回退到原始消息切片。
+    // Spec: title 不只是 UI 展示——Front 在做 supplement_task 决策时活跃任务清单里展示的就是它。
+    const taskTitle = (dispatchActionText && dispatchActionText.trim().length > 0)
+      ? dispatchActionText.slice(0, 200)
+      : triggerSummary
     const syntheticTaskId = `trigger-${randomUUID()}` as TaskId
 
     let registered = false
     try {
       await this.registerTriggerTaskToAdmin({
         syntheticTaskId,
-        triggerSummary,
+        taskTitle,
         channelId,
         sessionId,
         senderFriendId: senderFriend.id,
@@ -1280,8 +1292,8 @@ export class AgentHandler {
 
     const task: ExecuteTaskParams['task'] = {
       task_id: syntheticTaskId,
-      task_title: triggerSummary,
-      task_description: triggerSummary,
+      task_title: taskTitle,
+      task_description: taskTitle,
       priority: 'normal',
     }
 
@@ -1316,7 +1328,7 @@ export class AgentHandler {
       taskId: syntheticTaskId,
       status: 'executing',
       startedAt: new Date().toISOString(),
-      title: triggerSummary,
+      title: taskTitle,
       triggerType: 'message',
       abortController: new AbortController(),
       pendingHumanMessages: [],
@@ -1612,7 +1624,7 @@ export class AgentHandler {
    */
   private async registerTriggerTaskToAdmin(params: {
     syntheticTaskId: string
-    triggerSummary: string
+    taskTitle: string
     channelId: string
     sessionId: string
     senderFriendId: string
@@ -1624,7 +1636,7 @@ export class AgentHandler {
     const adminPort = await this.deps.getAdminPort()
     await this.deps.rpcClient.call(adminPort, 'create_task', {
       id: params.syntheticTaskId,
-      title: params.triggerSummary,
+      title: params.taskTitle,
       source: {
         origin: 'human',
         channel_id: params.channelId,

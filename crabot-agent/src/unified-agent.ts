@@ -616,7 +616,7 @@ export class UnifiedAgent extends ModuleBase {
             return 'fallback'
           }
         },
-        spawnAgentInstance: async (_actionText: string) => {
+        spawnAgentInstance: async (actionText: string) => {
           const triggerIds = new Set(messages.map(m => m.platform_message_id))
           const history = (frontContext.recent_messages ?? []).filter(
             (m) => !triggerIds.has(m.platform_message_id)
@@ -633,6 +633,7 @@ export class UnifiedAgent extends ModuleBase {
             resolvedPermissions: resolvedPerms as ResolvedPermissions,
             channelId: session.channel_id,
             sessionId: session.session_id,
+            dispatchActionText: actionText,
             frontContext,
           }
           const taskTraceId = await this.spawnTaskTrace({
@@ -814,9 +815,11 @@ export class UnifiedAgent extends ModuleBase {
             return 'fallback'
           }
         },
-        spawnAgentInstance: async (_actionText: string) => {
+        spawnAgentInstance: async (actionText: string) => {
           // 群聊：把 attention 批次 messages（已含群成员发的文件/图片）+ recent_messages 历史去重后整批传给 worker。
-          // 不用 action.text 覆盖触发消息的 content.text，让 worker 拿到完整保真的消息上下文。
+          // 不用 action.text 覆盖触发消息的 content.text，让 worker 拿到完整保真的消息上下文；
+          // 但 actionText 单独作为 task title/description 透传（dispatchActionText），影响 Front
+          // 后续 supplement_task 决策时活跃任务清单的可识别度。
           const currentIds = new Set(messages.map((m) => m.platform_message_id))
           const history = (frontContext.recent_messages ?? []).filter(
             (m) => !currentIds.has(m.platform_message_id)
@@ -833,6 +836,7 @@ export class UnifiedAgent extends ModuleBase {
             resolvedPermissions: resolvedPerms as ResolvedPermissions,
             channelId: session.channel_id,
             sessionId,
+            dispatchActionText: actionText,
             frontContext,
           }
           const taskTraceId = await this.spawnTaskTrace({
@@ -1617,7 +1621,7 @@ export class UnifiedAgent extends ModuleBase {
             return 'fallback'
           }
         },
-        spawnAgentInstance: async (_actionText: string) => {
+        spawnAgentInstance: async (actionText: string) => {
           // admin_chat：把当前 trigger + recent_messages 去重后整批传给 worker，保留媒体上下文。
           // 注：admin chat 由 admin REST 串行串发（前端 fetch 等响应才会发下一条），天然单线，
           //     不走 SessionLane；这里 awaitWorker=true 同步等 worker 完成，便于把错误反映到 HTTP 响应。
@@ -1639,6 +1643,7 @@ export class UnifiedAgent extends ModuleBase {
             resolvedPermissions: (masterResolvedPerms ?? masterMemPerms) as unknown as ResolvedPermissions,
             channelId: 'admin-web',
             sessionId,
+            dispatchActionText: actionText,
             frontContext,
           }
           const taskTraceId = await this.spawnTaskTrace({

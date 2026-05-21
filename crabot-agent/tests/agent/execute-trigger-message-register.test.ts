@@ -344,4 +344,40 @@ describe('executeTriggerMessage 超期注册到 admin', () => {
     // Only startup register = 1 (onOverdue no longer triggers register)
     expect(createTaskCalls).toHaveLength(1)
   })
+
+  it('dispatchActionText 优先用作 task title（不再用用户原始消息切片）', async () => {
+    mockRunEngine.mockImplementation(async (_opts) => makeEngineResult({ overdueInjected: false }))
+
+    const params = makeTriggerParams({
+      dispatchActionText: 'Dispatch LLM 抽象后的任务摘要：用新数据源重做 L2 并做对比',
+    })
+    await handler.executeTriggerMessage(params)
+
+    const createTaskCalls = mockRpcCall.mock.calls.filter(
+      (call: unknown[]) => call[1] === 'create_task',
+    )
+    expect(createTaskCalls.length).toBeGreaterThanOrEqual(1)
+
+    const [, , ctParams] = createTaskCalls[0] as [number, string, Record<string, unknown>]
+    expect(ctParams.title).toBe('Dispatch LLM 抽象后的任务摘要：用新数据源重做 L2 并做对比')
+    // 必须不是用户原文（"帮我查一下进度"）
+    expect(ctParams.title).not.toBe('帮我查一下进度')
+  })
+
+  it('缺省 dispatchActionText 时回退到原始消息切片', async () => {
+    mockRunEngine.mockImplementation(async (_opts) => makeEngineResult({ overdueInjected: false }))
+
+    const params = makeTriggerParams()
+    // dispatchActionText 不传
+    expect(params.dispatchActionText).toBeUndefined()
+    await handler.executeTriggerMessage(params)
+
+    const createTaskCalls = mockRpcCall.mock.calls.filter(
+      (call: unknown[]) => call[1] === 'create_task',
+    )
+    expect(createTaskCalls.length).toBeGreaterThanOrEqual(1)
+
+    const [, , ctParams] = createTaskCalls[0] as [number, string, Record<string, unknown>]
+    expect(ctParams.title).toBe('帮我查一下进度')
+  })
 })
