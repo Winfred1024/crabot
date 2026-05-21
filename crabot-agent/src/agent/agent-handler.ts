@@ -335,7 +335,12 @@ export class AgentHandler {
   private mcpConnector?: McpConnector
   private extra: Record<string, unknown>
   private digestSdkEnv?: SdkEnvConfig
-  private readonly subAgents: ReadonlyArray<SubAgentConfig>
+  /**
+   * 当前 subagent 列表（可被 updateSubagents 热更新）。
+   * 注意：in-flight worker loop 启动时 snapshot 这个引用，loop 内不再读 this.subAgents——
+   * 见 runWorkerLoop 顶部 `const subAgentsSnapshot = this.subAgents`。
+   */
+  private subAgents: ReadonlyArray<SubAgentConfig>
   private skills: ReadonlyArray<SkillConfig>
   private readonly lspManager?: import('../lsp/lsp-manager').LSPManager
   private memoryWriter?: MemoryWriter
@@ -503,6 +508,48 @@ export class AgentHandler {
   }
 
   /**
+   * 热加载：更新 subagent 列表。
+   *
+   * 设计与 skills 的区别：subagents 用 snapshot 模式，**不影响 in-flight loop**。
+   * runWorkerLoop 顶部把 this.subAgents 快照进闭包，loop 内 buildToolsDynamic /
+   * buildSystemPrompt 走快照，避免任务中途换 subagent 配置打乱推理。
+   * 下次新 worker loop 启动时拿到最新列表。
+   */
+  updateSubagents(newList: ReadonlyArray<SubAgentConfig>): void {
+    this.subAgents = newList
+  }
+
+  /**
+   * 热加载：更新主 LLM sdkEnv（model_config 变更时调）。
+   *
+   * 与 updateSubagents 同样走 snapshot 模式：runWorkerLoop 启动时已 capture
+   * adapter / modelId，in-flight loop 继续用旧 adapter；下次 loop 用新。
+   *
+   * digestSdkEnv 单独可选；不传时保留旧值（与 updateSystemPrompt 同语义）。
+   */
+  updateSdkEnv(sdkEnv: SdkEnvConfig, digestSdkEnv?: SdkEnvConfig): void {
+    this.sdkEnv = sdkEnv
+    if (digestSdkEnv !== undefined) {
+      this.digestSdkEnv = digestSdkEnv
+    }
+  }
+
+  /** 暴露 subagents 当前值的只读快照（测试 / 诊断用，不应在 hot loop 中调）。 */
+  getSubagentsSnapshot(): ReadonlyArray<SubAgentConfig> {
+    return this.subAgents
+  }
+
+  /** 暴露 sdkEnv 当前值（测试 / 诊断用）。 */
+  getSdkEnvSnapshot(): SdkEnvConfig {
+    return this.sdkEnv
+  }
+
+  /** 暴露 digestSdkEnv 当前值（测试 / 诊断用）；未配置返回 undefined。 */
+  getDigestSdkEnvSnapshot(): SdkEnvConfig | undefined {
+    return this.digestSdkEnv
+  }
+
+  /**
    * 热加载：更新 extra（progress_digest_interval_seconds 等）。
    * 下次 executeTask 构造 ProgressDigest 时会读到新值。
    */
@@ -609,6 +656,12 @@ export class AgentHandler {
 
     try {
       // skillsDir 在 worker init / updateSkills 时已经写好（instance-level），这里不再 per-task 写盘
+
+      // Snapshot subagents at loop start. updateSubagents（admin 改 subagents 或 model_config 触发）
+      // 走 hot-update 改 this.subAgents，但 in-flight loop 必须用 snapshot：避免中途换 subagent
+      // 列表后，LLM 看到的 system prompt 列表 / delegate_task 工具 enum 跟它之前的推理矛盾。
+      // 下次新 loop 启动时取最新 this.subAgents。
+      const subAgentsSnapshot = this.subAgents
 
       // Build tools — adapter / sub-agent trace config 等无依赖项先行构造
       const adapter = adapterFromSdkEnv(this.sdkEnv)
@@ -768,9 +821,9 @@ export class AgentHandler {
           this.deps?.getPermissionConfig?.(baseToolsRaw, context.resolved_permissions) ?? { mode: 'bypass' }
         const baseTools = filterToolsByPermission(baseToolsRaw, baseToolsPermissionConfig)
 
-        if (this.subAgents.length > 0) {
+        if (subAgentsSnapshot.length > 0) {
           tools.push(createDelegateTaskTool({
-            subAgents: this.subAgents,
+            subAgents: subAgentsSnapshot,
             runSubAgent: this.makeRunSubAgent({
               parentTools: baseTools,
               parentTaskId: task.task_id,
@@ -809,7 +862,7 @@ export class AgentHandler {
       }
 
       // System prompt 也改为 callback：admin push config 触发 updateSystemPrompt 后下一轮生效。
-      const buildSystemPromptDynamic = (): string => this.buildSystemPrompt(context)
+      const buildSystemPromptDynamic = (): string => this.buildSystemPrompt(context, subAgentsSnapshot)
 
       // 5. Build task message（一次性，task 启动后用户请求/记忆等不变）
       // 若 opts 提供了 initialPrompt，跳过 buildTaskMessage（trigger 流自己构造 prompt）。
@@ -2145,14 +2198,20 @@ export class AgentHandler {
     }
   }
 
-  private buildSystemPrompt(context: WorkerAgentContext): string {
+  private buildSystemPrompt(
+    context: WorkerAgentContext,
+    subAgentsOverride?: ReadonlyArray<SubAgentConfig>,
+  ): string {
     // unified loop spec §3.1：使用 assembleAgentPrompt（12 段统一模板）。
     // isGroup 从 task_origin.session_type 推断；scheduled task 无 session 时默认 false。
     const isGroup = context.task_origin?.session_type === 'group'
     const sceneProfile = context.scene_profile
       ? { label: context.scene_profile.label, content: context.scene_profile.content }
       : undefined
-    const availableSubAgents = this.subAgents.map((s) => ({
+    // subAgentsOverride 由 runWorkerLoop 在 loop 启动时 snapshot 后传入，
+    // 防止 in-flight loop 中 admin 改 subagents 后 system prompt 列表跳变。
+    const subAgentsSource = subAgentsOverride ?? this.subAgents
+    const availableSubAgents = subAgentsSource.map((s) => ({
       toolName: s.name,
       workerHint: s.when_to_use.split('\n')[0] || s.description || s.name,
     }))

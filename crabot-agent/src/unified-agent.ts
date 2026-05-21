@@ -1987,8 +1987,10 @@ export class UnifiedAgent extends ModuleBase {
       changedFields.push('skills')
     }
 
-    // 更新 Subagents（AgentHandler 在构造时接收 subAgents，无热更新 API；需重建 Worker）
+    // 更新 Subagents（热更新：handler.updateSubagents 改 this.subAgents；
+    // in-flight loop 用启动时 snapshot 不感知；新 loop 下次拿最新 list）
     if (params.subagents !== undefined) {
+      this.agentHandler?.updateSubagents(params.subagents)
       this.agentConfig.subagents = params.subagents
       changedFields.push('subagents')
     }
@@ -2003,15 +2005,18 @@ export class UnifiedAgent extends ModuleBase {
       changedFields.push('overdue_reminder_enabled')
     }
 
-    // 根据变更字段，按需触发 handler 重建
+    // 根据变更字段，按需更新 LLM client。
+    //
+    // 历史：modelConfig / subagents 变化曾走 createWorkerHandler 重建路径，
+    // 后果是 in-flight task 的 activeTasks 表丢失 + agent_loop trace 永不 endTrace
+    // （详见 2026-05-21 FuFu 与 Claude 的根因诊断）。
+    //
+    // 现在 modelConfig 走 handler.updateSdkEnv 热更，subagents 走 handler.updateSubagents
+    // 热更；两者都是 snapshot 模式：in-flight loop 用启动时快照继续跑，新 loop 取最新值。
+    // skills / system_prompt 历史就已经是 hot-update。
     if (modelConfigChanged || skillsChanged || systemPromptChanged || subagentsChanged) {
       const mergedModelConfig = this.agentConfig.model_config ?? {}
-      // skills / system_prompt 变更时 Front 必须重建（Front prompt closure 在构造时绑定 personality + skill listing）；
-      // Worker 已通过 updateSkills / updateSystemPrompt 热更新，无需重建（重建会让 in-flight task 的 RPC 路由
-      // 找不到原 activeTasks 条目）。仅 model_config 或 subagents 变化才重建 Worker。
-      await this.updateLlmClients(mergedModelConfig, {
-        skipWorkerRebuild: !modelConfigChanged && !subagentsChanged,
-      })
+      await this.updateLlmClients(mergedModelConfig)
     }
 
     // 更新扩展配置（热生效，下次使用对应功能时生效）
@@ -2043,45 +2048,56 @@ export class UnifiedAgent extends ModuleBase {
   }
 
   /**
-   * 热更新 LLM 客户端
-   * @param modelConfig 新的模型配置
-   * @param options.skipWorkerRebuild 跳过 Worker handler 重建（skills / system_prompt 走 worker 自己的热更新方法
-   *   updateSkills / updateSystemPrompt，重建会鬼存 in-flight task 的 activeTasks）
+   * 热更新 LLM 客户端：永不重建 AgentHandler 实例。
+   *
+   * 之前的实现：modelConfig 变化时整个 new AgentHandler，scheduledTaskRunner 也指向新 handler。
+   * 副作用：老 handler 上的 in-flight task activeTasks / agent_loop trace 全部失联，trace
+   * 永远 running，dispatcher 找不到 task。
+   *
+   * 现在的实现：
+   * - handler 存在时：调 handler.updateSdkEnv 原地写 sdkEnv / digestSdkEnv；in-flight loop 用
+   *   启动时 snapshot 的旧 adapter 继续跑完，新 loop 用新 adapter。
+   * - handler 不存在（首次启动 / 之前未配齐 model）：才走 createWorkerHandler 兜底。
    */
   private async updateLlmClients(
     modelConfig: Record<string, LLMConnectionInfo>,
-    options: { skipWorkerRebuild?: boolean } = {},
   ): Promise<void> {
-    const { workerPersonality } = this.buildPromptParts(this.agentConfig?.system_prompt)
-
-    // MCP config factory: creates fresh in-process McpServer instances per task
-    const createMcpConfigs = (taskCtx?: TaskContext): Record<string, McpServer> => ({
-      'crab-messaging': createCrabMessagingServer({
-        rpcClient: this.rpcClient,
-        moduleId: this.config.moduleId,
-        getAdminPort: () => this.getAdminPort(),
-        resolveChannelPort: (channelId) => this.getChannelPort(channelId),
-        ...(taskCtx ? { getTaskContext: () => taskCtx } : {}),
-      }, this.sandboxPathMappingsRef),
-    })
-
-    // 更新 Digest 模型（在 Worker 之前，因为 AgentHandler 构造需要 digestSdkEnv）
-    // Phase 5 ModelRole 重整后：cost_effective → powerful 回退链
+    // 更新 Digest 模型（cost_effective → powerful fallback）
     const digestConfig = modelConfig.cost_effective ?? modelConfig.powerful
-    if (digestConfig) {
-      this.digestSdkEnv = this.buildSdkEnv(digestConfig)
+    const newDigestSdkEnv = digestConfig ? this.buildSdkEnv(digestConfig) : undefined
+    if (newDigestSdkEnv) {
+      this.digestSdkEnv = newDigestSdkEnv
     }
 
-    // 更新 Worker Agent — 仅 model_config 真正变化时重建（skills / system_prompt 走热更新方法）
-    if (this.roles.has('worker') && !options.skipWorkerRebuild) {
+    // 更新 Worker Agent
+    if (this.roles.has('worker')) {
       const workerConfig = modelConfig.powerful
       if (workerConfig) {
-        this.sdkEnvWorker = this.buildSdkEnv(workerConfig)
-        this.agentHandler = this.createWorkerHandler(
-          this.sdkEnvWorker, workerPersonality,
-          createMcpConfigs, this.agentConfig?.builtin_tool_config, this.agentConfig?.skills)
-        this.scheduledTaskRunner.setWorkerHandler(this.agentHandler)
-        console.log(`[${this.config.moduleId}] Worker Agent SDK env ${this.agentHandler ? 'updated' : 'created from config push'}`)
+        const newWorkerSdkEnv = this.buildSdkEnv(workerConfig)
+        this.sdkEnvWorker = newWorkerSdkEnv
+
+        if (this.agentHandler) {
+          // 热更：原地改 sdkEnv，handler 实例不换。in-flight loop 用 snapshot 继续跑。
+          this.agentHandler.updateSdkEnv(newWorkerSdkEnv, newDigestSdkEnv)
+          console.log(`[${this.config.moduleId}] Worker Agent SDK env hot-updated (in-flight loops keep old config)`)
+        } else {
+          // 首次：handler 还不存在（启动期 model 没配齐），现在配齐了创建 handler。
+          const { workerPersonality } = this.buildPromptParts(this.agentConfig?.system_prompt)
+          const createMcpConfigs = (taskCtx?: TaskContext): Record<string, McpServer> => ({
+            'crab-messaging': createCrabMessagingServer({
+              rpcClient: this.rpcClient,
+              moduleId: this.config.moduleId,
+              getAdminPort: () => this.getAdminPort(),
+              resolveChannelPort: (channelId) => this.getChannelPort(channelId),
+              ...(taskCtx ? { getTaskContext: () => taskCtx } : {}),
+            }, this.sandboxPathMappingsRef),
+          })
+          this.agentHandler = this.createWorkerHandler(
+            newWorkerSdkEnv, workerPersonality,
+            createMcpConfigs, this.agentConfig?.builtin_tool_config, this.agentConfig?.skills)
+          this.scheduledTaskRunner.setWorkerHandler(this.agentHandler)
+          console.log(`[${this.config.moduleId}] Worker Agent SDK env created from config push`)
+        }
       }
     }
   }
