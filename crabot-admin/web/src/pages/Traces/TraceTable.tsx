@@ -340,7 +340,12 @@ export function GroupedTableRow({
           {group.totalSpans}
         </td>
       </tr>
-      {expanded && group.members.map((m) => (
+      {expanded && group.members.map((m) => {
+        const isSubAgent = m.trigger_type === 'sub_agent_call'
+        const indentPx = isSubAgent ? 44 : 28
+        const prefix = isSubAgent ? '↳' : '└'
+        const prefixTitle = isSubAgent ? 'Subagent 子 trace（点击进入查看内部 span）' : undefined
+        return (
         <tr
           key={m.trace_id}
           onClick={() => onSelectTrace(m.trace_id)}
@@ -350,8 +355,13 @@ export function GroupedTableRow({
             borderBottom: '1px solid var(--border)',
           }}
         >
-          <td style={{ padding: '6px 10px', paddingLeft: 28, whiteSpace: 'nowrap' }}>
-            <span style={{ color: '#9ca3af', marginRight: 4 }}>└</span>
+          <td style={{ padding: '6px 10px', paddingLeft: indentPx, whiteSpace: 'nowrap' }}>
+            <span
+              style={{ color: isSubAgent ? '#ec4899' : '#9ca3af', marginRight: 4 }}
+              title={prefixTitle}
+            >
+              {prefix}
+            </span>
             <StatusDot status={m.status} />
           </td>
           <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>
@@ -402,7 +412,8 @@ export function GroupedTableRow({
             {m.span_count}
           </td>
         </tr>
-      ))}
+        )
+      })}
     </>
   )
 }

@@ -68,6 +68,7 @@ import { forkEngine } from '../engine/sub-agent.js'
 import type { SubAgentTraceConfig } from '../engine/sub-agent.js'
 import { createDelegateTaskTool } from './delegate-task-tool.js'
 import type { RunSubAgentFn } from './delegate-task-tool.js'
+import { buildSubAgentFailureOutput } from './subagent-error-classifier.js'
 import { filterToolsForSubAgent } from './subagent-tool-filter.js'
 import { assembleSubAgentPrompt } from './subagent-prompt-assembler.js'
 import type { SubAgentConfig } from '../types.js'
@@ -1997,11 +1998,14 @@ export class AgentHandler {
       let subTraceCallback: ((event: EngineTurnEvent) => void) | undefined
 
       if (tc) {
+        // summary 前缀带 subagent name，让 Admin Traces 列表展开行一眼看出
+        // "这是谁派的子任务" — 否则只能看见 task prompt 内容，分不清是哪个 subagent。
+        const taskPrompt = String(input.task).slice(0, 180)
         subTrace = tc.traceStore.startTrace({
           module_id: 'sub-agent',
           trigger: {
             type: 'sub_agent_call',
-            summary: String(input.task).slice(0, 200),
+            summary: `[${subagent.name}] ${taskPrompt}`,
           },
           parent_trace_id: tc.parentTraceId,
           parent_span_id: tc.parentSpanId,
@@ -2101,6 +2105,20 @@ export class AgentHandler {
           )
         }
 
+        if (result.outcome === 'failed') {
+          const errSrc = result.error || result.output || 'subagent failed without error message'
+          const failure = buildSubAgentFailureOutput({
+            errorSource: new Error(errSrc),
+            subagentName: subagent.name,
+            providerEndpoint: subagent.model.endpoint,
+            model: subagent.model.model_id,
+            ...(result.output ? { partialOutput: result.output } : {}),
+            totalTurns: result.totalTurns,
+            ...(subTrace ? { childTraceId: subTrace.trace_id } : {}),
+          })
+          return { output: JSON.stringify(failure), isError: true }
+        }
+
         return {
           output: JSON.stringify({
             output: result.output,
@@ -2108,17 +2126,21 @@ export class AgentHandler {
             totalTurns: result.totalTurns,
             child_trace_id: subTrace?.trace_id,
           }),
-          isError: result.outcome === 'failed',
+          isError: false,
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         if (subTrace && tc) {
           tc.traceStore.endTrace(subTrace.trace_id, 'failed', { summary: msg, error: msg })
         }
-        return {
-          output: JSON.stringify({ outcome: 'failed', error: msg }),
-          isError: true,
-        }
+        const failure = buildSubAgentFailureOutput({
+          errorSource: err,
+          subagentName: subagent.name,
+          providerEndpoint: subagent.model.endpoint,
+          model: subagent.model.model_id,
+          ...(subTrace ? { childTraceId: subTrace.trace_id } : {}),
+        })
+        return { output: JSON.stringify(failure), isError: true }
       }
     }
   }
