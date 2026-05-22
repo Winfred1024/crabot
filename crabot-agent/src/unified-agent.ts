@@ -2520,6 +2520,9 @@ export class UnifiedAgent extends ModuleBase {
 
   protected override async onStart(): Promise<void> {
     this.startEventLoopWatchdog()
+    // trace 的 in-flight 持久化：每 15s 覆盖写 traces-running.jsonl，让 agent
+    // 被 SIGKILL 时主 task trace 仍能保留到最后一次 flush 的状态。
+    this.traceStore.startFlushTimer(15_000)
     this.sessionManager.startCleanup()
 
     // Connect to external MCP servers (Admin-configured)
@@ -2557,6 +2560,7 @@ export class UnifiedAgent extends ModuleBase {
   protected override async onStop(): Promise<void> {
     this.sessionManager.stopCleanup()
     this.attentionScheduler.stopAll()
+    this.traceStore.stopFlushTimer()
 
     if (this.watchdogInterval) {
       clearInterval(this.watchdogInterval)

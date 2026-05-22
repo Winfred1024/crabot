@@ -58,20 +58,104 @@ export class TraceStore {
   private traceIndex: TraceIndexEntry[] = []
   private taskIndex: Map<string, string[]> = new Map()
 
+  // ── In-flight 定时持久化 ────────────────────────────────
+  // status='running' 的 trace 只在 endTrace 时才追加到 traces-{date}.jsonl。
+  // 但 agent 被 SIGKILL（health 失败 / OOM / 外部强杀）时根本没机会 endTrace，
+  // 整条主 task trace 连带所有 span 永久丢失 —— admin UI 上只能看到已结束的
+  // sub-agent / dispatch trace，看不到死前主 loop 在做啥。
+  //
+  // 解决：定时把所有 in-flight trace 全量覆盖写到独立文件 traces-running.jsonl。
+  // 覆盖式（writeFileSync + rename atomic 替换），文件大小有界。
+  // 进程重启后 rebuildIndex 把上次 running 的 trace 重新加载到 this.traces，
+  // searchTraces 的现有合并逻辑（line 107-112）能直接展示出来。
+  private flushTimer?: ReturnType<typeof setInterval>
+  private static readonly RUNNING_FLUSH_FILE = 'traces-running.jsonl'
+
   constructor(maxSize = 100, persistDir?: string) {
     this.maxSize = maxSize
     this.persistDir = persistDir
     if (persistDir) {
       fs.mkdirSync(persistDir, { recursive: true })
       this.rebuildIndex()
+      this.loadRunningTraces()
     }
+  }
+
+  /**
+   * 启动 in-flight trace 的定时全量 flush。caller（UnifiedAgent.onStart）调一次。
+   * intervalMs 太短会增加 IO，太长会让"死前的最后状态"丢得多；默认 15s 是经验值。
+   */
+  startFlushTimer(intervalMs = 15_000): void {
+    if (this.flushTimer || !this.persistDir) return
+    this.flushTimer = setInterval(() => {
+      try {
+        this.flushInFlightTraces()
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.warn(`[TraceStore] flushInFlightTraces failed: ${msg}`)
+      }
+    }, intervalMs)
+    this.flushTimer.unref?.()
+  }
+
+  stopFlushTimer(): void {
+    if (this.flushTimer) {
+      clearInterval(this.flushTimer)
+      this.flushTimer = undefined
+    }
+  }
+
+  /**
+   * 全量重写 traces-running.jsonl —— 当前所有 status='running' 的 trace。
+   * 用 tmp + rename 实现 atomic 替换：进程在写中间被杀，旧文件保持完好。
+   */
+  private flushInFlightTraces(): void {
+    if (!this.persistDir) return
+    const lines: string[] = []
+    for (const trace of this.traces.values()) {
+      if (trace.status === 'running') {
+        lines.push(JSON.stringify(trace))
+      }
+    }
+    const content = lines.length > 0 ? lines.join('\n') + '\n' : ''
+    const finalPath = path.join(this.persistDir, TraceStore.RUNNING_FLUSH_FILE)
+    const tmpPath = finalPath + '.tmp'
+    fs.writeFileSync(tmpPath, content, 'utf-8')
+    fs.renameSync(tmpPath, finalPath)
+  }
+
+  /**
+   * 启动时加载 traces-running.jsonl —— 上次 agent 死时未结束的 trace。
+   * 不进 traceIndex（覆盖式文件没有稳定 offset），直接放进内存 this.traces 让
+   * searchTraces 合并展示。这些 trace 是"墓碑"——agent 看到它们 status='running'
+   * 但实际进程已死；新 agent 不会复用这些 trace_id。
+   */
+  private loadRunningTraces(): void {
+    if (!this.persistDir) return
+    const filePath = path.join(this.persistDir, TraceStore.RUNNING_FLUSH_FILE)
+    if (!fs.existsSync(filePath)) return
+    try {
+      const content = fs.readFileSync(filePath, 'utf-8')
+      for (const line of content.split('\n')) {
+        if (!line.trim()) continue
+        try {
+          const trace = JSON.parse(line) as AgentTrace
+          // 已经 endTrace 过的（rebuildIndex 已读到）跳过
+          if (this.traceIndex.some(e => e.trace_id === trace.trace_id)) continue
+          this.traces.set(trace.trace_id, trace)
+        } catch { /* skip malformed */ }
+      }
+    } catch { /* best effort */ }
   }
 
   private rebuildIndex(): void {
     if (!this.persistDir) return
     try {
+      // 排除 traces-running.jsonl —— 那是覆盖式写的 in-flight 文件，没有稳定
+      // 字节 offset，不能进 traceIndex（getFullTrace 走 offset 读会乱）。
+      // in-flight 由 loadRunningTraces 单独加载到内存 Map。
       const files = fs.readdirSync(this.persistDir)
-        .filter(f => f.startsWith('traces-') && f.endsWith('.jsonl'))
+        .filter(f => f.startsWith('traces-') && f.endsWith('.jsonl') && f !== TraceStore.RUNNING_FLUSH_FILE)
         .sort()
 
       for (const file of files) {

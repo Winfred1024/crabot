@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { TraceStore, SpanWithMeta } from '../../src/core/trace-store'
+import { TraceStore } from '../../src/core/trace-store'
 
 describe('TraceStore', () => {
   describe('startTrace with related_task_id', () => {
@@ -45,6 +45,92 @@ describe('TraceStore', () => {
       const store = new TraceStore(10)
       // Should not throw
       store.updateTrace('non-existent', { related_task_id: 'task-123' })
+    })
+  })
+
+  describe('in-flight trace flush + reload (survives SIGKILL)', () => {
+    function makeTempDir(): string {
+      return fs.mkdtempSync(path.join(os.tmpdir(), 'trace-store-flush-'))
+    }
+
+    it('flushed in-flight trace is visible after store recreation (simulates SIGKILL + restart)', () => {
+      const dir = makeTempDir()
+      try {
+        const store1 = new TraceStore(10, dir)
+        const trace = store1.startTrace({
+          module_id: 'agent-1',
+          trigger: { type: 'task', summary: 'long-running task' },
+          related_task_id: 'task-victim',
+        })
+        // 模拟一个跑了几轮 turn 的 trace（in-flight，未 endTrace）
+        store1.startSpan(trace.trace_id, { type: 'llm_call', details: { iteration: 1 } })
+        // 触发 flush（私有方法用 any 绕过）
+        ;(store1 as unknown as { flushInFlightTraces: () => void }).flushInFlightTraces()
+
+        // 不调 endTrace —— 模拟 SIGKILL
+        // 新进程启动，新 store 从同一 dir 加载
+        const store2 = new TraceStore(10, dir)
+        const result = store2.searchTraces({ task_id: 'task-victim' })
+        expect(result.traces.length).toBe(1)
+        expect(result.traces[0].trace_id).toBe(trace.trace_id)
+        expect(result.traces[0].status).toBe('running')
+
+        // getTrace 也应该能拿到完整数据（spans 等）
+        const full = store2.getTrace(trace.trace_id)
+        expect(full).toBeDefined()
+        expect(full?.spans?.length ?? 0).toBeGreaterThan(0)
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('endTrace + next flush clears the trace from running file', () => {
+      const dir = makeTempDir()
+      try {
+        const store = new TraceStore(10, dir)
+        const trace = store.startTrace({
+          module_id: 'agent-1',
+          trigger: { type: 'task', summary: 'done task' },
+        })
+        ;(store as unknown as { flushInFlightTraces: () => void }).flushInFlightTraces()
+
+        // 完成 trace → 走 append 到 traces-{date}.jsonl
+        store.endTrace(trace.trace_id, 'completed', { summary: 'ok' })
+        // 再触发 flush：running 文件应该清掉这条
+        ;(store as unknown as { flushInFlightTraces: () => void }).flushInFlightTraces()
+
+        const runningPath = path.join(dir, 'traces-running.jsonl')
+        const content = fs.existsSync(runningPath) ? fs.readFileSync(runningPath, 'utf-8') : ''
+        expect(content).toBe('')
+
+        // 新 store 加载时不会再误把已完成的 trace 当 running 加进去
+        const store2 = new TraceStore(10, dir)
+        const completed = store2.searchTraces({})
+        expect(completed.traces.filter(t => t.trace_id === trace.trace_id && t.status === 'running').length).toBe(0)
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('startFlushTimer triggers periodic flush', async () => {
+      const dir = makeTempDir()
+      try {
+        const store = new TraceStore(10, dir)
+        const trace = store.startTrace({
+          module_id: 'agent-1',
+          trigger: { type: 'task', summary: 'timer test' },
+        })
+        store.startFlushTimer(50)
+        await new Promise(resolve => setTimeout(resolve, 120))
+        store.stopFlushTimer()
+
+        const runningPath = path.join(dir, 'traces-running.jsonl')
+        expect(fs.existsSync(runningPath)).toBe(true)
+        const content = fs.readFileSync(runningPath, 'utf-8')
+        expect(content).toContain(trace.trace_id)
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
     })
   })
 })
