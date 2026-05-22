@@ -18,10 +18,26 @@ import { createUserMessage } from './types'
 
 // --- Config & Deps ---
 
+export type DigestReason = 'interval' | 'overdue' | 'ask_human'
+
 export interface ProgressDigestConfig {
-  readonly intervalMs: number
+  /** 定时 flush 间隔（毫秒）；不传或 ≤0 表示不启用定时触发 */
+  readonly intervalMs?: number
+  /**
+   * 超期触发延迟（毫秒，相对于 ProgressDigest 构造时刻）。
+   * 不传表示不启用超期触发。启用后到时间会触发一次 fork-and-send，且只触发一次。
+   * 跟 intervalMs 是两条独立触发条件，可以一起开 / 单独开 / 都不开。
+   */
+  readonly overdueMs?: number
   /** 主人私聊场景 —— 允许暴露完整路径；否则要求 LLM 用 basename 替代 */
   readonly isMasterPrivate: boolean
+  /**
+   * trace 写入回调：每次 fork-and-send 开始时调一次。
+   * 不传则不写 trace；返回的 spanId 由调用方在 trace 结束时配合 onTraceEnd 关闭。
+   */
+  readonly onTraceStart?: (reason: DigestReason) => string | undefined
+  /** 配合 onTraceStart 使用：fork-and-send 完成（含失败）时调一次。 */
+  readonly onTraceEnd?: (spanId: string, status: 'completed' | 'failed', details?: Record<string, unknown>) => void
 }
 
 export interface ProgressDigestDeps {
@@ -64,72 +80,112 @@ const buildAskPrompt = (isMasterPrivate: boolean): string => {
 export class ProgressDigest {
   private readonly config: ProgressDigestConfig
   private readonly deps: ProgressDigestDeps
-  private timer: ReturnType<typeof setInterval> | null = null
+  private intervalTimer: ReturnType<typeof setInterval> | null = null
+  private overdueTimer: ReturnType<typeof setTimeout> | null = null
   private disposed = false
   private flushing = false
   /** 上次 flush 时观察到的 snapshot 长度 —— 没有新内容时跳过 flush */
   private lastFlushMessagesCount = 0
+  /**
+   * agent 在本 loop 已经成功调过 send_message —— overdue 触发时用作"用户已知进度"
+   * 的兜底判断：agent 主动说过话了就不再额外发 overdue digest，避免用户收两条
+   * 相近的进度消息。interval 不受此影响（interval 是稳定节奏）。
+   */
+  private sentMessageSinceStart = false
 
   constructor(config: ProgressDigestConfig, deps: ProgressDigestDeps) {
     this.config = config
     this.deps = deps
-    this.startTimer()
+    this.startTimers()
   }
 
   /**
-   * 入口仅保留 ask_human 立即 flush 一类的快速触发；
-   * 普通 turn event 不进 buffer —— 现在的摘要直接读 messagesRef。
+   * 入口做两件事：
+   * 1. 检测 send_message 调用 → 标记 sentMessageSinceStart（影响 overdue 是否触发）
+   * 2. ask_human 立即 flush（用户必须立刻看到问题）
    */
   ingest(event: EngineTurnEvent): void {
     if (this.disposed) return
-    const isAskHuman = event.toolCalls.some(tc => {
-      if (tc.name === 'mcp__crab-messaging__send_message' || tc.name === 'send_message') {
-        const input = tc.input as { intent?: string } | undefined
-        return input?.intent === 'ask_human'
-      }
-      return false
-    })
-    if (isAskHuman) this.flushNow()
+    let askHuman = false
+    for (const tc of event.toolCalls) {
+      const bare = tc.name.replace(/^mcp__[^_]+__/, '')
+      const isSendMsg = bare === 'send_message' || bare === 'send_private_message'
+      if (!isSendMsg || tc.isError) continue
+      this.sentMessageSinceStart = true
+      const intent = (tc.input as { intent?: string } | undefined)?.intent
+      if (intent === 'ask_human') askHuman = true
+    }
+    if (askHuman) this.flushNow('ask_human')
   }
 
-  flushNow(): void {
+  flushNow(reason: DigestReason = 'ask_human'): void {
     if (this.disposed) return
-    this.doFlush().catch(() => {})
+    this.doFlush(reason).catch(() => {})
   }
 
   dispose(): void {
     this.disposed = true
-    if (this.timer !== null) {
-      clearInterval(this.timer)
-      this.timer = null
+    if (this.intervalTimer !== null) {
+      clearInterval(this.intervalTimer)
+      this.intervalTimer = null
+    }
+    if (this.overdueTimer !== null) {
+      clearTimeout(this.overdueTimer)
+      this.overdueTimer = null
     }
   }
 
-  private startTimer(): void {
-    this.timer = setInterval(() => {
-      this.doFlush().catch(() => {})
-    }, this.config.intervalMs)
+  private startTimers(): void {
+    if (this.config.intervalMs !== undefined && this.config.intervalMs > 0) {
+      this.intervalTimer = setInterval(() => {
+        this.doFlush('interval').catch(() => {})
+      }, this.config.intervalMs)
+    }
+    if (this.config.overdueMs !== undefined && this.config.overdueMs > 0) {
+      this.overdueTimer = setTimeout(() => {
+        this.overdueTimer = null
+        this.doFlush('overdue').catch(() => {})
+      }, this.config.overdueMs)
+    }
   }
 
-  private async doFlush(): Promise<void> {
+  private async doFlush(reason: DigestReason): Promise<void> {
     if (this.flushing) return
+    // overdue 触发但 agent 已经 send_message 过 → 跳过：用户已经收到 agent 自己写的
+    // 进度（带工作记忆 + 后续行动），再发一份 fork digest 是冗余。interval / ask_human
+    // 不受此判断影响。
+    if (reason === 'overdue' && this.sentMessageSinceStart) return
     const snapshot = this.deps.messagesRef.current
     if (snapshot.length === 0) return
     // 与上次相比没有新增 turn → 跳过（避免重复输出相同进度）
     if (snapshot.length <= this.lastFlushMessagesCount) return
+    // 防御性检查：跳过尾部有"孤立 tool_use"（assistant 调了工具但 tool_result
+    // 还没 push）的快照。OpenAI Responses / Anthropic 都严格要求 function_call
+    // 配 output；race 窗口里 fork 这种半截 messages 会 400。
+    if (hasDanglingToolUse(snapshot)) return
 
     this.flushing = true
     const observedCount = snapshot.length
+    const spanId = this.config.onTraceStart?.(reason)
+    let status: 'completed' | 'failed' = 'completed'
+    let details: Record<string, unknown> | undefined
 
     try {
       const message = await this.generateDigest(snapshot)
       if (message.length > 0) {
         await this.deps.sendToUser(message)
         this.lastFlushMessagesCount = observedCount
+        details = { output_summary: message.slice(0, 200), messages_count: observedCount }
+      } else {
+        details = { output_summary: '(empty)', messages_count: observedCount }
       }
-    } catch {
-      // 摘要失败就静默 —— 发垃圾汇报比不发更糟
+    } catch (err) {
+      status = 'failed'
+      details = { error: err instanceof Error ? err.message : String(err) }
     } finally {
+      if (spanId !== undefined) {
+        this.config.onTraceEnd?.(spanId, status, details)
+      }
       this.flushing = false
     }
   }
@@ -153,4 +209,29 @@ export class ProgressDigest {
       .join('')
       .trim()
   }
+}
+
+// --- Helpers ---
+
+/**
+ * 末尾是否有"孤立 tool_use"：最后一条 assistant 含 tool_use 块，但后面没有
+ * 配对的 tool_result。LLM API 严格要求 function_call 配 output，否则 400。
+ */
+function hasDanglingToolUse(messages: ReadonlyArray<EngineMessage>): boolean {
+  // 从尾向前找最后一条 assistant
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (m.role !== 'assistant') continue
+    // 找到最后一条 assistant：看它有没有 tool_use 块
+    const hasToolUse = Array.isArray(m.content)
+      && m.content.some((b) => (b as { type?: string }).type === 'tool_use')
+    if (!hasToolUse) return false
+    // 有 tool_use → 检查后面是否有 tool_result（用 toolResults 字段判定 EngineToolResultMessage）
+    for (let j = i + 1; j < messages.length; j++) {
+      const after = messages[j] as { toolResults?: unknown }
+      if (Array.isArray(after.toolResults) && after.toolResults.length > 0) return false
+    }
+    return true
+  }
+  return false
 }

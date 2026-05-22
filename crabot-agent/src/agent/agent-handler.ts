@@ -195,8 +195,22 @@ export interface RunWorkerLoopOptions {
   readonly initialPrompt?: string | ContentBlock[]
   /** Extra tools appended to the dynamic tool list (e.g., exit tools for trigger flow). */
   readonly extraTools?: ReadonlyArray<ToolDefinition>
-  /** Overdue config passed straight to runEngine. */
+  /**
+   * Overdue config passed straight to runEngine — 让 engine 在主 loop 内同步注入
+   * user msg 提示 worker。这条路径会污染主 loop 上下文，**默认不用**；保留供
+   * 极少数需要"超期强制 worker 中断去汇报"的场景。
+   *
+   * 一般诉求（用户超期想看到进度）走 `digestOverdueMs` —— 旁路 fork 一次发用户，
+   * 不污染主 loop。
+   */
   readonly overdueConfig?: import('../engine/types.js').OverdueConfig
+  /**
+   * 超期触发 ProgressDigest 单次 fork-and-send 的延迟（毫秒，相对于 worker
+   * 启动时刻）。是 `overdueConfig` 的旁路替代：不注入主 loop，仅通过 digest 通道
+   * fork 一次发用户。reportMode='digest' 时生效；其他 reportMode 下被静默忽略
+   * （silent/text_forward 本来就不该被超期打扰）。
+   */
+  readonly digestOverdueMs?: number
   /** Called once per turn AFTER traceCallback wiring, with the toolCalls of that turn.
    *  Used by trigger flow to detect send_message. */
   readonly onAfterTurn?: (event: EngineTurnEvent) => void
@@ -282,7 +296,16 @@ export interface ExecuteTriggerMessageParams {
   readonly triggerArrivedAtMs: number
   /** 超期阈值（毫秒）；默认 30_000 */
   readonly timeoutMs?: number
-  /** 是否启用超期辅助提醒；默认 true */
+  /**
+   * 是否启用超期提醒；默认 true。
+   *
+   * 启用后超期时通过 ProgressDigest 旁路 fork 一次主 loop messages 生成汇报发
+   * 给用户，不污染主 loop。仅在 reportMode='digest' 下生效（silent / text_forward
+   * 模式用户已经主动选择了别的汇报形式）。
+   *
+   * 历史：早期实现是 engine 同步向主 loop 注入 user msg 提示 worker 主动 send_message，
+   * 代价是焦点漂移 + token 永久占据。现已统一走 digest 旁路通道。
+   */
   readonly overdueReminderEnabled?: boolean
   /** 内存权限 */
   readonly memoryPermissions: MemoryPermissions
@@ -941,7 +964,22 @@ export class AgentHandler {
 
           const digestConfig: ProgressDigestConfig = {
             intervalMs: intervalSec * 1000,
+            ...(opts?.digestOverdueMs !== undefined && opts.digestOverdueMs > 0
+              ? { overdueMs: opts.digestOverdueMs }
+              : {}),
             isMasterPrivate,
+            // trace span：让 admin UI 上能看到 digest 在哪个时刻被触发以及由谁触发
+            // （定时 / 超期 / ask_human）。span 命名沿用 `__system_*__` 内部 span 风格。
+            ...(traceCallback ? {
+              onTraceStart: (reason) =>
+                traceCallback.onToolCallStart('__system_progress_digest__', `reason=${reason}`),
+              onTraceEnd: (spanId, status, details) =>
+                traceCallback.onToolCallEnd(
+                  spanId,
+                  typeof details?.output_summary === 'string' ? details.output_summary : '(no output)',
+                  status === 'failed' && typeof details?.error === 'string' ? details.error : undefined,
+                ),
+            } : {}),
           }
 
           const digestDeps: ProgressDigestDeps = {
@@ -1357,15 +1395,12 @@ export class AgentHandler {
     let sentMessage = false
     let finalSent = false
 
-    const overdueReminderText =
-      `已处理超过 ${Math.floor(timeoutMs / 1000)} 秒，建议先 send_message ` +
-      `友好告知人类正在处理 + 简要说明打算怎么干，发完继续执行。`
-    const overdueConfig = overdueReminderEnabled
-      ? {
-        timeoutMs,
-        startedAtMs: triggerArrivedAtMs,
-        onOverdue: () => sentMessage ? null : overdueReminderText,
-      }
+    // 超期提醒走 ProgressDigest 旁路：到时 fork 主 loop 生成一份汇报发给用户，
+    // 不污染主 loop 上下文。digestOverdueMs 是相对于 worker 启动时刻的延迟，
+    // 减去 trigger 抵达到 worker 启动之间的时间，让总等待对齐 timeoutMs。
+    const elapsedSinceTrigger = Math.max(0, Date.now() - triggerArrivedAtMs)
+    const digestOverdueMs = overdueReminderEnabled
+      ? Math.max(1_000, timeoutMs - elapsedSinceTrigger)
       : undefined
 
     let loopResult: RunWorkerLoopResult
@@ -1373,7 +1408,7 @@ export class AgentHandler {
       loopResult = await this.runWorkerLoop(task, context, traceCallback, traceContext, {
         initialPrompt: triggerPrompt,
         extraTools: [],
-        ...(overdueConfig ? { overdueConfig } : {}),
+        ...(digestOverdueMs !== undefined ? { digestOverdueMs } : {}),
         suppressForcedSummary: () => finalSent,
         onAfterTurn: (event) => {
           for (const tc of event.toolCalls) {

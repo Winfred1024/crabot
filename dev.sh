@@ -390,9 +390,16 @@ start() {
   fi
 
   # 4. Module Manager（前台 exec，会自动拉起 Memory + Admin + Agent + Vite）
+  #
+  # stdout/stderr 同时落盘到 module-manager.log —— 包含 MM 自己的 health check
+  # 失败警告 / auto-restart 决策 / 子进程 spawn 等关键事件。早期版本只 exec 到
+  # 终端导致 agent 被 SIGKILL 时 MM 端的诊断信息全部丢失。
   log_info "启动 Module Manager..."
   cd "$SCRIPT_DIR/crabot-core"
-  exec node dist/main.js
+  local mm_log="$DATA_DIR/logs/module-manager.log"
+  mkdir -p "$(dirname "$mm_log")"
+  # 通过 tee 同时输出到终端与文件；exec 仍让 node 接管 shell 进程
+  exec node dist/main.js 2>&1 | tee -a "$mm_log"
 }
 
 # ── 主入口 ────────────────────────────────────────────────

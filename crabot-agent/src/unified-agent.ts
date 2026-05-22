@@ -6,6 +6,8 @@
  * @see crabot-docs/protocols/protocol-agent-v2.md
  */
 
+import fs from 'node:fs'
+import path from 'node:path'
 import { ModuleBase, type ModuleConfig, type Event, type ModuleId, type TraceStoreInterface } from 'crabot-shared'
 import { resolveTimezone } from './utils/time.js'
 import type {
@@ -169,6 +171,19 @@ export class UnifiedAgent extends ModuleBase {
   private lspManager: LSPManager
   private traceCleanupInterval?: ReturnType<typeof setInterval>
   private promptManager: PromptManager
+
+  // ── Event loop watchdog ───────────────────────────────────
+  // 每秒 tick 一次记录与上次 tick 的时间差。理想 1000ms，多出的就是 event loop
+  // 滞后（被某段同步代码阻塞或 GC 暂停）。/health 暴露最近一次 lag；超阈值时
+  // 单独写一行到 agent-event-loop-lag.log 留下"卡了多久"的痕迹，下次 agent
+  // 被 MM 误判 health 死掉时能直接定位。
+  private watchdogInterval?: ReturnType<typeof setInterval>
+  private lastWatchdogTickMs = 0
+  private lastEventLoopLagMs = 0
+  private peakEventLoopLagMs = 0
+  private static readonly WATCHDOG_INTERVAL_MS = 1000
+  private static readonly WATCHDOG_LAG_WARN_MS = 500
+  private static readonly WATCHDOG_LOG_FILE = 'agent-event-loop-lag.log'
 
   constructor(config: UnifiedAgentConfig) {
     const moduleConfig: ModuleConfig = {
@@ -629,6 +644,7 @@ export class UnifiedAgent extends ModuleBase {
             ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
             senderFriend: friend,
             triggerArrivedAtMs: Date.now(),
+            ...this.overdueOverrides(),
             memoryPermissions: memPerms,
             resolvedPermissions: resolvedPerms as ResolvedPermissions,
             channelId: session.channel_id,
@@ -832,6 +848,7 @@ export class UnifiedAgent extends ModuleBase {
             ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
             senderFriend: lastEntry.friend,
             triggerArrivedAtMs: Date.now(),
+            ...this.overdueOverrides(),
             memoryPermissions: memPerms,
             resolvedPermissions: resolvedPerms as ResolvedPermissions,
             channelId: session.channel_id,
@@ -1639,6 +1656,7 @@ export class UnifiedAgent extends ModuleBase {
             ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
             senderFriend: masterFriend,
             triggerArrivedAtMs: Date.now(),
+            ...this.overdueOverrides(),
             memoryPermissions: masterMemPerms,
             resolvedPermissions: (masterResolvedPerms ?? masterMemPerms) as unknown as ResolvedPermissions,
             channelId: 'admin-web',
@@ -2144,6 +2162,20 @@ export class UnifiedAgent extends ModuleBase {
    * @returns task trace_id，作为 spawnedTraceId 回给 dispatcher_executor 写到 dispatch_action span
    *          的 spawned_trace_id 字段，供 Admin UI 做 cross-trace link 跳转。
    */
+  /**
+   * 从 agentConfig 读取 timeout_seconds / overdue_reminder_enabled 并转成
+   * ExecuteTriggerMessageParams 的字段。三处 spawnAgentInstance 闭包都用它，
+   * 避免 admin UI 上的开关写到 agentConfig 但不下传到 trigger params 的 bug。
+   */
+  private overdueOverrides(): Partial<ExecuteTriggerMessageParams> {
+    const cfg = this.agentConfig
+    if (!cfg) return {}
+    return {
+      ...(cfg.timeout_seconds !== undefined ? { timeoutMs: cfg.timeout_seconds * 1000 } : {}),
+      ...(cfg.overdue_reminder_enabled !== undefined ? { overdueReminderEnabled: cfg.overdue_reminder_enabled } : {}),
+    }
+  }
+
   private async spawnTaskTrace(opts: {
     dispatchTraceId: string
     params: ExecuteTriggerMessageParams
@@ -2406,6 +2438,12 @@ export class UnifiedAgent extends ModuleBase {
       llm_status: this.isConfigured() ? 'ready' : 'not_configured',
       sdk_status: this.sdkEnvWorker ? 'ready' : 'not_configured',
       mcp_servers_count: this.mcpConnector.count,
+      // Event loop watchdog 指标：MM 拿到 health 响应时同步读这两个字段，能反映
+      // agent 进程的 event loop 是否被同步代码阻塞 / GC 暂停。
+      // last_event_loop_lag_ms：最近一次 1s 间隔实际 tick 与 1000ms 预期的差值
+      // peak_event_loop_lag_ms：自启动以来观察到的最大 lag
+      last_event_loop_lag_ms: this.lastEventLoopLagMs,
+      peak_event_loop_lag_ms: this.peakEventLoopLagMs,
     }
   }
 
@@ -2453,7 +2491,35 @@ export class UnifiedAgent extends ModuleBase {
   // 生命周期
   // ============================================================================
 
+  /**
+   * 启动 event loop watchdog。每秒触发一次 setInterval；与"预期 1000ms"的差值
+   * 就是 event loop 滞后。滞后超阈值时立即落盘 lag 日志（独立文件，避免被 stdout
+   * buffer 吞掉）。/health 实时暴露最近一次 lag + 启动以来的 peak。
+   */
+  private startEventLoopWatchdog(): void {
+    this.lastWatchdogTickMs = Date.now()
+    this.watchdogInterval = setInterval(() => {
+      const now = Date.now()
+      const elapsed = now - this.lastWatchdogTickMs
+      const lag = Math.max(0, elapsed - UnifiedAgent.WATCHDOG_INTERVAL_MS)
+      this.lastWatchdogTickMs = now
+      this.lastEventLoopLagMs = lag
+      if (lag > this.peakEventLoopLagMs) this.peakEventLoopLagMs = lag
+      if (lag > UnifiedAgent.WATCHDOG_LAG_WARN_MS) {
+        try {
+          const logDir = path.join(process.env.DATA_DIR ?? './data', 'logs')
+          fs.mkdirSync(logDir, { recursive: true })
+          const line = `[${new Date(now).toISOString()}] lag_ms=${lag} active_tasks=${this.agentHandler?.getActiveTaskCount() ?? 0}\n`
+          fs.appendFileSync(path.join(logDir, UnifiedAgent.WATCHDOG_LOG_FILE), line, 'utf-8')
+        } catch { /* best effort */ }
+      }
+    }, UnifiedAgent.WATCHDOG_INTERVAL_MS)
+    // 不阻塞进程退出
+    this.watchdogInterval.unref?.()
+  }
+
   protected override async onStart(): Promise<void> {
+    this.startEventLoopWatchdog()
     this.sessionManager.startCleanup()
 
     // Connect to external MCP servers (Admin-configured)
@@ -2491,6 +2557,11 @@ export class UnifiedAgent extends ModuleBase {
   protected override async onStop(): Promise<void> {
     this.sessionManager.stopCleanup()
     this.attentionScheduler.stopAll()
+
+    if (this.watchdogInterval) {
+      clearInterval(this.watchdogInterval)
+      this.watchdogInterval = undefined
+    }
 
     if (this.traceCleanupInterval) {
       clearInterval(this.traceCleanupInterval)

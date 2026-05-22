@@ -496,6 +496,13 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
     // Add tool results as a single batched message
     messages.push(createBatchToolResultMessage(processedResults))
 
+    // Refresh messagesRef again after tool_result push: fireOnTurn 上方触发的
+    // refresh 此刻拍下的快照里只有 assistant(tool_use) 还没有 tool_result——
+    // ProgressDigest 异步 fork 时若读到这个半截状态，调 OpenAI Responses API
+    // 会 400（function_call 缺 output）。这里再刷一次让 ref 反映完整的 tool_use
+    // + tool_result 配对。
+    refreshMessagesRef()
+
     // ── Post-tool barrier check ──
     // 工具可能在执行中 setBarrier（如 send_message(intent='ask_human')）。
     // 若 barrier 已设，等待人类回复后再进入下一轮 LLM；
