@@ -272,6 +272,15 @@ export interface EngineOptions {
    */
   readonly onAfterCompaction?: (messages: ReadonlyArray<EngineMessage>) => ReadonlyArray<EngineMessage>
   /**
+   * 外部只读访问当前 messages 数组的 holder。engine 在每个 turn 完成时浅拷贝赋值
+   * `current`。用于 progress digest 等需要从主 loop 上下文 fork 出来做摘要但不能
+   * 修改主 loop 的观察者。
+   *
+   * 不传时 engine 不更新；ref 对象由 caller 维护生命周期。`current` 字段可写但
+   * 写入的数组本身是 ReadonlyArray —— 外部只读，不应原地修改。
+   */
+  readonly messagesRef?: { current: ReadonlyArray<EngineMessage> }
+  /**
    * 引擎层主动向 loop 注入 user message 时触发（trace 可见性钩子）。
    *
    * 当前 4 类注入：

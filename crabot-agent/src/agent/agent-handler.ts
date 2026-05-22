@@ -29,6 +29,7 @@ import type {
   EngineTurnEvent,
   EngineResult,
   ContentBlock,
+  EngineMessage,
   ProgressDigestConfig,
   ProgressDigestDeps,
   ToolPermissionConfig,
@@ -917,6 +918,12 @@ export class AgentHandler {
         tools: initialTools.map(t => t.name),
       })
 
+      // 主 loop messages 的只读 holder —— engine 在每 turn 后浅拷贝刷新 current；
+      // ProgressDigest 定时从这里 fork 一份做摘要，主 loop 不感知。
+      // 总是创建：即使本任务不启用 digest（silent / text_forward），engine 维护
+      // 它无副作用，留出钩子方便日后其他 observer 复用。
+      const messagesRef: { current: ReadonlyArray<EngineMessage> } = { current: [] }
+
       // 创建进度汇报（根据会话场景分支）
       let textForwardMode = false
       if (taskOrigin && this.deps) {
@@ -931,37 +938,18 @@ export class AgentHandler {
           const intervalSec = typeof ex.progress_digest_interval_seconds === 'number'
             ? ex.progress_digest_interval_seconds
             : 120
-          const digestMode: 'llm' | 'extract' = ex.progress_digest_mode === 'extract' ? 'extract' : 'llm'
-          const digestAdapter = (digestMode !== 'extract' && this.digestSdkEnv)
-            ? adapterFromSdkEnv(this.digestSdkEnv)
-            : undefined
 
           const digestConfig: ProgressDigestConfig = {
             intervalMs: intervalSec * 1000,
-            mode: digestMode,
             isMasterPrivate,
           }
 
-          const deps = this.deps
           const digestDeps: ProgressDigestDeps = {
             sendToUser: (text: string) => this.sendToUser(taskOrigin, text),
-            getChatHistory: async (limit: number) => {
-              try {
-                const channelPort = await deps.resolveChannelPort(taskOrigin.channel_id)
-                const result = await deps.rpcClient.call<
-                  { session_id: string; limit: number },
-                  { items: Array<{ sender_name: string; content: string }> }
-                >(channelPort, 'get_history', {
-                  session_id: taskOrigin.session_id,
-                  limit,
-                }, deps.moduleId)
-                return (result.items ?? []).map(m => `${m.sender_name}: ${m.content}`)
-              } catch {
-                return []
-              }
-            },
-            digestAdapter,
-            digestModelId: this.digestSdkEnv?.modelId,
+            adapter,
+            modelId: this.sdkEnv.modelId,
+            ...(this.sdkEnv.maxTokens !== undefined ? { maxTokens: this.sdkEnv.maxTokens } : {}),
+            messagesRef,
           }
 
           digest = new ProgressDigest(digestConfig, digestDeps)
@@ -1026,6 +1014,7 @@ export class AgentHandler {
           timezone: this.getTimezone(),
           abortSignal: taskState.abortController.signal as AbortSignal,
           humanMessageQueue: humanQueue,
+          messagesRef,
           onAfterCompaction: (messages) => {
             const injection = taskState.todoStore.formatForInjection()
             if (!injection) return messages
@@ -1260,15 +1249,23 @@ export class AgentHandler {
     registered: boolean
     task: ExecuteTaskParams['task']
     context: WorkerAgentContext
-    triggerSummary: string
+    /**
+     * Task 的标题 / 触发摘要。优先用 dispatch LLM 生成的 actionText（清晰任务化），
+     * 缺省回退到 messages 最后一条切 100 字。同时作为 task_title / task_description /
+     * activeTasks.title / task trace.trigger.summary 使用。
+     */
+    taskTitle: string
   }> {
     const { messages, isGroup, senderFriend, memoryPermissions, resolvedPermissions,
       channelId, sessionId, frontContext, dispatchActionText } = params
 
-    const triggerSummary = messages
-      .map(m => m.content.type === 'text' ? (m.content.text ?? '') : '[非文本]')
-      .join(' ')
-      .slice(0, 100)
+    // Fallback 路径：dispatchActionText 缺省时从原始消息切片。
+    // 注意 caller 传进来的 messages 通常已经是 history + 当前 trigger 批次合并后的数组
+    // （worker 需要完整消息上下文），从头切容易切到历史最早的一条无关消息——所以这里
+    // **取最后一条**作为 trigger 摘要（最新一条 ≈ 当前触发批次的尾部，与历史无关）。
+    const lastMsg = messages[messages.length - 1]
+    const lastMsgText = lastMsg?.content.type === 'text' ? (lastMsg.content.text ?? '') : '[非文本]'
+    const triggerSummary = lastMsgText.slice(0, 100)
     // 优先用 Dispatch LLM 生成的任务摘要（清晰、抽象到任务层面），缺省时才回退到原始消息切片。
     // Spec: title 不只是 UI 展示——Front 在做 supplement_task 决策时活跃任务清单里展示的就是它。
     const taskTitle = (dispatchActionText && dispatchActionText.trim().length > 0)
@@ -1336,7 +1333,7 @@ export class AgentHandler {
       todoStore: new TodoStore(),
     })
 
-    return { taskId: syntheticTaskId, registered, task, context, triggerSummary }
+    return { taskId: syntheticTaskId, registered, task, context, taskTitle }
   }
 
   /**

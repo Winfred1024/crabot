@@ -64,6 +64,20 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
     maxContextTokens: DEFAULT_MAX_CONTEXT_TOKENS,
   })
 
+  // 外部 observer（progress digest 等）通过 messagesRef 只读访问当前 messages。
+  // 每轮 onTurn 之前以及主循环开头各刷新一次 —— 足以让定时 flush（≥秒级间隔）
+  // 看到最近一轮的对话快照，主 loop 自身零开销（仅 slice）。
+  const messagesRef = options.messagesRef
+  const refreshMessagesRef = (): void => {
+    if (messagesRef) {
+      messagesRef.current = messages.slice()
+    }
+  }
+  const fireOnTurn = (event: EngineTurnEvent): void => {
+    refreshMessagesRef()
+    options.onTurn?.(event)
+  }
+
   let totalTurns = 0
   let finalText = ''
   let silentEndTurnCount = 0
@@ -245,9 +259,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
       if (isSilentText && stopReason === 'max_tokens') {
         if (maxTokensCompactRetryCount < MAX_MAX_TOKENS_COMPACT_RETRIES) {
           maxTokensCompactRetryCount++
-          if (options.onTurn) {
-            options.onTurn(buildSilentTurnEvent(totalTurns, processed.text, stopReason, llmCallMs, llmStartedAtMs, undefined, response.usage))
-          }
+          fireOnTurn(buildSilentTurnEvent(totalTurns, processed.text, stopReason, llmCallMs, llmStartedAtMs, undefined, response.usage))
           messages.pop()
           await compactInPlace(messages, contextManager, adapter, options)
           continue
@@ -261,20 +273,16 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
       // 但 caller 可通过 suppressForcedSummary 回调表达"silent end_turn 是正常完成态"——
       // 用于新 unified loop（交付走 send_message 工具、不写 finalText）。
       if (isSilentText && options.suppressForcedSummary?.() === true) {
-        if (options.onTurn) {
-          options.onTurn(buildSilentTurnEvent(
-            totalTurns, processed.text, stopReason, llmCallMs, llmStartedAtMs, forcedSummaryAttempt, response.usage,
-          ))
-        }
+        fireOnTurn(buildSilentTurnEvent(
+          totalTurns, processed.text, stopReason, llmCallMs, llmStartedAtMs, forcedSummaryAttempt, response.usage,
+        ))
         return buildResult('completed', finalText, totalTurns, contextManager, messages, overdueInjected, exitToolCall)
       }
       if (isSilentText && silentEndTurnCount < MAX_SILENT_END_TURN_RETRIES) {
         silentEndTurnCount++
-        if (options.onTurn) {
-          options.onTurn(buildSilentTurnEvent(
-            totalTurns, processed.text, stopReason, llmCallMs, llmStartedAtMs, forcedSummaryAttempt, response.usage,
-          ))
-        }
+        fireOnTurn(buildSilentTurnEvent(
+          totalTurns, processed.text, stopReason, llmCallMs, llmStartedAtMs, forcedSummaryAttempt, response.usage,
+        ))
         messages.push(createUserMessage(FORCED_SUMMARY_PROMPT))
         options.onSystemInjection?.({
           type: 'forced_summary',
@@ -320,25 +328,22 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
 
         // Fire onTurn with cancelled tools for trace recording.
         // Cancelled tools never executed → omit per-tool timing entirely.
-        if (options.onTurn) {
-          const turnEvent: EngineTurnEvent = {
-            turnNumber: totalTurns,
-            assistantText: processed.text,
-            toolCalls: processed.toolUseBlocks.map(b => ({
-              id: b.id,
-              name: b.name,
-              input: b.input,
-              output: '[cancelled by supplement]',
-              isError: false,
-            })),
-            stopReason,
-            llmCallMs,
-            llmStartedAtMs,
-            ...(forcedSummaryAttempt !== undefined ? { forcedSummaryAttempt } : {}),
-            ...(response.usage ? { usage: response.usage } : {}),
-          }
-          options.onTurn(turnEvent)
-        }
+        fireOnTurn({
+          turnNumber: totalTurns,
+          assistantText: processed.text,
+          toolCalls: processed.toolUseBlocks.map(b => ({
+            id: b.id,
+            name: b.name,
+            input: b.input,
+            output: '[cancelled by supplement]',
+            isError: false,
+          })),
+          stopReason,
+          llmCallMs,
+          llmStartedAtMs,
+          ...(forcedSummaryAttempt !== undefined ? { forcedSummaryAttempt } : {}),
+          ...(response.usage ? { usage: response.usage } : {}),
+        })
 
         continue  // Skip tool execution, go to next LLM turn
       }
@@ -363,25 +368,22 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
         // 全转 error tool result，跳过 executeToolBatches；下一轮 LLM 重试
         messages.push(createBatchToolResultMessage(violatingResults))
         // fire onTurn for trace recording
-        if (options.onTurn) {
-          const turnEvent: EngineTurnEvent = {
-            turnNumber: totalTurns,
-            assistantText: processed.text,
-            toolCalls: processed.toolUseBlocks.map(b => ({
-              id: b.id,
-              name: b.name,
-              input: b.input,
-              output: violatingResults.find(r => r.tool_use_id === b.id)?.content ?? '',
-              isError: violatingResults.some(r => r.tool_use_id === b.id),
-            })),
-            stopReason,
-            llmCallMs,
-            llmStartedAtMs,
-            ...(forcedSummaryAttempt !== undefined ? { forcedSummaryAttempt } : {}),
-            ...(response.usage ? { usage: response.usage } : {}),
-          }
-          options.onTurn(turnEvent)
-        }
+        fireOnTurn({
+          turnNumber: totalTurns,
+          assistantText: processed.text,
+          toolCalls: processed.toolUseBlocks.map(b => ({
+            id: b.id,
+            name: b.name,
+            input: b.input,
+            output: violatingResults.find(r => r.tool_use_id === b.id)?.content ?? '',
+            isError: violatingResults.some(r => r.tool_use_id === b.id),
+          })),
+          stopReason,
+          llmCallMs,
+          llmStartedAtMs,
+          ...(forcedSummaryAttempt !== undefined ? { forcedSummaryAttempt } : {}),
+          ...(response.usage ? { usage: response.usage } : {}),
+        })
         continue
       }
     }
@@ -398,25 +400,22 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
         input: exitBlock.input as Record<string, unknown>,
       }
       // Fire onTurn with this single tool call for trace recording
-      if (options.onTurn) {
-        const turnEvent: EngineTurnEvent = {
-          turnNumber: totalTurns,
-          assistantText: processed.text,
-          toolCalls: [{
-            id: exitBlock.id,
-            name: exitBlock.name,
-            input: exitBlock.input,
-            output: '[exit_tool]',
-            isError: false,
-          }],
-          stopReason,
-          llmCallMs,
-          llmStartedAtMs,
-          ...(forcedSummaryAttempt !== undefined ? { forcedSummaryAttempt } : {}),
-          ...(response.usage ? { usage: response.usage } : {}),
-        }
-        options.onTurn(turnEvent)
-      }
+      fireOnTurn({
+        turnNumber: totalTurns,
+        assistantText: processed.text,
+        toolCalls: [{
+          id: exitBlock.id,
+          name: exitBlock.name,
+          input: exitBlock.input,
+          output: '[exit_tool]',
+          isError: false,
+        }],
+        stopReason,
+        llmCallMs,
+        llmStartedAtMs,
+        ...(forcedSummaryAttempt !== undefined ? { forcedSummaryAttempt } : {}),
+        ...(response.usage ? { usage: response.usage } : {}),
+      })
       return buildResult('completed', finalText, totalTurns, contextManager, messages, overdueInjected, exitToolCall)
     }
 
@@ -449,31 +448,28 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
     }
 
     // Fire onTurn callback
-    if (options.onTurn) {
-      const turnEvent: EngineTurnEvent = {
-        turnNumber: totalTurns,
-        assistantText: processed.text,
-        toolCalls: processed.toolUseBlocks.map((b, i) => {
-          const r = toolResults[i]
-          const tc: EngineTurnEvent['toolCalls'][number] = {
-            id: b.id,
-            name: b.name,
-            input: b.input,
-            output: r?.content ?? '',
-            isError: r?.is_error ?? false,
-            ...(r?.duration_ms !== undefined ? { durationMs: r.duration_ms } : {}),
-            ...(r?.started_at_ms !== undefined ? { startedAtMs: r.started_at_ms } : {}),
-          }
-          return tc
-        }),
-        stopReason,
-        llmCallMs,
-        llmStartedAtMs,
-        ...(forcedSummaryAttempt !== undefined ? { forcedSummaryAttempt } : {}),
-        ...(response.usage ? { usage: response.usage } : {}),
-      }
-      options.onTurn(turnEvent)
-    }
+    fireOnTurn({
+      turnNumber: totalTurns,
+      assistantText: processed.text,
+      toolCalls: processed.toolUseBlocks.map((b, i) => {
+        const r = toolResults[i]
+        const tc: EngineTurnEvent['toolCalls'][number] = {
+          id: b.id,
+          name: b.name,
+          input: b.input,
+          output: r?.content ?? '',
+          isError: r?.is_error ?? false,
+          ...(r?.duration_ms !== undefined ? { durationMs: r.duration_ms } : {}),
+          ...(r?.started_at_ms !== undefined ? { startedAtMs: r.started_at_ms } : {}),
+        }
+        return tc
+      }),
+      stopReason,
+      llmCallMs,
+      llmStartedAtMs,
+      ...(forcedSummaryAttempt !== undefined ? { forcedSummaryAttempt } : {}),
+      ...(response.usage ? { usage: response.usage } : {}),
+    })
 
     // Process images based on model capability
     let processedResults: typeof toolResults

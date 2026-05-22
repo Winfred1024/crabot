@@ -2157,7 +2157,9 @@ export class UnifiedAgent extends ModuleBase {
       module_id: this.config.moduleId,
       trigger: {
         type: 'task',
-        summary: pre.triggerSummary,
+        // task trace 的触发摘要 = dispatch LLM 抽象出的任务意图（dfdc818 起 task_title 一致）。
+        // 不再用原始 messages 切片：caller 传进来的 messages 通常含历史，切片会取到无关的最早消息。
+        summary: pre.taskTitle,
         source: opts.source,
       },
       related_task_id: pre.taskId,
