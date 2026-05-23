@@ -806,34 +806,6 @@ export class AgentHandler {
           ownerFriendId: bgOwner.friend_id,
           agentAbortControllers: this.agentAbortControllers,
         }
-        const onAgentExit = (info: {
-          entity_id: string
-          task_description: string
-          status: 'completed' | 'failed'
-          exit_code: number
-          runtime_ms: number
-          spawned_at: string
-          result_file: string | null
-        }): void => {
-          const runtimeStr = formatRuntimeMs(info.runtime_ms)
-          const message =
-            `Background sub-agent ${info.entity_id} 已结束。\n` +
-            `状态: ${info.status} (exit_code=${info.exit_code})\n` +
-            `运行时长: ${runtimeStr}\n` +
-            `任务: ${info.task_description.slice(0, 200)}${info.task_description.length > 200 ? '...' : ''}\n` +
-            (info.result_file ? `结果文件: ${info.result_file}\n` : '') +
-            `提示: 用 Output("${info.entity_id}") 读最终结果`
-          this.enqueueBgNotification(`friend:${bgOwner.friend_id}`, message)
-        }
-        const subAgentBgContext = {
-          registry: this.bgRegistry,
-          workerContext: context,
-          owner: bgOwner,
-          spawned_by_task_id: task.task_id,
-          abortControllers: this.agentAbortControllers,
-          traceContext: bgTraceCtx,
-          onAgentExit,
-        }
         tools.push(...getConfiguredBuiltinTools(
           os.homedir(),
           this.builtinToolConfig,
@@ -2049,8 +2021,231 @@ export class AgentHandler {
   }
 
   /**
+   * 直接执行 subagent 的核心 helper，被 makeRunSubAgent（delegate_task 路径）
+   * 和 goal audit gate 路径（Task 7 引入的 runGoalAudit）共用。
+   *
+   * 与 makeRunSubAgent 的关系：makeRunSubAgent 只是把 deps 闭包包成 RunSubAgentFn 薄壳，
+   * 实际执行（tool filter → prompt 装配 → adapter → sub-trace → forkEngine → 错误包装）
+   * 全在这里。goal audit gate 可通过 traceSummaryPrefix/traceTaskType 定制 trace 显示
+   * 而不需要复制粘贴这段逻辑。
+   *
+   * 返回值额外带 traceId，方便上层（如 goal audit）记录子 trace ID。
+   * makeRunSubAgent 会把 traceId 摘掉再返回（RunSubAgentFn 类型不含此字段）。
+   */
+  private async runSubAgentDirect(
+    subagent: SubAgentConfig,
+    input: import('./delegate-task-tool.js').RunSubAgentInput,
+    ctx: import('../engine/types.js').ToolCallContext,
+    deps: {
+      readonly parentTools: ReadonlyArray<import('../engine/types.js').ToolDefinition>
+      readonly parentTaskId: string
+      readonly callerLabel: string
+      readonly humanQueue?: import('../engine/human-message-queue.js').HumanMessageQueue
+      readonly permissionConfig?: import('../engine/types.js').ToolPermissionConfig
+      readonly traceConfig?: SubAgentTraceConfig
+      /** trace summary 前缀；缺省 `[${subagent.name}]`。goal_audit 路径传 `'[goal_audit]'`。 */
+      readonly traceSummaryPrefix?: string
+      /** trigger.task_type；缺省不设。goal_audit 路径传 `'goal_audit'`，Admin UI 用来标特殊样式。 */
+      readonly traceTaskType?: string
+    },
+  ): Promise<import('../engine/types.js').ToolCallResult & { readonly traceId?: string }> {
+    // 1. filter parent tools by subagent capabilities (delegate_task always excluded by filter)
+    const subTools = filterToolsForSubAgent(
+      deps.parentTools,
+      subagent.builtin_capabilities,
+      subagent.allowed_mcp_server_ids,
+      subagent.allowed_skill_ids,
+    )
+
+    // 2. assemble 5-section system prompt
+    const systemPrompt = assembleSubAgentPrompt(subagent, {
+      parentTaskId: deps.parentTaskId,
+      callerLabel: deps.callerLabel,
+    })
+
+    // 3. build adapter from subagent's resolved model
+    const subAdapter = createAdapter({
+      endpoint: subagent.model.endpoint,
+      apikey: subagent.model.apikey,
+      format: subagent.model.format,
+      ...(subagent.model.account_id ? { accountId: subagent.model.account_id } : {}),
+    })
+
+    // 4. resolve hook registry based on hook_preset
+    const hookRegistry = subagent.hook_preset === 'coding_expert'
+      ? createCodingExpertHookRegistry()
+      : undefined
+    const lspManager = hookRegistry ? this.lspManager : undefined
+
+    // 5. trace stitching: create sub-trace linked to parent trace
+    const tc = deps.traceConfig
+    let subTrace: AgentTrace | undefined
+    let subTraceCallback: ((event: EngineTurnEvent) => void) | undefined
+
+    if (tc) {
+      // summary 前缀带 subagent name，让 Admin Traces 列表展开行一眼看出
+      // "这是谁派的子任务" — 否则只能看见 task prompt 内容，分不清是哪个 subagent。
+      // goal_audit 等定制路径可通过 deps.traceSummaryPrefix 覆盖。
+      const taskPrompt = String(input.task).slice(0, 180)
+      const summaryPrefix = deps.traceSummaryPrefix ?? `[${subagent.name}]`
+      subTrace = tc.traceStore.startTrace({
+        module_id: 'sub-agent',
+        trigger: {
+          type: 'sub_agent_call',
+          summary: `${summaryPrefix} ${taskPrompt}`,
+          ...(deps.traceTaskType ? { task_type: deps.traceTaskType } : {}),
+        },
+        parent_trace_id: tc.parentTraceId,
+        parent_span_id: tc.parentSpanId,
+        related_task_id: tc.relatedTaskId,
+      })
+
+      // onTurn fires post-hoc (after LLM + tools); back-date span timestamps
+      // with engine-measured ms to keep the waterfall accurate.
+      subTraceCallback = (event: EngineTurnEvent) => {
+        const llmEndedAtMs =
+          event.llmStartedAtMs !== undefined && event.llmCallMs !== undefined
+            ? event.llmStartedAtMs + event.llmCallMs
+            : undefined
+
+        const llmSpan = tc.traceStore.startSpan(subTrace!.trace_id, {
+          type: 'llm_call',
+          details: {
+            iteration: event.turnNumber,
+            input_summary: `turn ${event.turnNumber}`,
+          },
+          ...(event.llmStartedAtMs !== undefined ? { started_at_ms: event.llmStartedAtMs } : {}),
+        })
+
+        for (const toolCall of event.toolCalls) {
+          const toolEndedAtMs =
+            toolCall.startedAtMs !== undefined && toolCall.durationMs !== undefined
+              ? toolCall.startedAtMs + toolCall.durationMs
+              : undefined
+
+          const toolSpan = tc.traceStore.startSpan(subTrace!.trace_id, {
+            type: 'tool_call',
+            parent_span_id: llmSpan.span_id,
+            details: {
+              tool_name: toolCall.name,
+              input_summary: JSON.stringify(toolCall.input ?? {}).slice(0, 200),
+            },
+            ...(toolCall.startedAtMs !== undefined ? { started_at_ms: toolCall.startedAtMs } : {}),
+          })
+          tc.traceStore.endSpan(
+            subTrace!.trace_id,
+            toolSpan.span_id,
+            toolCall.isError ? 'failed' : 'completed',
+            {
+              output_summary: String(toolCall.output).slice(0, 500),
+              error: toolCall.isError ? String(toolCall.output) : undefined,
+            },
+            toolEndedAtMs,
+          )
+        }
+
+        tc.traceStore.endSpan(
+          subTrace!.trace_id,
+          llmSpan.span_id,
+          'completed',
+          {
+            stop_reason: event.stopReason ?? undefined,
+            output_summary: event.assistantText.slice(0, 200) || undefined,
+            tool_calls_count: event.toolCalls.length > 0 ? event.toolCalls.length : undefined,
+          },
+          llmEndedAtMs,
+        )
+      }
+    }
+
+    // TODO(phase-2b): image_paths support for vision subagents
+    try {
+      const result = await forkEngine({
+        prompt: input.task,
+        adapter: subAdapter,
+        model: subagent.model.model_id,
+        systemPrompt,
+        tools: subTools,
+        maxTurns: subagent.max_turns,
+        ...(subagent.model.max_tokens !== undefined ? { maxTokens: subagent.model.max_tokens } : {}),
+        ...(input.context ? { parentContext: input.context } : {}),
+        abortSignal: ctx.abortSignal,
+        onTurn: subTraceCallback,
+        supportsVision: subagent.model.supports_vision,
+        humanMessageQueue: deps.humanQueue,
+        hookRegistry,
+        lspManager,
+        permissionConfig: deps.permissionConfig,
+      })
+
+      if (subTrace && tc) {
+        const traceSummary = result.output.slice(0, 200) || result.error?.slice(0, 200) || ''
+        tc.traceStore.endTrace(
+          subTrace.trace_id,
+          result.outcome === 'failed' ? 'failed' : 'completed',
+          {
+            summary: traceSummary,
+            error:
+              result.outcome === 'failed'
+                ? result.error?.slice(0, 200) || result.output.slice(0, 200)
+                : undefined,
+          },
+        )
+      }
+
+      if (result.outcome === 'failed') {
+        const errSrc = result.error || result.output || 'subagent failed without error message'
+        const failure = buildSubAgentFailureOutput({
+          errorSource: new Error(errSrc),
+          subagentName: subagent.name,
+          providerEndpoint: subagent.model.endpoint,
+          model: subagent.model.model_id,
+          ...(result.output ? { partialOutput: result.output } : {}),
+          totalTurns: result.totalTurns,
+          ...(subTrace ? { childTraceId: subTrace.trace_id } : {}),
+        })
+        return {
+          output: JSON.stringify(failure),
+          isError: true,
+          ...(subTrace ? { traceId: subTrace.trace_id } : {}),
+        }
+      }
+
+      return {
+        output: JSON.stringify({
+          output: result.output,
+          outcome: result.outcome,
+          totalTurns: result.totalTurns,
+          child_trace_id: subTrace?.trace_id,
+        }),
+        isError: false,
+        ...(subTrace ? { traceId: subTrace.trace_id } : {}),
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (subTrace && tc) {
+        tc.traceStore.endTrace(subTrace.trace_id, 'failed', { summary: msg, error: msg })
+      }
+      const failure = buildSubAgentFailureOutput({
+        errorSource: err,
+        subagentName: subagent.name,
+        providerEndpoint: subagent.model.endpoint,
+        model: subagent.model.model_id,
+        ...(subTrace ? { childTraceId: subTrace.trace_id } : {}),
+      })
+      return {
+        output: JSON.stringify(failure),
+        isError: true,
+        ...(subTrace ? { traceId: subTrace.trace_id } : {}),
+      }
+    }
+  }
+
+  /**
    * 构造 RunSubAgentFn，注入到 delegate_task 工具。
    * 每次 createWorkerHandler 时调用，deps 绑定当次任务的 humanQueue / permissionConfig 等上下文。
+   *
+   * 薄壳：转发到 runSubAgentDirect 并摘掉 traceId（RunSubAgentFn 返回 ToolCallResult）。
    */
   private makeRunSubAgent(deps: {
     readonly parentTools: ReadonlyArray<import('../engine/types.js').ToolDefinition>
@@ -2061,184 +2256,8 @@ export class AgentHandler {
     readonly traceConfig?: SubAgentTraceConfig
   }): RunSubAgentFn {
     return async (subagent, input, ctx) => {
-      // 1. filter parent tools by subagent capabilities (delegate_task always excluded by filter)
-      const subTools = filterToolsForSubAgent(
-        deps.parentTools,
-        subagent.builtin_capabilities,
-        subagent.allowed_mcp_server_ids,
-        subagent.allowed_skill_ids,
-      )
-
-      // 2. assemble 5-section system prompt
-      const systemPrompt = assembleSubAgentPrompt(subagent, {
-        parentTaskId: deps.parentTaskId,
-        callerLabel: deps.callerLabel,
-      })
-
-      // 3. build adapter from subagent's resolved model
-      const subAdapter = createAdapter({
-        endpoint: subagent.model.endpoint,
-        apikey: subagent.model.apikey,
-        format: subagent.model.format,
-        ...(subagent.model.account_id ? { accountId: subagent.model.account_id } : {}),
-      })
-
-      // 4. resolve hook registry based on hook_preset
-      const hookRegistry = subagent.hook_preset === 'coding_expert'
-        ? createCodingExpertHookRegistry()
-        : undefined
-      const lspManager = hookRegistry ? this.lspManager : undefined
-
-      // 5. trace stitching: create sub-trace linked to parent trace
-      const tc = deps.traceConfig
-      let subTrace: AgentTrace | undefined
-      let subTraceCallback: ((event: EngineTurnEvent) => void) | undefined
-
-      if (tc) {
-        // summary 前缀带 subagent name，让 Admin Traces 列表展开行一眼看出
-        // "这是谁派的子任务" — 否则只能看见 task prompt 内容，分不清是哪个 subagent。
-        const taskPrompt = String(input.task).slice(0, 180)
-        subTrace = tc.traceStore.startTrace({
-          module_id: 'sub-agent',
-          trigger: {
-            type: 'sub_agent_call',
-            summary: `[${subagent.name}] ${taskPrompt}`,
-          },
-          parent_trace_id: tc.parentTraceId,
-          parent_span_id: tc.parentSpanId,
-          related_task_id: tc.relatedTaskId,
-        })
-
-        // onTurn fires post-hoc (after LLM + tools); back-date span timestamps
-        // with engine-measured ms to keep the waterfall accurate.
-        subTraceCallback = (event: EngineTurnEvent) => {
-          const llmEndedAtMs =
-            event.llmStartedAtMs !== undefined && event.llmCallMs !== undefined
-              ? event.llmStartedAtMs + event.llmCallMs
-              : undefined
-
-          const llmSpan = tc.traceStore.startSpan(subTrace!.trace_id, {
-            type: 'llm_call',
-            details: {
-              iteration: event.turnNumber,
-              input_summary: `turn ${event.turnNumber}`,
-            },
-            ...(event.llmStartedAtMs !== undefined ? { started_at_ms: event.llmStartedAtMs } : {}),
-          })
-
-          for (const toolCall of event.toolCalls) {
-            const toolEndedAtMs =
-              toolCall.startedAtMs !== undefined && toolCall.durationMs !== undefined
-                ? toolCall.startedAtMs + toolCall.durationMs
-                : undefined
-
-            const toolSpan = tc.traceStore.startSpan(subTrace!.trace_id, {
-              type: 'tool_call',
-              parent_span_id: llmSpan.span_id,
-              details: {
-                tool_name: toolCall.name,
-                input_summary: JSON.stringify(toolCall.input ?? {}).slice(0, 200),
-              },
-              ...(toolCall.startedAtMs !== undefined ? { started_at_ms: toolCall.startedAtMs } : {}),
-            })
-            tc.traceStore.endSpan(
-              subTrace!.trace_id,
-              toolSpan.span_id,
-              toolCall.isError ? 'failed' : 'completed',
-              {
-                output_summary: String(toolCall.output).slice(0, 500),
-                error: toolCall.isError ? String(toolCall.output) : undefined,
-              },
-              toolEndedAtMs,
-            )
-          }
-
-          tc.traceStore.endSpan(
-            subTrace!.trace_id,
-            llmSpan.span_id,
-            'completed',
-            {
-              stop_reason: event.stopReason ?? undefined,
-              output_summary: event.assistantText.slice(0, 200) || undefined,
-              tool_calls_count: event.toolCalls.length > 0 ? event.toolCalls.length : undefined,
-            },
-            llmEndedAtMs,
-          )
-        }
-      }
-
-      // TODO(phase-2b): image_paths support for vision subagents
-      try {
-        const result = await forkEngine({
-          prompt: input.task,
-          adapter: subAdapter,
-          model: subagent.model.model_id,
-          systemPrompt,
-          tools: subTools,
-          maxTurns: subagent.max_turns,
-          ...(subagent.model.max_tokens !== undefined ? { maxTokens: subagent.model.max_tokens } : {}),
-          ...(input.context ? { parentContext: input.context } : {}),
-          abortSignal: ctx.abortSignal,
-          onTurn: subTraceCallback,
-          supportsVision: subagent.model.supports_vision,
-          humanMessageQueue: deps.humanQueue,
-          hookRegistry,
-          lspManager,
-          permissionConfig: deps.permissionConfig,
-        })
-
-        if (subTrace && tc) {
-          const traceSummary = result.output.slice(0, 200) || result.error?.slice(0, 200) || ''
-          tc.traceStore.endTrace(
-            subTrace.trace_id,
-            result.outcome === 'failed' ? 'failed' : 'completed',
-            {
-              summary: traceSummary,
-              error:
-                result.outcome === 'failed'
-                  ? result.error?.slice(0, 200) || result.output.slice(0, 200)
-                  : undefined,
-            },
-          )
-        }
-
-        if (result.outcome === 'failed') {
-          const errSrc = result.error || result.output || 'subagent failed without error message'
-          const failure = buildSubAgentFailureOutput({
-            errorSource: new Error(errSrc),
-            subagentName: subagent.name,
-            providerEndpoint: subagent.model.endpoint,
-            model: subagent.model.model_id,
-            ...(result.output ? { partialOutput: result.output } : {}),
-            totalTurns: result.totalTurns,
-            ...(subTrace ? { childTraceId: subTrace.trace_id } : {}),
-          })
-          return { output: JSON.stringify(failure), isError: true }
-        }
-
-        return {
-          output: JSON.stringify({
-            output: result.output,
-            outcome: result.outcome,
-            totalTurns: result.totalTurns,
-            child_trace_id: subTrace?.trace_id,
-          }),
-          isError: false,
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        if (subTrace && tc) {
-          tc.traceStore.endTrace(subTrace.trace_id, 'failed', { summary: msg, error: msg })
-        }
-        const failure = buildSubAgentFailureOutput({
-          errorSource: err,
-          subagentName: subagent.name,
-          providerEndpoint: subagent.model.endpoint,
-          model: subagent.model.model_id,
-          ...(subTrace ? { childTraceId: subTrace.trace_id } : {}),
-        })
-        return { output: JSON.stringify(failure), isError: true }
-      }
+      const { traceId: _traceId, ...result } = await this.runSubAgentDirect(subagent, input, ctx, deps)
+      return result
     }
   }
 
