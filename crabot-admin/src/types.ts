@@ -687,6 +687,12 @@ export interface Task {
    * 区别于 updated_at——updated_at 会被任何字段改动重置，不可靠。
    */
   waiting_human_at?: string
+  /**
+   * Per-task goal（spec: 2026-05-23-goal-mode-design.md §3）。
+   * 由 agent 在动手前调 set_task_goal 写入；不存在表示这是简单 task，audit gate 透明放行。
+   * 一旦写入，进入"重流程"模式：worker todo + audit gate 全部生效。
+   */
+  goal?: TaskGoal
 }
 
 // ============================================================================
@@ -1926,4 +1932,121 @@ export interface SubAgentRegistryEntry extends SubAgentBase {
 export interface SubAgentConfig extends SubAgentBase {
   /** Admin 解析后的具体连接信息（provider+model 或 model_role 之一，由 Admin 解析时决定） */
   model: LLMConnectionInfo
+}
+
+// ============================================================================
+// TaskGoal — 目标驱动模式（per-task，agent 自定）
+// spec: crabot-docs/superpowers/specs/2026-05-23-goal-mode-design.md §3
+//
+// 不是独立资源，是 Task 上的子对象。task_id 即所有权，没有 id / owner_id。
+// 简单 task 不挂 goal（task.goal === undefined），audit gate 透明放行。
+// agent 调 set_task_goal 工具 = 进入"重流程"模式：todo + audit 全部生效。
+// ============================================================================
+
+/**
+ * TaskGoal 生命周期：
+ *   active ──► complete | blocked | budget_limited | cleared （均为终态）
+ *
+ * - active           agent 写下承诺后的默认状态
+ * - complete         send_message(intent='final') 通过 audit
+ * - blocked          连续 N 次 audit 失败且 failed_criteria 一致；走 request_goal_revision 让人类介入
+ * - budget_limited   tokens_used >= token_budget
+ * - cleared          task 取消 / 异常退出时由系统清理
+ */
+export type TaskGoalStatus = 'active' | 'complete' | 'blocked' | 'budget_limited' | 'cleared'
+
+/**
+ * 完成条件的单条规则。audit subagent 逐条独立验证。
+ * - kind='cmd'      Bash 跑 spec 命令，对照 expect.exit_code / stdout_contains / stdout_matches
+ * - kind='file'     看文件（路径=spec），可选用 stdout_matches 验证内容
+ * - kind='semantic' 语义验证，auditor 用 Read/Grep 自采证据
+ */
+export interface AcceptanceCriterion {
+  /** Audit 报告里用来定位的短 id（agent 自定，比如 c-typecheck） */
+  id: string
+  kind: 'cmd' | 'file' | 'semantic'
+  /** kind=cmd 时是命令；kind=file 时是路径；kind=semantic 时是自然语言描述 */
+  spec: string
+  /** 期望结果（cmd/file 验证时用） */
+  expect?: {
+    exit_code?: number
+    stdout_contains?: string
+    /** 正则字符串（new RegExp 形式） */
+    stdout_matches?: string
+  }
+  /** Agent 写给 auditor 的解释，便于 auditor 理解 criterion 的本意（可选） */
+  rationale?: string
+}
+
+/** 单次 audit 历史条目（task_id 已经在外层 Task，不重复存） */
+export interface TaskGoalAuditEntry {
+  /** ISO 时间戳 */
+  at: string
+  pass: boolean
+  /** 失败的 criterion id 列表（pass 时为空数组） */
+  failed_criteria: string[]
+  /** Audit subagent 跑出来的子 trace id（追溯证据） */
+  audit_trace_id: string
+}
+
+/** 挂在 Task.goal 上的子对象 */
+export interface TaskGoal {
+  /** 自然语言目标描述（喂给 worker 也喂给 auditor） */
+  objective: string
+  /** 完成条件；非空，至少 1 条 */
+  acceptance_criteria: AcceptanceCriterion[]
+  status: TaskGoalStatus
+  /** 累计 token 用量（worker turn 结束后由 agent 累加） */
+  tokens_used: number
+  /** 可选预算；超过 → status=budget_limited（系统强制终态） */
+  token_budget?: number
+  /** Audit 历次结果，最新的在前 */
+  audit_history: TaskGoalAuditEntry[]
+  created_at: string
+  updated_at: string
+  /** 进入终态时间（complete / blocked / budget_limited / cleared） */
+  completed_at?: string
+}
+
+// === Task.goal 相关 RPC 参数与返回 ===
+
+/** Agent 在动手前调 set_task_goal 写入承诺。Task 必须已存在且无 goal（不允许中途改）。 */
+export interface SetTaskGoalParams {
+  task_id: TaskId
+  objective: string
+  acceptance_criteria: AcceptanceCriterion[]
+  token_budget?: number
+}
+
+export interface SetTaskGoalResult {
+  task: Task
+}
+
+/** Audit fail 后追加历史；自动在 audit_history × N 同 failed_criteria 时切 blocked。 */
+export interface AppendTaskGoalAuditEntryParams {
+  task_id: TaskId
+  entry: TaskGoalAuditEntry
+}
+
+export interface AppendTaskGoalAuditEntryResult {
+  task: Task
+}
+
+/** 累加 token；超过 budget 时自动切 budget_limited 终态。 */
+export interface IncrementTaskGoalTokensParams {
+  task_id: TaskId
+  delta: number
+}
+
+export interface IncrementTaskGoalTokensResult {
+  task: Task
+}
+
+/** 由 audit 通过路径调用；status='complete'。 */
+export interface CompleteTaskGoalParams {
+  task_id: TaskId
+}
+
+export interface CompleteTaskGoalResult {
+  task: Task
 }

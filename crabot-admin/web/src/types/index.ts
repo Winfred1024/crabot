@@ -687,3 +687,46 @@ export interface SubAgentRegistryEntry extends SubAgentBase {
   created_at: string
   updated_at: string
 }
+
+// ============================================================================
+// TaskGoal — 目标驱动模式（per-task，agent 自定）
+// spec: crabot-docs/superpowers/specs/2026-05-23-goal-mode-design.md §3
+// ============================================================================
+
+/**
+ * Task 内嵌的目标状态机：
+ *   active ──► complete | blocked | budget_limited | cleared （均为终态）
+ */
+export type TaskGoalStatus = 'active' | 'complete' | 'blocked' | 'budget_limited' | 'cleared'
+
+export interface AcceptanceCriterion {
+  id: string
+  kind: 'cmd' | 'file' | 'semantic'
+  spec: string
+  expect?: {
+    exit_code?: number
+    stdout_contains?: string
+    stdout_matches?: string
+  }
+  rationale?: string
+}
+
+export interface TaskGoalAuditEntry {
+  at: string
+  pass: boolean
+  failed_criteria: string[]
+  audit_trace_id: string
+}
+
+/** 挂在 Task.goal 上的子对象；不是独立资源，没有 id / owner_id（task_id 即所有权） */
+export interface TaskGoal {
+  objective: string
+  acceptance_criteria: AcceptanceCriterion[]
+  status: TaskGoalStatus
+  tokens_used: number
+  token_budget?: number
+  audit_history: TaskGoalAuditEntry[]
+  created_at: string
+  updated_at: string
+  completed_at?: string
+}

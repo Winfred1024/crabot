@@ -509,6 +509,9 @@ export class AdminModule extends ModuleBase {
     // Chat 管理
     this.registerMethod('chat_callback', this.handleChatCallback.bind(this))
     this.registerMethod('get_chat_history', this.handleGetChatHistory.bind(this))
+
+    // TaskGoal 管理（spec: 2026-05-23-goal-mode-design.md §3；agent 自定 goal）
+    // RPC handler 实现在 Phase 2 - 与 set_task_goal 工具一起上
   }
 
   // ============================================================================
