@@ -1566,6 +1566,7 @@ export interface AdminEventPayloads {
   'admin.task_assigned': { task_id: TaskId; worker_agent_id: ModuleId }
   'admin.task_plan_updated': { task_id: TaskId; plan: TaskPlan }
   'admin.task_cancelled': { task_id: TaskId; reason?: string }
+  'admin.task_updated': { task: Task }
   'admin.schedule_created': { schedule: Schedule }
   'admin.schedule_updated': { schedule: Schedule }
   'admin.schedule_deleted': { schedule_id: ScheduleId }

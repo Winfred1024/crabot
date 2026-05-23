@@ -116,7 +116,21 @@ import {
   createCliAccessConfig,
   type ResolvePrincipalPermissionsParams,
   type ResolvePrincipalPermissionsResult,
+  type SetTaskGoalParams,
+  type SetTaskGoalResult,
+  type AppendTaskGoalAuditEntryParams,
+  type AppendTaskGoalAuditEntryResult,
+  type IncrementTaskGoalTokensParams,
+  type IncrementTaskGoalTokensResult,
+  type CompleteTaskGoalParams,
+  type CompleteTaskGoalResult,
 } from './types.js'
+import {
+  buildNewTaskGoal,
+  appendAuditEntry,
+  incrementTokens,
+  transitionGoalStatus,
+} from './task-goal.js'
 import { unionResolved } from './permission-resolution.js'
 import { ModelProviderManager } from './model-provider-manager.js'
 import { AgentManager } from './agent-manager.js'
@@ -510,8 +524,11 @@ export class AdminModule extends ModuleBase {
     this.registerMethod('chat_callback', this.handleChatCallback.bind(this))
     this.registerMethod('get_chat_history', this.handleGetChatHistory.bind(this))
 
-    // TaskGoal 管理（spec: 2026-05-23-goal-mode-design.md §3；agent 自定 goal）
-    // RPC handler 实现在 Phase 2 - 与 set_task_goal 工具一起上
+    // TaskGoal 管理（spec: 2026-05-23-goal-mode-design.md §3）
+    this.registerMethod('set_task_goal', this.handleSetTaskGoal.bind(this))
+    this.registerMethod('append_task_goal_audit_entry', this.handleAppendTaskGoalAuditEntry.bind(this))
+    this.registerMethod('increment_task_goal_tokens', this.handleIncrementTaskGoalTokens.bind(this))
+    this.registerMethod('complete_task_goal', this.handleCompleteTaskGoal.bind(this))
   }
 
   // ============================================================================
@@ -3610,6 +3627,78 @@ export class AdminModule extends ModuleBase {
     if (!task) {
       throw new Error(AdminErrorCode.TASK_NOT_FOUND)
     }
+    return { task }
+  }
+
+  // ============================================================================
+  // TaskGoal 协议方法（spec: 2026-05-23-goal-mode-design.md §3）
+  // ============================================================================
+
+  private async handleSetTaskGoal(
+    params: SetTaskGoalParams,
+  ): Promise<SetTaskGoalResult> {
+    const task = this.tasks.get(params.task_id)
+    if (!task) throw new Error(AdminErrorCode.TASK_NOT_FOUND)
+    if (task.goal !== undefined) {
+      throw new Error(`task ${params.task_id} 的 goal 已存在；agent 不可自改 goal`)
+    }
+    const now = generateTimestamp()
+    const goal = buildNewTaskGoal({
+      objective: params.objective,
+      acceptance_criteria: params.acceptance_criteria,
+      ...(params.token_budget !== undefined ? { token_budget: params.token_budget } : {}),
+    }, now)
+    task.goal = goal
+    task.updated_at = now
+    this.tasks.set(task.id, task)
+    this.publishAdminEvent('admin.task_updated', { task })
+    return { task }
+  }
+
+  private async handleAppendTaskGoalAuditEntry(
+    params: AppendTaskGoalAuditEntryParams,
+  ): Promise<AppendTaskGoalAuditEntryResult> {
+    const task = this.tasks.get(params.task_id)
+    if (!task) throw new Error(AdminErrorCode.TASK_NOT_FOUND)
+    if (!task.goal) throw new Error(`task ${params.task_id} 没有 goal，无法追加 audit 历史`)
+    const now = generateTimestamp()
+    task.goal = appendAuditEntry(task.goal, params.entry, now)
+    task.updated_at = now
+    this.tasks.set(task.id, task)
+    this.publishAdminEvent('admin.task_updated', { task })
+    return { task }
+  }
+
+  private async handleIncrementTaskGoalTokens(
+    params: IncrementTaskGoalTokensParams,
+  ): Promise<IncrementTaskGoalTokensResult> {
+    const task = this.tasks.get(params.task_id)
+    if (!task) throw new Error(AdminErrorCode.TASK_NOT_FOUND)
+    if (!task.goal) return { task } // noop：无 goal 不累加
+    const now = generateTimestamp()
+    const nextGoal = incrementTokens(task.goal, params.delta, now)
+    if (nextGoal === task.goal) {
+      // 非 active goal：incrementTokens 返回原 goal 引用，无实际变更，跳过 touch + event
+      return { task }
+    }
+    task.goal = nextGoal
+    task.updated_at = now
+    this.tasks.set(task.id, task)
+    this.publishAdminEvent('admin.task_updated', { task })
+    return { task }
+  }
+
+  private async handleCompleteTaskGoal(
+    params: CompleteTaskGoalParams,
+  ): Promise<CompleteTaskGoalResult> {
+    const task = this.tasks.get(params.task_id)
+    if (!task) throw new Error(AdminErrorCode.TASK_NOT_FOUND)
+    if (!task.goal) throw new Error(`task ${params.task_id} 没有 goal，无法 complete`)
+    const now = generateTimestamp()
+    task.goal = transitionGoalStatus(task.goal, 'complete', now)
+    task.updated_at = now
+    this.tasks.set(task.id, task)
+    this.publishAdminEvent('admin.task_updated', { task })
     return { task }
   }
 
