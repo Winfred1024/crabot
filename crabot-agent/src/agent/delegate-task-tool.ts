@@ -81,10 +81,12 @@ export interface CreateDelegateTaskToolOptions {
  * - runSubAgent 由 caller 注入（含 trace / spawn / model adapter 选择等运行时依赖）
  */
 export function createDelegateTaskTool(opts: CreateDelegateTaskToolOptions): ToolDefinition {
-  const enabledNames = opts.subAgents.map((s) => s.name)
+  // 过滤掉 system_only=true 的 subagent —— 它们仅由系统隐式触发，不暴露给 worker
+  const visible = opts.subAgents.filter((s) => !s.system_only)
+  const enabledNames = visible.map((s) => s.name)
   return {
     name: 'delegate_task',
-    description: buildDelegateTaskDescription(opts.subAgents),
+    description: buildDelegateTaskDescription(visible),
     isReadOnly: false,
     inputSchema: {
       type: 'object',
@@ -102,7 +104,7 @@ export function createDelegateTaskTool(opts: CreateDelegateTaskToolOptions): Too
     },
     call: async (input: Record<string, unknown>, ctx: ToolCallContext): Promise<ToolCallResult> => {
       const subagentType = String(input.subagent_type ?? '')
-      const subagent = opts.subAgents.find((s) => s.name === subagentType)
+      const subagent = visible.find((s) => s.name === subagentType)
       if (subagent === undefined) {
         return {
           output: `Unknown subagent_type "${subagentType}"。可用：[${enabledNames.join(', ')}]`,

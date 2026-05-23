@@ -86,3 +86,42 @@ describe('createDelegateTaskTool', () => {
     expect(result.isError).toBe(false)
   })
 })
+
+describe('createDelegateTaskTool system_only filtering', () => {
+  it('过滤掉 system_only=true 的 subagent，不出现在 enum / description', () => {
+    const subagents: SubAgentConfig[] = [
+      fakeSubAgent('code_writer'),
+      { ...fakeSubAgent('goal_auditor'), system_only: true },
+    ]
+    const tool = createDelegateTaskTool({
+      subAgents: subagents,
+      runSubAgent: async () => ({ output: '', isError: false }),
+    })
+    const schema = tool.inputSchema as { properties: { subagent_type: { enum: string[] } } }
+    expect(schema.properties.subagent_type.enum).toEqual(['code_writer'])
+    expect(tool.description).not.toContain('goal_auditor')
+    expect(tool.description).toContain('code_writer')
+  })
+
+  it('worker 调用 system_only subagent 会被拒（即使硬塞 enum 外的 name）', async () => {
+    const subagents: SubAgentConfig[] = [
+      { ...fakeSubAgent('goal_auditor'), system_only: true },
+    ]
+    let called = false
+    const tool = createDelegateTaskTool({
+      subAgents: subagents,
+      runSubAgent: async () => {
+        called = true
+        return { output: 'should not run', isError: false }
+      },
+    })
+    const ctx = { abortSignal: new AbortController().signal } as any
+    const result = await tool.call(
+      { subagent_type: 'goal_auditor', task: 'audit' },
+      ctx,
+    )
+    expect(result.isError).toBe(true)
+    expect(String(result.output)).toContain('Unknown subagent_type')
+    expect(called).toBe(false)
+  })
+})
