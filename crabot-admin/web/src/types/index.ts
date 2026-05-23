@@ -676,6 +676,8 @@ export interface SubAgentBase {
   allowed_skill_ids: string[]
   max_turns: number
   hook_preset?: string
+  /** 系统专用：仅由系统隐式触发，不暴露给 worker（spec §6.4） */
+  system_only?: boolean
 }
 
 export interface SubAgentRegistryEntry extends SubAgentBase {

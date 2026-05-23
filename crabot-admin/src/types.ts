@@ -1904,6 +1904,11 @@ export interface SubAgentBase {
   max_turns: number
   /** 代码层注册的 hook bundle 名（可选）。当前唯一已知值：'coding_expert' */
   hook_preset?: string
+
+  /** 系统专用：仅由系统隐式触发（如 send_message(intent='final') 的 audit gate），
+   *  不出现在 delegate_task 工具的 enum 里，worker 不可主动调。
+   *  spec: 2026-05-23-goal-mode-design.md §6.4 */
+  system_only?: boolean
 }
 
 /** 注册表存储格式（data/admin/subagents.json）；model 以引用形式存储。 */
