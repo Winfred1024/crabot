@@ -1014,7 +1014,10 @@ export interface AgentTrace {
     type: 'message' | 'task' | 'schedule' | 'sub_agent_call'
     summary: string
     source?: string
-    /** 调度任务类型，如 'daily_reflection'（仅调度任务有） */
+    /** 触发子类型分类标签。
+     *  - 调度任务：如 'daily_reflection'
+     *  - sub_agent_call 子 trace：如 'goal_audit'（Phase 2 起）
+     *  其它情况可缺省。 */
     task_type?: string
   }
   spans: AgentSpan[]

@@ -85,6 +85,13 @@ import { getInstanceSkillsDir } from '../core/data-paths.js'
 import { llmUsageToTrace } from '../core/trace-usage.js'
 import { TodoStore } from './worker-todo-store.js'
 import { createTodoTool } from './worker-todo-tool.js'
+import {
+  buildAuditPrompt,
+  parseAuditReport,
+  buildHumanQueueReport,
+  type AuditResult,
+  type GoalAuditTaskGoal,
+} from './goal-audit.js'
 
 import { reflectStructuredOutcome } from '../orchestration/structured-outcome-reflector.js'
 
@@ -2238,6 +2245,123 @@ export class AgentHandler {
         isError: true,
         ...(subTrace ? { traceId: subTrace.trace_id } : {}),
       }
+    }
+  }
+
+  /**
+   * Goal audit gate 入口：crab-messaging send_message(intent='final') 拦截时调用。
+   *
+   * 流程：
+   *  1. 拿 admin task → 验证 task.goal 存在
+   *  2. 查 goal_auditor builtin from this.subAgents snapshot
+   *  3. 用 buildAuditPrompt 拼输入（worker 不参与）
+   *  4. 调 runSubAgentDirect 跑 auditor（独立 trace, task_type='goal_audit'）
+   *  5. parseAuditReport 解析输出
+   *  6. admin RPC append_task_goal_audit_entry 写历史
+   *  7. pass → admin RPC complete_task_goal 同步标 complete
+   *  8. 返回 AuditResult
+   *
+   * 注意：parentTools 传空 array——auditor 不继承 worker 工具集，
+   * filterToolsForSubAgent 走 auditor 自己的 capability 过滤。
+   * 没传 humanQueue / permissionConfig：auditor 是只读，不通讯。
+   *
+   * traceConfig 可选：caller（Task 8 crab-messaging）能拿到自己的 traceContext 时透传，
+   * 让 audit subtree 挂到 worker 主 trace 下；缺省则跑无父 trace 的 standalone subagent，
+   * auditTraceId 为空串。
+   *
+   * spec: 2026-05-23-goal-mode-design.md §7.2
+   */
+  async runGoalAudit(params: {
+    readonly taskId: string
+    readonly pendingContent: string
+    readonly traceConfig?: SubAgentTraceConfig
+    readonly abortSignal?: AbortSignal
+  }): Promise<AuditResult> {
+    if (!this.deps?.getAdminPort || !this.deps.rpcClient) {
+      throw new Error('runGoalAudit: getAdminPort/rpcClient deps 缺失')
+    }
+    const adminPort = await this.deps.getAdminPort()
+    const moduleId = this.deps.moduleId
+
+    // 1. 拿 task + goal（用现有 RPC pattern）
+    const taskResp = await this.deps.rpcClient.call<
+      { task_id: string },
+      { task: { id: string; goal?: GoalAuditTaskGoal } }
+    >(adminPort, 'get_task', { task_id: params.taskId }, moduleId)
+    const task = taskResp.task
+    if (!task.goal) {
+      throw new Error(
+        `runGoalAudit: task ${params.taskId} has no goal; audit should not be triggered`,
+      )
+    }
+    const goal = task.goal
+
+    // 2. 拿 auditor 配置（snapshot 风格的 in-flight 不变 reference）
+    const auditor = this.subAgents.find((s) => s.id === 'builtin-goal-auditor')
+    if (!auditor) {
+      throw new Error('runGoalAudit: goal_auditor subagent not configured')
+    }
+
+    // 3. 装输入（系统拼，worker 不插手）
+    const promptText = buildAuditPrompt({
+      goal,
+      pendingContent: params.pendingContent,
+      cwd: process.cwd(),
+    })
+
+    // 4. 跑 subagent（独立 trace, task_type='goal_audit'）
+    const result = await this.runSubAgentDirect(
+      auditor,
+      {
+        subagent_type: 'goal_auditor',
+        task: promptText,
+      },
+      { ...(params.abortSignal ? { abortSignal: params.abortSignal } : {}) },
+      {
+        parentTools: [],
+        parentTaskId: params.taskId,
+        callerLabel: 'goal_audit',
+        ...(params.traceConfig ? { traceConfig: params.traceConfig } : {}),
+        traceSummaryPrefix: '[goal_audit]',
+        traceTaskType: 'goal_audit',
+      },
+    )
+
+    // 5. 解析输出
+    const parsed = parseAuditReport(String(result.output))
+
+    // 6. 写 audit_history
+    const auditTraceId = result.traceId ?? ''
+    await this.deps.rpcClient.call<unknown, unknown>(
+      adminPort,
+      'append_task_goal_audit_entry',
+      {
+        task_id: params.taskId,
+        entry: {
+          at: new Date().toISOString(),
+          pass: parsed.pass,
+          failed_criteria: [...parsed.failedCriteria],
+          audit_trace_id: auditTraceId,
+        },
+      },
+      moduleId,
+    )
+
+    // 7. pass 路径同步把 goal 切 complete
+    if (parsed.pass) {
+      await this.deps.rpcClient.call<unknown, unknown>(
+        adminPort,
+        'complete_task_goal',
+        { task_id: params.taskId },
+        moduleId,
+      )
+    }
+
+    return {
+      pass: parsed.pass,
+      failedCriteria: parsed.failedCriteria,
+      detailedReport: buildHumanQueueReport(parsed, goal),
+      auditTraceId,
     }
   }
 
