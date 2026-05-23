@@ -26,7 +26,7 @@ import {
 } from './utils'
 import { FilterBar } from './FilterBar'
 import { PaginationBar } from './PaginationBar'
-import { StatusDot, TriggerBadge, TraceTableRow, GroupedTableRow, TraceChip, TraceLink } from './TraceTable'
+import { StatusDot, TriggerBadge, AuditBadge, TraceTableRow, GroupedTableRow, TraceChip, TraceLink } from './TraceTable'
 import { SpanTree } from './SpanTree'
 import { StatusBar } from './StatusBar'
 import { ManualCleanupDialog, AutoCleanupSettingsDialog } from './CleanupDialogs'
@@ -233,6 +233,7 @@ function TraceDetailPanel({
       <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--border)', background: 'var(--bg-secondary, #f9fafb)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
           <TriggerBadge type={trace.trigger.type} />
+          <AuditBadge taskType={trace.trigger.task_type} />
           <span
             style={{
               background: statusColor(trace.status),

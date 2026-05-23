@@ -103,6 +103,33 @@ export function TriggerBadge({ type }: { type: string }) {
 }
 
 // ============================================================================
+// 子组件：AuditBadge — trigger.task_type === 'goal_audit' 时高亮"审计"
+// spec: 2026-05-23-goal-mode-design.md §8.2
+// ============================================================================
+
+export function AuditBadge({ taskType }: { taskType?: string }) {
+  if (taskType !== 'goal_audit') return null
+  return (
+    <span
+      title="Goal audit subagent 调用（spec §8.2）"
+      style={{
+        background: '#fef3c7',
+        color: '#92400e',
+        fontSize: 10,
+        padding: '1px 6px',
+        borderRadius: 3,
+        fontWeight: 600,
+        letterSpacing: 0.2,
+        flexShrink: 0,
+        border: '1px solid #fcd34d',
+      }}
+    >
+      审计
+    </span>
+  )
+}
+
+// ============================================================================
 // 子组件：TraceLink
 // ============================================================================
 
@@ -157,7 +184,10 @@ export function TraceTableRow({
         <StatusDot status={entry.status} />
       </td>
       <td style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>
-        <TriggerBadge type={entry.trigger_type} />
+        <div style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+          <TriggerBadge type={entry.trigger_type} />
+          <AuditBadge taskType={entry.trigger_task_type} />
+        </div>
       </td>
       <td
         style={{
@@ -365,7 +395,10 @@ export function GroupedTableRow({
             <StatusDot status={m.status} />
           </td>
           <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>
-            <TriggerBadge type={m.trigger_type} />
+            <div style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+              <TriggerBadge type={m.trigger_type} />
+              <AuditBadge taskType={m.trigger_task_type} />
+            </div>
           </td>
           <td
             style={{

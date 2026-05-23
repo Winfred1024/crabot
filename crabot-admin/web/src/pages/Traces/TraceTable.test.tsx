@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
-import { GroupedTableRow } from './TraceTable'
+import { GroupedTableRow, AuditBadge, TraceTableRow } from './TraceTable'
 import type { TraceGroup } from './utils'
 import type { TraceIndexEntry } from '../../services/trace'
 
@@ -89,6 +89,21 @@ describe('GroupedTableRow — sub_agent_call 行视觉', () => {
     expect(screen.queryByTitle(/Subagent 子 trace/)).toBeNull()
   })
 
+  it('展开后 sub_agent_call 行带 task_type=goal_audit 时显示"审计" badge', () => {
+    const group = makeGroup([
+      entry({ trace_id: 'task-1', trigger_type: 'task' }),
+      entry({
+        trace_id: 'sub-audit',
+        trigger_type: 'sub_agent_call',
+        trigger_summary: '[goal_audit] check AC',
+        parent_trace_id: 'task-1',
+        trigger_task_type: 'goal_audit',
+      }),
+    ])
+    renderGrouped(group)
+    expect(screen.getByText('审计')).toBeInTheDocument()
+  })
+
   it('点击 sub_agent_call 行调 onSelectTrace 跳进 trace 详情（去看 SpanTree）', () => {
     let selected = ''
     const group = makeGroup([
@@ -112,5 +127,56 @@ describe('GroupedTableRow — sub_agent_call 行视觉', () => {
     const subRow = screen.getByText(/code_writer/).closest('tr')!
     fireEvent.click(subRow)
     expect(selected).toBe('sub-99')
+  })
+})
+
+describe('AuditBadge — goal_audit 高亮', () => {
+  it('taskType=goal_audit 渲染"审计"', () => {
+    render(<AuditBadge taskType="goal_audit" />)
+    expect(screen.getByText('审计')).toBeInTheDocument()
+  })
+
+  it('taskType 缺省 / 其他值 不渲染', () => {
+    const { container, rerender } = render(<AuditBadge taskType={undefined} />)
+    expect(container.firstChild).toBeNull()
+    rerender(<AuditBadge taskType="other_subtask" />)
+    expect(container.firstChild).toBeNull()
+  })
+})
+
+describe('TraceTableRow — 顶层 trace 行 goal_audit badge', () => {
+  it('trigger_task_type=goal_audit 显示"审计"', () => {
+    render(
+      <table>
+        <tbody>
+          <TraceTableRow
+            entry={entry({
+              trace_id: 'goal-audit-trace',
+              trigger_type: 'sub_agent_call',
+              trigger_summary: '[goal_audit] check AC',
+              trigger_task_type: 'goal_audit',
+            })}
+            isSelected={false}
+            onClick={() => {}}
+          />
+        </tbody>
+      </table>,
+    )
+    expect(screen.getByText('审计')).toBeInTheDocument()
+  })
+
+  it('普通 trace 行不显示"审计" badge', () => {
+    render(
+      <table>
+        <tbody>
+          <TraceTableRow
+            entry={entry({ trace_id: 'normal', trigger_type: 'task' })}
+            isSelected={false}
+            onClick={() => {}}
+          />
+        </tbody>
+      </table>,
+    )
+    expect(screen.queryByText('审计')).toBeNull()
   })
 })
