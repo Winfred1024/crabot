@@ -36,7 +36,14 @@ export interface CrabMessagingDeps {
   getTaskContext?: () => TaskContext | null
   /** 可选：goal audit 执行入口。worker 路径 + taskCtx.hasGoal=true 时由 agent-handler 注入。
    *  spec: 2026-05-23-goal-mode-design.md §4 */
-  runGoalAudit?: (params: { taskId: string; pendingContent: string }) => Promise<AuditResult>
+  runGoalAudit?: (params: {
+    taskId: string
+    pendingContent: string
+    /** worker turn 的 sub-agent trace 上下文；让 audit subagent 产生的 sub_agent_call
+     *  span 挂到主 worker trace 下，admin UI 才能渲染。缺省则 audit 跑在 standalone
+     *  trace 里（auditTraceId 为空，admin UI 看不到）。 */
+    traceConfig?: import('../engine/sub-agent.js').SubAgentTraceConfig
+  }) => Promise<AuditResult>
 }
 
 export interface TaskContext {
@@ -49,6 +56,11 @@ export interface TaskContext {
    *  此处用 getter 形式以便 worker 中途 set_task_goal 后下一次工具调用立即生效。
    *  spec: 2026-05-23-goal-mode-design.md §4.2 */
   hasGoal: () => boolean
+  /** 当前 worker turn 的 sub-agent trace 上下文（traceStore + parentTraceId + relatedTaskId）。
+   *  worker 启动时 agent-handler 构造 TaskContext 时填入，crab-messaging audit gate
+   *  会透传给 runGoalAudit，让 audit subagent 的 sub_agent_call span 挂到主 trace。
+   *  缺省（front 路径等）则 audit 走 standalone trace。 */
+  traceConfig?: import('../engine/sub-agent.js').SubAgentTraceConfig
 }
 
 // ============================================================================
@@ -502,13 +514,20 @@ export function buildMessagingTools(
               const audit = await deps.runGoalAudit({
                 taskId: taskCtx.taskId,
                 pendingContent: content,
+                // 透传 traceConfig 让 audit sub-trace 挂主 worker trace 下，
+                // 否则 auditTraceId 是空串、admin UI 看不到 audit subagent。
+                ...(taskCtx.traceConfig ? { traceConfig: taskCtx.traceConfig } : {}),
               })
               if (!audit.pass) {
                 // 注入详细审计报告到 worker 下一轮 user message
                 taskCtx.humanQueue.push(audit.detailedReport)
-                // 工具返回简短拒绝 + audit_trace_id（追溯锚点）
+                // 区分"审计员故障"和"真不达标"，避免显示"0 条不达标"误导
+                const isAuditFault = audit.failedCriteria.includes('__no_audit_result_emitted__')
+                const errPrefix = isAuditFault
+                  ? `final 交付被审计员侧故障拦截（auditor 未 emit AUDIT_RESULT）。`
+                  : `final 交付未通过目标审计（${audit.failedCriteria.length} 条不达标）。`
                 return wrapText({
-                  error: `final 交付未通过目标审计（${audit.failedCriteria.length} 条不达标）。`
+                  error: errPrefix
                     + `详细审计报告已注入下一轮上下文，请根据缺口续作。`
                     + `audit_trace_id: ${audit.auditTraceId}`,
                 }, { isError: true })

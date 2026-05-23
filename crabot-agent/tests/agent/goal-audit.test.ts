@@ -71,10 +71,22 @@ AUDIT_REPORT_END`)
     expect(r.failedCriteria).toEqual(['c1', 'c2', 'c3'])
   })
 
-  it('缺 AUDIT_RESULT → 当 fail，failed_criteria 空', () => {
+  it('缺 AUDIT_RESULT → 当 fail，failed_criteria 含 sentinel 标记审计员故障', () => {
     const r = parseAuditReport('乱写一通')
     expect(r.pass).toBe(false)
-    expect(r.failedCriteria).toEqual([])
+    // sentinel：让下游错误信息能区分"审计员故障"和"真不达标"，避免显示"0 条不达标"误导 worker
+    expect(r.failedCriteria).toEqual(['__no_audit_result_emitted__'])
+  })
+
+  it('buildHumanQueueReport 收到 sentinel 时 emit 审计员故障专属报告', async () => {
+    const goal = sampleGoal()
+    const r = parseAuditReport('auditor 输出格式错误')
+    const report = buildHumanQueueReport(r, goal)
+    expect(report).toMatch(/审计员异常|审计员侧的故障/)
+    expect(report).toMatch(/未按契约|未识别到/)
+    // 仍含目标 + 反 specification gaming 提示
+    expect(report).toContain(goal.objective)
+    expect(report).toMatch(/ask_human/)
   })
 
   it('大小写不敏感的 PASS', () => {

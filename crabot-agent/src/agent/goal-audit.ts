@@ -73,6 +73,11 @@ ${params.cwd}
 按 system prompt 的指引逐条验证，输出 AUDIT_REPORT。`
 }
 
+/** 当 auditor 输出未按契约 emit AUDIT_RESULT 时，failedCriteria 用此 sentinel
+ *  标记"审计员自身故障"——避免下游错误消息显示"0 条不达标"误导 worker。
+ *  spec: 2026-05-23-goal-mode-design.md §6.2 deliverables 契约 */
+export const AUDIT_PARSE_FAILURE_SENTINEL = '__no_audit_result_emitted__'
+
 export function parseAuditReport(output: string): ParsedAuditReport {
   // 仅在 AUDIT_RESULT 行到 AUDIT_REPORT_END 之间的 envelope 内解析，
   // 避免 auditor 在 example/quote 里写 "AUDIT_RESULT: pass" 被误抓。
@@ -81,7 +86,13 @@ export function parseAuditReport(output: string): ParsedAuditReport {
   const headerRegex = /^AUDIT_RESULT:\s*(pass|fail)\b/gim
   const headerMatches = [...output.matchAll(headerRegex)]
   if (headerMatches.length === 0) {
-    return { pass: false, failedCriteria: [], rawOutput: output }
+    // 契约违例：auditor 没 emit AUDIT_RESULT —— 用 sentinel 标记，
+    // 让 buildHumanQueueReport / crab-messaging 错误信息能区分"审计员故障"和"真不达标"
+    return {
+      pass: false,
+      failedCriteria: [AUDIT_PARSE_FAILURE_SENTINEL],
+      rawOutput: output,
+    }
   }
   const lastHeader = headerMatches[headerMatches.length - 1]!
   const envelopeStart = lastHeader.index ?? 0
@@ -107,6 +118,29 @@ export function buildHumanQueueReport(
   }
   // belt-and-suspenders：rawOutput 里如果有 ``` 会破坏外层 fence，先 neutralize
   const safeRaw = parsed.rawOutput.replace(/```/g, '` ` `')
+
+  // 区分"审计员故障"和"真不达标"两种 fail 形态
+  const isAuditFault = parsed.failedCriteria.includes(AUDIT_PARSE_FAILURE_SENTINEL)
+  if (isAuditFault) {
+    return `[系统] 目标审计员异常：未按契约 emit AUDIT_RESULT
+
+## 任务目标
+${goal.objective}
+
+## 审计员原始输出（未识别到 AUDIT_RESULT: pass|fail 行）
+\`\`\`
+${safeRaw}
+\`\`\`
+
+## 继续执行
+这是**审计员侧的故障**，不是你的交付不达标。可能原因：审计员 max_turns 跑满 / 工具被卡 / 输出被截断。
+
+请：
+1. 短期：用 send_message(intent='final') 再试一次，触发新审计
+2. 如果同样问题反复出现：调 ask_human 描述给 master，让人类判断是否绕过 audit 或修审计员配置
+**不要**用 send_message(intent='normal') 上报"审计卡了"——loop 不会停，问题不会被人类同步看到。`
+  }
+
   return `[系统] 目标审计未通过
 
 ## 任务目标

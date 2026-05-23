@@ -789,6 +789,10 @@ export class AgentHandler {
           triggerType: task.source?.trigger_type === 'scheduled' ? 'scheduled' : 'message',
           // 用 getter 形式封装本地 cache，worker 中途 set_task_goal 后下一轮工具调用立即生效。
           hasGoal: () => goalSetCache,
+          // 透传 sub-agent trace 上下文：让 audit gate 触发的 audit subagent
+          // 产生的 sub_agent_call span 挂到主 worker trace 下，admin UI 能渲染。
+          // spec: 2026-05-23-goal-mode-design.md §4.2
+          ...(subAgentTraceConfig ? { traceConfig: subAgentTraceConfig } : {}),
         }) ?? {}
         for (const [serverName, server] of Object.entries(externalMcpServers)) {
           tools.push(...mcpServerToToolDefinitions(server, serverName))
