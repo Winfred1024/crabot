@@ -115,10 +115,12 @@ describe('getBuiltinSubAgents', () => {
     expect(w.allowed_skill_ids).toContain(BUILTIN_SKILL_IDS.verificationBeforeCompletion)
   })
 
-  it('research_collector 使用 vision role + builtin_capabilities.file_system=false', () => {
+  it('research_collector 使用 vision role + 通用调查员 capabilities 全开', () => {
+    // memory: feedback_research_collector_is_general — 2026-05-21 把 capabilities 全开恢复
+    // 原意（通用调查员，不是 web 专科），断言同步跟上代码 entry。
     const r = getBuiltinSubAgents().find((s) => s.name === 'research_collector')!
     expect(r.model_role).toBe('vision')
-    expect(r.builtin_capabilities.file_system).toBe(false)
+    expect(r.builtin_capabilities.file_system).toBe(true)
     expect(r.builtin_capabilities.crab_memory).toBe(true)
     expect(r.allowed_mcp_server_ids).toEqual([])
   })
