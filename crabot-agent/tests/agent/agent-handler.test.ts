@@ -895,12 +895,38 @@ describe('AgentHandler bg-entities admin RPC', () => {
     })
 
     it('passes onAfterCompaction that prepends todo active list to messages', async () => {
-      const handler = makeHandler()
+      // todo 写模式被 hasGoal 门控（spec §5），先调 set_task_goal 解锁 cache
+      const rpcClient = {
+        call: vi.fn().mockImplementation(async (_port: number, method: string) => {
+          if (method === 'get_task') return { task: { id: 'task_1' } } // no goal initially
+          if (method === 'set_task_goal') return { task: { id: 'task_1' } }
+          return {}
+        }),
+      }
+      const handler = new AgentHandler(
+        { modelId: 'test-model', format: 'anthropic' as const, env: { ANTHROPIC_BASE_URL: 'http://localhost:4000', ANTHROPIC_API_KEY: 'test-key' } },
+        { systemPrompt: 'You are a helpful worker.' },
+        {
+          deps: {
+            rpcClient: rpcClient as never,
+            moduleId: 'worker-test',
+            resolveChannelPort: async () => 0,
+            getMemoryPort: async () => 0,
+            getAdminPort: async () => 19001,
+          },
+        },
+      )
       let capturedHook: ((msgs: ReadonlyArray<unknown>) => ReadonlyArray<unknown>) | undefined
       mockRunEngine.mockImplementation(async (params) => {
         capturedHook = params.options.onAfterCompaction as typeof capturedHook
-        // 模拟 worker 已经写了一个 in_progress item
         const toolsFn = params.options.tools as () => ReadonlyArray<{ name: string; call: Function }>
+        // 先 set_task_goal 解锁 todo 写模式
+        const setGoalTool = toolsFn().find(t => t.name === 'set_task_goal')!
+        await setGoalTool.call({
+          objective: '研究 X 可行性',
+          acceptance_criteria: [{ id: 'c1', kind: 'semantic', spec: '结论清晰' }],
+        }, {} as never)
+        // 然后写 todo
         const todoTool = toolsFn().find(t => t.name === 'todo')!
         await todoTool.call({
           todos: [{ id: 'work', content: '研究 X', status: 'in_progress' }],

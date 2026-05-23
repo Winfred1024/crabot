@@ -33,7 +33,7 @@ function makeDeps(overrides: DepsOverrides = {}): CrabMessagingDeps {
     taskId: 't1',
     humanQueue: new HumanMessageQueue(),
     triggerType: 'message',
-    hasGoal: false,
+    hasGoal: () => false,
   }
   const taskCtx = overrides.taskCtx === undefined ? defaultTaskCtx : overrides.taskCtx
   return {
@@ -72,7 +72,7 @@ describe('send_message audit gate', () => {
     const runGoalAudit = vi.fn()
     const deps = makeDeps({
       runGoalAudit,
-      taskCtx: { taskId: 't1', humanQueue: new HumanMessageQueue(), triggerType: 'message', hasGoal: false },
+      taskCtx: { taskId: 't1', humanQueue: new HumanMessageQueue(), triggerType: 'message', hasGoal: () => false },
     })
     const tools = buildMessagingTools(deps)
     const result = await callSendMessage(tools, { ...baseArgs, intent: 'final' })
@@ -84,7 +84,7 @@ describe('send_message audit gate', () => {
     const runGoalAudit = vi.fn()
     const deps = makeDeps({
       runGoalAudit,
-      taskCtx: { taskId: 't1', humanQueue: new HumanMessageQueue(), triggerType: 'message', hasGoal: true },
+      taskCtx: { taskId: 't1', humanQueue: new HumanMessageQueue(), triggerType: 'message', hasGoal: () => true },
     })
     const tools = buildMessagingTools(deps)
     await callSendMessage(tools, { ...baseArgs, intent: 'normal' })
@@ -100,7 +100,7 @@ describe('send_message audit gate', () => {
     } satisfies AuditResult)
     const deps = makeDeps({
       runGoalAudit,
-      taskCtx: { taskId: 't1', humanQueue: new HumanMessageQueue(), triggerType: 'message', hasGoal: true },
+      taskCtx: { taskId: 't1', humanQueue: new HumanMessageQueue(), triggerType: 'message', hasGoal: () => true },
     })
     const tools = buildMessagingTools(deps)
     const result = await callSendMessage(tools, { ...baseArgs, intent: 'final' })
@@ -120,7 +120,7 @@ describe('send_message audit gate', () => {
     } satisfies AuditResult)
     const deps = makeDeps({
       runGoalAudit,
-      taskCtx: { taskId: 't1', humanQueue, triggerType: 'message', hasGoal: true },
+      taskCtx: { taskId: 't1', humanQueue, triggerType: 'message', hasGoal: () => true },
     })
     const rpcSpy = deps.rpcClient.call as ReturnType<typeof vi.fn>
     const tools = buildMessagingTools(deps)
@@ -138,7 +138,7 @@ describe('send_message audit gate', () => {
     const runGoalAudit = vi.fn().mockRejectedValue(new Error('auditor crashed'))
     const deps = makeDeps({
       runGoalAudit,
-      taskCtx: { taskId: 't1', humanQueue: new HumanMessageQueue(), triggerType: 'message', hasGoal: true },
+      taskCtx: { taskId: 't1', humanQueue: new HumanMessageQueue(), triggerType: 'message', hasGoal: () => true },
     })
     const tools = buildMessagingTools(deps)
     const result = await callSendMessage(tools, { ...baseArgs, intent: 'final' })
@@ -161,7 +161,7 @@ describe('send_message audit gate', () => {
   it('deps.runGoalAudit 未注入时 → 即使 hasGoal=true 也不触发（向后兼容）', async () => {
     // 不传 runGoalAudit；hasGoal=true 但 deps.runGoalAudit 是 undefined，应 short-circuit
     const deps = makeDeps({
-      taskCtx: { taskId: 't1', humanQueue: new HumanMessageQueue(), triggerType: 'message', hasGoal: true },
+      taskCtx: { taskId: 't1', humanQueue: new HumanMessageQueue(), triggerType: 'message', hasGoal: () => true },
     })
     const tools = buildMessagingTools(deps)
     const result = await callSendMessage(tools, { ...baseArgs, intent: 'final' })

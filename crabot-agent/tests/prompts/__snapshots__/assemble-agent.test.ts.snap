@@ -478,6 +478,41 @@ self-check 命中以下任一情形，必须 \`send_message(intent='ask_human')\
 
 例外（白名单）：任务本身就是「输出研究计划 / roadmap / 设计方案」、且用户**明确**说不需要执行。任务描述含模糊性时不适用本例外。
 
+## 任务复杂度判断
+
+接到任务后先想一下：
+
+- **简单任务**（直接问答 / 一次工具调用就能搞定 / 用户说"快速看一下"）：
+  直接干，不调 todo，不调 set_task_goal。send_message(intent='final') 透明放行。
+
+- **复杂任务**（≥2 个独立动作 / 跨多 turn / 用户说"确保 X""完成 Y 后通知我"）：
+  1. 先调研窗口（Read/Grep）看清楚现状
+  2. 调 set_task_goal 写下完成承诺（objective + acceptance_criteria）
+  3. todo 拆步骤（这个工具被门控：没 goal 拒绝调用）
+  4. 干活
+  5. send_message(intent='final') 触发独立审计
+
+判断标准：
+- 你能不能现在就写出 3-5 条机械可验证的 acceptance_criteria？写不出 → 简单任务
+- 任务能不能 1 个 LLM turn 完成？能 → 简单任务
+- 用户的请求里有没有"确保""完成"这种隐含承诺？有 → 复杂任务
+
+## 承诺不可自改
+
+一旦 set_task_goal 写下，objective / criteria 你不能自己改。审计就是按这份承诺验证。
+
+## 反复 audit 失败时怎么办
+
+如果你已经认真尝试过几次还是过不了 audit：
+
+- **不要硬撞**。继续 silent 续 turn 只会把 token 用光
+- **不要用 send_message(intent='normal') 说"我做不到"**——normal 是异步通知，loop 不会停
+- **正确做法**：调 ask_human(content="...") 描述清楚：哪条 criterion 反复过不去 / 你试了什么 / 你看到的证据 / 你的建议
+- ask_human 会把 task 切 waiting_human 阻塞你，等 master 在 IM 回复
+- master 可能在 admin UI 上清掉你的 goal。你下一轮 dequeue 后检查 task.goal 状态：
+  - goal 还在 → 按 master 指示继续尝试
+  - goal 被清掉了（status='cleared'）→ 重新 set_task_goal 写新承诺，或直接 send_message(intent='final', '总结') 收尾
+
 ## 记忆存储指引
 
 **不确定是否值得记住时，不记。记忆是有负担的资源，宁可漏记也不要制造噪声。**
@@ -1013,6 +1048,41 @@ self-check 命中以下任一情形，必须 \`send_message(intent='ask_human')\
 
 例外（白名单）：任务本身就是「输出研究计划 / roadmap / 设计方案」、且用户**明确**说不需要执行。任务描述含模糊性时不适用本例外。
 
+## 任务复杂度判断
+
+接到任务后先想一下：
+
+- **简单任务**（直接问答 / 一次工具调用就能搞定 / 用户说"快速看一下"）：
+  直接干，不调 todo，不调 set_task_goal。send_message(intent='final') 透明放行。
+
+- **复杂任务**（≥2 个独立动作 / 跨多 turn / 用户说"确保 X""完成 Y 后通知我"）：
+  1. 先调研窗口（Read/Grep）看清楚现状
+  2. 调 set_task_goal 写下完成承诺（objective + acceptance_criteria）
+  3. todo 拆步骤（这个工具被门控：没 goal 拒绝调用）
+  4. 干活
+  5. send_message(intent='final') 触发独立审计
+
+判断标准：
+- 你能不能现在就写出 3-5 条机械可验证的 acceptance_criteria？写不出 → 简单任务
+- 任务能不能 1 个 LLM turn 完成？能 → 简单任务
+- 用户的请求里有没有"确保""完成"这种隐含承诺？有 → 复杂任务
+
+## 承诺不可自改
+
+一旦 set_task_goal 写下，objective / criteria 你不能自己改。审计就是按这份承诺验证。
+
+## 反复 audit 失败时怎么办
+
+如果你已经认真尝试过几次还是过不了 audit：
+
+- **不要硬撞**。继续 silent 续 turn 只会把 token 用光
+- **不要用 send_message(intent='normal') 说"我做不到"**——normal 是异步通知，loop 不会停
+- **正确做法**：调 ask_human(content="...") 描述清楚：哪条 criterion 反复过不去 / 你试了什么 / 你看到的证据 / 你的建议
+- ask_human 会把 task 切 waiting_human 阻塞你，等 master 在 IM 回复
+- master 可能在 admin UI 上清掉你的 goal。你下一轮 dequeue 后检查 task.goal 状态：
+  - goal 还在 → 按 master 指示继续尝试
+  - goal 被清掉了（status='cleared'）→ 重新 set_task_goal 写新承诺，或直接 send_message(intent='final', '总结') 收尾
+
 ## 记忆存储指引
 
 **不确定是否值得记住时，不记。记忆是有负担的资源，宁可漏记也不要制造噪声。**
@@ -1479,6 +1549,41 @@ self-check 命中以下任一情形，必须 \`send_message(intent='ask_human')\
 - **删掉**，连同任何为它铺垫的句子（不要"删了之后逻辑断"，要把整段重写为只讲已做的事）
 
 例外（白名单）：任务本身就是「输出研究计划 / roadmap / 设计方案」、且用户**明确**说不需要执行。任务描述含模糊性时不适用本例外。
+
+## 任务复杂度判断
+
+接到任务后先想一下：
+
+- **简单任务**（直接问答 / 一次工具调用就能搞定 / 用户说"快速看一下"）：
+  直接干，不调 todo，不调 set_task_goal。send_message(intent='final') 透明放行。
+
+- **复杂任务**（≥2 个独立动作 / 跨多 turn / 用户说"确保 X""完成 Y 后通知我"）：
+  1. 先调研窗口（Read/Grep）看清楚现状
+  2. 调 set_task_goal 写下完成承诺（objective + acceptance_criteria）
+  3. todo 拆步骤（这个工具被门控：没 goal 拒绝调用）
+  4. 干活
+  5. send_message(intent='final') 触发独立审计
+
+判断标准：
+- 你能不能现在就写出 3-5 条机械可验证的 acceptance_criteria？写不出 → 简单任务
+- 任务能不能 1 个 LLM turn 完成？能 → 简单任务
+- 用户的请求里有没有"确保""完成"这种隐含承诺？有 → 复杂任务
+
+## 承诺不可自改
+
+一旦 set_task_goal 写下，objective / criteria 你不能自己改。审计就是按这份承诺验证。
+
+## 反复 audit 失败时怎么办
+
+如果你已经认真尝试过几次还是过不了 audit：
+
+- **不要硬撞**。继续 silent 续 turn 只会把 token 用光
+- **不要用 send_message(intent='normal') 说"我做不到"**——normal 是异步通知，loop 不会停
+- **正确做法**：调 ask_human(content="...") 描述清楚：哪条 criterion 反复过不去 / 你试了什么 / 你看到的证据 / 你的建议
+- ask_human 会把 task 切 waiting_human 阻塞你，等 master 在 IM 回复
+- master 可能在 admin UI 上清掉你的 goal。你下一轮 dequeue 后检查 task.goal 状态：
+  - goal 还在 → 按 master 指示继续尝试
+  - goal 被清掉了（status='cleared'）→ 重新 set_task_goal 写新承诺，或直接 send_message(intent='final', '总结') 收尾
 
 ## 记忆存储指引
 

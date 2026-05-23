@@ -45,9 +45,10 @@ export interface TaskContext {
   /** 任务来源类型——schedule 触发的任务禁止调用 send_message(intent='ask_human')。
    *  与 Task.source.trigger_type 同名同枚举。 */
   triggerType: 'message' | 'scheduled'
-  /** 当前 task 是否挂了 goal；agent-handler 在装 deps 时由 admin task 查询结果设置。
+  /** 当前 task 是否挂了 goal；agent-handler 在装 deps 时由 admin task 查询结果维护 cache，
+   *  此处用 getter 形式以便 worker 中途 set_task_goal 后下一次工具调用立即生效。
    *  spec: 2026-05-23-goal-mode-design.md §4.2 */
-  hasGoal: boolean
+  hasGoal: () => boolean
 }
 
 // ============================================================================
@@ -496,7 +497,7 @@ export function buildMessagingTools(
         let auditWarning: string | undefined
         if (intent === 'final') {
           const taskCtx = deps.getTaskContext?.()
-          if (taskCtx?.hasGoal && deps.runGoalAudit) {
+          if (taskCtx?.hasGoal() && deps.runGoalAudit) {
             try {
               const audit = await deps.runGoalAudit({
                 taskId: taskCtx.taskId,

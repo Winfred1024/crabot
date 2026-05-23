@@ -85,6 +85,7 @@ import { getInstanceSkillsDir } from '../core/data-paths.js'
 import { llmUsageToTrace } from '../core/trace-usage.js'
 import { TodoStore } from './worker-todo-store.js'
 import { createTodoTool } from './worker-todo-tool.js'
+import { createSetTaskGoalTool } from './goal-tools.js'
 import {
   buildAuditPrompt,
   parseAuditReport,
@@ -714,6 +715,27 @@ export class AgentHandler {
         ? (await import('./trace-search-tool.js')).createSearchTracesTool(traceContext.traceStore)
         : undefined
 
+      // Goal mode：worker 启动时拍当前 task.goal 状态快照，构造同步 getter
+      // spec: 2026-05-23-goal-mode-design.md §7.5
+      //
+      // hasGoal 在 crab-messaging TaskContext 和 todo 工具 deps 中都是同步 getter，
+      // 但 admin RPC 是 async。折中：启动时 query 一次拍快照到 goalSetCache，
+      // 之后 worker 调 set_task_goal 工具时由 callAdminRpc 包装层同步更新 cache，
+      // 后续 turn 的 todo / send_message 检查 cache 立即生效，免去重复 RPC。
+      let goalSetCache = false
+      if (this.deps?.getAdminPort && this.deps.rpcClient) {
+        try {
+          const adminPort = await this.deps.getAdminPort()
+          const resp = await this.deps.rpcClient.call<
+            { task_id: string },
+            { task: { goal?: unknown } }
+          >(adminPort, 'get_task', { task_id: task.task_id }, this.deps.moduleId)
+          goalSetCache = resp.task.goal !== undefined
+        } catch {
+          // admin 不可用：保持 backward-compat，等同 no goal（audit gate 透明放行）
+        }
+      }
+
       // get_task_details 工具：让 worker 能查任意历史任务的完整执行复盘（用于"继续上次"场景）
       // digest LLM 用于超阈值时压缩；缺省则只截断
       const digestAdapterForTool = this.digestSdkEnv ? adapterFromSdkEnv(this.digestSdkEnv) : undefined
@@ -765,8 +787,8 @@ export class AgentHandler {
           taskId: task.task_id,
           humanQueue,
           triggerType: task.source?.trigger_type === 'scheduled' ? 'scheduled' : 'message',
-          // hasGoal: 暂时硬编码 false，Task 10 才接 admin task.goal 查询。
-          hasGoal: false,
+          // 用 getter 形式封装本地 cache，worker 中途 set_task_goal 后下一轮工具调用立即生效。
+          hasGoal: () => goalSetCache,
         }) ?? {}
         for (const [serverName, server] of Object.entries(externalMcpServers)) {
           tools.push(...mcpServerToToolDefinitions(server, serverName))
@@ -858,7 +880,27 @@ export class AgentHandler {
         }
 
         // 3j. todo tool — per-task mutable plan
-        tools.push(createTodoTool(taskState.todoStore))
+        // hasGoal 门控：复杂任务必须先 set_task_goal 才能 todo 写模式
+        // spec: 2026-05-23-goal-mode-design.md §5
+        tools.push(createTodoTool(taskState.todoStore, { hasGoal: () => goalSetCache }))
+
+        // 3j2. set_task_goal tool — worker 写下完成承诺，触发 audit gate + todo 门控解锁
+        // spec: 2026-05-23-goal-mode-design.md §7.3
+        if (this.deps?.getAdminPort && this.deps.rpcClient) {
+          const adminDeps = this.deps
+          tools.push(createSetTaskGoalTool({
+            taskId: task.task_id,
+            callAdminRpc: async <T = unknown>(method: string, params: unknown) => {
+              const adminPort = await adminDeps.getAdminPort!()
+              const result = await adminDeps.rpcClient.call<unknown, T>(adminPort, method, params, adminDeps.moduleId)
+              if (method === 'set_task_goal') {
+                // RPC 成功 → 同步更新本地 cache，让后续 todo 写模式 / audit gate 立即解锁
+                goalSetCache = true
+              }
+              return result
+            },
+          }))
+        }
 
         // 3k. Extra tools from opts (e.g., exit tools for trigger flow)
         if (opts?.extraTools) {

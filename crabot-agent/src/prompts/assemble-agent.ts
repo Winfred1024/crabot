@@ -21,6 +21,7 @@ import {
   INFO_QUERY_GUIDE,
   TOOL_USAGE,
   TASK_HARD_CONSTRAINTS,
+  GOAL_MODE_GUIDANCE,
   MEMORY_STORE_GUIDE,
   CLOSURE_DUTIES,
 } from './agent-sections.js'
@@ -64,6 +65,7 @@ export function assembleAgentPrompt(opts: AssembleAgentPromptOptions): string {
   parts.push(INFO_QUERY_GUIDE)
   parts.push(TOOL_USAGE)
   parts.push(TASK_HARD_CONSTRAINTS)
+  parts.push(GOAL_MODE_GUIDANCE)
   parts.push(MEMORY_STORE_GUIDE)
   parts.push(CLOSURE_DUTIES)
 
