@@ -765,6 +765,8 @@ export class AgentHandler {
           taskId: task.task_id,
           humanQueue,
           triggerType: task.source?.trigger_type === 'scheduled' ? 'scheduled' : 'message',
+          // hasGoal: 暂时硬编码 false，Task 10 才接 admin task.goal 查询。
+          hasGoal: false,
         }) ?? {}
         for (const [serverName, server] of Object.entries(externalMcpServers)) {
           tools.push(...mcpServerToToolDefinitions(server, serverName))

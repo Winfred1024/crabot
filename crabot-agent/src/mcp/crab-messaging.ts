@@ -14,6 +14,10 @@ import type { Friend } from '../types.js'
 import * as path from 'path'
 import { annotatePagination } from './pagination-annotator.js'
 import { translateChannelError } from './error-translator.js'
+import type { AuditResult } from '../agent/goal-audit.js'
+
+// Re-export so callers (agent-handler 装配 deps、单测) 可一处 import 拿到。
+export type { AuditResult }
 
 // ============================================================================
 // 依赖注入接口
@@ -30,6 +34,9 @@ export interface CrabMessagingDeps {
    * Front 调用路径返回 null（front 不能调 ask_human，工具内会拒绝）。
    */
   getTaskContext?: () => TaskContext | null
+  /** 可选：goal audit 执行入口。worker 路径 + taskCtx.hasGoal=true 时由 agent-handler 注入。
+   *  spec: 2026-05-23-goal-mode-design.md §4 */
+  runGoalAudit?: (params: { taskId: string; pendingContent: string }) => Promise<AuditResult>
 }
 
 export interface TaskContext {
@@ -38,6 +45,9 @@ export interface TaskContext {
   /** 任务来源类型——schedule 触发的任务禁止调用 send_message(intent='ask_human')。
    *  与 Task.source.trigger_type 同名同枚举。 */
   triggerType: 'message' | 'scheduled'
+  /** 当前 task 是否挂了 goal；agent-handler 在装 deps 时由 admin task 查询结果设置。
+   *  spec: 2026-05-23-goal-mode-design.md §4.2 */
+  hasGoal: boolean
 }
 
 // ============================================================================
@@ -129,15 +139,19 @@ export interface MessagingTool {
   name: string
   description: string
   schema: Record<string, z.ZodTypeAny>
-  handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ type: 'text'; text: string }> }>
+  handler: (args: Record<string, unknown>) => Promise<{
+    content: Array<{ type: 'text'; text: string }>
+    isError?: boolean
+  }>
 }
 
 // ============================================================================
 // 内部 helper
 // ============================================================================
 
-function wrapText(payload: unknown) {
-  return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] }
+function wrapText(payload: unknown, opts?: { isError?: boolean }) {
+  const base = { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] }
+  return opts?.isError ? { ...base, isError: true } : base
 }
 
 function clampPageSize(n: number, max = 100): number {
@@ -477,6 +491,37 @@ export function buildMessagingTools(
           }
         }
 
+        // === Goal Audit Gate (intent='final' + taskCtx.hasGoal) ===
+        // spec: 2026-05-23-goal-mode-design.md §4.3
+        let auditWarning: string | undefined
+        if (intent === 'final') {
+          const taskCtx = deps.getTaskContext?.()
+          if (taskCtx?.hasGoal && deps.runGoalAudit) {
+            try {
+              const audit = await deps.runGoalAudit({
+                taskId: taskCtx.taskId,
+                pendingContent: content,
+              })
+              if (!audit.pass) {
+                // 注入详细审计报告到 worker 下一轮 user message
+                taskCtx.humanQueue.push(audit.detailedReport)
+                // 工具返回简短拒绝 + audit_trace_id（追溯锚点）
+                return wrapText({
+                  error: `final 交付未通过目标审计（${audit.failedCriteria.length} 条不达标）。`
+                    + `详细审计报告已注入下一轮上下文，请根据缺口续作。`
+                    + `audit_trace_id: ${audit.auditTraceId}`,
+                }, { isError: true })
+              }
+              // audit pass → fall through 走正常发送路径（complete_task_goal 已在 runGoalAudit 内同步调）
+            } catch (err) {
+              // audit 跑挂：失败开放（不堵 worker）+ 留 warning 让 master 兜底
+              const msg = err instanceof Error ? err.message : String(err)
+              auditWarning = `audit 跑挂未拦截：${msg}`
+              console.warn(`[send_message] goal audit failed open: ${msg}`)
+            }
+          }
+        }
+
         // === Step 1: 先 send（高失败率操作先做；失败 → state 完全不变）===
         let sendResult: { platform_message_id: string; sent_at: string }
         try {
@@ -639,14 +684,21 @@ export function buildMessagingTools(
           if (stateError !== undefined) {
             // 补齐失败 / transient admin 故障：消息已发但状态没切。
             // 返回含 ask_human_state_error 的结果，worker 看到 error 字段会自己处理，不设 barrier 防止卡死。
-            return wrapText({ ...sendResult, ask_human_state_error: stateError })
+            return wrapText({
+              ...sendResult,
+              ask_human_state_error: stateError,
+              ...(auditWarning ? { audit_warning: auditWarning } : {}),
+            })
           }
 
           // Step 3: setBarrier（本地内存操作，从不失败）
           taskCtx.humanQueue.setBarrier(ASK_HUMAN_BARRIER_TIMEOUT_MS)
         }
 
-        return wrapText(sendResult)
+        return wrapText({
+          ...sendResult,
+          ...(auditWarning ? { audit_warning: auditWarning } : {}),
+        })
       },
     },
 
