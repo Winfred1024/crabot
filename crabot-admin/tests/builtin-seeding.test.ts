@@ -84,13 +84,14 @@ describe('getBuiltinSkills', () => {
 })
 
 describe('getBuiltinSubAgents', () => {
-  it('返回 3 个 builtin subagent', () => {
+  it('返回 4 个 builtin subagent', () => {
     const list = getBuiltinSubAgents()
-    expect(list).toHaveLength(3)
+    expect(list).toHaveLength(4)
     expect(list.map((s) => s.id).sort()).toEqual([
       BUILTIN_SUBAGENT_IDS.codePlanner,
       BUILTIN_SUBAGENT_IDS.codeWriter,
       BUILTIN_SUBAGENT_IDS.researchCollector,
+      BUILTIN_SUBAGENT_IDS.goalAuditor,
     ].sort())
   })
 
@@ -137,15 +138,15 @@ describe('SubAgentManager.seedBuiltin via getBuiltinSubAgents', () => {
     rmSync(tmpDir2, { recursive: true, force: true })
   })
 
-  it('空 registry 注入全 3 个', async () => {
+  it('空 registry 注入全 4 个', async () => {
     await mgr2.seedBuiltin(getBuiltinSubAgents())
-    expect(mgr2.list()).toHaveLength(3)
+    expect(mgr2.list()).toHaveLength(4)
   })
 
   it('idempotent — 第二次调用不变', async () => {
     await mgr2.seedBuiltin(getBuiltinSubAgents())
     await mgr2.seedBuiltin(getBuiltinSubAgents())
-    expect(mgr2.list()).toHaveLength(3)
+    expect(mgr2.list()).toHaveLength(4)
   })
 })
 
@@ -235,5 +236,38 @@ describe('SubAgentManager.pruneObsoleteBuiltins', () => {
 
     await mgr3.pruneObsoleteBuiltins(['builtin-x'])
     expect(mgr3.list().map((e) => e.id)).toEqual(['builtin-x'])
+  })
+})
+
+describe('getBuiltinSubAgents > goal_auditor', () => {
+  it('goal_auditor 配置正确', () => {
+    const g = getBuiltinSubAgents().find((s) => s.name === 'goal_auditor')
+    expect(g).toBeDefined()
+    if (!g) return
+    expect(g.id).toBe('builtin-goal-auditor')
+    expect(g.model_role).toBe('powerful')
+    expect(g.max_turns).toBe(15)
+    expect(g.system_only).toBe(true)
+    expect(g.is_builtin).toBe(true)
+    expect(g.enabled).toBe(true)
+    expect(g.builtin_capabilities).toEqual({
+      file_system: true,
+      shell: true,
+      task_intel: false,
+      crab_memory: false,
+      crab_messaging: false,
+    })
+    expect(g.allowed_skill_ids).toContain('builtin-skill-verification-before-completion')
+  })
+
+  it('goal_auditor 的 prompt 五段都齐全', () => {
+    const g = getBuiltinSubAgents().find((s) => s.name === 'goal_auditor')!
+    expect(g.role.length).toBeGreaterThan(100)
+    expect(g.workflow.length).toBeGreaterThan(100)
+    expect(g.deliverables).toContain('AUDIT_RESULT')
+    expect(g.deliverables).toContain('FAILED_CRITERIA')
+    expect(g.deliverables).toContain('AUDIT_REPORT_END')
+    expect(g.verification).toBeTruthy()
+    expect(g.when_to_use).toContain('system_only')
   })
 })

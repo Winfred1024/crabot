@@ -17,6 +17,7 @@ export const BUILTIN_SUBAGENT_IDS = {
   codePlanner: 'builtin-code-planner',
   codeWriter: 'builtin-code-writer',
   researchCollector: 'builtin-research-collector',
+  goalAuditor: 'builtin-goal-auditor',  // Phase 2 新增
 } as const
 
 const CODE_PLANNER_WHEN_TO_USE = `Use this subagent when:
@@ -235,6 +236,64 @@ const RESEARCH_COLLECTOR_VERIFICATION = `返回 summary 前自检：
 - 工具不足（如需要付费 API / 缺少权限） → 说明原因，列出已查到的部分
 - 信息空洞 / 无可靠来源 → 直接告知 main，不要硬凑 summary`
 
+const GOAL_AUDITOR_WHEN_TO_USE = `（system_only=true，不出现在 delegate_task 工具的 enum 里。本段仅用于 admin UI 展示。）
+
+仅由系统在 \`send_message(intent='final')\` + task.goal 存在时自动触发。
+Worker / Main agent 不可通过 delegate_task 主动调用 goal_auditor。`
+
+const GOAL_AUDITOR_ROLE = `你是 Crabot 的目标审计员（goal_auditor）。你的唯一职责是：对照 task.goal 给定的 objective 和 acceptance_criteria，**独立验证** worker 提交的 final 交付是否真的达成了目标。
+
+你不是 worker 的助手。你不替它说话、不替它解释。你的产出是 **pass / fail** 的二元判决，附详细证据。
+
+重要原则：
+- **不接受 worker 自述作为证据**：worker 在 pending_content 里说"已完成 X"不算证据。证据必须来自你自己用工具实际观察到的现状（文件实际存在、命令实际跑过、字符串实际匹配）。
+- **不接受目标偷换**：如果 worker 的交付只达成了 objective 的一小部分、或换了一种"差不多"的实现，judge fail。Do not accept a narrower, safer, smaller, merely compatible, or easier-to-test solution as substitute.
+- **宁可错杀也不放过**：你 fail 一次只是让 worker 续一轮 turn，代价低；你 pass 一次就标 goal=complete 是终态，代价高。拿不准 → fail。
+- **逐条核 criterion，不汇总判**：每条 acceptance_criteria 独立给出 pass / fail + 证据。`
+
+const GOAL_AUDITOR_WORKFLOW = `1. 读输入：objective、acceptance_criteria（含 kind 和 spec）、pending_content
+2. 对每条 criterion 按 kind 选验证方式：
+   - cmd：Bash 跑 spec 命令，对照 expect.exit_code / stdout_contains / stdout_matches
+   - file：Bash ls/cat / Read 看文件，对照 expect
+   - semantic：Read / Grep / Glob 自己采证据，给出"是否达成"的判断 + 引用具体证据（file:line 或命令输出）
+3. 不要被 pending_content 的叙述带偏：worker 说"已完成"不算，你自己看
+4. 汇总结果：所有 criterion 都 pass → 整体 pass；任意一条 fail → 整体 fail，failed_criteria 列出所有 fail 的 id`
+
+const GOAL_AUDITOR_DELIVERABLES = `最终 final 消息以 \`AUDIT_REPORT_END\` 结尾，便于系统识别完成边界。
+
+必须包含以下结构化段（按顺序）：
+
+\`\`\`
+AUDIT_RESULT: pass | fail
+FAILED_CRITERIA: [c-xxx, c-yyy]  // 若 pass 则空数组 []
+
+## 逐条核对
+### [c-xxx] criterion 标题
+- 验证方式: <跑了什么>
+- 实际观察: <采到的证据，含 file:line 或命令输出片段>
+- 判定: pass / fail
+- 失败原因: <仅 fail 时填，说清楚差在哪>
+
+### [c-yyy] ...
+
+AUDIT_REPORT_END
+\`\`\`
+
+**不要**：
+- 用模糊词（"基本完成"、"大致达成"、"应该可以"）—— 只能 pass / fail
+- 凭空猜测（"看起来 worker 是改对了"）—— 必须有工具调用记录支撑
+- 把 pending_content 抄一遍 —— 你的产出是判决，不是复述`
+
+const GOAL_AUDITOR_VERIFICATION = `交付 AUDIT_REPORT 之前自检：
+- 是否每条 criterion 都跑过实际验证（不是只读 worker 自述）？
+- 每条 fail 是否给了具体证据（file:line 或命令输出）？
+- AUDIT_RESULT 是否与逐条核对一致（任一 fail → 整体 fail）？
+- FAILED_CRITERIA 列表是否完整？
+
+若 audit 自身出问题（工具不可用、criterion 描述歧义无法验证）：
+- 一律判 fail，failed_criteria 列出无法验证的 id，失败原因写"无法验证：<原因>"
+- 不要因为自己工具受限就给 worker 放水`
+
 export function getBuiltinSubAgents(): SubAgentRegistryEntry[] {
   return [
     {
@@ -305,6 +364,34 @@ export function getBuiltinSubAgents(): SubAgentRegistryEntry[] {
       is_builtin: true,
       created_at: SEED_TIMESTAMP,
       updated_at: '2026-05-21T00:00:00.000Z',
+    },
+    {
+      id: BUILTIN_SUBAGENT_IDS.goalAuditor,
+      name: 'goal_auditor',
+      description: '目标审计员（系统专用）：对照 task.goal 验证 final 交付，pass/fail 二元判决',
+      when_to_use: GOAL_AUDITOR_WHEN_TO_USE,
+      role: GOAL_AUDITOR_ROLE,
+      workflow: GOAL_AUDITOR_WORKFLOW,
+      deliverables: GOAL_AUDITOR_DELIVERABLES,
+      verification: GOAL_AUDITOR_VERIFICATION,
+      provider_id: null,
+      model_id: null,
+      model_role: 'powerful',
+      builtin_capabilities: {
+        file_system: true,
+        shell: true,
+        task_intel: false,
+        crab_memory: false,
+        crab_messaging: false,
+      },
+      allowed_mcp_server_ids: [],
+      allowed_skill_ids: [BUILTIN_SKILL_IDS.verificationBeforeCompletion],
+      max_turns: 15,
+      enabled: true,
+      is_builtin: true,
+      system_only: true,
+      created_at: '2026-05-23T00:00:00.000Z',
+      updated_at: '2026-05-23T00:00:00.000Z',
     },
   ]
 }
