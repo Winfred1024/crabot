@@ -88,11 +88,12 @@ import { createTodoTool } from './worker-todo-tool.js'
 import { createSetTaskGoalTool } from './goal-tools.js'
 import {
   buildAuditPrompt,
-  parseAuditReport,
   buildHumanQueueReport,
+  resolveAuditJudgment,
   type AuditResult,
   type GoalAuditTaskGoal,
 } from './goal-audit.js'
+import { createSubmitAuditResultTool } from './goal-auditor-tools.js'
 
 import { reflectStructuredOutcome } from '../orchestration/structured-outcome-reflector.js'
 
@@ -2124,20 +2125,34 @@ export class AgentHandler {
       readonly traceSummaryPrefix?: string
       /** trigger.task_type；缺省不设。goal_audit 路径传 `'goal_audit'`，Admin UI 用来标特殊样式。 */
       readonly traceTaskType?: string
+      /** caller 注入的专属工具（如 audit 路径的 submit_audit_result），
+       *  在 capability filter **之后** concat 进 subTools。这些工具不走 capability 体系，
+       *  专属用法不污染通用过滤逻辑。 */
+      readonly extraTools?: ReadonlyArray<import('../engine/types.js').ToolDefinition>
     },
   ): Promise<import('../engine/types.js').ToolCallResult & {
     readonly traceId?: string
     /** auditor 等系统侧 caller 用的 raw subagent output（裸 finalText，不被 JSON 包裹）。
      *  delegate_task 工具路径继续用 output（JSON 包了元信息）；runGoalAudit 等不要解 JSON。 */
     readonly rawOutput?: string
+    /** exitsLoop 工具触发的早退判决：tool name + schema-enforced input。
+     *  例：audit subagent 调 submit_audit_result(pass, failed_criteria, evidence)
+     *  时直接拿到结构化判决，不必 regex parse free text。 */
+    readonly exitToolCall?: { readonly name: string; readonly input: Record<string, unknown> }
   }> {
     // 1. filter parent tools by subagent capabilities (delegate_task always excluded by filter)
-    const subTools = filterToolsForSubAgent(
+    const filteredSubTools = filterToolsForSubAgent(
       deps.parentTools,
       subagent.builtin_capabilities,
       subagent.allowed_mcp_server_ids,
       subagent.allowed_skill_ids,
     )
+    // caller 注入的专属工具（如 audit 的 submit_audit_result）在 capability filter
+    // 之后 concat，绕开 filter 的 unknown-default-deny 逻辑（这些工具不属于任何
+    // capability group，本来就会被剔除）。
+    const subTools = deps.extraTools
+      ? [...filteredSubTools, ...deps.extraTools]
+      : filteredSubTools
 
     // 2. assemble 5-section system prompt
     const systemPrompt = assembleSubAgentPrompt(subagent, {
@@ -2291,6 +2306,7 @@ export class AgentHandler {
           rawOutput: result.output,
           isError: true,
           ...(subTrace ? { traceId: subTrace.trace_id } : {}),
+          ...(result.exitToolCall ? { exitToolCall: result.exitToolCall } : {}),
         }
       }
 
@@ -2307,6 +2323,9 @@ export class AgentHandler {
         rawOutput: result.output,
         isError: false,
         ...(subTrace ? { traceId: subTrace.trace_id } : {}),
+        // exitToolCall：sub-agent 通过 exitsLoop 工具早退时的结构化判决（如 audit
+        // 的 submit_audit_result）。caller 优先用它而不是 parse free text。
+        ...(result.exitToolCall ? { exitToolCall: result.exitToolCall } : {}),
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -2394,7 +2413,7 @@ export class AgentHandler {
       cwd: process.cwd(),
     })
 
-    // 4. 跑 subagent（独立 trace, task_type='goal_audit'）
+    // 4. 跑 subagent（独立 trace, task_type='goal_audit'），注入 submit_audit_result 工具。
     const result = await this.runSubAgentDirect(
       auditor,
       {
@@ -2414,15 +2433,14 @@ export class AgentHandler {
         ...(params.traceConfig ? { traceConfig: params.traceConfig } : {}),
         traceSummaryPrefix: '[goal_audit]',
         traceTaskType: 'goal_audit',
+        // submit_audit_result 是 audit 专属 exitsLoop 工具，capability filter 之后注入。
+        // auditor 调它即结束，input 直接是 schema-enforced {pass, failed_criteria, evidence}。
+        extraTools: [createSubmitAuditResultTool()],
       },
     )
 
-    // 5. 解析输出
-    // 重要：runSubAgentDirect 的 output 字段是 JSON 包裹（含 child_trace_id 等元信息，
-    // 给 delegate_task 工具的 LLM caller 看）；audit 解析必须用 rawOutput 拿裸 finalText，
-    // 否则 parseAuditReport 在 JSON 字符串里找不到行首 AUDIT_RESULT: 走 sentinel 路径。
-    const auditRaw = String(result.rawOutput ?? result.output ?? '')
-    const parsed = parseAuditReport(auditRaw)
+    // 5. 解析判决（优先 tool call → fallback parseAuditReport → fallback sentinel）
+    const parsed = resolveAuditJudgment(result)
 
     // 6. 写 audit_history
     const auditTraceId = result.traceId ?? ''

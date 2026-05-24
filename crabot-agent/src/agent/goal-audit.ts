@@ -73,10 +73,44 @@ ${params.cwd}
 按 system prompt 的指引逐条验证，输出 AUDIT_REPORT。`
 }
 
-/** 当 auditor 输出未按契约 emit AUDIT_RESULT 时，failedCriteria 用此 sentinel
- *  标记"审计员自身故障"——避免下游错误消息显示"0 条不达标"误导 worker。
+/** 当 auditor 输出未按契约 emit AUDIT_RESULT 时（也包括 tool call 没调时），
+ *  failedCriteria 用此 sentinel 标记"审计员自身故障"——避免下游错误消息显示
+ *  "0 条不达标"误导 worker。
  *  spec: 2026-05-23-goal-mode-design.md §6.2 deliverables 契约 */
 export const AUDIT_PARSE_FAILURE_SENTINEL = '__no_audit_result_emitted__'
+
+/**
+ * 三层 fallback 解析 audit subagent 的判决：
+ * 1. tool call（happy path）：auditor 调 submit_audit_result，input 是 schema-enforced
+ *    {pass, failed_criteria, evidence}，零 parse 成本
+ * 2. 兜底 regex（auditor 没调工具但 emit 了 free-text "AUDIT_RESULT: ..."）：保留兼容
+ * 3. 都没拿到 → sentinel "__no_audit_result_emitted__"，判 fail
+ *
+ * spec: 2026-05-23-goal-mode-design.md §6.2
+ */
+export function resolveAuditJudgment(result: {
+  exitToolCall?: { name: string; input: Record<string, unknown> }
+  rawOutput?: string
+  output?: string
+}): ParsedAuditReport {
+  // Layer 1: tool call（首选）
+  if (result.exitToolCall && result.exitToolCall.name === 'submit_audit_result') {
+    const input = result.exitToolCall.input as {
+      pass?: unknown
+      failed_criteria?: unknown
+      evidence?: unknown
+    }
+    const pass = input.pass === true
+    const failedCriteria = Array.isArray(input.failed_criteria)
+      ? input.failed_criteria.map((x) => String(x))
+      : []
+    const evidence = typeof input.evidence === 'string' ? input.evidence : ''
+    return { pass, failedCriteria, rawOutput: evidence }
+  }
+  // Layer 2: 兜底 regex parse free text（auditor 没调工具但写了 AUDIT_RESULT: 行）
+  const rawText = String(result.rawOutput ?? result.output ?? '')
+  return parseAuditReport(rawText)
+}
 
 export function parseAuditReport(output: string): ParsedAuditReport {
   // 仅在 AUDIT_RESULT 行到 AUDIT_REPORT_END 之间的 envelope 内解析，

@@ -259,39 +259,49 @@ const GOAL_AUDITOR_WORKFLOW = `1. 读输入：objective、acceptance_criteria（
 3. 不要被 pending_content 的叙述带偏：worker 说"已完成"不算，你自己看
 4. 汇总结果：所有 criterion 都 pass → 整体 pass；任意一条 fail → 整体 fail，failed_criteria 列出所有 fail 的 id`
 
-const GOAL_AUDITOR_DELIVERABLES = `最终 final 消息以 \`AUDIT_REPORT_END\` 结尾，便于系统识别完成边界。
+const GOAL_AUDITOR_DELIVERABLES = `**必须**通过调 \`submit_audit_result\` 工具收尾审计——这是 schema-enforced 的结构化协议，外层直接拿你的判决。
 
-必须包含以下结构化段（按顺序）：
+不要用 free text 写 "AUDIT_RESULT: pass" / "FAILED_CRITERIA: ..." 之类的标记——外层不再解析这些文本（旧契约已废弃）。
+
+工具签名（你看到的工具列表里会有它）：
 
 \`\`\`
-AUDIT_RESULT: pass | fail
-FAILED_CRITERIA: [c-xxx, c-yyy]  // 若 pass 则空数组 []
+submit_audit_result({
+  pass: boolean,            // 所有 criterion 都通过才 true；拿不准 → false
+  failed_criteria: string[],// 未通过的 criterion id（pass=true 时空数组）
+  evidence: string,         // 逐条核对的 markdown 证据汇总（见下方格式）
+})
+\`\`\`
 
+调用即结束审计；调完不要再调其它工具。
+
+**evidence 字段的 markdown 格式**（按 criterion 顺序）：
+
+\`\`\`
 ## 逐条核对
 ### [c-xxx] criterion 标题
-- 验证方式: <跑了什么>
-- 实际观察: <采到的证据，含 file:line 或命令输出片段>
+- 验证方式: <跑了什么工具、什么命令>
+- 实际观察: <采到的证据片段，含 file:line / 命令 stdout 等>
 - 判定: pass / fail
 - 失败原因: <仅 fail 时填，说清楚差在哪>
 
 ### [c-yyy] ...
-
-AUDIT_REPORT_END
 \`\`\`
 
 **不要**：
-- 用模糊词（"基本完成"、"大致达成"、"应该可以"）—— 只能 pass / fail
-- 凭空猜测（"看起来 worker 是改对了"）—— 必须有工具调用记录支撑
-- 把 pending_content 抄一遍 —— 你的产出是判决，不是复述`
+- 用模糊词（"基本完成"、"大致达成"、"应该可以"）—— pass 字段只能 true / false
+- 凭空猜测（"看起来 worker 是改对了"）—— evidence 必须有工具调用记录支撑
+- 把 pending_content 抄一遍 —— 你的产出是判决，不是复述
+- silent end_turn 不调本工具 —— 视为审计员故障，外层当 fail 处理`
 
-const GOAL_AUDITOR_VERIFICATION = `交付 AUDIT_REPORT 之前自检：
+const GOAL_AUDITOR_VERIFICATION = `调 submit_audit_result 之前自检：
 - 是否每条 criterion 都跑过实际验证（不是只读 worker 自述）？
-- 每条 fail 是否给了具体证据（file:line 或命令输出）？
-- AUDIT_RESULT 是否与逐条核对一致（任一 fail → 整体 fail）？
-- FAILED_CRITERIA 列表是否完整？
+- 每条 fail 是否在 evidence 里给了具体证据（file:line 或命令输出）？
+- pass 字段是否与 evidence 内的逐条判定一致（任一 fail → pass=false）？
+- failed_criteria 列表是否完整覆盖了 evidence 里所有 fail 的 id？
 
 若 audit 自身出问题（工具不可用、criterion 描述歧义无法验证）：
-- 一律判 fail，failed_criteria 列出无法验证的 id，失败原因写"无法验证：<原因>"
+- 一律 submit_audit_result({pass: false, failed_criteria: [无法验证的 id], evidence: "无法验证：<原因>"})
 - 不要因为自己工具受限就给 worker 放水`
 
 export function getBuiltinSubAgents(): SubAgentRegistryEntry[] {

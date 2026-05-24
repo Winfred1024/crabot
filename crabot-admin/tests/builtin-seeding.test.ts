@@ -262,14 +262,15 @@ describe('getBuiltinSubAgents > goal_auditor', () => {
     expect(g.allowed_skill_ids).toContain('builtin-skill-verification-before-completion')
   })
 
-  it('goal_auditor 的 prompt 五段都齐全', () => {
+  it('goal_auditor 的 prompt 五段都齐全（tool call 协议）', () => {
     const g = getBuiltinSubAgents().find((s) => s.name === 'goal_auditor')!
     expect(g.role.length).toBeGreaterThan(100)
     expect(g.workflow.length).toBeGreaterThan(100)
-    expect(g.deliverables).toContain('AUDIT_RESULT')
-    expect(g.deliverables).toContain('FAILED_CRITERIA')
-    expect(g.deliverables).toContain('AUDIT_REPORT_END')
+    // tool call 协议：要求调 submit_audit_result，不再 emit AUDIT_RESULT 自由文本
+    expect(g.deliverables).toContain('submit_audit_result')
+    expect(g.deliverables).toMatch(/pass.*boolean|failed_criteria|evidence/)
     expect(g.verification).toBeTruthy()
+    expect(g.verification).toContain('submit_audit_result')
     expect(g.when_to_use).toContain('system_only')
   })
 })

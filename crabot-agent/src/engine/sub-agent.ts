@@ -56,6 +56,11 @@ export interface ForkEngineResult {
   readonly totalTurns: number
   /** Error message (when outcome is 'failed') */
   readonly error?: string
+  /** 早退工具（exitsLoop=true）触发时的 tool name + input。
+   *  例：goal_audit 路径 auditor 调 submit_audit_result 时，input 是
+   *  schema-enforced 的 {pass, failed_criteria, evidence}，caller 直接拿
+   *  结构化结果，不必 regex parse free text。 */
+  readonly exitToolCall?: { readonly name: string; readonly input: Record<string, unknown> }
 }
 
 const DEFAULT_SUB_AGENT_MAX_TURNS = 20
@@ -100,6 +105,7 @@ export async function forkEngine(params: ForkEngineParams): Promise<ForkEngineRe
     usage: result.usage,
     totalTurns: result.totalTurns,
     error: result.error,
+    ...(result.exitToolCall ? { exitToolCall: result.exitToolCall } : {}),
   }
 }
 

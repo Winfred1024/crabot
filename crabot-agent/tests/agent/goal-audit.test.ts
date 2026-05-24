@@ -3,6 +3,8 @@ import {
   buildAuditPrompt,
   parseAuditReport,
   buildHumanQueueReport,
+  resolveAuditJudgment,
+  AUDIT_PARSE_FAILURE_SENTINEL,
 } from '../../src/agent/goal-audit.js'
 import type { GoalAuditTaskGoal } from '../../src/agent/goal-audit.js'
 
@@ -172,5 +174,85 @@ describe('buildHumanQueueReport', () => {
     // 验证 rawOutput 被 ``` 包裹
     expect(report).toMatch(/```\n## 内部 markdown/)
     expect(report).toMatch(/broken fence[\s\S]*```/)  // 闭合 fence
+  })
+})
+
+describe('resolveAuditJudgment', () => {
+  it('Layer 1 优先：tool call (submit_audit_result) 拿到结构化判决', () => {
+    const r = resolveAuditJudgment({
+      exitToolCall: {
+        name: 'submit_audit_result',
+        input: {
+          pass: true,
+          failed_criteria: [],
+          evidence: '## 逐条核对\n### [c1]\n- 判定: pass',
+        },
+      },
+      // rawOutput / output 应被忽略（tool call 优先）
+      rawOutput: 'irrelevant free text',
+    })
+    expect(r.pass).toBe(true)
+    expect(r.failedCriteria).toEqual([])
+    expect(r.rawOutput).toContain('c1')
+  })
+
+  it('Layer 1：fail 路径解析 failed_criteria 字符串数组', () => {
+    const r = resolveAuditJudgment({
+      exitToolCall: {
+        name: 'submit_audit_result',
+        input: {
+          pass: false,
+          failed_criteria: ['c-typecheck', 'c-coverage'],
+          evidence: 'typecheck 报错 + coverage 缺失',
+        },
+      },
+    })
+    expect(r.pass).toBe(false)
+    expect(r.failedCriteria).toEqual(['c-typecheck', 'c-coverage'])
+    expect(r.rawOutput).toContain('typecheck 报错')
+  })
+
+  it('Layer 2 fallback：没 tool call 但有 AUDIT_RESULT free text → regex parse', () => {
+    const r = resolveAuditJudgment({
+      rawOutput: 'AUDIT_RESULT: pass\nFAILED_CRITERIA: []\n\nAUDIT_REPORT_END',
+    })
+    expect(r.pass).toBe(true)
+    expect(r.failedCriteria).toEqual([])
+  })
+
+  it('Layer 3 兜底：完全没拿到 → sentinel + pass=false', () => {
+    const r = resolveAuditJudgment({ rawOutput: 'auditor 输出格式错乱' })
+    expect(r.pass).toBe(false)
+    expect(r.failedCriteria).toEqual([AUDIT_PARSE_FAILURE_SENTINEL])
+  })
+
+  it('exitToolCall.name 不是 submit_audit_result → 走 Layer 2 fallback', () => {
+    const r = resolveAuditJudgment({
+      exitToolCall: { name: 'something_else', input: { pass: true } },
+      rawOutput: 'AUDIT_RESULT: fail\nFAILED_CRITERIA: [c1]',
+    })
+    expect(r.pass).toBe(false)
+    expect(r.failedCriteria).toEqual(['c1'])
+  })
+
+  it('tool call input 字段不规范（pass 非 boolean）→ pass 当 false 处理', () => {
+    const r = resolveAuditJudgment({
+      exitToolCall: {
+        name: 'submit_audit_result',
+        input: { pass: 'yes' as unknown, failed_criteria: [], evidence: '' },
+      },
+    })
+    expect(r.pass).toBe(false)  // 严格 === true 才算 pass
+    expect(r.failedCriteria).toEqual([])
+  })
+
+  it('tool call input failed_criteria 非数组 → 视为空', () => {
+    const r = resolveAuditJudgment({
+      exitToolCall: {
+        name: 'submit_audit_result',
+        input: { pass: false, failed_criteria: 'c1,c2' as unknown, evidence: '' },
+      },
+    })
+    expect(r.failedCriteria).toEqual([])
   })
 })
