@@ -506,12 +506,11 @@ self-check 命中以下任一情形，必须 \`send_message(intent='ask_human')\
 如果你已经认真尝试过几次还是过不了 audit：
 
 - **不要硬撞**。继续 silent 续 turn 只会把 token 用光
-- **不要用 send_message(intent='normal') 说"我做不到"**——normal 是异步通知，loop 不会停
-- **正确做法**：调 ask_human(content="...") 描述清楚：哪条 criterion 反复过不去 / 你试了什么 / 你看到的证据 / 你的建议
-- ask_human 会把 task 切 waiting_human 阻塞你，等 master 在 IM 回复
+- 任何"想让 master 介入"——包括"我做不到 X / 想换方向 / 想申请放弃某 criterion / 审计员异常"——**一律走 ask_human**，不要用 normal。normal 是单向通知，loop 不会停，你说完下一轮还要面对同样问题
+- ask_human 描述清楚：哪条 criterion 过不去 / 你试了什么 / 看到的证据 / 你的建议
 - master 可能在 admin UI 上清掉你的 goal。你下一轮 dequeue 后检查 task.goal 状态：
   - goal 还在 → 按 master 指示继续尝试
-  - goal 被清掉了（status='cleared'）→ 重新 set_task_goal 写新承诺，或直接 send_message(intent='final', '总结') 收尾
+  - goal 被清掉了（status='cleared'）→ 重新 set_task_goal 写新承诺，或 send_message(intent='final', '总结') 收尾
 
 ## 记忆存储指引
 
@@ -1076,12 +1075,11 @@ self-check 命中以下任一情形，必须 \`send_message(intent='ask_human')\
 如果你已经认真尝试过几次还是过不了 audit：
 
 - **不要硬撞**。继续 silent 续 turn 只会把 token 用光
-- **不要用 send_message(intent='normal') 说"我做不到"**——normal 是异步通知，loop 不会停
-- **正确做法**：调 ask_human(content="...") 描述清楚：哪条 criterion 反复过不去 / 你试了什么 / 你看到的证据 / 你的建议
-- ask_human 会把 task 切 waiting_human 阻塞你，等 master 在 IM 回复
+- 任何"想让 master 介入"——包括"我做不到 X / 想换方向 / 想申请放弃某 criterion / 审计员异常"——**一律走 ask_human**，不要用 normal。normal 是单向通知，loop 不会停，你说完下一轮还要面对同样问题
+- ask_human 描述清楚：哪条 criterion 过不去 / 你试了什么 / 看到的证据 / 你的建议
 - master 可能在 admin UI 上清掉你的 goal。你下一轮 dequeue 后检查 task.goal 状态：
   - goal 还在 → 按 master 指示继续尝试
-  - goal 被清掉了（status='cleared'）→ 重新 set_task_goal 写新承诺，或直接 send_message(intent='final', '总结') 收尾
+  - goal 被清掉了（status='cleared'）→ 重新 set_task_goal 写新承诺，或 send_message(intent='final', '总结') 收尾
 
 ## 记忆存储指引
 
@@ -1578,12 +1576,11 @@ self-check 命中以下任一情形，必须 \`send_message(intent='ask_human')\
 如果你已经认真尝试过几次还是过不了 audit：
 
 - **不要硬撞**。继续 silent 续 turn 只会把 token 用光
-- **不要用 send_message(intent='normal') 说"我做不到"**——normal 是异步通知，loop 不会停
-- **正确做法**：调 ask_human(content="...") 描述清楚：哪条 criterion 反复过不去 / 你试了什么 / 你看到的证据 / 你的建议
-- ask_human 会把 task 切 waiting_human 阻塞你，等 master 在 IM 回复
+- 任何"想让 master 介入"——包括"我做不到 X / 想换方向 / 想申请放弃某 criterion / 审计员异常"——**一律走 ask_human**，不要用 normal。normal 是单向通知，loop 不会停，你说完下一轮还要面对同样问题
+- ask_human 描述清楚：哪条 criterion 过不去 / 你试了什么 / 看到的证据 / 你的建议
 - master 可能在 admin UI 上清掉你的 goal。你下一轮 dequeue 后检查 task.goal 状态：
   - goal 还在 → 按 master 指示继续尝试
-  - goal 被清掉了（status='cleared'）→ 重新 set_task_goal 写新承诺，或直接 send_message(intent='final', '总结') 收尾
+  - goal 被清掉了（status='cleared'）→ 重新 set_task_goal 写新承诺，或 send_message(intent='final', '总结') 收尾
 
 ## 记忆存储指引
 

@@ -782,6 +782,11 @@ export class AgentHandler {
           tools.push(...mcpServerToToolDefinitions(crabMemoryServer, 'crab-memory'))
         }
 
+        // baseTools 是后面（line ~860+）才构造的；这里用 outer let 提前声明，
+        // 让 mcpConfigFactory 通过 getter 拿到 audit 用的 worker baseTools。
+        // spec: 2026-05-23-goal-mode-design.md §6 / §7.2（auditor 工具来源）
+        let auditBaseTools: ReadonlyArray<ToolDefinition> = []
+
         // 3c. External MCP server tools (crab-messaging, etc.)
         const externalMcpServers = this.mcpConfigFactory?.({
           taskId: task.task_id,
@@ -793,6 +798,9 @@ export class AgentHandler {
           // 产生的 sub_agent_call span 挂到主 worker trace 下，admin UI 能渲染。
           // spec: 2026-05-23-goal-mode-design.md §4.2
           ...(subAgentTraceConfig ? { traceConfig: subAgentTraceConfig } : {}),
+          // getter 形式 forward-reference：baseTools 在下方 ~line 860 构造，
+          // audit gate 真正触发时 baseTools 已就位。
+          auditParentTools: () => auditBaseTools,
         }) ?? {}
         for (const [serverName, server] of Object.entries(externalMcpServers)) {
           tools.push(...mcpServerToToolDefinitions(server, serverName))
@@ -857,7 +865,11 @@ export class AgentHandler {
         const baseToolsRaw = [...tools]
         const baseToolsPermissionConfig: ToolPermissionConfig =
           this.deps?.getPermissionConfig?.(baseToolsRaw, context.resolved_permissions) ?? { mode: 'bypass' }
+        // baseTools 构造后立刻把 outer auditBaseTools 接上，给 audit gate 的 getter 用。
+        // 见 mcpConfigFactory 上方的 outer let 声明。
         const baseTools = filterToolsByPermission(baseToolsRaw, baseToolsPermissionConfig)
+        // 把 baseTools 接到 outer auditBaseTools，让 audit gate getter 能拿到。
+        auditBaseTools = baseTools
 
         if (subAgentsSnapshot.length > 0) {
           tools.push(createDelegateTaskTool({
@@ -1440,9 +1452,15 @@ export class AgentHandler {
         onAfterTurn: (event) => {
           for (const tc of event.toolCalls) {
             const bare = tc.name.replace(/^mcp__[^_]+__/, '')
-            if ((bare === 'send_message' || bare === 'send_private_message') && !tc.isError) {
-              sentMessage = true
+            if (bare === 'send_message' || bare === 'send_private_message') {
               const intent = (tc.input as { intent?: string } | undefined)?.intent
+              // sentMessage 严格追踪"消息成功发送"——失败不算
+              if (!tc.isError) sentMessage = true
+              // finalSent 追踪"worker 已表达交付意图"——只要调了 intent='final'，
+              // 不论 audit 是否通过都算（避免 audit fail → silent end_turn →
+              // forced_summary 反复轰炸的死循环）。audit fail 路径的 humanQueue
+              // 报告会驱动 worker 续作或 ask_human；worker 若 silent end_turn 视为
+              // 主动放弃，不再被 forced_summary 拦截。
               if (intent === 'final') finalSent = true
             }
           }
@@ -2324,6 +2342,9 @@ export class AgentHandler {
     readonly pendingContent: string
     readonly traceConfig?: SubAgentTraceConfig
     readonly abortSignal?: AbortSignal
+    /** worker baseTools；auditor 的 capability filter（file_system+shell）在其上筛子集。
+     *  缺省/空数组 = auditor 没有 Bash/Read/Grep 等工具，实测会回"环境没有工具"导致永远 fail。 */
+    readonly parentTools?: ReadonlyArray<import('../engine/types.js').ToolDefinition>
   }): Promise<AuditResult> {
     if (!this.deps?.getAdminPort || !this.deps.rpcClient) {
       throw new Error('runGoalAudit: getAdminPort/rpcClient deps 缺失')
@@ -2366,7 +2387,9 @@ export class AgentHandler {
       },
       { ...(params.abortSignal ? { abortSignal: params.abortSignal } : {}) },
       {
-        parentTools: [],
+        // parentTools: 来自 worker baseTools（capability filter 会在其上筛 file_system+shell）；
+        // 缺省 [] 是历史 bug，会让 auditor 没工具可用、根本无法验证任何 criterion。
+        parentTools: params.parentTools ?? [],
         parentTaskId: params.taskId,
         callerLabel: 'goal_audit',
         ...(params.traceConfig ? { traceConfig: params.traceConfig } : {}),

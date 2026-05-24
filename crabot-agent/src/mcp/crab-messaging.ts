@@ -43,6 +43,9 @@ export interface CrabMessagingDeps {
      *  span 挂到主 worker trace 下，admin UI 才能渲染。缺省则 audit 跑在 standalone
      *  trace 里（auditTraceId 为空，admin UI 看不到）。 */
     traceConfig?: import('../engine/sub-agent.js').SubAgentTraceConfig
+    /** worker baseTools，auditor 的 capability filter 在其上筛 file_system+shell 子集。
+     *  传空数组会让 auditor 无工具可用，根本无法验证。 */
+    parentTools?: ReadonlyArray<import('../engine/types.js').ToolDefinition>
   }) => Promise<AuditResult>
 }
 
@@ -61,6 +64,12 @@ export interface TaskContext {
    *  会透传给 runGoalAudit，让 audit subagent 的 sub_agent_call span 挂到主 trace。
    *  缺省（front 路径等）则 audit 走 standalone trace。 */
   traceConfig?: import('../engine/sub-agent.js').SubAgentTraceConfig
+  /** worker baseTools 的 getter（forward reference：baseTools 在 mcpConfigFactory
+   *  调用后才构造）。audit gate 透传给 runGoalAudit 作为 audit subagent 的 parentTools；
+   *  auditor 的 capability filter 再筛出 file_system + shell 子集。
+   *  缺省/返回空数组 = auditor 无 Bash/Read/Grep 等工具，无法验证 acceptance_criteria。
+   *  spec: 2026-05-23-goal-mode-design.md §6 / §7.2 */
+  auditParentTools?: () => ReadonlyArray<import('../engine/types.js').ToolDefinition>
 }
 
 // ============================================================================
@@ -463,7 +472,12 @@ export function buildMessagingTools(
     // ================================================================
     {
       name: 'send_message',
-      description: '在指定 Channel 的指定 Session 中发送消息。支持文本、媒体 URL、本地文件路径。\n\nintent 参数说明：\n- "normal"（默认）：普通消息（ack / 进度告知 / 中间结果），发完继续后续工作。\n- "final"：本任务的最终交付消息，发完即代表你的工作完成；之后 silent end_turn 视为正常结束。\n- "ask_human"：发出后阻塞等待人类回应，适合"你想要 A 还是 B"这类必须等回答才能继续的问题。滥用会让任务停摆，能自己决策的不要 ask。',
+      description: `在指定 Channel 的指定 Session 中发送消息。支持文本、媒体 URL、本地文件路径。
+
+intent 参数（决定工具返回后 worker 的去向，选错会让 loop 失控）：
+- "normal"（默认）：单向通知（ack / 进度告知 / 中间结果），发完 worker 立即继续。**不用于**"我做不到 / 卡住了 / 想换方向"——人类同步看不到，loop 不停，下一轮你还要面对同样状态。
+- "final"：本任务的最终交付。task 挂了 goal 会触发独立审计；通过即 end_turn。
+- "ask_human"：阻塞等人类回应（task 切 waiting_human）。**任何想让 master 同步回复才能继续的场景**都用它，不限问句形态——决策分叉 / 求助 / 关键澄清都算。Self-check：你期不期待回复内容会改变下一轮动作？期待→ask_human，不期待→normal。滥用会让任务停摆，能自己决策的不要 ask。`,
       schema: {
         channel_id: z.string().describe('Channel 模块实例 ID'),
         session_id: z.string().describe('目标 Session ID'),
@@ -517,6 +531,9 @@ export function buildMessagingTools(
                 // 透传 traceConfig 让 audit sub-trace 挂主 worker trace 下，
                 // 否则 auditTraceId 是空串、admin UI 看不到 audit subagent。
                 ...(taskCtx.traceConfig ? { traceConfig: taskCtx.traceConfig } : {}),
+                // 透传 worker baseTools（getter，懒执行）；缺省会让 auditor 无
+                // Bash/Read/Grep 等工具，实测会回"环境没有工具"导致 audit 永远 fail。
+                ...(taskCtx.auditParentTools ? { parentTools: taskCtx.auditParentTools() } : {}),
               })
               if (!audit.pass) {
                 // 注入详细审计报告到 worker 下一轮 user message
