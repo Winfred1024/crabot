@@ -2125,7 +2125,12 @@ export class AgentHandler {
       /** trigger.task_type；缺省不设。goal_audit 路径传 `'goal_audit'`，Admin UI 用来标特殊样式。 */
       readonly traceTaskType?: string
     },
-  ): Promise<import('../engine/types.js').ToolCallResult & { readonly traceId?: string }> {
+  ): Promise<import('../engine/types.js').ToolCallResult & {
+    readonly traceId?: string
+    /** auditor 等系统侧 caller 用的 raw subagent output（裸 finalText，不被 JSON 包裹）。
+     *  delegate_task 工具路径继续用 output（JSON 包了元信息）；runGoalAudit 等不要解 JSON。 */
+    readonly rawOutput?: string
+  }> {
     // 1. filter parent tools by subagent capabilities (delegate_task always excluded by filter)
     const subTools = filterToolsForSubAgent(
       deps.parentTools,
@@ -2283,18 +2288,23 @@ export class AgentHandler {
         })
         return {
           output: JSON.stringify(failure),
+          rawOutput: result.output,
           isError: true,
           ...(subTrace ? { traceId: subTrace.trace_id } : {}),
         }
       }
 
       return {
+        // output 给 delegate_task 工具 caller (worker LLM) 看：JSON 包了 child_trace_id 等
+        // 元信息，便于 worker 拼下一轮 prompt 追溯
         output: JSON.stringify({
           output: result.output,
           outcome: result.outcome,
           totalTurns: result.totalTurns,
           child_trace_id: subTrace?.trace_id,
         }),
+        // rawOutput 给系统侧 caller（如 runGoalAudit）解 auditor 原始文本，不要解 JSON
+        rawOutput: result.output,
         isError: false,
         ...(subTrace ? { traceId: subTrace.trace_id } : {}),
       }
@@ -2408,7 +2418,11 @@ export class AgentHandler {
     )
 
     // 5. 解析输出
-    const parsed = parseAuditReport(String(result.output))
+    // 重要：runSubAgentDirect 的 output 字段是 JSON 包裹（含 child_trace_id 等元信息，
+    // 给 delegate_task 工具的 LLM caller 看）；audit 解析必须用 rawOutput 拿裸 finalText，
+    // 否则 parseAuditReport 在 JSON 字符串里找不到行首 AUDIT_RESULT: 走 sentinel 路径。
+    const auditRaw = String(result.rawOutput ?? result.output ?? '')
+    const parsed = parseAuditReport(auditRaw)
 
     // 6. 写 audit_history
     const auditTraceId = result.traceId ?? ''
