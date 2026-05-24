@@ -106,6 +106,9 @@ export async function spawnPersistentAgent(opts: SpawnPersistentAgentOpts): Prom
           model: opts.model,
           ...(opts.maxTokens !== undefined ? { maxTokens: opts.maxTokens } : {}),
           abortSignal: abortController.signal,
+          // 同 forkEngine：bg-agent 也是 subagent 派发路径，禁用 compaction。
+          // 详见 EngineOptions.disableCompaction 注释。
+          disableCompaction: true,
           onLiveProgress: (event) => {
             // Append event as a JSONL line; errors are silently swallowed so
             // logging failures never crash the agent loop.

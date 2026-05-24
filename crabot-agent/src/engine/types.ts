@@ -313,6 +313,20 @@ export interface EngineOptions {
    */
   readonly onCompactionEnd?: (info: { readonly beforeCount: number; readonly afterCount: number; readonly durationMs: number }) => void
   /**
+   * 禁用所有 compaction 触发路径（既不自动压缩，也不在 max_tokens 静默响应时压缩重试）。
+   *
+   * 设计动机：subagent 应当是"短命 + 有界 + 独立"的，靠 maxTurns 控制资源消耗，
+   * 不让其跑到需要压缩的规模。一旦 subagent 内部 compact，会出现：
+   * 1) 父 agent 无感知（trace 黑洞）；
+   * 2) 嵌套 LLM call（compaction 摘要也要 LLM），行为不可预测；
+   * 3) 返回给父的 finalText 基于压缩后的视角，丢失原始决策依据。
+   *
+   * 该标志默认 false（主 worker handler 行为不变）；forkEngine 显式传 true。
+   * 若 subagent 不幸跑到 max_tokens，直接以 outcome='completed' 空 finalText 退出，
+   * 由父 agent 根据 totalTurns + 空 output 判断是否拆任务 / 上调 budget。
+   */
+  readonly disableCompaction?: boolean
+  /**
    * 超期检测配置。引擎在每个 turn 结束时测量从 `startedAtMs`（默认为 runEngine 入口时刻）
    * 到当前的 elapsed；超过 timeoutMs 且本 loop 内未注入过时，调 `onOverdue()` 询问注入文本。
    *

@@ -321,7 +321,8 @@ export function getBuiltinSubAgents(): SubAgentRegistryEntry[] {
       builtin_capabilities: { file_system: true, shell: true, task_intel: true, crab_memory: true, crab_messaging: false },
       allowed_mcp_server_ids: [],
       allowed_skill_ids: [BUILTIN_SKILL_IDS.writingPlans],
-      max_turns: 30,
+      // 规划阶段需读多文件 + 调研 + 写 plan；30 偏紧，上调避免触顶截断。
+      max_turns: 60,
       enabled: true,
       is_builtin: true,
       created_at: SEED_TIMESTAMP,
@@ -342,7 +343,8 @@ export function getBuiltinSubAgents(): SubAgentRegistryEntry[] {
       builtin_capabilities: { file_system: true, shell: true, task_intel: false, crab_memory: false, crab_messaging: false },
       allowed_mcp_server_ids: [],
       allowed_skill_ids: [BUILTIN_SKILL_IDS.systematicDebugging, BUILTIN_SKILL_IDS.verificationBeforeCompletion],
-      max_turns: 50,
+      // 实写阶段 read/edit/test/grep 反复，50 容易触顶。参考 Claude Code FORK_AGENT=200。
+      max_turns: 120,
       enabled: true,
       is_builtin: true,
       created_at: SEED_TIMESTAMP,
@@ -369,7 +371,8 @@ export function getBuiltinSubAgents(): SubAgentRegistryEntry[] {
       },
       allowed_mcp_server_ids: [],
       allowed_skill_ids: [],
-      max_turns: 30,
+      // 调查员要消化 web/本地/shell/图片多源信息再凝练 ≤2K tokens；30 偏紧。
+      max_turns: 60,
       enabled: true,
       is_builtin: true,
       created_at: SEED_TIMESTAMP,
@@ -396,7 +399,9 @@ export function getBuiltinSubAgents(): SubAgentRegistryEntry[] {
       },
       allowed_mcp_server_ids: [],
       allowed_skill_ids: [BUILTIN_SKILL_IDS.verificationBeforeCompletion],
-      max_turns: 15,
+      // 逐条验证 acceptance criteria 可能要 Bash 跑命令 + Read 验文件，15 极易触顶。
+      // 截图反馈"派出但子任务到轮次上限"主要就在 audit 路径，上调到 50。
+      max_turns: 50,
       enabled: true,
       is_builtin: true,
       system_only: true,

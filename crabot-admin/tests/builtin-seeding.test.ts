@@ -248,7 +248,7 @@ describe('getBuiltinSubAgents > goal_auditor', () => {
     if (!g) return
     expect(g.id).toBe('builtin-goal-auditor')
     expect(g.model_role).toBe('powerful')
-    expect(g.max_turns).toBe(15)
+    expect(g.max_turns).toBe(50)
     expect(g.system_only).toBe(true)
     expect(g.is_builtin).toBe(true)
     expect(g.enabled).toBe(true)

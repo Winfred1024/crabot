@@ -1786,18 +1786,29 @@ export class AgentHandler {
 
     // 失败路径：跳过反思补轮（LLM 已脱轨，再让它反思价值低且容易乱编），用 engine.error 当兜底 brief
     if (finalStatus === 'failed') {
-      const failureBrief = (engineResult.error ?? engineResult.finalText ?? '任务失败').slice(0, 200)
+      // max_turns 元信息独立 prefix，防被 finalText（可能是中途产出的几百字）覆盖——
+      // 与 subagent trace tag 同 pattern；admin UI / master 通知都要能一眼看出"是触顶不是异常"。
+      const maxTurnsTag = engineResult.outcome === 'max_turns'
+        ? `[max_turns reached after ${engineResult.totalTurns} turns]`
+        : ''
+      const baseBrief = (engineResult.error ?? engineResult.finalText ?? '任务失败').slice(0, 200)
+      const failureBrief = maxTurnsTag
+        ? `${maxTurnsTag} ${baseBrief}`.slice(0, 400)
+        : baseBrief
       await this.writeOutcome(taskId, adminPort, 'failed', failureBrief, [], context)
-      // 仅当 engine 主动抛错（区别 max_turns / aborted）且确有真人在会话里等，才把原样接口错回传 master。
-      // schedule / 内部任务（无 sender_friend）发到系统会话没人看，徒增噪音。
-      if (
-        engineResult.outcome === 'failed'
-        && engineResult.error
-        && context.task_origin
-        && context.sender_friend
-      ) {
+      // 通知 master 的两类 case：
+      // 1) engine 主动抛错（outcome='failed' + error）：原样回传接口错
+      // 2) max_turns 触顶：告知任务因轮次上限被截断，让 master 决定是否拆任务 / 调整
+      //    （此前 max_turns 沉默失败，master 只能去 admin UI 才能看到，体验差）
+      const shouldNotify = context.task_origin && context.sender_friend
+      if (shouldNotify && engineResult.outcome === 'failed' && engineResult.error) {
         const text = `大模型接口出错：${engineResult.error}`.slice(0, 1500)
-        await this.sendToUser(context.task_origin, text)
+        await this.sendToUser(context.task_origin!, text)
+      } else if (shouldNotify && engineResult.outcome === 'max_turns') {
+        const tail = engineResult.finalText ? `\n\n最后一段输出：${engineResult.finalText.slice(0, 300)}` : ''
+        const text = `任务因 max_turns 截断（跑了 ${engineResult.totalTurns} 轮仍未完成）。` +
+          `建议把任务拆小后再派，或在 admin UI 调高该任务对应 worker 的 max_turns。${tail}`
+        await this.sendToUser(context.task_origin!, text.slice(0, 1500))
       }
       return
     }
@@ -2139,6 +2150,10 @@ export class AgentHandler {
      *  例：audit subagent 调 submit_audit_result(pass, failed_criteria, evidence)
      *  时直接拿到结构化判决，不必 regex parse free text。 */
     readonly exitToolCall?: { readonly name: string; readonly input: Record<string, unknown> }
+    /** ForkEngineResult.outcome 顶层透出，让系统侧 caller（如 runGoalAudit）能
+     *  在 isError=true 之外进一步区分 max_turns（截断）与 failed（异常）。
+     *  catch 抛错路径不填（属于纯异常，按 unknown 走）。 */
+    readonly outcome?: import('../engine/types.js').EngineResult['outcome']
   }> {
     // 1. filter parent tools by subagent capabilities (delegate_task always excluded by filter)
     const filteredSubTools = filterToolsForSubAgent(
@@ -2275,36 +2290,53 @@ export class AgentHandler {
         permissionConfig: deps.permissionConfig,
       })
 
+      // outcome 一并视为"非完成"的两个 case：failed（异常）+ max_turns（截断）。
+      // exitToolCall 触发（exitsLoop 工具被调）= 业务终态，按 completed 处理。
+      const isAbnormalExit =
+        (result.outcome === 'failed' || result.outcome === 'max_turns') &&
+        result.exitToolCall === undefined
+
       if (subTrace && tc) {
         const traceSummary = result.output.slice(0, 200) || result.error?.slice(0, 200) || ''
+        // max_turns 的元信息独立维护，不被 partial output 覆盖——partial 可能有几十
+        // turn 累出的文本，会顶掉 "max_turns reached" 字符串导致 trace 里分不清失败原因。
+        const maxTurnsTag = result.outcome === 'max_turns'
+          ? `[max_turns reached after ${result.totalTurns} turns]`
+          : ''
+        const baseError = isAbnormalExit
+          ? (result.error?.slice(0, 200) || result.output.slice(0, 200) || undefined)
+          : undefined
+        const errorWithTag = maxTurnsTag
+          ? (baseError ? `${maxTurnsTag} ${baseError}` : maxTurnsTag)
+          : baseError
         tc.traceStore.endTrace(
           subTrace.trace_id,
-          result.outcome === 'failed' ? 'failed' : 'completed',
+          isAbnormalExit ? 'failed' : 'completed',
           {
             summary: traceSummary,
-            error:
-              result.outcome === 'failed'
-                ? result.error?.slice(0, 200) || result.output.slice(0, 200)
-                : undefined,
+            error: errorWithTag,
           },
         )
       }
 
-      if (result.outcome === 'failed') {
-        const errSrc = result.error || result.output || 'subagent failed without error message'
+      if (isAbnormalExit) {
+        const isMaxTurns = result.outcome === 'max_turns'
+        const errSrc = result.error || (isMaxTurns ? undefined : result.output) || 'subagent failed without error message'
         const failure = buildSubAgentFailureOutput({
-          errorSource: new Error(errSrc),
+          errorSource: isMaxTurns ? new Error(`max_turns reached (${result.totalTurns} turns)`) : new Error(errSrc),
           subagentName: subagent.name,
           providerEndpoint: subagent.model.endpoint,
           model: subagent.model.model_id,
           ...(result.output ? { partialOutput: result.output } : {}),
           totalTurns: result.totalTurns,
           ...(subTrace ? { childTraceId: subTrace.trace_id } : {}),
+          ...(isMaxTurns ? { kindOverride: 'max_turns' as const, stopReason: 'max_turns' as const } : { stopReason: 'failed' as const }),
         })
         return {
           output: JSON.stringify(failure),
           rawOutput: result.output,
           isError: true,
+          outcome: result.outcome,
           ...(subTrace ? { traceId: subTrace.trace_id } : {}),
           ...(result.exitToolCall ? { exitToolCall: result.exitToolCall } : {}),
         }
@@ -2322,6 +2354,7 @@ export class AgentHandler {
         // rawOutput 给系统侧 caller（如 runGoalAudit）解 auditor 原始文本，不要解 JSON
         rawOutput: result.output,
         isError: false,
+        outcome: result.outcome,
         ...(subTrace ? { traceId: subTrace.trace_id } : {}),
         // exitToolCall：sub-agent 通过 exitsLoop 工具早退时的结构化判决（如 audit
         // 的 submit_audit_result）。caller 优先用它而不是 parse free text。
@@ -2439,7 +2472,7 @@ export class AgentHandler {
       },
     )
 
-    // 5. 解析判决（优先 tool call → fallback parseAuditReport → fallback sentinel）
+    // 5. 解析判决（优先 tool call → max_turns/failed/aborted 直接 sentinel → fallback parseAuditReport → fallback sentinel）
     const parsed = resolveAuditJudgment(result)
 
     // 6. 写 audit_history

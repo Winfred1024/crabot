@@ -18,6 +18,7 @@ export type SubAgentErrorKind =
   | 'network'
   | 'timeout'
   | 'tool_error'
+  | 'max_turns'
   | 'unknown'
 
 export interface SubAgentErrorClassification {
@@ -181,6 +182,16 @@ export interface SubAgentFailureContext {
   readonly partialOutput?: string
   /** forkEngine 走完了几轮 */
   readonly totalTurns?: number
+  /**
+   * 显式指定 classifier kind，绕过 errorSource 文本解析。
+   * 用于"非异常 outcome"路径（如 max_turns）—— engine 没抛错，但 caller 知道这是个失败终态。
+   */
+  readonly kindOverride?: SubAgentErrorKind
+  /**
+   * 引擎层 stop reason；max_turns 时由 caller 显式置 'max_turns'。
+   * 顶层暴露便于父 LLM 一眼判定，不必去解 hint 文本。
+   */
+  readonly stopReason?: 'max_turns' | 'failed'
 }
 
 export interface SubAgentFailureOutput {
@@ -196,14 +207,39 @@ export interface SubAgentFailureOutput {
   readonly partial_output?: string
   readonly totalTurns?: number
   readonly child_trace_id?: string
+  /** 'max_turns' 表示 engine 触顶截断（非异常），'failed' 表示真异常。缺省维持向后兼容。 */
+  readonly stop_reason?: 'max_turns' | 'failed'
+  /** truncated=true 等价 stop_reason='max_turns'；冗余字段方便父侧布尔判断。 */
+  readonly truncated?: boolean
 }
 
 const MAX_ERROR_MESSAGE_CHARS = 500
 const MAX_PARTIAL_OUTPUT_CHARS = 500
 
+/**
+ * max_turns 截断的 classifier：subagent 没抛错，但 engine outcome='max_turns'。
+ * retryable=true（拆任务 / 上调 budget 后可再试），但不可重试同样 prompt 同样 budget。
+ */
+function classifyMaxTurns(): SubAgentErrorClassification {
+  return {
+    kind: 'max_turns',
+    retryable: true,
+    summary: 'Subagent 触达 max_turns 上限，未在 budget 内完成任务即被引擎截断。',
+    hint:
+      '不要原 prompt 直接重试——同样的 budget 会再次触顶。' +
+      '处理选项：(a) 把任务拆成更小子步骤分多次 delegate；(b) 调更强的 subagent；' +
+      '(c) 若已多次截断，调 ask_human 把 partial_output 给 master 让人判断。' +
+      '可用 search_traces 看 child_trace_id 找出卡在哪一步。',
+  }
+}
+
 export function buildSubAgentFailureOutput(ctx: SubAgentFailureContext): SubAgentFailureOutput {
-  const cls = classifySubAgentError(ctx.errorSource)
-  const rawMessage = getMessage(ctx.errorSource) || 'subagent failed without error message'
+  const cls = ctx.kindOverride === 'max_turns'
+    ? classifyMaxTurns()
+    : classifySubAgentError(ctx.errorSource)
+  const rawMessage = ctx.kindOverride === 'max_turns'
+    ? `subagent reached max_turns (${ctx.totalTurns ?? '?'} turns)`
+    : getMessage(ctx.errorSource) || 'subagent failed without error message'
   const out: Record<string, unknown> = {
     outcome: 'failed' as const,
     error_kind: cls.kind,
@@ -218,6 +254,10 @@ export function buildSubAgentFailureOutput(ctx: SubAgentFailureContext): SubAgen
   if (ctx.partialOutput) out.partial_output = ctx.partialOutput.slice(0, MAX_PARTIAL_OUTPUT_CHARS)
   if (ctx.totalTurns !== undefined) out.totalTurns = ctx.totalTurns
   if (ctx.childTraceId) out.child_trace_id = ctx.childTraceId
+  if (ctx.stopReason !== undefined) {
+    out.stop_reason = ctx.stopReason
+    out.truncated = ctx.stopReason === 'max_turns'
+  }
   return out as unknown as SubAgentFailureOutput
 }
 

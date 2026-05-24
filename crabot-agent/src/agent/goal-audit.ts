@@ -82,9 +82,11 @@ export const AUDIT_PARSE_FAILURE_SENTINEL = '__no_audit_result_emitted__'
 /**
  * 三层 fallback 解析 audit subagent 的判决：
  * 1. tool call（happy path）：auditor 调 submit_audit_result，input 是 schema-enforced
- *    {pass, failed_criteria, evidence}，零 parse 成本
- * 2. 兜底 regex（auditor 没调工具但 emit 了 free-text "AUDIT_RESULT: ..."）：保留兼容
- * 3. 都没拿到 → sentinel "__no_audit_result_emitted__"，判 fail
+ *    {pass, failed_criteria, evidence}，零 parse 成本——无视 outcome，tool call 即终态
+ * 2. outcome 异常拦截：subagent max_turns/failed/aborted 时直接 sentinel——避免
+ *    Layer 3 误抓到 auditor 在中途文本里写过的 "AUDIT_RESULT: fail"
+ * 3. 兜底 regex（auditor 没调工具但 emit 了 free-text "AUDIT_RESULT: ..."）：保留兼容
+ * 4. 都没拿到 → sentinel "__no_audit_result_emitted__"，判 fail
  *
  * spec: 2026-05-23-goal-mode-design.md §6.2
  */
@@ -92,8 +94,11 @@ export function resolveAuditJudgment(result: {
   exitToolCall?: { name: string; input: Record<string, unknown> }
   rawOutput?: string
   output?: string
+  /** ForkEngineResult.outcome；'max_turns' / 'failed' / 'aborted' 时跳过 Layer 3
+   *  的 free-text parse 直接走 sentinel，避免误抓中途判决。 */
+  outcome?: 'completed' | 'failed' | 'max_turns' | 'aborted'
 }): ParsedAuditReport {
-  // Layer 1: tool call（首选）
+  // Layer 1: tool call（首选；无视 outcome——schema-enforced 即终态）
   if (result.exitToolCall && result.exitToolCall.name === 'submit_audit_result') {
     const input = result.exitToolCall.input as {
       pass?: unknown
@@ -107,7 +112,16 @@ export function resolveAuditJudgment(result: {
     const evidence = typeof input.evidence === 'string' ? input.evidence : ''
     return { pass, failedCriteria, rawOutput: evidence }
   }
-  // Layer 2: 兜底 regex parse free text（auditor 没调工具但写了 AUDIT_RESULT: 行）
+  // Layer 2: 异常 outcome 直接 sentinel —— rawOutput 可能含中途 AUDIT_RESULT 行，
+  // 但既然 auditor 没走到 submit_audit_result 就被截断，那些中途判决不算数。
+  if (result.outcome === 'max_turns' || result.outcome === 'failed' || result.outcome === 'aborted') {
+    return {
+      pass: false,
+      failedCriteria: [AUDIT_PARSE_FAILURE_SENTINEL],
+      rawOutput: String(result.rawOutput ?? result.output ?? ''),
+    }
+  }
+  // Layer 3: 兜底 regex parse free text（auditor 没调工具但写了 AUDIT_RESULT: 行）
   const rawText = String(result.rawOutput ?? result.output ?? '')
   return parseAuditReport(rawText)
 }

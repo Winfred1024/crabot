@@ -121,7 +121,8 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
     }
 
     // Check if context compaction is needed
-    if (contextManager.shouldCompact(messages)) {
+    // disableCompaction=true 时整体 bypass（subagent 路径）；详见 EngineOptions 注释。
+    if (!options.disableCompaction && contextManager.shouldCompact(messages)) {
       await compactInPlace(messages, contextManager, adapter, options)
     }
 
@@ -259,15 +260,17 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
       // 压缩阈值无视 shouldCompact——后者估算不含 system prompt + tools，对 reasoning
       // 模型 + 大量工具的场景系统性低估。
       if (isSilentText && stopReason === 'max_tokens') {
-        if (maxTokensCompactRetryCount < MAX_MAX_TOKENS_COMPACT_RETRIES) {
+        // disableCompaction（subagent）路径：没有 compact 这条退路，直接以空 finalText 收尾。
+        // 父 agent 通过 outcome + totalTurns + 空 output 判断要不要拆任务 / 上调 budget。
+        if (!options.disableCompaction && maxTokensCompactRetryCount < MAX_MAX_TOKENS_COMPACT_RETRIES) {
           maxTokensCompactRetryCount++
           fireOnTurn(buildSilentTurnEvent(totalTurns, processed.text, stopReason, llmCallMs, llmStartedAtMs, undefined, response.usage))
           messages.pop()
           await compactInPlace(messages, contextManager, adapter, options)
           continue
         }
-        // 配额耗尽：input 已被压过两次仍 max_tokens，再走 forced-summary 会让 input
-        // 更大；此时只能诚实返回空 finalText。
+        // 配额耗尽（或 subagent 禁用了 compact）：input 已被压过两次仍 max_tokens，
+        // 再走 forced-summary 会让 input 更大；此时只能诚实返回空 finalText。
         return buildResult('completed', finalText, totalTurns, contextManager, messages, overdueInjected, exitToolCall)
       }
 

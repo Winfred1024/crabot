@@ -63,7 +63,10 @@ export interface ForkEngineResult {
   readonly exitToolCall?: { readonly name: string; readonly input: Record<string, unknown> }
 }
 
-const DEFAULT_SUB_AGENT_MAX_TURNS = 20
+// 兜底值——subagent 都该在 builtin-subagents.ts 显式设 max_turns；这里只防"忘配"。
+// 参考：Claude Code 的隐式 fork 是 200 turns，显式 subagent 默认无限制（靠 frontmatter）。
+// Crabot 保持有上限（防失控），但提到 50 减少"忘配 + 触顶"事故。
+const DEFAULT_SUB_AGENT_MAX_TURNS = 50
 
 export async function forkEngine(params: ForkEngineParams): Promise<ForkEngineResult> {
   let prompt: string | ReadonlyArray<ContentBlock>
@@ -96,6 +99,9 @@ export async function forkEngine(params: ForkEngineParams): Promise<ForkEngineRe
       hookRegistry: params.hookRegistry,
       lspManager: params.lspManager,
       permissionConfig: params.permissionConfig,
+      // subagent 内禁用 compaction：靠 maxTurns 控规模，避免父侧无感知的隐式压缩 +
+      // 嵌套 LLM call。详见 EngineOptions.disableCompaction 注释。
+      disableCompaction: true,
     },
   })
 
@@ -345,22 +351,42 @@ export function createSubAgentTool(config: SubAgentToolConfig): ToolDefinition {
           permissionConfig: config.permissionConfig,
         })
 
+        // exitToolCall 触发的早退视为业务完成；其余 'failed' / 'max_turns' 都是异常退出。
+        const isAbnormalExit =
+          (result.outcome === 'failed' || result.outcome === 'max_turns') &&
+          result.exitToolCall === undefined
+
         if (subTrace && tc) {
           const traceSummary = result.output.slice(0, 200) || result.error?.slice(0, 200) || ''
-          tc.traceStore.endTrace(subTrace.trace_id, result.outcome === 'failed' ? 'failed' : 'completed', {
+          // max_turns 元信息独立 prefix，防被 partial output 覆盖（见 agent-handler.ts 同一处注释）。
+          const maxTurnsTag = result.outcome === 'max_turns'
+            ? `[max_turns reached after ${result.totalTurns} turns]`
+            : ''
+          const baseError = isAbnormalExit
+            ? (result.error?.slice(0, 200) || result.output.slice(0, 200) || undefined)
+            : undefined
+          const errorWithTag = maxTurnsTag
+            ? (baseError ? `${maxTurnsTag} ${baseError}` : maxTurnsTag)
+            : baseError
+          tc.traceStore.endTrace(subTrace.trace_id, isAbnormalExit ? 'failed' : 'completed', {
             summary: traceSummary,
-            error: result.outcome === 'failed' ? (result.error?.slice(0, 200) || result.output.slice(0, 200)) : undefined,
+            error: errorWithTag,
           })
         }
 
+        const truncated = result.outcome === 'max_turns'
         return {
           output: JSON.stringify({
             output: result.output,
             outcome: result.outcome,
+            // 顶层 stop_reason + truncated 让父 LLM 不用解 outcome 枚举
+            stop_reason: truncated ? 'max_turns' : (result.outcome === 'failed' ? 'failed' : 'end_turn'),
+            truncated,
             totalTurns: result.totalTurns,
             child_trace_id: subTrace?.trace_id,
+            ...(result.error ? { error: result.error } : {}),
           }),
-          isError: result.outcome === 'failed',
+          isError: isAbnormalExit,
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
