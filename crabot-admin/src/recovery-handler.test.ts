@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { buildRecoveryTask } from './recovery-handler.js'
-import type { Task } from './types.js'
+import { buildRecoveryTask, cleanupStaleInflightTasks } from './recovery-handler.js'
+import type { Task, TaskStatus } from './types.js'
 
 function fakeTask(overrides: Partial<Task>): Task {
   return {
@@ -58,5 +58,50 @@ describe('buildRecoveryTask', () => {
     const tasks = [fakeTask({ id: 'a' })]
     const r = buildRecoveryTask(tasks, 0, '2026-05-07T01:30:00.000Z')
     expect(r).toBeNull()
+  })
+})
+
+describe('cleanupStaleInflightTasks', () => {
+  const NOW = '2026-05-24T10:00:00.000Z'
+
+  it('marks pending / planning / executing as failed', () => {
+    const statuses: TaskStatus[] = ['pending', 'planning', 'executing']
+    const input = statuses.map((s) => fakeTask({ id: s, status: s }))
+    const { tasks, staleCount } = cleanupStaleInflightTasks(input, NOW)
+    expect(staleCount).toBe(3)
+    for (const t of tasks) {
+      expect(t.status).toBe('failed')
+      expect(t.error).toBe('admin_restarted_during_task')
+      expect(t.updated_at).toBe(NOW)
+      expect(t.completed_at).toBe(NOW)
+    }
+  })
+
+  it('preserves waiting_human (worker not running, will resume via supplement)', () => {
+    const input = [fakeTask({ id: 'wh', status: 'waiting_human' })]
+    const { tasks, staleCount } = cleanupStaleInflightTasks(input, NOW)
+    expect(staleCount).toBe(0)
+    expect(tasks[0].status).toBe('waiting_human')
+    expect(tasks[0].updated_at).not.toBe(NOW)
+  })
+
+  it('preserves terminal states (completed / failed / cancelled)', () => {
+    const terminals: TaskStatus[] = ['completed', 'failed', 'cancelled']
+    const input = terminals.map((s) => fakeTask({ id: s, status: s }))
+    const { tasks, staleCount } = cleanupStaleInflightTasks(input, NOW)
+    expect(staleCount).toBe(0)
+    expect(tasks.map((t) => t.status)).toEqual(terminals)
+  })
+
+  it('does not overwrite existing error field', () => {
+    const input = [fakeTask({ id: 'a', status: 'executing', error: 'preexisting reason' })]
+    const { tasks } = cleanupStaleInflightTasks(input, NOW)
+    expect(tasks[0].error).toBe('preexisting reason')
+  })
+
+  it('returns a fresh array (no mutation of input objects)', () => {
+    const original = fakeTask({ id: 'a', status: 'executing' })
+    cleanupStaleInflightTasks([original], NOW)
+    expect(original.status).toBe('executing') // 入参未被改写
   })
 })

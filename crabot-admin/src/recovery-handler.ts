@@ -8,7 +8,44 @@
  * @see crabot-docs/protocols/protocol-admin.md "Recovery Task 约定"
  */
 
-import type { CreateTaskParams, Task } from './types.js'
+import type { CreateTaskParams, Task, TaskStatus } from './types.js'
+
+/**
+ * Admin 重启后对磁盘上 loaded tasks 做的状态清扫。
+ *
+ * 触发场景：admin 进程死后重启（不一定 agent 也重启）。磁盘上仍写着
+ * status='executing' 之类的"看起来在跑"的任务，但 admin 进程刚活过来，
+ * 对应的 worker 进程内存状态早就丢了——任务对调用方而言就是僵尸。
+ *
+ * 处理：把所有"非终态、非 waiting_human"的任务一律标 failed。
+ * waiting_human 是例外：它本来就不依赖 worker 进程活着（worker 已经
+ * end_turn 了，等 dispatcher 收到人类回复重新拉起即可），跨重启天然可恢复。
+ *
+ * @returns 新数组 + 实际清扫了几条（用于日志）
+ */
+export function cleanupStaleInflightTasks(
+  tasks: ReadonlyArray<Task>,
+  nowISO: string,
+): { tasks: Task[]; staleCount: number } {
+  const STALE_INFLIGHT: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
+    'pending',
+    'planning',
+    'executing',
+  ])
+  let staleCount = 0
+  const next = tasks.map((task) => {
+    if (!STALE_INFLIGHT.has(task.status)) return task
+    staleCount++
+    return {
+      ...task,
+      status: 'failed' as TaskStatus,
+      error: task.error ?? 'admin_restarted_during_task',
+      updated_at: nowISO,
+      completed_at: nowISO,
+    }
+  })
+  return { tasks: next, staleCount }
+}
 
 /**
  * 构造 recovery 任务参数。

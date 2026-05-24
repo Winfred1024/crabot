@@ -156,7 +156,7 @@ import { createMemoryV2RestRouter } from './memory-v2-rest.js'
 import { OnboardingManager } from './onboarding-manager.js'
 import type { Onboarder } from 'crabot-shared'
 import { tailLogFile } from './module-log-tail.js'
-import { buildRecoveryTask } from './recovery-handler.js'
+import { buildRecoveryTask, cleanupStaleInflightTasks } from './recovery-handler.js'
 import { getBuiltinSkills } from './builtin-skills.js'
 import { getBuiltinSubAgents } from './builtin-subagents.js'
 import { parseCleanupParams } from './trace-cleanup-cron.js'
@@ -356,6 +356,7 @@ export class AdminModule extends ModuleBase {
   private readonly sessionConfigsFilePath: string
   private readonly friendPermissionConfigsFilePath: string
   private readonly schedulesFilePath: string
+  private readonly tasksFilePath: string
 
   // waiting_human 超时扫描器
   private static readonly WAITING_HUMAN_TIMEOUT_MS = 24 * 60 * 60 * 1000  // 24h
@@ -380,6 +381,7 @@ export class AdminModule extends ModuleBase {
     this.sessionConfigsFilePath = path.join(this.adminConfig.data_dir, 'session-configs.json')
     this.friendPermissionConfigsFilePath = path.join(this.adminConfig.data_dir, 'friend-permission-configs.json')
     this.schedulesFilePath = path.join(this.adminConfig.data_dir, 'schedules.json')
+    this.tasksFilePath = path.join(this.adminConfig.data_dir, 'tasks.json')
 
     this.modelProviderManager = new ModelProviderManager(
       this.adminConfig.data_dir
@@ -566,6 +568,9 @@ export class AdminModule extends ModuleBase {
     // 加载数据（filePath 已在 constructor 初始化）
     await this.loadData()
     this.dataLoaded = true
+
+    // loadData 内对 in-flight 任务做了 failed 清扫；落盘以免下次启动重复清扫已经 failed 的同一条
+    await this.saveTasks()
 
     // 初始化系统权限模板
     await this.initSystemTemplates()
@@ -3534,6 +3539,24 @@ export class AdminModule extends ModuleBase {
     } catch {
       console.log('[Admin] No existing schedules data')
     }
+
+    // Task 加载 + 重启清扫：admin 重启意味着 worker 进程内存状态已丢，
+    // 任何 pending/planning/executing 的任务对调用方都是僵尸——一律 failed。
+    // waiting_human 是例外（不依赖 worker 进程活着），cleanupStaleInflightTasks 保留之。
+    try {
+      const tasksData = await fs.readFile(this.tasksFilePath, 'utf-8')
+      const loaded = JSON.parse(tasksData) as Task[]
+      const { tasks: cleaned, staleCount } = cleanupStaleInflightTasks(loaded, generateTimestamp())
+      for (const task of cleaned) {
+        this.tasks.set(task.id, task)
+      }
+      console.log(
+        `[Admin] Loaded ${this.tasks.size} tasks` +
+        (staleCount > 0 ? ` (marked ${staleCount} in-flight task(s) failed due to admin restart)` : '')
+      )
+    } catch {
+      console.log('[Admin] No existing tasks data')
+    }
   }
 
   /**
@@ -3576,6 +3599,27 @@ export class AdminModule extends ModuleBase {
 
     const schedulesArray = Array.from(this.schedules.values())
     await this.atomicWriteFile(this.schedulesFilePath, JSON.stringify(schedulesArray, null, 2))
+
+    await this.saveTasks()
+  }
+
+  /**
+   * 单独的 tasks 落盘——比 saveData 轻得多。
+   * 每个 task 变更都调一次（mutation 频率高，不能拖累其它六个文件）。
+   */
+  private async saveTasks(): Promise<void> {
+    if (!this.dataLoaded) return
+    const tasksArray = Array.from(this.tasks.values())
+    await this.atomicWriteFile(this.tasksFilePath, JSON.stringify(tasksArray, null, 2))
+  }
+
+  /**
+   * 写入 task 的统一入口：set + 落盘原子绑定，杜绝"改了内存忘了落盘"。
+   * 所有 handler*Task / handle*TaskGoal / handleCancelTask 都走这里。
+   */
+  private async upsertTask(task: Task): Promise<void> {
+    this.tasks.set(task.id, task)
+    await this.saveTasks()
   }
 
   private async initSystemTemplates(): Promise<void> {
@@ -3614,7 +3658,7 @@ export class AdminModule extends ModuleBase {
       expires_at: params.expires_at,
     }
 
-    this.tasks.set(task.id, task)
+    await this.upsertTask(task)
 
     // 发布事件
     this.publishAdminEvent('admin.task_created', { task })
@@ -3650,7 +3694,7 @@ export class AdminModule extends ModuleBase {
     }, now)
     task.goal = goal
     task.updated_at = now
-    this.tasks.set(task.id, task)
+    await this.upsertTask(task)
     this.publishAdminEvent('admin.task_updated', { task })
     return { task }
   }
@@ -3664,7 +3708,7 @@ export class AdminModule extends ModuleBase {
     const now = generateTimestamp()
     task.goal = appendAuditEntry(task.goal, params.entry, now)
     task.updated_at = now
-    this.tasks.set(task.id, task)
+    await this.upsertTask(task)
     this.publishAdminEvent('admin.task_updated', { task })
     return { task }
   }
@@ -3683,7 +3727,7 @@ export class AdminModule extends ModuleBase {
     }
     task.goal = nextGoal
     task.updated_at = now
-    this.tasks.set(task.id, task)
+    await this.upsertTask(task)
     this.publishAdminEvent('admin.task_updated', { task })
     return { task }
   }
@@ -3697,7 +3741,7 @@ export class AdminModule extends ModuleBase {
     const now = generateTimestamp()
     task.goal = transitionGoalStatus(task.goal, 'complete', now)
     task.updated_at = now
-    this.tasks.set(task.id, task)
+    await this.upsertTask(task)
     this.publishAdminEvent('admin.task_updated', { task })
     return { task }
   }
@@ -3899,7 +3943,7 @@ export class AdminModule extends ModuleBase {
       task.result = params.result
     }
 
-    this.tasks.set(task.id, task)
+    await this.upsertTask(task)
 
     // 任务完成时推进关联 Schedule 的 watermark
     if (params.status === 'completed') {
@@ -3948,7 +3992,7 @@ export class AdminModule extends ModuleBase {
       ...(params.process_highlights !== undefined ? { process_highlights: params.process_highlights } : {}),
     }
     task.updated_at = generateTimestamp()
-    this.tasks.set(task.id, task)
+    await this.upsertTask(task)
     return { task }
   }
 
@@ -3965,7 +4009,7 @@ export class AdminModule extends ModuleBase {
     task.worker_agent_id = params.worker_agent_id
     task.updated_at = generateTimestamp()
 
-    this.tasks.set(task.id, task)
+    await this.upsertTask(task)
 
     // 发布事件
     this.publishAdminEvent('admin.task_assigned', {
@@ -3985,7 +4029,7 @@ export class AdminModule extends ModuleBase {
     task.plan = params.plan
     task.updated_at = generateTimestamp()
 
-    this.tasks.set(task.id, task)
+    await this.upsertTask(task)
 
     // 发布事件
     this.publishAdminEvent('admin.task_plan_updated', {
@@ -4013,7 +4057,7 @@ export class AdminModule extends ModuleBase {
     task.messages.push(message)
     task.updated_at = generateTimestamp()
 
-    this.tasks.set(task.id, task)
+    await this.upsertTask(task)
 
     return { message }
   }
@@ -4122,7 +4166,7 @@ export class AdminModule extends ModuleBase {
       if (params.reason) {
         task.error = params.reason
       }
-      this.tasks.set(task.id, task)
+      await this.upsertTask(task)
 
       this.publishAdminEvent('admin.task_cancelled', {
         task_id: task.id,
@@ -4146,7 +4190,7 @@ export class AdminModule extends ModuleBase {
     if (params.reason) {
       task.error = params.reason
     }
-    this.tasks.set(task.id, task)
+    await this.upsertTask(task)
 
     this.publishAdminEvent('admin.task_cancelled', {
       task_id: task.id,
