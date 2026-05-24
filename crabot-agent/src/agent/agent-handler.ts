@@ -782,10 +782,12 @@ export class AgentHandler {
           tools.push(...mcpServerToToolDefinitions(crabMemoryServer, 'crab-memory'))
         }
 
-        // baseTools 是后面（line ~860+）才构造的；这里用 outer let 提前声明，
-        // 让 mcpConfigFactory 通过 getter 拿到 audit 用的 worker baseTools。
+        // baseTools / baseToolsPermissionConfig 是后面（line ~860+）才构造的；这里用 outer let
+        // 提前声明，让 mcpConfigFactory 通过 getter 拿到 audit 用的 worker baseTools +
+        // permissionConfig（auditor 调 dangerous 工具如 Bash 时 runtime permission check 才能放行）。
         // spec: 2026-05-23-goal-mode-design.md §6 / §7.2（auditor 工具来源）
         let auditBaseTools: ReadonlyArray<ToolDefinition> = []
+        let auditPermissionCfg: ToolPermissionConfig | undefined
 
         // 3c. External MCP server tools (crab-messaging, etc.)
         const externalMcpServers = this.mcpConfigFactory?.({
@@ -799,8 +801,9 @@ export class AgentHandler {
           // spec: 2026-05-23-goal-mode-design.md §4.2
           ...(subAgentTraceConfig ? { traceConfig: subAgentTraceConfig } : {}),
           // getter 形式 forward-reference：baseTools 在下方 ~line 860 构造，
-          // audit gate 真正触发时 baseTools 已就位。
+          // audit gate 真正触发时 baseTools / permissionConfig 已就位。
           auditParentTools: () => auditBaseTools,
+          auditPermissionConfig: () => auditPermissionCfg,
         }) ?? {}
         for (const [serverName, server] of Object.entries(externalMcpServers)) {
           tools.push(...mcpServerToToolDefinitions(server, serverName))
@@ -868,8 +871,9 @@ export class AgentHandler {
         // baseTools 构造后立刻把 outer auditBaseTools 接上，给 audit gate 的 getter 用。
         // 见 mcpConfigFactory 上方的 outer let 声明。
         const baseTools = filterToolsByPermission(baseToolsRaw, baseToolsPermissionConfig)
-        // 把 baseTools 接到 outer auditBaseTools，让 audit gate getter 能拿到。
+        // 把 baseTools / baseToolsPermissionConfig 接到 outer，audit gate getter 用。
         auditBaseTools = baseTools
+        auditPermissionCfg = baseToolsPermissionConfig
 
         if (subAgentsSnapshot.length > 0) {
           tools.push(createDelegateTaskTool({
@@ -2345,6 +2349,8 @@ export class AgentHandler {
     /** worker baseTools；auditor 的 capability filter（file_system+shell）在其上筛子集。
      *  缺省/空数组 = auditor 没有 Bash/Read/Grep 等工具，实测会回"环境没有工具"导致永远 fail。 */
     readonly parentTools?: ReadonlyArray<import('../engine/types.js').ToolDefinition>
+    /** worker permissionConfig；缺省时 auditor 调 dangerous 工具（如 Bash）会被拒。 */
+    readonly permissionConfig?: import('../engine/types.js').ToolPermissionConfig
   }): Promise<AuditResult> {
     if (!this.deps?.getAdminPort || !this.deps.rpcClient) {
       throw new Error('runGoalAudit: getAdminPort/rpcClient deps 缺失')
@@ -2392,6 +2398,9 @@ export class AgentHandler {
         parentTools: params.parentTools ?? [],
         parentTaskId: params.taskId,
         callerLabel: 'goal_audit',
+        // permissionConfig: 同样必须透传，否则 runtime check 用 dangerous 工具默认拒绝逻辑，
+        // auditor 调 Bash 等会被拦回"Permission denied"。
+        ...(params.permissionConfig ? { permissionConfig: params.permissionConfig } : {}),
         ...(params.traceConfig ? { traceConfig: params.traceConfig } : {}),
         traceSummaryPrefix: '[goal_audit]',
         traceTaskType: 'goal_audit',
