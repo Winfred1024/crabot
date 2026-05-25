@@ -68,6 +68,34 @@ describe('resolveTaskByShortIdPrefix', () => {
     const r = resolveTaskByShortIdPrefix('a3f8c2-uuid-full-length', tasks)
     expect(r.kind).toBe('found')
   })
+  it('剥离 trigger- 语义前缀后用 UUID 前 8 字符匹配', () => {
+    const tasks = [
+      makeTask('trigger-ff5340db-264b-4016-9368-6d0f47f8e1b0'),
+      makeTask('trigger-323132d6-abd0-422f-bc11-1dbcdcdc794a'),
+    ]
+    const r = resolveTaskByShortIdPrefix('ff5340db', tasks)
+    expect(r.kind).toBe('found')
+    if (r.kind === 'found') expect(r.task.id).toBe('trigger-ff5340db-264b-4016-9368-6d0f47f8e1b0')
+  })
+  it('master 输入带 trigger- 前缀也能匹配（input 也剥前缀）', () => {
+    const tasks = [makeTask('trigger-ff5340db-264b-4016-9368-6d0f47f8e1b0')]
+    const r = resolveTaskByShortIdPrefix('trigger-ff5340db', tasks)
+    expect(r.kind).toBe('found')
+  })
+  it('多个 trigger- task 前 8 字符不同 → 不再 ambiguous', () => {
+    const tasks = [
+      makeTask('trigger-ff5340db-aaa'),
+      makeTask('trigger-323132d6-bbb'),
+      makeTask('trigger-0eb0debb-ccc'),
+    ]
+    const r = resolveTaskByShortIdPrefix('ff5340db', tasks)
+    expect(r.kind).toBe('found')
+  })
+  it('纯 UUID 形态不被误剥（首段非纯字母）', () => {
+    const tasks = [makeTask('a2bde067-1234-5678-9abc-def012345678')]
+    const r = resolveTaskByShortIdPrefix('a2bde067', tasks)
+    expect(r.kind).toBe('found')
+  })
 })
 
 describe('话术格式化', () => {
@@ -78,6 +106,12 @@ describe('话术格式化', () => {
     expect(out.includes('a3f8c2')).toBe(true)
     expect(out.includes('do stuff')).toBe(true)
     expect(out.includes('status: active')).toBe(true)
+  })
+  it('formatGoalShowResponse 显示 trigger- 前缀 task 的 UUID 短 id（不是 trigger-）', () => {
+    const task = makeTask('trigger-ff5340db-264b-4016-9368-6d0f47f8e1b0', 'do stuff')
+    const out = formatGoalShowResponse('ff5340db', task)
+    expect(out.includes('ff5340db')).toBe(true)
+    expect(out.includes('trigger-')).toBe(false)  // 短 id 不应含 trigger-
   })
   it('formatGoalClearResponse 带 [系统响应 /清除目标 <input>] 前缀', () => {
     const out = formatGoalClearResponse('a3f8', 'a3f8c2-uuid')

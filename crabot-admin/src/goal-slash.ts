@@ -25,14 +25,28 @@ export function resolveTaskByShortIdPrefix(
   if (prefix.length < MIN_PREFIX_LEN) {
     return { kind: 'invalid-input', reason: `task-id 短前缀至少 ${MIN_PREFIX_LEN} 字符` }
   }
-  const matched = tasks.filter((t) => t.id.startsWith(prefix))
+  const inputStripped = stripSemanticPrefix(prefix)
+  const matched = tasks.filter((t) =>
+    stripSemanticPrefix(t.id).startsWith(inputStripped),
+  )
   if (matched.length === 0) return { kind: 'not-found' }
   if (matched.length === 1) return { kind: 'found', task: matched[0]! }
   return { kind: 'ambiguous', candidates: matched }
 }
 
+/**
+ * 剥离 task id 开头的语义前缀（如 `trigger-` / `recovery-` / `manual-`），
+ * 让短 id 显示和短前缀匹配都基于真正有区分度的 UUID 部分。
+ *
+ * 正则匹配"小写字母段 + 短划线"且后面紧跟 hex 字符，避免把纯 UUID
+ * （如 `a2bde067-...`）误判为有前缀（UUID 首段含数字不是纯字母）。
+ */
+function stripSemanticPrefix(id: string): string {
+  return id.replace(/^[a-z]+-(?=[a-f0-9])/, '')
+}
+
 function shortId(id: string): string {
-  return id.slice(0, 8)
+  return stripSemanticPrefix(id).slice(0, 8)
 }
 
 function objectivePreview(task: Task, max = 60): string {
