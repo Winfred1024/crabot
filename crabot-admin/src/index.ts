@@ -28,6 +28,11 @@ import {
   CLAIM_PAIR_COMMANDS,
   UNCLAIMED_HINT_TEXT,
   ALREADY_CLAIMED_HINT_TEXT,
+  GOAL_SHOW_PREFIX,
+  GOAL_CLEAR_PREFIX,
+  GOAL_LIST_EXACT,
+  GOAL_SHOW_BARE,
+  GOAL_CLEAR_BARE,
 } from 'crabot-shared'
 import {
   type Friend,
@@ -162,6 +167,17 @@ import { buildRecoveryTask, cleanupStaleInflightTasks } from './recovery-handler
 import { getBuiltinSkills } from './builtin-skills.js'
 import { getBuiltinSubAgents } from './builtin-subagents.js'
 import { parseCleanupParams } from './trace-cleanup-cron.js'
+import {
+  resolveTaskByShortIdPrefix,
+  formatGoalShowResponse,
+  formatGoalShowNotFound,
+  formatGoalShowNoGoal,
+  formatGoalClearResponse,
+  formatGoalClearAlreadyTerminal,
+  formatGoalClearAmbiguous,
+  formatGoalListResponse,
+  formatMissingIdResponse,
+} from './goal-slash.js'
 
 // ============================================================================
 // JWT 工具函数
@@ -3282,6 +3298,27 @@ export class AdminModule extends ModuleBase {
       return
     }
 
+    // === Goal slash 拦截（仅 master + 私聊触发） ===
+    // 仅已认主 master friend 可触发；其他人发同样字面视为普通消息走 dispatcher（默认下面的 publish 路径）
+    if (friend?.permission === 'master' && message.session.type === 'private') {
+      if (body.startsWith(GOAL_SHOW_PREFIX)) {
+        await this.handleGoalShowSlash(channelId, message, body)
+        return
+      }
+      if (body.startsWith(GOAL_CLEAR_PREFIX)) {
+        await this.handleGoalClearSlash(channelId, message, body)
+        return
+      }
+      if (body === GOAL_LIST_EXACT) {
+        await this.handleGoalListSlash(channelId, message)
+        return
+      }
+      if (body === GOAL_SHOW_BARE || body === GOAL_CLEAR_BARE) {
+        await this.handleGoalSlashMissingId(channelId, message, body)
+        return
+      }
+    }
+
     if (friend) {
       // 已知 Friend：填充 friend_id，发出授权事件
       const authorizedMessage: ChannelMessageRef = {
@@ -3767,6 +3804,167 @@ export class AdminModule extends ModuleBase {
     await this.upsertTask(task)
     this.publishAdminEvent('admin.task_updated', { task })
     return { task }
+  }
+
+  /**
+   * `/目标 <task-id>`：显示某 task 的 goal 详情。
+   * Spec: 2026-05-25-goal-slash-commands-design.md §4.1 / §5.2
+   */
+  private async handleGoalShowSlash(
+    channelId: ModuleId,
+    message: ChannelMessageRef,
+    body: string,
+  ): Promise<void> {
+    const input = body.slice(GOAL_SHOW_PREFIX.length).trim()
+    const activeTasks = this.listActiveTasksForChannelSession(
+      channelId,
+      message.session.session_id,
+    )
+    let text: string
+    if (input.length === 0) {
+      text = formatMissingIdResponse('/目标', activeTasks)
+    } else {
+      const r = resolveTaskByShortIdPrefix(input, activeTasks)
+      if (r.kind === 'invalid-input') {
+        text = `[系统响应 /目标 ${input}]\n${r.reason}`
+      } else if (r.kind === 'not-found') {
+        text = formatGoalShowNotFound(input, activeTasks)
+      } else if (r.kind === 'ambiguous') {
+        text = formatGoalShowNotFound(input, r.candidates)
+      } else {
+        text = r.task.goal
+          ? formatGoalShowResponse(input, r.task)
+          : formatGoalShowNoGoal(input, r.task)
+      }
+    }
+    await this.sendSlashResponse(channelId, message.session.session_id, text)
+  }
+
+  /**
+   * `/清除目标 <task-id>`：清除某 task 的 goal。
+   * Spec: 2026-05-25-goal-slash-commands-design.md §4.2 / §5.2
+   */
+  private async handleGoalClearSlash(
+    channelId: ModuleId,
+    message: ChannelMessageRef,
+    body: string,
+  ): Promise<void> {
+    const input = body.slice(GOAL_CLEAR_PREFIX.length).trim()
+    const activeTasks = this.listActiveTasksForChannelSession(
+      channelId,
+      message.session.session_id,
+    )
+    let text: string
+    if (input.length === 0) {
+      text = formatMissingIdResponse('/清除目标', activeTasks)
+    } else {
+      const r = resolveTaskByShortIdPrefix(input, activeTasks)
+      if (r.kind === 'invalid-input') {
+        text = `[系统响应 /清除目标 ${input}]\n${r.reason}`
+      } else if (r.kind === 'not-found') {
+        text = `[系统响应 /清除目标 ${input}]\n未找到 task ${input}（前缀匹配无果）。`
+      } else if (r.kind === 'ambiguous') {
+        text = formatGoalClearAmbiguous(input, r.candidates)
+      } else if (!r.task.goal) {
+        text = `[系统响应 /清除目标 ${input}]\n该 task 没有 goal，无需清除。`
+      } else if (r.task.goal.status !== 'active') {
+        text = formatGoalClearAlreadyTerminal(input, r.task.goal.status)
+      } else {
+        try {
+          await this.handleClearTaskGoal({ task_id: r.task.id })
+          text = formatGoalClearResponse(input, r.task.id)
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          text = `[系统响应 /清除目标 ${input}]\n清除失败：${msg}`
+        }
+      }
+    }
+    await this.sendSlashResponse(channelId, message.session.session_id, text)
+  }
+
+  /**
+   * `/目标列表`：列出当前 channel + session 的 active task。
+   * Spec: 2026-05-25-goal-slash-commands-design.md §4.3 / §5.2
+   */
+  private async handleGoalListSlash(
+    channelId: ModuleId,
+    message: ChannelMessageRef,
+  ): Promise<void> {
+    const activeTasks = this.listActiveTasksForChannelSession(
+      channelId,
+      message.session.session_id,
+    )
+    const text = formatGoalListResponse(activeTasks)
+    await this.sendSlashResponse(channelId, message.session.session_id, text)
+  }
+
+  /** `/目标` 或 `/清除目标`（漏 id）的引导话术 */
+  private async handleGoalSlashMissingId(
+    channelId: ModuleId,
+    message: ChannelMessageRef,
+    body: string,
+  ): Promise<void> {
+    const command = body === GOAL_SHOW_BARE ? '/目标' : '/清除目标'
+    const activeTasks = this.listActiveTasksForChannelSession(
+      channelId,
+      message.session.session_id,
+    )
+    const text = formatMissingIdResponse(command, activeTasks)
+    await this.sendSlashResponse(channelId, message.session.session_id, text)
+  }
+
+  /**
+   * 取"当前 channel + session 的活跃任务清单"——跟 agent dispatcher fetchActiveTasks
+   * 同一规则（spec 2026-05-19 §3.2 + protocol-agent-v2.md §5.1）。
+   *
+   * 过滤规则：
+   * - status ∈ {pending, planning, executing, waiting_human}
+   * - source.channel_id + source.session_id 完全匹配
+   * - 排除 trigger_type='scheduled'
+   */
+  private listActiveTasksForChannelSession(
+    channelId: ModuleId,
+    sessionId: string,
+  ): Task[] {
+    const ACTIVE_STATUSES: ReadonlySet<TaskStatus> = new Set([
+      'pending', 'planning', 'executing', 'waiting_human',
+    ])
+    return Array.from(this.tasks.values()).filter((t) => {
+      if (!ACTIVE_STATUSES.has(t.status)) return false
+      if (t.source.channel_id !== channelId) return false
+      if (t.source.session_id !== sessionId) return false
+      if (t.source.trigger_type === 'scheduled') return false
+      return true
+    })
+  }
+
+  /**
+   * 通用：发送 [系统响应 ...] 话术给 channel 的 session。
+   * 跟 replyClaimHint 的范式一致但不走 5 分钟节流（slash 是 master 主动操作，要立刻响应）。
+   */
+  private async sendSlashResponse(
+    channelId: ModuleId,
+    sessionId: string,
+    text: string,
+  ): Promise<void> {
+    try {
+      const modules = await this.rpcClient.resolve(
+        { module_id: channelId },
+        this.config.moduleId,
+      )
+      if (modules.length === 0) {
+        console.warn(`[Admin] sendSlashResponse: channel module ${channelId} not resolvable`)
+        return
+      }
+      await this.rpcClient.call(
+        modules[0].port,
+        'send_message',
+        { session_id: sessionId, content: { type: 'text', text } },
+        this.config.moduleId,
+      )
+    } catch (err) {
+      console.warn(`[Admin] sendSlashResponse failed for ${channelId}:`, err)
+    }
   }
 
   /**
