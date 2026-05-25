@@ -154,8 +154,12 @@ jobs:
           done
 
           # crabot-admin：额外排 web/（前端源码 + 构建依赖；构建产物已在 dist/web/）
+          # builtin-skills/*.md 是运行时 snapshot（readFileSync 同步加载），include 必须在 *.md exclude 之前
           if [ -d "crabot-admin" ]; then
-            rsync -aH "${COMMON_EXCLUDES[@]}" \
+            rsync -aH \
+                  --include='builtin-skills/' \
+                  --include='builtin-skills/**' \
+                  "${COMMON_EXCLUDES[@]}" \
                   --exclude='/src/' --exclude='/test*/' --exclude='/web/' \
                   "crabot-admin/" "/tmp/${DIRNAME}/crabot-admin/"
           fi
@@ -223,11 +227,13 @@ jobs:
           }
 
           # 清理无用文件（递归扫整个 staging 目录）
+          # crabot-admin/builtin-skills/*.md 是运行时 snapshot，必须保留
           $filePatterns = @('*.md','*.markdown','*.map','*.ts','tsconfig*.json',
                             '*.tsbuildinfo','.eslintrc*','.prettierrc*','.editorconfig',
                             '.gitignore','.npmignore')
           foreach ($pat in $filePatterns) {
             Get-ChildItem -Path $TempDir -Recurse -File -Filter $pat -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -notmatch '[\\/]builtin-skills[\\/]' } |
               Remove-Item -Force -ErrorAction SilentlyContinue
           }
           $dirPatterns = @('__tests__','.github')
