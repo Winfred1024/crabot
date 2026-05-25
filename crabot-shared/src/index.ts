@@ -66,9 +66,19 @@ export {
   CLAIM_PAIR_COMMANDS,
   UNCLAIMED_HINT_TEXT,
   ALREADY_CLAIMED_HINT_TEXT,
+  LEGACY_UNCLAIMED_HINT_TEXT,
+  LEGACY_ALREADY_CLAIMED_HINT_TEXT,
+  GOAL_SHOW_PREFIX,
+  GOAL_CLEAR_PREFIX,
+  GOAL_LIST_EXACT,
+  GOAL_SHOW_BARE,
+  GOAL_CLEAR_BARE,
   isClaimCommand,
   isClaimSystemHint,
-} from './claim-commands.js'
+  isSlashSystemResponse,
+  isLegacyUnclaimedHint,
+  isLegacyAlreadyClaimedHint,
+} from './slash-commands.js'
 
 export {
   type Onboarder,
