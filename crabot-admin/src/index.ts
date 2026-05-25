@@ -124,6 +124,8 @@ import {
   type IncrementTaskGoalTokensResult,
   type CompleteTaskGoalParams,
   type CompleteTaskGoalResult,
+  type ClearTaskGoalParams,
+  type ClearTaskGoalResult,
 } from './types.js'
 import {
   buildNewTaskGoal,
@@ -531,6 +533,7 @@ export class AdminModule extends ModuleBase {
     this.registerMethod('append_task_goal_audit_entry', this.handleAppendTaskGoalAuditEntry.bind(this))
     this.registerMethod('increment_task_goal_tokens', this.handleIncrementTaskGoalTokens.bind(this))
     this.registerMethod('complete_task_goal', this.handleCompleteTaskGoal.bind(this))
+    this.registerMethod('clear_task_goal', this.handleClearTaskGoal.bind(this))
   }
 
   // ============================================================================
@@ -3740,6 +3743,26 @@ export class AdminModule extends ModuleBase {
     if (!task.goal) throw new Error(`task ${params.task_id} 没有 goal，无法 complete`)
     const now = generateTimestamp()
     task.goal = transitionGoalStatus(task.goal, 'complete', now)
+    task.updated_at = now
+    await this.upsertTask(task)
+    this.publishAdminEvent('admin.task_updated', { task })
+    return { task }
+  }
+
+  private async handleClearTaskGoal(
+    params: ClearTaskGoalParams,
+  ): Promise<ClearTaskGoalResult> {
+    const task = this.tasks.get(params.task_id)
+    if (!task) throw new Error(AdminErrorCode.TASK_NOT_FOUND)
+    if (!task.goal) {
+      // 无 goal 视为幂等成功，不抛错
+      return { task }
+    }
+    if (task.goal.status !== 'active') {
+      throw new Error(`task ${params.task_id} 的 goal 当前 status=${task.goal.status}，不可清除`)
+    }
+    const now = generateTimestamp()
+    task.goal = transitionGoalStatus(task.goal, 'cleared', now)
     task.updated_at = now
     await this.upsertTask(task)
     this.publishAdminEvent('admin.task_updated', { task })

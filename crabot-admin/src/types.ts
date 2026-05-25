@@ -2061,3 +2061,12 @@ export interface CompleteTaskGoalParams {
 export interface CompleteTaskGoalResult {
   task: Task
 }
+
+/** 由 /清除目标 slash 调用；status='cleared'。 */
+export interface ClearTaskGoalParams {
+  task_id: TaskId
+}
+
+export interface ClearTaskGoalResult {
+  task: Task
+}
