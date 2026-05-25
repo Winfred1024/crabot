@@ -2,6 +2,21 @@
  * SubAgent 注册表管理器
  *
  * 仿 MCPServerManager / SkillManager 模式：data/admin/subagents.json + 文件原子写入。
+ *
+ * ## 持久化模型（v2，2026-05-24 起）
+ *
+ * Builtin entry 的 "代码默认值" 不落盘——磁盘上仅存：
+ *  - 不可推导的状态字段：id / is_builtin / enabled / provider_id / model_id / model_role
+ *    / created_at / updated_at
+ *  - 用户实际改过的字段（override；与 getBuiltinSubAgents() 的 default 不同的字段）
+ *
+ * Load 时 merge codeDefault + storedOverride 还原完整 entry；save 时 diff 出 override。
+ * 代码升级 default 后，未 override 的字段自动跟随；用户改过的字段永久保留。
+ *
+ * User-created entry（is_builtin=false）走全量落盘，逻辑不变。
+ *
+ * 文件格式 `{ version: 2, entries: [...] }`。v1（裸数组）自动迁移：所有 builtin entry 内容字段
+ * 重置为 codeDefault（备份原文件 + warn 日志）。
  */
 
 import fs from 'fs/promises'
@@ -36,26 +51,144 @@ export type UpdateSubAgentParams = Partial<
   >
 >
 
+const STORAGE_FORMAT_VERSION = 2
+
+/** 必落盘字段：用户/系统状态，无法从 codeDefault 推导。builtin 和 non-builtin 都存。 */
+const PERSISTED_STATE_FIELDS = [
+  'id',
+  'is_builtin',
+  'enabled',
+  'provider_id',
+  'model_id',
+  'model_role',
+  'created_at',
+  'updated_at',
+] as const
+
+/** Builtin 的"可被用户 override"字段：落盘前 diff codeDefault，仅与 default 不同的值才写。 */
+const BUILTIN_OVERRIDABLE_FIELDS = [
+  'name',
+  'description',
+  'when_to_use',
+  'role',
+  'workflow',
+  'deliverables',
+  'verification',
+  'builtin_capabilities',
+  'allowed_mcp_server_ids',
+  'allowed_skill_ids',
+  'max_turns',
+  'hook_preset',
+  'system_only',
+] as const
+
+function isDeepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (a === null || b === null || a === undefined || b === undefined) return a === b
+  if (typeof a !== typeof b) return false
+  if (typeof a !== 'object') return false
+  if (Array.isArray(a) !== Array.isArray(b)) return false
+  if (Array.isArray(a)) {
+    const bArr = b as unknown[]
+    if (a.length !== bArr.length) return false
+    return a.every((v, i) => isDeepEqual(v, bArr[i]))
+  }
+  const ao = a as Record<string, unknown>
+  const bo = b as Record<string, unknown>
+  const ak = Object.keys(ao)
+  const bk = Object.keys(bo)
+  if (ak.length !== bk.length) return false
+  return ak.every((k) => isDeepEqual(ao[k], bo[k]))
+}
+
+interface StoredFile {
+  version: number
+  entries: Record<string, unknown>[]
+}
+
 export class SubAgentManager {
   private entries: Map<string, SubAgentRegistryEntry> = new Map()
   private readonly filePath: string
+  private readonly getBuiltinDefaults: () => SubAgentRegistryEntry[]
 
-  constructor(dataDir: string) {
+  constructor(dataDir: string, getBuiltinDefaults: () => SubAgentRegistryEntry[] = () => []) {
     this.filePath = path.join(dataDir, 'subagents.json')
+    this.getBuiltinDefaults = getBuiltinDefaults
   }
 
   async initialize(): Promise<void> {
     await this.load()
   }
 
+  private buildBuiltinMap(): Map<string, SubAgentRegistryEntry> {
+    return new Map(this.getBuiltinDefaults().map((e) => [e.id, e]))
+  }
+
   private async load(): Promise<void> {
+    let raw: string
     try {
-      const raw = await fs.readFile(this.filePath, 'utf-8')
-      const list: SubAgentRegistryEntry[] = JSON.parse(raw)
-      this.entries = new Map(list.map((e) => [e.id, e]))
+      raw = await fs.readFile(this.filePath, 'utf-8')
     } catch {
       this.entries = new Map()
+      return
     }
+
+    const parsed: unknown = JSON.parse(raw)
+    const builtinMap = this.buildBuiltinMap()
+
+    let rawEntries: Record<string, unknown>[]
+    let needsRewrite = false
+
+    if (Array.isArray(parsed)) {
+      // v1 格式（裸数组）：迁移。备份原文件，builtin entry 仅保留 state 字段（内容字段重置为
+      // codeDefault），non-builtin 不变。
+      const ts = new Date().toISOString().replace(/[:.]/g, '-')
+      const backup = path.join(path.dirname(this.filePath), `.legacy-subagents-${ts}.json`)
+      await fs.copyFile(this.filePath, backup)
+      console.warn(
+        `[SubAgentManager] 检测到 v1 格式 subagents.json，已备份至 ${backup}。\n` +
+          '正在迁移到 v2 override-only 格式：builtin subagent 的所有 prompt / capabilities / max_turns ' +
+          '等内容字段将回退到代码默认值。\n如曾通过 Admin UI 改过 builtin，请对照备份文件重新设置。'
+      )
+      rawEntries = (parsed as Record<string, unknown>[]).map((e) => {
+        if (!e.is_builtin) return e
+        const out: Record<string, unknown> = {}
+        for (const k of PERSISTED_STATE_FIELDS) out[k] = e[k]
+        return out
+      })
+      needsRewrite = true
+    } else if (parsed && typeof parsed === 'object' && (parsed as StoredFile).version === STORAGE_FORMAT_VERSION) {
+      rawEntries = (parsed as StoredFile).entries
+    } else {
+      const v = (parsed as { version?: unknown })?.version
+      throw new Error(
+        `subagents.json: unsupported storage version ${JSON.stringify(v)}, expected ${STORAGE_FORMAT_VERSION}`
+      )
+    }
+
+    this.entries = new Map()
+    for (const stored of rawEntries) {
+      const id = stored.id as string
+      const isBuiltin = stored.is_builtin === true
+      if (isBuiltin) {
+        const codeDefault = builtinMap.get(id)
+        if (!codeDefault) {
+          // builtin 在代码里被删了（pruneObsoleteBuiltins 应该已经清掉），保底全量读
+          this.entries.set(id, stored as unknown as SubAgentRegistryEntry)
+          continue
+        }
+        const merged = {
+          ...codeDefault,
+          ...stored,
+          is_builtin: true,
+        } as SubAgentRegistryEntry
+        this.entries.set(id, merged)
+      } else {
+        this.entries.set(id, stored as unknown as SubAgentRegistryEntry)
+      }
+    }
+
+    if (needsRewrite) await this.save()
   }
 
   private async atomicWriteFile(filePath: string, content: string): Promise<void> {
@@ -65,11 +198,40 @@ export class SubAgentManager {
     await fs.rename(tempPath, filePath)
   }
 
+  /** 把全量 entry 转成磁盘稀疏格式：builtin 仅保留 state + 与 codeDefault 不同的 override 字段。 */
+  private stripBuiltinDefaults(
+    entry: SubAgentRegistryEntry,
+    builtinMap: Map<string, SubAgentRegistryEntry>
+  ): Record<string, unknown> {
+    if (!entry.is_builtin) {
+      return entry as unknown as Record<string, unknown>
+    }
+    const codeDefault = builtinMap.get(entry.id)
+    if (!codeDefault) {
+      // 代码里没对应 default（应该已被 pruneObsoleteBuiltins 清掉，保底全量）
+      return entry as unknown as Record<string, unknown>
+    }
+    const out: Record<string, unknown> = {}
+    for (const k of PERSISTED_STATE_FIELDS) {
+      out[k] = (entry as unknown as Record<string, unknown>)[k]
+    }
+    for (const k of BUILTIN_OVERRIDABLE_FIELDS) {
+      const v = (entry as unknown as Record<string, unknown>)[k]
+      const d = (codeDefault as unknown as Record<string, unknown>)[k]
+      if (!isDeepEqual(v, d)) {
+        out[k] = v
+      }
+    }
+    return out
+  }
+
   private async save(): Promise<void> {
-    await this.atomicWriteFile(
-      this.filePath,
-      JSON.stringify(Array.from(this.entries.values()), null, 2)
-    )
+    const builtinMap = this.buildBuiltinMap()
+    const file: StoredFile = {
+      version: STORAGE_FORMAT_VERSION,
+      entries: Array.from(this.entries.values()).map((e) => this.stripBuiltinDefaults(e, builtinMap)),
+    }
+    await this.atomicWriteFile(this.filePath, JSON.stringify(file, null, 2))
   }
 
   list(): SubAgentRegistryEntry[] {
@@ -111,8 +273,9 @@ export class SubAgentManager {
   }
 
   async update(id: string, params: UpdateSubAgentParams): Promise<SubAgentRegistryEntry> {
-    // 注：内置项（is_builtin=true）允许 update 修改任意字段（包括 enabled / model 引用 / prompt 段）
-    // 仅 delete 受 is_builtin 限制。语义来自 spec §1.1 "内置项可编辑可禁用不可删"
+    // 内置项（is_builtin=true）允许 update 修改任意字段。spec §1.1 "内置项可编辑可禁用不可删"。
+    // 与代码默认值相同的字段在落盘时自动剔除（stripBuiltinDefaults），后续代码升级该字段会自动跟随；
+    // 与默认值不同的字段视为 user override，永久保留。无需 is_user_modified 标志位。
     const existing = this.entries.get(id)
     if (!existing) throw new Error(`SubAgent not found: ${id}`)
 
@@ -143,7 +306,8 @@ export class SubAgentManager {
     await this.save()
   }
 
-  /** 内置项 seed：仅当不存在同 id 时插入 */
+  /** 内置项 seed：仅插入不存在的 entry。已存在的 builtin 的内容字段在 load 时由 codeDefault 提供，
+   *  override 写在 stripBuiltinDefaults 落盘逻辑里，seed 路径不需要再覆盖。 */
   async seedBuiltin(entries: SubAgentRegistryEntry[]): Promise<void> {
     let changed = false
     for (const e of entries) {
@@ -175,7 +339,7 @@ export class SubAgentManager {
     for (const e of obsolete) {
       console.warn(
         `[SubAgentManager] 删除已废弃的 builtin subagent: ${e.name} (id=${e.id}). ` +
-        `如曾通过 Admin UI 编辑过 prompt，自定义内容将丢失。`
+          `如曾通过 Admin UI 编辑过 prompt，自定义内容将丢失。`
       )
       this.entries.delete(e.id)
     }

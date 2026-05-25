@@ -1928,7 +1928,12 @@ export interface SubAgentRegistryEntry extends SubAgentBase {
 
   /** 该 subagent 是否在 delegate_task 的 <available_subagents> 列表里 */
   enabled: boolean
-  /** 内置项（is_builtin=true）可编辑可禁用不可删 */
+  /** 内置项（is_builtin=true）可编辑可禁用不可删。
+   *
+   *  存储语义（is_builtin=true 时）：磁盘只存"用户实际 override 的字段"，与代码里
+   *  getBuiltinSubAgents() 的 default 不同的字段才落盘。Load 时 merge default + override
+   *  得到完整 entry。代码升级 default 后，未 override 的字段自动跟随；用户改过的字段
+   *  永久保留。无需 is_user_modified 标志位——override 本身即表达。 */
   is_builtin: boolean
   created_at: string
   updated_at: string

@@ -7,6 +7,7 @@ import type { SkillRegistryEntry } from '../src/mcp-skill-manager.js'
 import { getBuiltinSkills, BUILTIN_SKILL_IDS } from '../src/builtin-skills.js'
 import { SubAgentManager } from '../src/subagent-manager.js'
 import { getBuiltinSubAgents, BUILTIN_SUBAGENT_IDS } from '../src/builtin-subagents.js'
+import type { SubAgentRegistryEntry } from '../src/types.js'
 
 function makeEntry(id: string, name: string): SkillRegistryEntry {
   return {
@@ -238,6 +239,166 @@ describe('SubAgentManager.pruneObsoleteBuiltins', () => {
 
     await mgr3.pruneObsoleteBuiltins(['builtin-x'])
     expect(mgr3.list().map((e) => e.id)).toEqual(['builtin-x'])
+  })
+})
+
+describe('SubAgentManager v2 override 存储', () => {
+  let tmpDir: string
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'subagent-v2-'))
+  })
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it('v1 裸数组格式 load 时自动迁移到 v2 + 备份原文件', async () => {
+    // 模拟当前线上磁盘格式：v1 裸数组 + builtin 全量字段（含旧 max_turns=15）
+    const { writeFileSync, readdirSync, readFileSync } = await import('fs')
+    const filePath = join(tmpDir, 'subagents.json')
+    const legacy = getBuiltinSubAgents().map((e) => ({ ...e, max_turns: 15 }))
+    writeFileSync(filePath, JSON.stringify(legacy, null, 2))
+
+    const mgr = new SubAgentManager(tmpDir, getBuiltinSubAgents)
+    await mgr.initialize()
+
+    // 备份文件已落盘
+    const files = readdirSync(tmpDir)
+    expect(files.some((f) => f.startsWith('.legacy-subagents-'))).toBe(true)
+
+    // builtin 内容字段被代码默认值覆盖（max_turns 回到 50/60/120/60）
+    const goalAuditor = mgr.list().find((e) => e.name === 'goal_auditor')!
+    expect(goalAuditor.max_turns).toBe(50)
+    const codePlanner = mgr.list().find((e) => e.name === 'code_planner')!
+    expect(codePlanner.max_turns).toBe(60)
+
+    // 磁盘已重写为 v2 格式
+    const reread = JSON.parse(readFileSync(filePath, 'utf-8'))
+    expect(reread.version).toBe(2)
+    expect(Array.isArray(reread.entries)).toBe(true)
+  })
+
+  it('save 后 builtin 仅落 state 字段（未 override 时不写内容字段）', async () => {
+    const { readFileSync } = await import('fs')
+    const mgr = new SubAgentManager(tmpDir, getBuiltinSubAgents)
+    await mgr.initialize()
+    await mgr.seedBuiltin(getBuiltinSubAgents())
+
+    const stored = JSON.parse(readFileSync(join(tmpDir, 'subagents.json'), 'utf-8'))
+    const auditorOnDisk = stored.entries.find((e: { id: string }) => e.id === 'builtin-goal-auditor')
+    expect(auditorOnDisk).toBeDefined()
+    // 状态字段必须有
+    expect(auditorOnDisk).toHaveProperty('id')
+    expect(auditorOnDisk).toHaveProperty('enabled')
+    expect(auditorOnDisk).toHaveProperty('created_at')
+    // 与 codeDefault 相同的内容字段不应落盘
+    expect(auditorOnDisk).not.toHaveProperty('role')
+    expect(auditorOnDisk).not.toHaveProperty('max_turns')
+    expect(auditorOnDisk).not.toHaveProperty('workflow')
+  })
+
+  it('用户 update max_turns → 仅 override 落盘 + 跨实例持久化', async () => {
+    const { readFileSync } = await import('fs')
+    const mgr = new SubAgentManager(tmpDir, getBuiltinSubAgents)
+    await mgr.initialize()
+    await mgr.seedBuiltin(getBuiltinSubAgents())
+
+    await mgr.update('builtin-goal-auditor', { max_turns: 99 })
+
+    const stored = JSON.parse(readFileSync(join(tmpDir, 'subagents.json'), 'utf-8'))
+    const auditorOnDisk = stored.entries.find((e: { id: string }) => e.id === 'builtin-goal-auditor')
+    expect(auditorOnDisk.max_turns).toBe(99)
+    expect(auditorOnDisk).not.toHaveProperty('role')
+
+    // 新实例 load 后看到的还是 99
+    const mgr2 = new SubAgentManager(tmpDir, getBuiltinSubAgents)
+    await mgr2.initialize()
+    expect(mgr2.get('builtin-goal-auditor')?.max_turns).toBe(99)
+  })
+
+  it('codeDefault 升级后未 override 字段自动跟随', async () => {
+    const { readFileSync } = await import('fs')
+
+    // 先用旧 codeDefault seed
+    const oldDefaults = (): SubAgentRegistryEntry[] =>
+      getBuiltinSubAgents().map((e) =>
+        e.id === 'builtin-goal-auditor' ? { ...e, max_turns: 15, role: 'OLD ROLE' } : e
+      )
+    const mgrOld = new SubAgentManager(tmpDir, oldDefaults)
+    await mgrOld.initialize()
+    await mgrOld.seedBuiltin(oldDefaults())
+
+    // 磁盘上应该只存 state（max_turns / role 都和 oldDefault 一致，不落盘）
+    const stored = JSON.parse(readFileSync(join(tmpDir, 'subagents.json'), 'utf-8'))
+    const auditor = stored.entries.find((e: { id: string }) => e.id === 'builtin-goal-auditor')
+    expect(auditor).not.toHaveProperty('max_turns')
+    expect(auditor).not.toHaveProperty('role')
+
+    // 升级到新 codeDefault（max_turns=50, role='NEW ROLE'）
+    const newDefaults = (): SubAgentRegistryEntry[] =>
+      getBuiltinSubAgents().map((e) =>
+        e.id === 'builtin-goal-auditor' ? { ...e, max_turns: 50, role: 'NEW ROLE' } : e
+      )
+    const mgrNew = new SubAgentManager(tmpDir, newDefaults)
+    await mgrNew.initialize()
+
+    const merged = mgrNew.get('builtin-goal-auditor')!
+    expect(merged.max_turns).toBe(50)
+    expect(merged.role).toBe('NEW ROLE')
+  })
+
+  it('用户改过的字段不被代码升级覆盖（override 永久保留）', async () => {
+    // 旧 codeDefault max_turns=15，user override 到 99
+    const oldDefaults = (): SubAgentRegistryEntry[] =>
+      getBuiltinSubAgents().map((e) =>
+        e.id === 'builtin-goal-auditor' ? { ...e, max_turns: 15 } : e
+      )
+    const mgrOld = new SubAgentManager(tmpDir, oldDefaults)
+    await mgrOld.initialize()
+    await mgrOld.seedBuiltin(oldDefaults())
+    await mgrOld.update('builtin-goal-auditor', { max_turns: 99 })
+
+    // 代码升级 default 到 50；用户 override 99 应保留
+    const newDefaults = (): SubAgentRegistryEntry[] =>
+      getBuiltinSubAgents().map((e) =>
+        e.id === 'builtin-goal-auditor' ? { ...e, max_turns: 50 } : e
+      )
+    const mgrNew = new SubAgentManager(tmpDir, newDefaults)
+    await mgrNew.initialize()
+    expect(mgrNew.get('builtin-goal-auditor')?.max_turns).toBe(99)
+  })
+
+  it('非 builtin entry 走全量落盘，行为不变', async () => {
+    const { readFileSync } = await import('fs')
+    const mgr = new SubAgentManager(tmpDir, getBuiltinSubAgents)
+    await mgr.initialize()
+    await mgr.create({
+      name: 'user_custom',
+      description: 'd',
+      when_to_use: 'w',
+      role: 'r',
+      workflow: 'wf',
+      deliverables: 'd',
+      provider_id: 'p',
+      model_id: 'm',
+      model_role: null,
+      builtin_capabilities: {
+        file_system: false,
+        shell: false,
+        task_intel: false,
+        crab_memory: false,
+        crab_messaging: false,
+      },
+      allowed_mcp_server_ids: [],
+      allowed_skill_ids: [],
+      max_turns: 20,
+    })
+    const stored = JSON.parse(readFileSync(join(tmpDir, 'subagents.json'), 'utf-8'))
+    const userEntry = stored.entries.find((e: { name: string }) => e.name === 'user_custom')
+    expect(userEntry).toHaveProperty('role', 'r')
+    expect(userEntry).toHaveProperty('max_turns', 20)
+    expect(userEntry).toHaveProperty('workflow', 'wf')
   })
 })
 

@@ -392,7 +392,7 @@ export class AdminModule extends ModuleBase {
     this.mcpServerManager = new MCPServerManager(this.adminConfig.data_dir)
     this.skillManager = new SkillManager(this.adminConfig.data_dir)
     this.essentialToolsManager = new EssentialToolsManager(this.adminConfig.data_dir)
-    this.subAgentManager = new SubAgentManager(this.adminConfig.data_dir)
+    this.subAgentManager = new SubAgentManager(this.adminConfig.data_dir, getBuiltinSubAgents)
     this.browserManager = new BrowserManager(
       this.adminConfig.data_dir,
       parseInt(process.env.CRABOT_PORT_OFFSET || '0', 10)
