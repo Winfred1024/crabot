@@ -7,7 +7,15 @@
  * @see protocol-agent-v2.md 3.2.3 WorkerAgentContext
  */
 
-import { isClaimCommand, isClaimSystemHint, type ModuleId, type SessionId, type RpcClient, type RpcTraceContext } from 'crabot-shared'
+import {
+  isLegacyUnclaimedHint,
+  isLegacyAlreadyClaimedHint,
+  isSlashSystemResponse,
+  type ModuleId,
+  type SessionId,
+  type RpcClient,
+  type RpcTraceContext,
+} from 'crabot-shared'
 import type {
   OrchestrationConfig,
   FrontAgentContext,
@@ -49,15 +57,31 @@ interface MemoryFetchParams {
 type FetchShortTermMemoryParams = MemoryFetchParams
 
 /**
- * 过滤 channel.history 里的认主类噪声：
- * - 用户发的 `/认主` `/pair` `/apply` 指令本身（admin 已拦截，agent 看到也只会鹦鹉学舌）
- * - admin 自动回出的引导话术（"渠道未认主..." 等）
- * 这些消息被注入 history 会让 LLM 误以为还要继续走"让用户去后台审批"流程。
+ * 对老 message store 残留的裸 claim hint outbound 做读时兜底改写：
+ * - 新版（已带 [系统响应 /认主] 前缀）→ 原样
+ * - 老版（无前缀的 UNCLAIMED / ALREADY_CLAIMED 裸字符串）→ 拼前缀
+ * - inbound slash 字面 / 普通文本 / 非 text 内容 → 原样
+ *
+ * 新方案设计（spec 2026-05-25 §7.1）：
+ * - inbound slash 字面（如 /认主 / /目标 a3f8）原文透传给 LLM，靠 SLASH_AWARENESS_GUIDANCE
+ *   prompt 教化不模仿
+ * - admin 新发出的 outbound 话术在发送时即带前缀，message store 里就是带前缀的
+ * - 仅本兜底处理升级前已写入的老裸 hint
  */
-function filterChannelClaimNoise(message: ChannelMessage): boolean {
-  if (message.content?.type !== 'text') return true
+export function compatLegacyClaimHint(message: ChannelMessage): ChannelMessage {
+  if (message.content?.type !== 'text') return message
   const text = message.content.text
-  return !isClaimCommand(text) && !isClaimSystemHint(text)
+  if (typeof text !== 'string') return message
+  // 已带新前缀 → 不改
+  if (isSlashSystemResponse(text)) return message
+  // 老版裸 hint → 加前缀
+  if (isLegacyUnclaimedHint(text) || isLegacyAlreadyClaimedHint(text)) {
+    return {
+      ...message,
+      content: { ...message.content, text: `[系统响应 /认主]\n${text}` },
+    }
+  }
+  return message
 }
 
 interface ContextAssemblerDeps {
@@ -314,7 +338,7 @@ export class ContextAssembler {
         return result.messages
           .filter((m) => !m.platform_timestamp || m.platform_timestamp >= sinceIso)
           .slice(-maxCap)
-          .filter(filterChannelClaimNoise)
+          .map(compatLegacyClaimHint)
       }
 
       // 其他 Channel：通过 Module Manager 解析 Channel 模块并调用 get_history
@@ -337,7 +361,7 @@ export class ContextAssembler {
         { session_id: sessionId, limit: maxCap, time_range: { after: sinceIso } },
         this.moduleId
       )
-      // 注入 session 上下文，转换为 ChannelMessage，并过滤认主指令 + 引导话术
+      // 注入 session 上下文，转换为 ChannelMessage，并对老裸 hint 做兜底补前缀（inbound slash 字面原样透传）
       // 后过滤：channel 不一定支持 time_range.after，本地兜底；并按 maxCap 截断尾部
       return result.items
         .filter((msg) => !msg.platform_timestamp || msg.platform_timestamp >= sinceIso)
@@ -364,7 +388,7 @@ export class ContextAssembler {
           },
           platform_timestamp: msg.platform_timestamp,
         }))
-        .filter(filterChannelClaimNoise)
+        .map(compatLegacyClaimHint)
     } catch {
       return []
     }

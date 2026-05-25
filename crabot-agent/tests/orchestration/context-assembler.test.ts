@@ -299,9 +299,12 @@ describe('ContextAssembler', () => {
     expect(getSceneCalls).toHaveLength(1)
   })
 
-  it('filters claim commands and unclaimed-hint replies out of recent_messages', async () => {
-    // history 里混了 admin 拦截过的指令和自动回的引导话术；agent 不该看到它们，
-    // 否则 LLM 会照着 history 鹦鹉学舌、反复让用户去后台审批。
+  it('inbound slash 原文透传，老裸 hint 加前缀，普通文本不变', async () => {
+    // 新方案（spec 2026-05-25 §7.1）：
+    // - inbound slash（/认主）字面原文透传，靠 SLASH_AWARENESS_GUIDANCE prompt 教化不模仿
+    // - 老版裸 outbound hint 由 compatLegacyClaimHint 读时兜底加 [系统响应 /认主] 前缀
+    // - 普通文本原样
+    const LEGACY_HINT = '渠道未认主，请输入"/认主"，然后到 crabot 后台 对话对象->申请队列 中进行审批创建 Master 后方可正常对话。'
     const messages = [
       {
         platform_message_id: 'm1',
@@ -317,7 +320,7 @@ describe('ContextAssembler', () => {
         sender: { platform_user_id: 'self', platform_display_name: 'Crabot' },
         content: {
           type: 'text',
-          text: '渠道未认主，请输入"/认主"，然后到 crabot 后台 对话对象->申请队列 中进行审批创建 Master 后方可正常对话。',
+          text: LEGACY_HINT,
         },
         features: { is_mention_crab: false },
         platform_timestamp: new Date(Date.now() - 2000).toISOString(),
@@ -362,8 +365,21 @@ describe('ContextAssembler', () => {
       defaultMemoryPermissions,
     )
 
-    expect(ctx.recent_messages).toHaveLength(1)
-    expect(ctx.recent_messages[0].platform_message_id).toBe('m3')
+    // 三条消息全部透传（不再硬 drop）
+    expect(ctx.recent_messages).toHaveLength(3)
+    // m1: inbound /认主 原文透传
+    expect(ctx.recent_messages[0].platform_message_id).toBe('m1')
+    if (ctx.recent_messages[0].content.type === 'text') {
+      expect(ctx.recent_messages[0].content.text).toBe('/认主')
+    }
+    // m2: 老裸 hint → 加前缀
+    expect(ctx.recent_messages[1].platform_message_id).toBe('m2')
+    if (ctx.recent_messages[1].content.type === 'text') {
+      expect(ctx.recent_messages[1].content.text!.startsWith('[系统响应 /认主]\n')).toBe(true)
+      expect(ctx.recent_messages[1].content.text!.includes(LEGACY_HINT)).toBe(true)
+    }
+    // m3: 普通文本原样
+    expect(ctx.recent_messages[2].platform_message_id).toBe('m3')
   })
 
   describe('fetchShortTermMemory — channel+session 排除（B.1）', () => {
