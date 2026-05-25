@@ -84,6 +84,13 @@ describe('assembleDispatcherPrompt', () => {
     expect(p).not.toMatch(/target_task_id 硬约束/)
   })
 
+  it('包含 SLASH_AWARENESS_GUIDANCE 段', () => {
+    const p = assembleDispatcherPrompt(ctx())
+    expect(p).toContain('## 系统 slash 指令认知')
+    expect(p).toContain('/目标 <task-id>')
+    expect(p).toContain('/清除目标 <task-id>')
+  })
+
   it('OUTPUT_SCHEMA 在空 activeTasks 时只列出允许的 kind', () => {
     const pPrivate = assembleDispatcherPrompt(ctx({ sessionType: 'private', activeTasks: [] }))
     // schema 段应表明 1 种合法 kind

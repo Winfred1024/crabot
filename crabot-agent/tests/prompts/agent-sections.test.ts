@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { CRABOT_BRAIN_IDENTITY, SYSTEM_DIALOGUE_BOUNDARY, WORKFLOW_PRIVATE, WORKFLOW_GROUP, SEND_MESSAGE_SPEC, END_TURN_SELF_CHECK, TIME_AWARENESS, INFO_QUERY_GUIDE, TOOL_USAGE, TASK_HARD_CONSTRAINTS, MEMORY_STORE_GUIDE, CLOSURE_DUTIES } from '../../src/prompts/agent-sections.js'
+import { CRABOT_BRAIN_IDENTITY, SYSTEM_DIALOGUE_BOUNDARY, WORKFLOW_PRIVATE, WORKFLOW_GROUP, SEND_MESSAGE_SPEC, END_TURN_SELF_CHECK, TIME_AWARENESS, INFO_QUERY_GUIDE, TOOL_USAGE, TASK_HARD_CONSTRAINTS, MEMORY_STORE_GUIDE, CLOSURE_DUTIES, SLASH_AWARENESS_GUIDANCE } from '../../src/prompts/agent-sections.js'
 
 describe('#1 你是 Crabot 的大脑', () => {
   it('开头自我定位为"认知中枢"', () => {
@@ -359,5 +359,22 @@ describe('#9 任务推进硬约束', () => {
     expect(TASK_HARD_CONSTRAINTS).toContain('禁止未尝试的后续方向')
     expect(TASK_HARD_CONSTRAINTS).toContain('下一步可以试')
     expect(TASK_HARD_CONSTRAINTS).toContain('未来工作')
+  })
+})
+
+describe('#12 系统 slash 指令认知', () => {
+  it('开头是 "## 系统 slash 指令认知"', () => {
+    expect(SLASH_AWARENESS_GUIDANCE.startsWith('## 系统 slash 指令认知')).toBe(true)
+  })
+  it('列出已知 slash 清单', () => {
+    expect(SLASH_AWARENESS_GUIDANCE).toContain('/认主')
+    expect(SLASH_AWARENESS_GUIDANCE).toContain('/加好友')
+    expect(SLASH_AWARENESS_GUIDANCE).toContain('/目标 <task-id>')
+    expect(SLASH_AWARENESS_GUIDANCE).toContain('/清除目标 <task-id>')
+    expect(SLASH_AWARENESS_GUIDANCE).toContain('/目标列表')
+  })
+  it('明确禁止 LLM 模仿 / 开头格式 + [系统响应] 格式', () => {
+    expect(SLASH_AWARENESS_GUIDANCE).toContain('不要模仿')
+    expect(SLASH_AWARENESS_GUIDANCE).toContain('[系统响应')
   })
 })

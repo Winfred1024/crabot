@@ -16,6 +16,7 @@
 import type { DispatchContext } from './dispatcher-types.js'
 import type { RuntimeSceneProfile } from '../types.js'
 import { MAX_ACTIONS_PER_DISPATCH } from './dispatcher-types.js'
+import { SLASH_AWARENESS_GUIDANCE } from '../prompts/agent-sections.js'
 
 export function assembleDispatcherPrompt(ctx: DispatchContext): string {
   const hasActiveTasks = ctx.activeTasks.length > 0
@@ -28,6 +29,9 @@ export function assembleDispatcherPrompt(ctx: DispatchContext): string {
     parts.push(`## 场景画像\n${formatSceneProfile(ctx.sceneProfile)}`)
     parts.push('')
   }
+  parts.push('')
+  parts.push(SLASH_AWARENESS_GUIDANCE)
+  parts.push('')
   parts.push(buildOutputSchema(ctx.sessionType, hasActiveTasks))
   return parts.join('\n')
 }

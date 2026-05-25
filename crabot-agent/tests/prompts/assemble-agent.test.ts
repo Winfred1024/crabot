@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { assembleAgentPrompt } from '../../src/prompts/assemble-agent.js'
 
 describe('assembleAgentPrompt 装配顺序', () => {
-  it('私聊版按 spec 顺序拼接 11 段', () => {
+  it('私聊版按 spec 顺序拼接 12 段', () => {
     const prompt = assembleAgentPrompt({ isGroup: false })
 
     const sections = [
@@ -15,6 +15,7 @@ describe('assembleAgentPrompt 装配顺序', () => {
       '## 信息查询指引',
       '## 工具使用规范',
       '## 任务推进硬约束',
+      '## 系统 slash 指令认知',
       '## 记忆存储指引',
       '## 收尾责任',
     ]
