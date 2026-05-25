@@ -556,7 +556,7 @@ export const GOAL_MODE_GUIDANCE = `## 任务复杂度判断
 - **复杂任务**（≥2 个独立动作 / 跨多 turn / 用户说"确保 X""完成 Y 后通知我"）：
   1. 先调研窗口（Read/Grep）看清楚现状
   2. 调 set_task_goal 写下完成承诺（objective + acceptance_criteria）
-  3. todo 拆步骤（这个工具被门控：没 goal 拒绝调用）
+  3. todo 拆步骤（这个工具被门控：没目标拒绝调用）
   4. 干活
   5. send_message(intent='final') 触发独立审计
 
@@ -576,9 +576,9 @@ export const GOAL_MODE_GUIDANCE = `## 任务复杂度判断
 - **不要硬撞**。继续 silent 续 turn 只会把 token 用光
 - 任何"想让 master 介入"——包括"我做不到 X / 想换方向 / 想申请放弃某 criterion / 审计员异常"——**一律走 ask_human**，不要用 normal。normal 是单向通知，loop 不会停，你说完下一轮还要面对同样问题
 - ask_human 描述清楚：哪条 criterion 过不去 / 你试了什么 / 看到的证据 / 你的建议
-- master 可能在 admin UI 上清掉你的 goal。你下一轮 dequeue 后检查 task.goal 状态：
-  - goal 还在 → 按 master 指示继续尝试
-  - goal 被清掉了（status='cleared'）→ 重新 set_task_goal 写新承诺，或 send_message(intent='final', '总结') 收尾`
+- master 可能通过 \`/清除目标 <task-id>\` slash 清掉你的目标。你下一轮 dequeue 后检查 task.goal 状态：
+  - 目标还在 → 按 master 指示继续尝试
+  - 目标被清掉了（status='cleared'）→ 重新 set_task_goal 写新承诺，或 send_message(intent='final', '总结') 收尾`
 
 export const SLASH_AWARENESS_GUIDANCE = `## 系统 slash 指令认知
 
