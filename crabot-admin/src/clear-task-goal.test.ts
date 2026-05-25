@@ -1,5 +1,4 @@
-import { describe, it } from 'node:test'
-import { strict as assert } from 'node:assert'
+import { describe, expect, it } from 'vitest'
 import { transitionGoalStatus } from './task-goal.js'
 import type { TaskGoal } from './types.js'
 
@@ -17,20 +16,20 @@ describe('transitionGoalStatus 用于 clear', () => {
 
   it('active → cleared 合法', () => {
     const out = transitionGoalStatus(baseGoal, 'cleared', '2026-05-25T01:00:00.000Z')
-    assert.equal(out.status, 'cleared')
-    assert.equal(out.completed_at, '2026-05-25T01:00:00.000Z')
-    assert.equal(out.updated_at, '2026-05-25T01:00:00.000Z')
+    expect(out.status).toBe('cleared')
+    expect(out.completed_at).toBe('2026-05-25T01:00:00.000Z')
+    expect(out.updated_at).toBe('2026-05-25T01:00:00.000Z')
   })
 
   it('已 cleared 再次 cleared 幂等', () => {
     const cleared = transitionGoalStatus(baseGoal, 'cleared', '2026-05-25T01:00:00.000Z')
     const second = transitionGoalStatus(cleared, 'cleared', '2026-05-25T02:00:00.000Z')
     // 同状态直接返回，updated_at 不变
-    assert.equal(second, cleared)
+    expect(second).toBe(cleared)
   })
 
   it('complete → cleared 非法（终态不可互转）', () => {
     const completed: TaskGoal = { ...baseGoal, status: 'complete' }
-    assert.throws(() => transitionGoalStatus(completed, 'cleared', 'now'), /非法状态切换/)
+    expect(() => transitionGoalStatus(completed, 'cleared', 'now')).toThrow(/非法状态切换/)
   })
 })
