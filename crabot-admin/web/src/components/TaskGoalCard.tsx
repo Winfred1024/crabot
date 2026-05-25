@@ -6,9 +6,6 @@ import type { TaskGoal, TaskGoalStatus } from '../types'
  *
  * 调用方负责：传 task.goal !== undefined 才渲染。
  *
- * Phase 2 现状：Admin Web 没有独立 task 详情页，本组件已就位但**没有挂载点**。
- * Phase 3 接通时由调用方挂入；"清除当前 goal" 按钮也由 Phase 3 接通。
- *
  * spec: crabot-docs/superpowers/specs/2026-05-23-goal-mode-design.md §8.1
  */
 
@@ -34,13 +31,11 @@ function statusLabel(s: TaskGoalStatus): string {
 
 export interface TaskGoalCardProps {
   goal: TaskGoal
-  /** Phase 3 接通后用来触发"清除当前 goal"；目前 disabled 状态时该 prop 不会被调用。 */
-  onClearGoal?: () => void
 }
 
 const AUDIT_HISTORY_MAX = 5
 
-export const TaskGoalCard: React.FC<TaskGoalCardProps> = ({ goal, onClearGoal }) => {
+export const TaskGoalCard: React.FC<TaskGoalCardProps> = ({ goal }) => {
   const recentAudits = goal.audit_history.slice(-AUDIT_HISTORY_MAX).reverse()
   const totalAudits = goal.audit_history.length
   const hasBudget = goal.token_budget !== undefined
@@ -138,25 +133,6 @@ export const TaskGoalCard: React.FC<TaskGoalCardProps> = ({ goal, onClearGoal })
           </div>
         )}
 
-        {goal.status === 'active' && (
-          <button
-            onClick={onClearGoal}
-            disabled
-            title="Phase 3 接入；当前请等 worker 完成或转为 blocked 状态"
-            style={{
-              marginTop: 4,
-              padding: '4px 10px',
-              fontSize: 12,
-              background: 'var(--bg-secondary, #f3f4f6)',
-              border: '1px solid var(--border)',
-              borderRadius: 4,
-              color: '#9ca3af',
-              cursor: 'not-allowed',
-            }}
-          >
-            清除当前 goal（Phase 3 接通）
-          </button>
-        )}
       </div>
     </section>
   )

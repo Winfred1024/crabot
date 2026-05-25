@@ -55,10 +55,9 @@ describe('TaskGoalCard', () => {
     expect(screen.getByText(/未通过（AC-1）/)).toBeInTheDocument()
   })
 
-  it('active 状态显示 disabled 的清除按钮', () => {
+  it('清除按钮已废弃：active 状态也不显示（master 改用 /清除目标 slash）', () => {
     render(<TaskGoalCard goal={makeGoal({ status: 'active' })} />)
-    const btn = screen.getByRole('button', { name: /清除当前 goal/ })
-    expect(btn).toBeDisabled()
+    expect(screen.queryByRole('button', { name: /清除当前 goal/ })).toBeNull()
   })
 
   it('非 active 状态不显示清除按钮', () => {
