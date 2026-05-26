@@ -581,6 +581,8 @@ export interface DialogObjectGroupEntry extends DialogObjectChannelSession {
   participant_count: number
   has_session_config: boolean
   master_in_group: boolean
+  /** 当前 channel 是否支持手动回填历史（目前仅 feishu native channel 实现了 backfill_history RPC） */
+  supports_backfill: boolean
 }
 
 // ============================================================================

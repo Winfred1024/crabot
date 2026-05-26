@@ -202,6 +202,27 @@ export interface PlatformUserInfoResult {
   extra?: Record<string, unknown>
 }
 
+export interface BackfillHistoryParams {
+  session_id: SessionId
+  /** 单次回填的消息总数上限。channel 内部还有 hard cap 防爆 */
+  max_count?: number
+  /** ISO 时间戳，默认 now - 7d */
+  after?: string
+  /** ISO 时间戳，默认 now */
+  before?: string
+}
+
+export interface BackfillHistoryResult {
+  session_id: SessionId
+  backfilled_count: number
+  /** 飞书返回但已经在本地的，跳过计数 */
+  skipped_count: number
+  /** 触达 max_count 上限或飞书还有更多分页时为 true */
+  has_more: boolean
+  oldest_ts?: string
+  newest_ts?: string
+}
+
 export interface SyncSessionsParams {
   mode?: 'full' | 'incremental'
 }

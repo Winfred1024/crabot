@@ -143,6 +143,7 @@ describe('DialogObjectsPage', () => {
           participant_count: 2,
           has_session_config: true,
           master_in_group: true,
+          supports_backfill: false,
           created_at: '2026-04-19T00:00:00.000Z',
           updated_at: '2026-04-19T00:00:00.000Z',
         },

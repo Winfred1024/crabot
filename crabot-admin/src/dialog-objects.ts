@@ -22,6 +22,8 @@ interface GroupProjectionInput {
   friends: Iterable<Friend>
   sessions: Iterable<DialogObjectChannelSession>
   sessionConfigs: ReadonlyMap<string, SessionPermissionConfig> | Iterable<[string, SessionPermissionConfig]>
+  /** channel_id → platform 映射。用于标注 group 是否支持 backfill */
+  channelPlatforms?: ReadonlyMap<string, string>
 }
 
 export interface DialogObjectSessionPage {
@@ -285,6 +287,7 @@ export function projectPrivatePoolDialogObjects(input: PrivatePoolProjectionInpu
 export function projectGroupDialogObjects(input: GroupProjectionInput): DialogObjectGroupEntry[] {
   const friends = Array.from(input.friends)
   const sessionConfigIds = toSessionConfigIdSet(input.sessionConfigs)
+  const channelPlatforms = input.channelPlatforms
 
   return Array.from(input.sessions)
     .filter((session) => session.type === 'group')
@@ -294,6 +297,7 @@ export function projectGroupDialogObjects(input: GroupProjectionInput): DialogOb
         participant_count: session.participants.length,
         has_session_config: sessionConfigIds.has(session.id),
         master_in_group: sessionHasMasterParticipant(session, friends),
+        supports_backfill: channelPlatforms?.get(session.channel_id) === 'feishu',
       }
     })
     .filter((session) => session.master_in_group)

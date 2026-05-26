@@ -83,6 +83,15 @@ export class FeishuClient {
 
   // ── chats ──────────────────────────────────────────────────────────────────
 
+  /** 取单个 chat 详情：/open-apis/im/v1/chats/{chat_id}。仅用 name 字段做群名解析 */
+  async getChat(chatId: string): Promise<{ chat_id: string; name: string }> {
+    const resp = await this.client.im.chat.get({ path: { chat_id: chatId } })
+    return {
+      chat_id: chatId,
+      name: resp.data?.name ?? '',
+    }
+  }
+
   async listChats(params?: { page_token?: string; page_size?: number }): Promise<{ items: ChatListItem[]; page_token?: string; has_more: boolean }> {
     const resp = await this.client.im.chat.list({ params: { page_size: params?.page_size ?? 50, page_token: params?.page_token } })
     if (!resp.data) return { items: [], has_more: false }
@@ -253,7 +262,7 @@ export class FeishuClient {
   }
 
   /** 历史消息查询：im.v1.message.list */
-  async listMessages(params: { container_id_type: 'chat'; container_id: string; start_time?: string; end_time?: string; page_size?: number; page_token?: string }): Promise<{ items: Array<Record<string, unknown>>; page_token?: string; has_more: boolean }> {
+  async listMessages(params: { container_id_type: 'chat'; container_id: string; start_time?: string; end_time?: string; page_size?: number; page_token?: string; sort_type?: 'ByCreateTimeAsc' | 'ByCreateTimeDesc' }): Promise<{ items: Array<Record<string, unknown>>; page_token?: string; has_more: boolean }> {
     const resp = await this.client.im.message.list({
       params: {
         container_id_type: params.container_id_type,
@@ -262,6 +271,7 @@ export class FeishuClient {
         end_time: params.end_time,
         page_size: params.page_size ?? 20,
         page_token: params.page_token,
+        sort_type: params.sort_type,
       },
     })
     return {

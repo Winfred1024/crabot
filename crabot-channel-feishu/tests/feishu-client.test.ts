@@ -173,6 +173,37 @@ describe('FeishuClient.listContacts', () => {
     expect(result.page_token).toBe('next_xyz')
   })
 
+  it('FeishuClient.getChat 返回 { chat_id, name }', async () => {
+    const fakeApi = {
+      im: {
+        chat: {
+          get: vi.fn().mockResolvedValue({ data: { name: '心术通识小伙伴' } }),
+        },
+      },
+    }
+    const client = new FeishuClient({ app_id: 'a', app_secret: 's', domain: 'feishu' })
+    ;(client as unknown as { client: typeof fakeApi }).client = fakeApi as never
+
+    const chat = await client.getChat('oc_xxx')
+    expect(fakeApi.im.chat.get).toHaveBeenCalledWith({ path: { chat_id: 'oc_xxx' } })
+    expect(chat).toEqual({ chat_id: 'oc_xxx', name: '心术通识小伙伴' })
+  })
+
+  it('FeishuClient.getChat 在 SDK 返回无 name 时退化为空字符串', async () => {
+    const fakeApi = {
+      im: {
+        chat: {
+          get: vi.fn().mockResolvedValue({ data: {} }),
+        },
+      },
+    }
+    const client = new FeishuClient({ app_id: 'a', app_secret: 's', domain: 'feishu' })
+    ;(client as unknown as { client: typeof fakeApi }).client = fakeApi as never
+
+    const chat = await client.getChat('oc_yyy')
+    expect(chat).toEqual({ chat_id: 'oc_yyy', name: '' })
+  })
+
   it('SDK 返回 99991672 时抛 RpcError(PERMISSION_DENIED) 携带 missing_scope', async () => {
     const fakeApi = {
       contact: {

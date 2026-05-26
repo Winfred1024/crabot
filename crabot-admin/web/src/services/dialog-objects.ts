@@ -77,4 +77,21 @@ export const dialogObjectsService = {
       data
     )
   },
+
+  async backfillGroupHistory(
+    sessionId: string,
+    data: { channel_id: string; max_count?: number; after?: string; before?: string }
+  ): Promise<{
+    session_id: string
+    backfilled_count: number
+    skipped_count: number
+    has_more: boolean
+    oldest_ts?: string
+    newest_ts?: string
+  }> {
+    return api.post(
+      `/dialog-objects/groups/${encodeURIComponent(sessionId)}/backfill-history`,
+      data
+    )
+  },
 }

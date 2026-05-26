@@ -128,6 +128,29 @@ describe('applyParticipantsAdded / Removed', () => {
   })
 })
 
+describe('applyChatUpdate', () => {
+  it('replaces chat_id placeholder title with real chat name (repair path)', () => {
+    // 模拟存量数据：handleMessageReceive 失败时把 chat_id 当 title 落了盘
+    mgr.upsertGroupSessionFromSnapshot({
+      platform_session_id: 'oc_chat1',
+      title: 'oc_chat1',
+      participants: [],
+    })
+    const updated = mgr.applyChatUpdate('oc_chat1', { title: '心术通识小伙伴' })
+    expect(updated?.title).toBe('心术通识小伙伴')
+  })
+
+  it('does not overwrite real title with chat_id placeholder', () => {
+    mgr.upsertGroupSessionFromSnapshot({
+      platform_session_id: 'oc_chat1',
+      title: '心术通识小伙伴',
+      participants: [],
+    })
+    const updated = mgr.applyChatUpdate('oc_chat1', { title: 'oc_chat1' })
+    expect(updated?.title).toBe('心术通识小伙伴')
+  })
+})
+
 describe('removeByPlatformId', () => {
   it('removes a session and clears index', () => {
     const r = mgr.upsert({ platform_session_id: 'ou_alice', type: 'private', title: 'Alice', sender_id: 'ou_alice', sender_name: 'Alice' })

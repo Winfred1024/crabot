@@ -14,6 +14,25 @@ import { GroupWorkbench } from './GroupWorkbench'
 import { ObjectList } from './ObjectList'
 import { PrivatePoolWorkbench } from './PrivatePoolWorkbench'
 
+vi.mock('../../../contexts/ToastContext', () => ({
+  useToast: () => ({
+    success: vi.fn(),
+    error: vi.fn(),
+    info: vi.fn(),
+  }),
+}))
+
+vi.mock('../../../services/dialog-objects', () => ({
+  dialogObjectsService: {
+    backfillGroupHistory: vi.fn().mockResolvedValue({
+      session_id: 'sess-1',
+      backfilled_count: 0,
+      skipped_count: 0,
+      has_more: false,
+    }),
+  },
+}))
+
 vi.mock('../../../components/Common/Card', () => ({
   Card: ({ children, title }: { children: React.ReactNode; title?: string }) => (
     <div className="card">
@@ -137,6 +156,7 @@ describe('DialogObjects components', () => {
       participant_count: 1,
       has_session_config: true,
       master_in_group: true,
+      supports_backfill: false,
       created_at: '2026-04-19T00:00:00.000Z',
       updated_at: '2026-04-19T00:00:00.000Z',
     }

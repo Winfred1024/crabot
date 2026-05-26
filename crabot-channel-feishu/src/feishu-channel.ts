@@ -34,6 +34,8 @@ import {
   mapMessageContent,
 } from './event-mapper.js'
 import type {
+  BackfillHistoryParams,
+  BackfillHistoryResult,
   ChannelMessage,
   ChannelCapabilities,
   FeishuChannelConfig,
@@ -149,9 +151,37 @@ export class FeishuChannel extends ModuleBase {
     })
 
     await this.subscriber.start(dispatcher)
-    this.bootstrapGroupSessions().catch((err) => {
-      console.warn('[FeishuChannel] bootstrap aborted:', err)
-    })
+    this.bootstrapGroupSessions()
+      .then(() => this.repairBrokenGroupTitles())
+      .catch((err) => {
+        console.warn('[FeishuChannel] bootstrap aborted:', err)
+      })
+  }
+
+  /**
+   * 扫描已有 group sessions，title 等于 chat_id 占位的，逐个调 getChat 补群名。
+   * 兜底场景：bootstrap 错过 / handleBotAdded 时 data.name 和 getChat 都失败留下 oc_xxx。
+   */
+  private async repairBrokenGroupTitles(): Promise<void> {
+    const broken = this.sessionManager.listSessions('group')
+      .filter((s) => s.title === s.platform_session_id)
+    if (broken.length === 0) return
+    let repaired = 0
+    for (const s of broken) {
+      try {
+        const chat = await this.client.getChat(s.platform_session_id)
+        const name = chat.name?.trim()
+        if (!name || name === s.platform_session_id) continue
+        const updated = this.sessionManager.applyChatUpdate(s.platform_session_id, { title: name })
+        if (updated && updated.title === name) {
+          repaired += 1
+          await this.publishSessionChanged('updated', updated)
+        }
+      } catch (err) {
+        console.warn(`[FeishuChannel] repair title ${s.platform_session_id} failed:`, err)
+      }
+    }
+    if (repaired > 0) console.log(`[FeishuChannel] repaired ${repaired} group titles (was chat_id placeholder)`)
   }
 
   protected override async onStop(): Promise<void> {
@@ -197,7 +227,9 @@ export class FeishuChannel extends ModuleBase {
       this.applyMediaContent(mapped, message.message_id),
     ])
 
-    const placeholderTitle = isGroup ? message.chat_id : (senderName || senderOpenId || message.chat_id)
+    const placeholderTitle = isGroup
+      ? await this.resolveGroupTitle(message.chat_id)
+      : (senderName || senderOpenId || message.chat_id)
     const { session } = this.sessionManager.upsert({
       platform_session_id: platformSessionId,
       type: sessionType,
@@ -332,9 +364,35 @@ export class FeishuChannel extends ModuleBase {
     }
   }
 
+  /**
+   * 解析群名：已有 session 且 title 不是 chat_id 占位 → 复用；否则调 getChat；失败 fallback 到 chat_id。
+   * 避免新建 session 时把 oc_xxx 当成 title 落盘。
+   */
+  private async resolveGroupTitle(chatId: string): Promise<string> {
+    const existing = this.sessionManager.findByPlatformId(chatId)
+    if (existing && existing.title && existing.title !== chatId) return existing.title
+    try {
+      const chat = await this.client.getChat(chatId)
+      const name = chat.name?.trim()
+      if (name) return name
+    } catch (err) {
+      console.warn(`[FeishuChannel] resolveGroupTitle ${chatId} failed:`, err)
+    }
+    return chatId
+  }
+
   private async handleBotAdded(data: { chat_id?: string; name?: string; type?: string }): Promise<void> {
     if (!data.chat_id) return
-    let title = data.name ?? data.chat_id
+    let title = data.name?.trim() ?? ''
+    if (!title) {
+      try {
+        const chat = await this.client.getChat(data.chat_id)
+        title = chat.name?.trim() || data.chat_id
+      } catch (err) {
+        console.warn(`[FeishuChannel] getChat ${data.chat_id} failed:`, err)
+        title = data.chat_id
+      }
+    }
     let participants: Array<{ platform_user_id: string; role: 'member' }> = []
     try {
       const members = await this.client.getChatMembers(data.chat_id)
@@ -348,6 +406,13 @@ export class FeishuChannel extends ModuleBase {
       participants,
     })
     await this.publishSessionChanged(created ? 'created' : 'updated', session)
+
+    // bot 首次入群 → 一次性拉历史。用户确认这是唯一自动回填场景
+    if (created) {
+      this.backfillHistory({ session_id: session.id })
+        .then((r) => console.log(`[FeishuChannel] auto backfill ${session.id}: backfilled=${r.backfilled_count}, skipped=${r.skipped_count}, has_more=${r.has_more}`))
+        .catch((err) => console.warn(`[FeishuChannel] auto backfill failed for ${session.id}:`, err))
+    }
   }
 
   private async handleBotDeleted(data: { chat_id?: string }): Promise<void> {
@@ -433,6 +498,7 @@ export class FeishuChannel extends ModuleBase {
     this.registerMethod('find_or_create_private_session', this.handleFindOrCreatePrivateSession.bind(this))
     this.registerMethod('get_history', this.handleGetHistory.bind(this))
     this.registerMethod('get_message', this.handleGetMessage.bind(this))
+    this.registerMethod('backfill_history', this.handleBackfillHistory.bind(this))
     this.registerMethod('get_platform_user_info', this.handleGetPlatformUserInfo.bind(this))
     this.registerMethod('sync_sessions', this.handleSyncSessions.bind(this))
     this.registerMethod('delete_session', this.handleDeleteSession.bind(this))
@@ -711,6 +777,120 @@ export class FeishuChannel extends ModuleBase {
     const remote = await this.client.getMessage(params.platform_message_id)
     if (!remote) throwError('NOT_FOUND', 'Message not found')
     return feishuMsgToHistory(remote)
+  }
+
+  private handleBackfillHistory(params: BackfillHistoryParams): Promise<BackfillHistoryResult> {
+    return this.backfillHistory(params)
+  }
+
+  /**
+   * 从飞书 im.v1.message.list 拉取指定群的历史消息，写入本地 message-store。
+   * 触发场景：bot 首次进群事件（自动）/ Admin Web 群条目手动按钮（RPC backfill_history）。
+   * 安全保护：默认窗口 7 天 / 默认上限 200 条 / 同 session 并发互斥 / 已存在 platform_message_id 跳过。
+   */
+  private readonly backfillInProgress = new Set<string>()
+  private static readonly BACKFILL_DEFAULT_COUNT = 500
+  private static readonly BACKFILL_HARD_CAP = 500
+
+  private async backfillHistory(params: BackfillHistoryParams): Promise<BackfillHistoryResult> {
+    const session = this.sessionManager.findById(params.session_id)
+    if (!session) throwError('NOT_FOUND', `Session not found: ${params.session_id}`)
+    if (session.type !== 'group') throwError('INVALID_ARGUMENT', 'Only group sessions support backfill')
+
+    if (this.backfillInProgress.has(session.id)) {
+      throwError('CONFLICT', `Backfill already in progress for session ${session.id}`)
+    }
+    this.backfillInProgress.add(session.id)
+
+    try {
+      const maxCount = Math.min(
+        Math.max(1, params.max_count ?? FeishuChannel.BACKFILL_DEFAULT_COUNT),
+        FeishuChannel.BACKFILL_HARD_CAP,
+      )
+
+      const stored = await this.messageStore.query({ sessionId: session.id })
+      const existingIds = new Set(stored.items.map((i) => i.platform_message_id))
+
+      // 默认不限时间下界，仅当调用方显式传 after/before 时才带上
+      const afterSec = params.after ? Math.floor(new Date(params.after).getTime() / 1000).toString() : undefined
+      let beforeSec: string | undefined
+      if (params.before) {
+        beforeSec = Math.floor(new Date(params.before).getTime() / 1000).toString()
+      } else if (stored.items.length > 0) {
+        // 自动续拉：从本地已存最早一条的前一秒往更早回溯，让"反复点击"真的能拿到新数据
+        let oldestMs = Number.POSITIVE_INFINITY
+        for (const m of stored.items) {
+          const t = new Date(m.platform_timestamp).getTime()
+          if (Number.isFinite(t) && t < oldestMs) oldestMs = t
+        }
+        if (Number.isFinite(oldestMs)) {
+          beforeSec = Math.max(0, Math.floor((oldestMs - 1000) / 1000)).toString()
+        }
+      }
+
+      let pageToken: string | undefined = undefined
+      let backfilledCount = 0
+      let skippedCount = 0
+      let oldestMs: number | null = null
+      let newestMs: number | null = null
+      let hasMore = false
+
+      while (backfilledCount < maxCount) {
+        const remaining = maxCount - backfilledCount
+        // page_size 上限 50；多拉一些抵消 dedup
+        const pageSize = Math.min(50, Math.max(remaining, 20))
+        const resp = await this.client.listMessages({
+          container_id_type: 'chat',
+          container_id: session.platform_session_id,
+          ...(afterSec ? { start_time: afterSec } : {}),
+          ...(beforeSec ? { end_time: beforeSec } : {}),
+          // 按时间倒序拉，先拿最近的，page_token 接着往更早回溯
+          sort_type: 'ByCreateTimeDesc',
+          page_size: pageSize,
+          page_token: pageToken,
+        })
+
+        for (const m of resp.items) {
+          const platformId = (m as Record<string, unknown>).message_id as string | undefined
+          if (!platformId) continue
+          if (existingIds.has(platformId)) {
+            skippedCount += 1
+            continue
+          }
+
+          const history = feishuMsgToHistory(m)
+          await this.messageStore.append(session.id, {
+            ...history,
+            direction: 'inbound',
+          })
+          existingIds.add(platformId)
+          backfilledCount += 1
+
+          const ts = new Date(history.platform_timestamp).getTime()
+          if (Number.isFinite(ts)) {
+            if (oldestMs === null || ts < oldestMs) oldestMs = ts
+            if (newestMs === null || ts > newestMs) newestMs = ts
+          }
+
+          if (backfilledCount >= maxCount) break
+        }
+
+        hasMore = resp.has_more
+        if (!hasMore || !resp.page_token) break
+        pageToken = resp.page_token
+      }
+
+      return {
+        session_id: session.id,
+        backfilled_count: backfilledCount,
+        skipped_count: skippedCount,
+        has_more: hasMore,
+        oldest_ts: oldestMs !== null ? new Date(oldestMs).toISOString() : undefined,
+        newest_ts: newestMs !== null ? new Date(newestMs).toISOString() : undefined,
+      }
+    } finally {
+      this.backfillInProgress.delete(session.id)
+    }
   }
 
   private async handleGetPlatformUserInfo(params: { platform_user_id: string }): Promise<PlatformUserInfoResult> {

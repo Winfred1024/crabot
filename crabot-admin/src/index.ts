@@ -981,6 +981,12 @@ export class AdminModule extends ModuleBase {
         return
       }
 
+      if (pathname.match(/^\/api\/dialog-objects\/groups\/[^/]+\/backfill-history$/) && req.method === 'POST') {
+        const sessionId = decodeURIComponent(pathname.split('/')[4])
+        await this.handleBackfillGroupHistoryApi(req, res, sessionId)
+        return
+      }
+
       if (pathname === '/api/dialog-objects/applications' && req.method === 'GET') {
         await this.handleListDialogObjectApplicationsApi(res)
         return
@@ -2568,14 +2574,84 @@ export class AdminModule extends ModuleBase {
 
   private async handleListDialogObjectGroupsApi(res: ServerResponse): Promise<void> {
     const sessions = await this.fetchChannelSessionsForDialogObjects('group')
+    const channelPlatforms = new Map<string, string>()
+    for (const inst of this.channelManager.listInstances({ page: 1, page_size: Number.MAX_SAFE_INTEGER }).items) {
+      channelPlatforms.set(inst.id, inst.platform)
+    }
     const items = projectGroupDialogObjects({
       friends: this.friends.values(),
       sessions,
       sessionConfigs: this.sessionConfigs,
+      channelPlatforms,
     })
 
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ items }))
+  }
+
+  /**
+   * 手动触发 channel 的 backfill_history RPC 把指定群历史拉到本地。
+   * body 需要带 channel_id 才能定位到正确的 channel module；可选 max_count / after / before。
+   */
+  private async handleBackfillGroupHistoryApi(
+    req: IncomingMessage,
+    res: ServerResponse,
+    sessionId: string,
+  ): Promise<void> {
+    const body = await this.readJsonBody<{
+      channel_id?: string
+      max_count?: number
+      after?: string
+      before?: string
+    }>(req)
+    const channelId = body.channel_id?.trim()
+    if (!channelId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'channel_id is required' }))
+      return
+    }
+
+    try {
+      const modules = await this.rpcClient.resolve(
+        { module_id: channelId },
+        this.config.moduleId,
+      )
+      if (modules.length === 0) {
+        res.writeHead(404, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: `Channel module not resolvable: ${channelId}` }))
+        return
+      }
+
+      const channelPort = modules[0].port
+      const result = await this.rpcClient.call<
+        { session_id: string; max_count?: number; after?: string; before?: string },
+        {
+          session_id: string
+          backfilled_count: number
+          skipped_count: number
+          has_more: boolean
+          oldest_ts?: string
+          newest_ts?: string
+        }
+      >(
+        channelPort,
+        'backfill_history',
+        {
+          session_id: sessionId,
+          ...(body.max_count !== undefined ? { max_count: body.max_count } : {}),
+          ...(body.after ? { after: body.after } : {}),
+          ...(body.before ? { before: body.before } : {}),
+        },
+        this.config.moduleId,
+      )
+
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(result))
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      res.writeHead(502, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: message }))
+    }
   }
 
   private async fetchChannelSessionsForDialogObjects(
