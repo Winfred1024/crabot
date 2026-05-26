@@ -88,6 +88,7 @@ import { createTodoTool } from './worker-todo-tool.js'
 import { createSetTaskGoalTool } from './goal-tools.js'
 import {
   buildAuditPrompt,
+  buildAuditVerdictSummary,
   buildHumanQueueReport,
   resolveAuditJudgment,
   type AuditResult,
@@ -2475,8 +2476,15 @@ export class AgentHandler {
     // 5. 解析判决（优先 tool call → max_turns/failed/aborted 直接 sentinel → fallback parseAuditReport → fallback sentinel）
     const parsed = resolveAuditJudgment(result)
 
-    // 6. 写 audit_history
+    // 5b. 把 verdict 回写到 audit trace 顶层 summary，让 admin UI 直接可见
+    //     (spec 2026-05-26-goal-audit-loop-completion §2.1.2)
     const auditTraceId = result.traceId ?? ''
+    if (auditTraceId && params.traceConfig?.traceStore) {
+      const verdictSummary = buildAuditVerdictSummary(parsed)
+      params.traceConfig.traceStore.appendTraceOutcome(auditTraceId, verdictSummary)
+    }
+
+    // 6. 写 audit_history
     await this.deps.rpcClient.call<unknown, unknown>(
       adminPort,
       'append_task_goal_audit_entry',
