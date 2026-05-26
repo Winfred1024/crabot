@@ -343,8 +343,9 @@ export function getBuiltinSubAgents(): SubAgentRegistryEntry[] {
       builtin_capabilities: { file_system: true, shell: true, task_intel: false, crab_memory: false, crab_messaging: false },
       allowed_mcp_server_ids: [],
       allowed_skill_ids: [BUILTIN_SKILL_IDS.systematicDebugging, BUILTIN_SKILL_IDS.verificationBeforeCompletion],
-      // 实写阶段 read/edit/test/grep 反复，50 容易触顶。参考 Claude Code FORK_AGENT=200。
-      max_turns: 120,
+      // 实写阶段 read/edit/test/grep 反复，120 实战仍易触顶（trace bbcbe0fc 案例：plan 8 task/34 step，
+      // ~18% turn 被长 wait 轮询吃掉），上调到 300。参考 Claude Code FORK_AGENT=200，我们任务粒度更大。
+      max_turns: 300,
       enabled: true,
       is_builtin: true,
       created_at: SEED_TIMESTAMP,
@@ -399,9 +400,9 @@ export function getBuiltinSubAgents(): SubAgentRegistryEntry[] {
       },
       allowed_mcp_server_ids: [],
       allowed_skill_ids: [BUILTIN_SKILL_IDS.verificationBeforeCompletion],
-      // 逐条验证 acceptance criteria 可能要 Bash 跑命令 + Read 验文件，15 极易触顶。
-      // 截图反馈"派出但子任务到轮次上限"主要就在 audit 路径，上调到 50。
-      max_turns: 50,
+      // 逐条验证 acceptance criteria 可能要 Bash 跑命令 + Read 验文件 + ssh 远程查；
+      // criterion 多时（trace bbcbe0fc 8 条）50 turn 仍偏紧，上调到 80。
+      max_turns: 80,
       enabled: true,
       is_builtin: true,
       system_only: true,
