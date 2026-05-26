@@ -81,22 +81,15 @@ export interface LLMCallResponse {
 
 // --- Non-streaming convenience ---
 
-export const DEFAULT_LLM_TIMEOUT_MS = 120_000
-
 export async function callNonStreaming(
   adapter: LLMAdapter,
   params: LLMStreamParams,
 ): Promise<LLMCallResponse> {
-  const effectiveParams = params.signal != null ? params : {
-    ...params,
-    signal: AbortSignal.timeout(DEFAULT_LLM_TIMEOUT_MS),
-  }
-
-  // Prefer native non-streaming endpoint when the adapter provides one.
-  // This avoids SSE parsing and makes mid-response network failures naturally
-  // retryable (vs. streaming, which can only retry before the first chunk).
+  // 不在这里加默认 timeout：LLM provider 响应慢是常态，时长不可预知；
+  // retry 由 streamWithRetry / withStreamConsumptionRetry 负责，socket-level
+  // 真错误由 SDK 抛。caller 想限时自己传 signal。
   if (adapter.complete) {
-    return adapter.complete(effectiveParams)
+    return adapter.complete(params)
   }
 
   // Fallback: consume stream and aggregate. Some adapters（如 OpenAI Responses）
@@ -107,7 +100,7 @@ export async function callNonStreaming(
   // 重发整个请求是安全的（server 端会生成新 response，没有下游 streaming 消费者
   // 看得到重复 chunk）。所以这里加 iter-level retry：mid-stream 断了就重跑全流，
   // 直到拿到完整结果或耗尽 retry 配额。
-  return await withStreamConsumptionRetry(adapter, effectiveParams)
+  return await withStreamConsumptionRetry(adapter, params)
 }
 
 async function withStreamConsumptionRetry(
