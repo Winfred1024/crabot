@@ -6824,6 +6824,7 @@ export class AdminModule extends ModuleBase {
 
   private async buildSubAgentConfigsForPush(
     agentInstanceConfig: AgentInstanceConfig,
+    resolvedModelConfig: Record<string, LLMConnectionInfo>,
   ): Promise<SubAgentConfig[]> {
     const enabled = this.subAgentManager.listEnabled()
     const result: SubAgentConfig[] = []
@@ -6837,17 +6838,18 @@ export class AdminModule extends ModuleBase {
             spec.provider_id, spec.model_id
           )
         } else {
-          const ref = agentInstanceConfig.model_config[spec.role]
-          if (!ref) {
+          // 直接复用 handleGetAgentConfig 已解析的 model_config——
+          // 它已应用了 ModelRoleDefinition.fallback='global_default'：
+          // 实例未配 + 有全局默认 LLM 时，resolvedModelConfig[role] 即全局默认。
+          const resolved = resolvedModelConfig[spec.role]
+          if (!resolved) {
             console.warn(
               `[Admin] SubAgent "${entry.name}" model_role=${spec.role} ` +
-              `在实例 ${agentInstanceConfig.instance_id} 未配置，跳过`
+              `在实例 ${agentInstanceConfig.instance_id} 未配置且无全局默认 LLM 可回退，跳过`
             )
             continue
           }
-          model = await this.modelProviderManager.buildConnectionInfo(
-            ref.provider_id, ref.model_id
-          )
+          model = resolved
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
@@ -6892,7 +6894,9 @@ export class AdminModule extends ModuleBase {
 
       // 拿原始 instance config（用于解析 model_role + 透传 timeout 字段）
       const instance = this.agentManager.getConfig('crabot-agent')
-      const subagents = instance ? await this.buildSubAgentConfigsForPush(instance) : []
+      const subagents = instance
+        ? await this.buildSubAgentConfigsForPush(instance, config.model_config)
+        : []
 
       // 推送可热更新的字段
       const updateParams = {
