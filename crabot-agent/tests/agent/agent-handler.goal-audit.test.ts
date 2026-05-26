@@ -150,8 +150,9 @@ describe('AgentHandler.runGoalAudit', () => {
       expect(result.pass).toBe(false)
       expect(result.failedCriteria).toEqual(['c1'])
       expect(result.auditTraceId).toBe('trace-xyz')
-      // detailedReport 包含 fail 报告核心要素
-      expect(result.detailedReport).toContain('目标审计未通过')
+      // detailedReport 包含 fail 报告核心要素（"日记体" 改造：仅你可见标记 + 自检反馈语义）
+      expect(result.detailedReport).toContain('仅你可见')
+      expect(result.detailedReport).toMatch(/自检.*差距|还没满足的承诺项/)
       expect(result.detailedReport).toContain('c1')
       expect(result.detailedReport).toContain('typecheck 报错')
 

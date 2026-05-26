@@ -113,8 +113,18 @@ describe('#3 工作流 · 群聊版', () => {
 
 describe('#4 send_message 工具使用规范', () => {
   it('说明 intent 字段语义', () => {
-    expect(SEND_MESSAGE_SPEC).toContain('intent="normal"')
+    expect(SEND_MESSAGE_SPEC).toContain('intent="info"')
     expect(SEND_MESSAGE_SPEC).toContain('intent="ask_human"')
+  })
+
+  it('开头有"唯一对外通道"铁则段，明示其他信号人类看不见', () => {
+    expect(SEND_MESSAGE_SPEC).toContain('唯一')
+    expect(SEND_MESSAGE_SPEC).toContain('人类完全看不见')
+  })
+
+  it('禁止 crabot 黑话直接搬给人类', () => {
+    expect(SEND_MESSAGE_SPEC).toMatch(/禁止.*黑话|禁止.*audit|禁止.*criterion/)
+    expect(SEND_MESSAGE_SPEC).toContain('翻译')
   })
 
   it('要求 ask_human 结构化书写', () => {

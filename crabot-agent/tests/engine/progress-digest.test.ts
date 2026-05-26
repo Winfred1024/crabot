@@ -159,7 +159,7 @@ describe('ProgressDigest fork mode', () => {
       assistantText: 'ack',
       toolCalls: [makeToolCall({
         name: 'mcp__crab-messaging__send_message',
-        input: { content: 'ack', intent: 'normal' },
+        input: { content: 'ack', intent: 'info' },
       })],
     }))
 
@@ -325,12 +325,12 @@ describe('ProgressDigest fork mode', () => {
     }
     const digest = new ProgressDigest(config, makeDeps({ sendToUser, messagesRef, adapter }))
 
-    // agent 在 1s 时主动 send_message（intent=normal） → 应记录 sentMessageSinceStart
+    // agent 在 1s 时主动 send_message（intent=info） → 应记录 sentMessageSinceStart
     digest.ingest(makeEvent({
       assistantText: '我先告诉你一下进度',
       toolCalls: [makeToolCall({
         name: 'mcp__crab-messaging__send_message',
-        input: { content: '正在处理 X', intent: 'normal' },
+        input: { content: '正在处理 X', intent: 'info' },
         isError: false,
       })],
     }))
@@ -385,7 +385,7 @@ describe('ProgressDigest fork mode', () => {
       assistantText: '试图汇报',
       toolCalls: [makeToolCall({
         name: 'mcp__crab-messaging__send_message',
-        input: { content: 'progress', intent: 'normal' },
+        input: { content: 'progress', intent: 'info' },
         isError: true,
         output: 'channel offline',
       })],

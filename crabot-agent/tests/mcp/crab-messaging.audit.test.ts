@@ -80,14 +80,14 @@ describe('send_message audit gate', () => {
     expect(runGoalAudit).not.toHaveBeenCalled()
   })
 
-  it('intent=normal 即使 hasGoal=true 也不触发 audit', async () => {
+  it('intent=info 即使 hasGoal=true 也不触发 audit', async () => {
     const runGoalAudit = vi.fn()
     const deps = makeDeps({
       runGoalAudit,
       taskCtx: { taskId: 't1', humanQueue: new HumanMessageQueue(), triggerType: 'message', hasGoal: () => true },
     })
     const tools = buildMessagingTools(deps)
-    await callSendMessage(tools, { ...baseArgs, intent: 'normal' })
+    await callSendMessage(tools, { ...baseArgs, intent: 'info' })
     expect(runGoalAudit).not.toHaveBeenCalled()
   })
 

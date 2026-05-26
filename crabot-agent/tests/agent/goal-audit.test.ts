@@ -84,11 +84,13 @@ AUDIT_REPORT_END`)
     const goal = sampleGoal()
     const r = parseAuditReport('auditor 输出格式错误')
     const report = buildHumanQueueReport(r, goal)
-    expect(report).toMatch(/审计员异常|审计员侧的故障/)
-    expect(report).toMatch(/未按契约|未识别到/)
+    expect(report).toMatch(/自检流程跑挂|自检模块自己出问题/)
+    expect(report).toMatch(/未识别到结论行|未识别到/)
     // 仍含目标 + 反 specification gaming 提示
     expect(report).toContain(goal.objective)
     expect(report).toMatch(/ask_human/)
+    // 仅你可见——明示这是 crabot 内部反馈
+    expect(report).toContain('仅你可见')
   })
 
   it('大小写不敏感的 PASS', () => {
@@ -136,14 +138,16 @@ describe('buildHumanQueueReport', () => {
       failedCriteria: ['c1'],
       rawOutput: '## 逐条核对\n### [c1] ...\n- 失败原因: typecheck 报错',
     }, goal)
-    expect(report).toContain('目标审计未通过')
+    // 改为"日记体"——明示这是 crabot 内部反馈、人类看不见
+    expect(report).toContain('仅你可见')
+    expect(report).toContain('不要把这段内容转给人类')
     expect(report).toContain('c1')
     expect(report).toContain(goal.objective)
-    expect(report).toMatch(/不要缩小目标范围/)
+    expect(report).toMatch(/不要缩小承诺范围/)
     expect(report).toContain('typecheck 报错')  // rawOutput 内嵌
   })
 
-  it('fail 时引导用 ask_human 而非 intent=normal', () => {
+  it('fail 时引导用 ask_human 而非 intent=info，且禁止教 agent 指挥人类操作 slash', () => {
     const goal = sampleGoal()
     const report = buildHumanQueueReport({
       pass: false,
@@ -151,7 +155,12 @@ describe('buildHumanQueueReport', () => {
       rawOutput: '',
     }, goal)
     expect(report).toContain('ask_human')
-    expect(report).toMatch(/不要.*intent='normal'|intent='normal'.*不要|那是异步通知/)
+    expect(report).toMatch(/不要.*intent='info'|intent='info'.*不要|单向播报/)
+    // 不该教 agent 指挥人类发 slash 命令（原模板有 "让 master 在 IM 发 /清除目标"）
+    expect(report).not.toMatch(/让 master.*发|让人类.*发.*\/|让.*master.*操作/)
+    // 至少有一条 "禁止把内部报告原样贴出去 / 出现黑话" 指引
+    expect(report).toContain('禁止')
+    expect(report).toContain('黑话')
   })
 
   it('pass 路径 noop（实际不会被调）', () => {

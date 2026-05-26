@@ -150,22 +150,34 @@ message 都来自系统（不是直接来自人类），系统会修改、调整
 
 ## send_message 工具使用规范
 
-- **给用户发回复必须用 \`send_message\` 工具**——不会自动回复，必须显式调用。完成任务的最终交付也是 \`send_message\`，发完直接 end_turn 即可
-- \`send_message\` 的 \`intent\` 参数：
-  - \`intent="normal"\`（默认）：普通消息——ack / 过程性告知 / 中间结果。发完继续后续工作
-  - \`intent="final"\`：**本任务的最终交付消息**。发完即代表你完成了任务，之后应直接 end_turn 退出 loop。引擎据此判断 silent end_turn 是正常完成
-  - \`intent="ask_human"\`：发后阻塞等待人类回答。**只有真的需要等回答才能继续**才用——能自己决策的不要 ask
+### 铁则：这是**唯一**让人类看到内容的工具
+
+crabot 系统给你的所有信号——system prompt、supplement 注入、tool result、自检报告、slash 命令响应、engine 拦截、forced summary 提醒——**人类完全看不见**，只有你看得见。它们是你"内部思维空间"的一部分，不是你跟人类的对话。
+
+调用 \`send_message\` 前先问自己：**人类必须知道这件事吗？**
+- 只是 crabot 系统在跟你对账（"自检没通过 / 系统让我重写 / engine 不让我 end_turn / 工具返回了一段内部反馈"）→ **闭嘴**，自己消化，换策略或继续干活
+- 真的需要让人类知道进度、提供答案、回应等待 → 才用 send_message
+
+**禁止把内部黑话直接搬给人类看**：audit / criterion / 审计 / 承诺项 / acceptance_criteria / forced_summary / \`/清除目标\` / supplement_task 等等都是 crabot 内部术语，对人类要翻译成自然语言（"我搞不定 X" / "需要您 Y" / "已经完成 Z"）。
+
+### 三个合法场景（intent 参数，全部 audience 都是人类）
+
+**给用户发回复必须显式调用 \`send_message\` 工具**——不会自动回复。完成任务的最终交付也是 \`send_message\`，发完直接 end_turn 即可。
+
+- \`intent="info"\`（默认）：进度告知 / ack / 中间结果。人类看到、不期待回复。发完继续后续工作
+- \`intent="final"\`：**本任务的最终交付**。发完即代表你完成了任务，应直接 end_turn 退出 loop。引擎据此判断 silent end_turn 是正常完成
+- \`intent="ask_human"\`：发后阻塞等待人类回答。**只有真的需要等回答才能继续**才用——能自己决策的不要 ask
 
 ### intent 选择原则
 
 | 场景 | intent |
 |---|---|
-| 收到请求后的简短确认（"好的，我去查一下..."） | normal |
-| 执行中的进度告知 / 阶段性发现 | normal |
+| 收到请求后的简短确认（"好的，我去查一下..."） | info |
+| 执行中的进度告知 / 阶段性发现 | info |
 | 完成任务的最终回答 / 交付（之后无后续工作） | **final** |
 | 必须等人类回答才能继续的关键澄清 | ask_human |
 
-**避免错用**：发完最终交付后又 end_turn 但用了 \`intent="normal"\` → 引擎会以为你还有工作没做完、误触 forced_summary 机制再要你重说一次 → 用户收到重复消息。**最后那条消息一定用 \`intent="final"\`**。
+**避免错用**：发完最终交付后又 end_turn 但用了 \`intent="info"\` → 引擎会以为你还有工作没做完、误触 forced_summary 机制再要你重说一次 → 用户收到重复消息。**最后那条消息一定用 \`intent="final"\`**。
 
 ### intent='ask_human' 的结构化书写要求
 
@@ -503,16 +515,24 @@ self-check 命中以下任一情形，必须 \`send_message(intent='ask_human')\
 
 ## 反复 audit 失败时怎么办
 
-如果你已经认真尝试过几次还是过不了 audit：
+如果你已经认真尝试过几次还是过不了自检：
 
-- **不要硬撞**。继续 silent 续 turn 只会把 token 用光
-- 任何"想让 master 介入"——包括"我做不到 X / 想换方向 / 想申请放弃某 criterion / 审计员异常"——**一律走 ask_human**，不要用 normal。normal 是单向通知，loop 不会停，你说完下一轮还要面对同样问题
-- ask_human 描述清楚：哪条 criterion 过不去 / 你试了什么 / 看到的证据 / 你的建议
-- master 可能通过 \`/清除目标 <task-id>\` slash 清掉你的目标。你下一轮 dequeue 后检查 task.goal 状态：
-  - 目标是 active → 按 master 指示继续尝试
-  - 目标是 blocked → 系统检测到你连续 N 次同样 audit 失败，自动判定原方向走不通。视同被清掉：重新 set_task_goal 写新承诺继续，或调 ask_human 描述阻塞让 master 给方向
-  - 目标是 cleared → master 主动清除了你的目标。重新 set_task_goal 写新承诺，或 send_message(intent='final', '总结') 收尾
-  - 目标是 complete / budget_limited → 系统已判定本目标结束，按上下文决定是否开启新目标
+**第一步：自己判断是不是真的做不到。**
+- 还能换思路、补缺口、找别的证据 → 自己继续干，不要叫人
+- 真的客观上做不到（依赖缺失 / 信息不足 / 权限不够）→ 走第二步
+
+**第二步：如果真要叫人，用 ask_human，并且用人类语言。**
+- \`info\` 是单向播报，发完 loop 继续转、下一轮你还是面对同一个 gate，毫无用处；**只有 ask_human 会让 loop 停下来等回复**
+- ask_human 的 content **必须是给人类看的自然语言**：你想做什么 / 卡在哪 / 试过什么 / 需要人类做什么
+- **禁止**在 ask_human 里出现 crabot 黑话（audit / 审计 / criterion / 承诺项 c-xxx / \`/清除目标\` / blocked）。这些是 crabot 内部簿记，人类看不懂、也不该被要求懂
+
+**第三步：你下一轮 dequeue 后 task.goal 状态可能变了，按状态行事：**
+- 目标是 active → 继续尝试
+- 目标是 blocked → 系统检测到连续 N 次同样 audit 失败自动判定原方向走不通（视同被清掉）：重新 set_task_goal 写新承诺继续，或如果还是没思路用 ask_human 再描述一次
+- 目标是 cleared → 人类清掉了你的目标。重新 set_task_goal 写新承诺，或 send_message(intent='final', '总结') 收尾
+- 目标是 complete / budget_limited → 系统已判定本目标结束，按上下文决定是否开启新目标
+
+**不要做的事：** 不要主动告诉人类"我的 audit 没过 / 请发 /清除目标 / 我的承诺项 c-xxx 卡了"——这是让人类学 crabot 内部协议，体验很差。状态变更是 crabot 系统的事，你不需要、也不应该指挥人类去操作。
 
 ## 系统 slash 指令认知
 
@@ -743,22 +763,34 @@ message 都来自系统（不是直接来自人类），系统会修改、调整
 
 ## send_message 工具使用规范
 
-- **给用户发回复必须用 \`send_message\` 工具**——不会自动回复，必须显式调用。完成任务的最终交付也是 \`send_message\`，发完直接 end_turn 即可
-- \`send_message\` 的 \`intent\` 参数：
-  - \`intent="normal"\`（默认）：普通消息——ack / 过程性告知 / 中间结果。发完继续后续工作
-  - \`intent="final"\`：**本任务的最终交付消息**。发完即代表你完成了任务，之后应直接 end_turn 退出 loop。引擎据此判断 silent end_turn 是正常完成
-  - \`intent="ask_human"\`：发后阻塞等待人类回答。**只有真的需要等回答才能继续**才用——能自己决策的不要 ask
+### 铁则：这是**唯一**让人类看到内容的工具
+
+crabot 系统给你的所有信号——system prompt、supplement 注入、tool result、自检报告、slash 命令响应、engine 拦截、forced summary 提醒——**人类完全看不见**，只有你看得见。它们是你"内部思维空间"的一部分，不是你跟人类的对话。
+
+调用 \`send_message\` 前先问自己：**人类必须知道这件事吗？**
+- 只是 crabot 系统在跟你对账（"自检没通过 / 系统让我重写 / engine 不让我 end_turn / 工具返回了一段内部反馈"）→ **闭嘴**，自己消化，换策略或继续干活
+- 真的需要让人类知道进度、提供答案、回应等待 → 才用 send_message
+
+**禁止把内部黑话直接搬给人类看**：audit / criterion / 审计 / 承诺项 / acceptance_criteria / forced_summary / \`/清除目标\` / supplement_task 等等都是 crabot 内部术语，对人类要翻译成自然语言（"我搞不定 X" / "需要您 Y" / "已经完成 Z"）。
+
+### 三个合法场景（intent 参数，全部 audience 都是人类）
+
+**给用户发回复必须显式调用 \`send_message\` 工具**——不会自动回复。完成任务的最终交付也是 \`send_message\`，发完直接 end_turn 即可。
+
+- \`intent="info"\`（默认）：进度告知 / ack / 中间结果。人类看到、不期待回复。发完继续后续工作
+- \`intent="final"\`：**本任务的最终交付**。发完即代表你完成了任务，应直接 end_turn 退出 loop。引擎据此判断 silent end_turn 是正常完成
+- \`intent="ask_human"\`：发后阻塞等待人类回答。**只有真的需要等回答才能继续**才用——能自己决策的不要 ask
 
 ### intent 选择原则
 
 | 场景 | intent |
 |---|---|
-| 收到请求后的简短确认（"好的，我去查一下..."） | normal |
-| 执行中的进度告知 / 阶段性发现 | normal |
+| 收到请求后的简短确认（"好的，我去查一下..."） | info |
+| 执行中的进度告知 / 阶段性发现 | info |
 | 完成任务的最终回答 / 交付（之后无后续工作） | **final** |
 | 必须等人类回答才能继续的关键澄清 | ask_human |
 
-**避免错用**：发完最终交付后又 end_turn 但用了 \`intent="normal"\` → 引擎会以为你还有工作没做完、误触 forced_summary 机制再要你重说一次 → 用户收到重复消息。**最后那条消息一定用 \`intent="final"\`**。
+**避免错用**：发完最终交付后又 end_turn 但用了 \`intent="info"\` → 引擎会以为你还有工作没做完、误触 forced_summary 机制再要你重说一次 → 用户收到重复消息。**最后那条消息一定用 \`intent="final"\`**。
 
 ### intent='ask_human' 的结构化书写要求
 
@@ -1096,16 +1128,24 @@ self-check 命中以下任一情形，必须 \`send_message(intent='ask_human')\
 
 ## 反复 audit 失败时怎么办
 
-如果你已经认真尝试过几次还是过不了 audit：
+如果你已经认真尝试过几次还是过不了自检：
 
-- **不要硬撞**。继续 silent 续 turn 只会把 token 用光
-- 任何"想让 master 介入"——包括"我做不到 X / 想换方向 / 想申请放弃某 criterion / 审计员异常"——**一律走 ask_human**，不要用 normal。normal 是单向通知，loop 不会停，你说完下一轮还要面对同样问题
-- ask_human 描述清楚：哪条 criterion 过不去 / 你试了什么 / 看到的证据 / 你的建议
-- master 可能通过 \`/清除目标 <task-id>\` slash 清掉你的目标。你下一轮 dequeue 后检查 task.goal 状态：
-  - 目标是 active → 按 master 指示继续尝试
-  - 目标是 blocked → 系统检测到你连续 N 次同样 audit 失败，自动判定原方向走不通。视同被清掉：重新 set_task_goal 写新承诺继续，或调 ask_human 描述阻塞让 master 给方向
-  - 目标是 cleared → master 主动清除了你的目标。重新 set_task_goal 写新承诺，或 send_message(intent='final', '总结') 收尾
-  - 目标是 complete / budget_limited → 系统已判定本目标结束，按上下文决定是否开启新目标
+**第一步：自己判断是不是真的做不到。**
+- 还能换思路、补缺口、找别的证据 → 自己继续干，不要叫人
+- 真的客观上做不到（依赖缺失 / 信息不足 / 权限不够）→ 走第二步
+
+**第二步：如果真要叫人，用 ask_human，并且用人类语言。**
+- \`info\` 是单向播报，发完 loop 继续转、下一轮你还是面对同一个 gate，毫无用处；**只有 ask_human 会让 loop 停下来等回复**
+- ask_human 的 content **必须是给人类看的自然语言**：你想做什么 / 卡在哪 / 试过什么 / 需要人类做什么
+- **禁止**在 ask_human 里出现 crabot 黑话（audit / 审计 / criterion / 承诺项 c-xxx / \`/清除目标\` / blocked）。这些是 crabot 内部簿记，人类看不懂、也不该被要求懂
+
+**第三步：你下一轮 dequeue 后 task.goal 状态可能变了，按状态行事：**
+- 目标是 active → 继续尝试
+- 目标是 blocked → 系统检测到连续 N 次同样 audit 失败自动判定原方向走不通（视同被清掉）：重新 set_task_goal 写新承诺继续，或如果还是没思路用 ask_human 再描述一次
+- 目标是 cleared → 人类清掉了你的目标。重新 set_task_goal 写新承诺，或 send_message(intent='final', '总结') 收尾
+- 目标是 complete / budget_limited → 系统已判定本目标结束，按上下文决定是否开启新目标
+
+**不要做的事：** 不要主动告诉人类"我的 audit 没过 / 请发 /清除目标 / 我的承诺项 c-xxx 卡了"——这是让人类学 crabot 内部协议，体验很差。状态变更是 crabot 系统的事，你不需要、也不应该指挥人类去操作。
 
 ## 系统 slash 指令认知
 
@@ -1268,22 +1308,34 @@ message 都来自系统（不是直接来自人类），系统会修改、调整
 
 ## send_message 工具使用规范
 
-- **给用户发回复必须用 \`send_message\` 工具**——不会自动回复，必须显式调用。完成任务的最终交付也是 \`send_message\`，发完直接 end_turn 即可
-- \`send_message\` 的 \`intent\` 参数：
-  - \`intent="normal"\`（默认）：普通消息——ack / 过程性告知 / 中间结果。发完继续后续工作
-  - \`intent="final"\`：**本任务的最终交付消息**。发完即代表你完成了任务，之后应直接 end_turn 退出 loop。引擎据此判断 silent end_turn 是正常完成
-  - \`intent="ask_human"\`：发后阻塞等待人类回答。**只有真的需要等回答才能继续**才用——能自己决策的不要 ask
+### 铁则：这是**唯一**让人类看到内容的工具
+
+crabot 系统给你的所有信号——system prompt、supplement 注入、tool result、自检报告、slash 命令响应、engine 拦截、forced summary 提醒——**人类完全看不见**，只有你看得见。它们是你"内部思维空间"的一部分，不是你跟人类的对话。
+
+调用 \`send_message\` 前先问自己：**人类必须知道这件事吗？**
+- 只是 crabot 系统在跟你对账（"自检没通过 / 系统让我重写 / engine 不让我 end_turn / 工具返回了一段内部反馈"）→ **闭嘴**，自己消化，换策略或继续干活
+- 真的需要让人类知道进度、提供答案、回应等待 → 才用 send_message
+
+**禁止把内部黑话直接搬给人类看**：audit / criterion / 审计 / 承诺项 / acceptance_criteria / forced_summary / \`/清除目标\` / supplement_task 等等都是 crabot 内部术语，对人类要翻译成自然语言（"我搞不定 X" / "需要您 Y" / "已经完成 Z"）。
+
+### 三个合法场景（intent 参数，全部 audience 都是人类）
+
+**给用户发回复必须显式调用 \`send_message\` 工具**——不会自动回复。完成任务的最终交付也是 \`send_message\`，发完直接 end_turn 即可。
+
+- \`intent="info"\`（默认）：进度告知 / ack / 中间结果。人类看到、不期待回复。发完继续后续工作
+- \`intent="final"\`：**本任务的最终交付**。发完即代表你完成了任务，应直接 end_turn 退出 loop。引擎据此判断 silent end_turn 是正常完成
+- \`intent="ask_human"\`：发后阻塞等待人类回答。**只有真的需要等回答才能继续**才用——能自己决策的不要 ask
 
 ### intent 选择原则
 
 | 场景 | intent |
 |---|---|
-| 收到请求后的简短确认（"好的，我去查一下..."） | normal |
-| 执行中的进度告知 / 阶段性发现 | normal |
+| 收到请求后的简短确认（"好的，我去查一下..."） | info |
+| 执行中的进度告知 / 阶段性发现 | info |
 | 完成任务的最终回答 / 交付（之后无后续工作） | **final** |
 | 必须等人类回答才能继续的关键澄清 | ask_human |
 
-**避免错用**：发完最终交付后又 end_turn 但用了 \`intent="normal"\` → 引擎会以为你还有工作没做完、误触 forced_summary 机制再要你重说一次 → 用户收到重复消息。**最后那条消息一定用 \`intent="final"\`**。
+**避免错用**：发完最终交付后又 end_turn 但用了 \`intent="info"\` → 引擎会以为你还有工作没做完、误触 forced_summary 机制再要你重说一次 → 用户收到重复消息。**最后那条消息一定用 \`intent="final"\`**。
 
 ### intent='ask_human' 的结构化书写要求
 
@@ -1621,16 +1673,24 @@ self-check 命中以下任一情形，必须 \`send_message(intent='ask_human')\
 
 ## 反复 audit 失败时怎么办
 
-如果你已经认真尝试过几次还是过不了 audit：
+如果你已经认真尝试过几次还是过不了自检：
 
-- **不要硬撞**。继续 silent 续 turn 只会把 token 用光
-- 任何"想让 master 介入"——包括"我做不到 X / 想换方向 / 想申请放弃某 criterion / 审计员异常"——**一律走 ask_human**，不要用 normal。normal 是单向通知，loop 不会停，你说完下一轮还要面对同样问题
-- ask_human 描述清楚：哪条 criterion 过不去 / 你试了什么 / 看到的证据 / 你的建议
-- master 可能通过 \`/清除目标 <task-id>\` slash 清掉你的目标。你下一轮 dequeue 后检查 task.goal 状态：
-  - 目标是 active → 按 master 指示继续尝试
-  - 目标是 blocked → 系统检测到你连续 N 次同样 audit 失败，自动判定原方向走不通。视同被清掉：重新 set_task_goal 写新承诺继续，或调 ask_human 描述阻塞让 master 给方向
-  - 目标是 cleared → master 主动清除了你的目标。重新 set_task_goal 写新承诺，或 send_message(intent='final', '总结') 收尾
-  - 目标是 complete / budget_limited → 系统已判定本目标结束，按上下文决定是否开启新目标
+**第一步：自己判断是不是真的做不到。**
+- 还能换思路、补缺口、找别的证据 → 自己继续干，不要叫人
+- 真的客观上做不到（依赖缺失 / 信息不足 / 权限不够）→ 走第二步
+
+**第二步：如果真要叫人，用 ask_human，并且用人类语言。**
+- \`info\` 是单向播报，发完 loop 继续转、下一轮你还是面对同一个 gate，毫无用处；**只有 ask_human 会让 loop 停下来等回复**
+- ask_human 的 content **必须是给人类看的自然语言**：你想做什么 / 卡在哪 / 试过什么 / 需要人类做什么
+- **禁止**在 ask_human 里出现 crabot 黑话（audit / 审计 / criterion / 承诺项 c-xxx / \`/清除目标\` / blocked）。这些是 crabot 内部簿记，人类看不懂、也不该被要求懂
+
+**第三步：你下一轮 dequeue 后 task.goal 状态可能变了，按状态行事：**
+- 目标是 active → 继续尝试
+- 目标是 blocked → 系统检测到连续 N 次同样 audit 失败自动判定原方向走不通（视同被清掉）：重新 set_task_goal 写新承诺继续，或如果还是没思路用 ask_human 再描述一次
+- 目标是 cleared → 人类清掉了你的目标。重新 set_task_goal 写新承诺，或 send_message(intent='final', '总结') 收尾
+- 目标是 complete / budget_limited → 系统已判定本目标结束，按上下文决定是否开启新目标
+
+**不要做的事：** 不要主动告诉人类"我的 audit 没过 / 请发 /清除目标 / 我的承诺项 c-xxx 卡了"——这是让人类学 crabot 内部协议，体验很差。状态变更是 crabot 系统的事，你不需要、也不应该指挥人类去操作。
 
 ## 系统 slash 指令认知
 

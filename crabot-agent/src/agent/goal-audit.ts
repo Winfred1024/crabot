@@ -170,43 +170,48 @@ export function buildHumanQueueReport(
   // 区分"审计员故障"和"真不达标"两种 fail 形态
   const isAuditFault = parsed.failedCriteria.includes(AUDIT_PARSE_FAILURE_SENTINEL)
   if (isAuditFault) {
-    return `[系统] 目标审计员异常：未按契约 emit AUDIT_RESULT
+    return `[crabot 内部 / 仅你可见] 自检流程跑挂了——这是你和系统之间的事，人类看不见，**不要把这段内容转给人类**。
 
-## 任务目标
+## 你的承诺
 ${goal.objective}
 
-## 审计员原始输出（未识别到 AUDIT_RESULT: pass|fail 行）
+## 自检原始输出（未识别到结论行）
 \`\`\`
 ${safeRaw}
 \`\`\`
 
-## 继续执行
-这是**审计员侧的故障**，不是你的交付不达标。可能原因：审计员 max_turns 跑满 / 工具被卡 / 输出被截断。
+## 怎么处理
+自检模块自己出问题了，不是你的交付不达标。可能是它跑超时 / 工具卡了 / 输出被截断。
 
-请：
-1. 短期：用 send_message(intent='final') 再试一次，触发新审计
-2. 如果同样问题反复出现：调 ask_human 描述给 master，让人类判断是否绕过 audit 或修审计员配置
-**不要**用 send_message(intent='normal') 上报"审计卡了"——loop 不会停，问题不会被人类同步看到。`
+行动建议（按顺序自己判断）：
+1. 直接重新 send_message(intent='final') 再触发一次自检——多数情况下就过了
+2. 重复跑了几次还是同样异常 → 用 ask_human 跟人类描述：用**人话**说"我尝试交付时系统的自检流程反复异常，需要您看下"，**禁止**贴这段内部报告、禁止说 "audit / 审计员 / criterion" 等术语
+3. **不要**用 send_message(intent='info') 说"审计卡了"——info 是单向播报，loop 不会停，问题也没人能同步处理`
   }
 
-  return `[系统] 目标审计未通过
+  return `[crabot 内部 / 仅你可见] 自检发现交付与你的承诺有差距——这是你和系统之间的事，人类看不见，**不要把这段内容转给人类**。
 
-## 任务目标
+## 你的承诺
 ${goal.objective}
 
-## 未达成的 criterion（${parsed.failedCriteria.length} 条）
+## 还没满足的承诺项（${parsed.failedCriteria.length} 条）
 ${parsed.failedCriteria.map((id) => `- ${id}`).join('\n')}
 
-## 审计员详细输出
+## 自检详细输出
 \`\`\`
 ${safeRaw}
 \`\`\`
 
-## 继续执行
-**不要缩小目标范围以让任务看起来已完成。** 按上面缺口逐条补齐再尝试 send_message(intent='final')。
+## 怎么处理（先自己判断，别急着叫人）
 
-若你判断某条 criterion 客观上做不到（外部依赖缺失等），调 ask_human 描述给 master，让 master 在 IM 发 \`/清除目标 <task-id>\` 清除当前目标后你才能重新 set_task_goal 走新方向。
-**不要**用 send_message(intent='normal') 上报阻塞——那是异步通知，loop 不会停。`
+**默认动作：自己补齐缺口再重交。** 不要缩小承诺范围让任务"看起来"完成。
+
+只有当你判断某项承诺**客观上做不到**（依赖的外部资源缺失 / 信息不足 / 需要的权限你没有），才升级到人类：
+1. 用 ask_human 跟人类**用自然语言**描述：你想做 X、卡在哪、试了什么、需要人类做什么
+2. **禁止**把上面这段内部报告原样贴出去；**禁止**出现"audit / 审计 / criterion / 承诺项 c-xxx / \`/清除目标\`"等 crabot 黑话
+3. 人类如果通过对话决定换方向，他可能会用 IM slash 指令清掉这个目标——你下一轮自然会看到 task.goal 状态变了，按那个状态行事即可。你不需要、也不应该指挥人类去操作 slash 命令
+
+**不要**用 send_message(intent='info') 上报阻塞——info 是单向播报，loop 不会停，问题也没人能同步处理。`
 }
 
 /**

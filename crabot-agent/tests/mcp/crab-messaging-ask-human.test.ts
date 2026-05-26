@@ -102,7 +102,7 @@ describe('send_message intent=ask_human', () => {
     expect(parsed.error).toContain('ask_human')
   })
 
-  it('intent=normal does NOT touch task state or barrier', async () => {
+  it('intent=info does NOT touch task state or barrier', async () => {
     const queue = new HumanMessageQueue()
     const rpcMethods: string[] = []
 
@@ -123,7 +123,7 @@ describe('send_message intent=ask_human', () => {
     await sendTool.handler({
       channel_id: 'telegram-001',
       session_id: 's1',
-      content: 'normal message',
+      content: 'info message',
     })
     expect(rpcMethods).not.toContain('update_task_status')
     expect(queue.hasBarrier).toBe(false)
@@ -152,7 +152,7 @@ describe('send_message intent=ask_human', () => {
     const parsed = JSON.parse(text)
     expect(parsed.error).toBeDefined()
     expect(parsed.error).toContain('ask_human is not allowed in scheduled tasks')
-    expect(parsed.error).toMatch(/intent='?normal'?/)
+    expect(parsed.error).toMatch(/intent='?info'?/)
   })
 
   it('message 任务调用 ask_human 不在 scheduled 闸门被拒（仍可走后续流程）', async () => {

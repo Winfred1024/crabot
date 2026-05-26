@@ -50,7 +50,7 @@ const MAX_MAX_TOKENS_COMPACT_RETRIES = 2
 const FORCED_SUMMARY_PROMPT =
   '你刚才以 end_turn 结束但没有输出任何文字。本次任务由用户派发并在等待结果，必须给出最终汇报。\n\n' +
   '**必须用 `send_message(intent=\'final\', content="...")`** —— 这才是任务终态认证。' +
-  'intent=\'normal\' 不算交付（引擎判定你还有工作没做完，会让你再说一次）；intent=\'final\' 才会触发审计 + 标记任务完成。\n' +
+  'intent=\'info\' 不算交付（引擎判定你还有工作没做完，会让你再说一次）；intent=\'final\' 才会触发审计 + 标记任务完成。\n' +
   '内容按 system prompt "## 收尾责任"段：可验证的产出，或**明确阻塞点**（说清楚卡在哪、为什么、需要什么才能继续）。\n' +
   '如需回看任务历史、重读文档或工具输出再汇报，可继续用工具。'
 
