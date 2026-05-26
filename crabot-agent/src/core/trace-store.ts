@@ -339,6 +339,23 @@ export class TraceStore {
     this.persistTrace(trace)
   }
 
+  /**
+   * Patch trace 顶层 outcome，不动 status / ended_at / duration_ms。
+   *
+   * 跟 endTrace 区别：endTrace 是 status-changing 操作（重置时间戳），
+   * 适合 trace 终结那一刻调用；appendTraceOutcome 是事后 patch 工具，
+   * 适合 trace 已 endTrace 后再补充关键 metadata 的场景（如 runGoalAudit
+   * 拿到 audit verdict 后回写 audit trace summary）。
+   *
+   * Spec: 2026-05-26-goal-audit-loop-completion §2.1.1
+   */
+  appendTraceOutcome(traceId: string, partial: Partial<NonNullable<AgentTrace['outcome']>>): void {
+    const trace = this.traces.get(traceId)
+    if (!trace) return
+    trace.outcome = { summary: '', ...(trace.outcome ?? {}), ...partial }
+    this.persistTrace(trace)
+  }
+
   updateTrace(traceId: string, updates: { related_task_id?: string }): void {
     const trace = this.traces.get(traceId)
     if (!trace) return

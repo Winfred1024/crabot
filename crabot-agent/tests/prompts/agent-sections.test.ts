@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { CRABOT_BRAIN_IDENTITY, SYSTEM_DIALOGUE_BOUNDARY, WORKFLOW_PRIVATE, WORKFLOW_GROUP, SEND_MESSAGE_SPEC, END_TURN_SELF_CHECK, TIME_AWARENESS, INFO_QUERY_GUIDE, TOOL_USAGE, TASK_HARD_CONSTRAINTS, MEMORY_STORE_GUIDE, CLOSURE_DUTIES, SLASH_AWARENESS_GUIDANCE } from '../../src/prompts/agent-sections.js'
+import { CRABOT_BRAIN_IDENTITY, SYSTEM_DIALOGUE_BOUNDARY, WORKFLOW_PRIVATE, WORKFLOW_GROUP, SEND_MESSAGE_SPEC, END_TURN_SELF_CHECK, TIME_AWARENESS, INFO_QUERY_GUIDE, TOOL_USAGE, TASK_HARD_CONSTRAINTS, MEMORY_STORE_GUIDE, CLOSURE_DUTIES, SLASH_AWARENESS_GUIDANCE, GOAL_MODE_GUIDANCE } from '../../src/prompts/agent-sections.js'
 
 describe('#1 你是 Crabot 的大脑', () => {
   it('开头自我定位为"认知中枢"', () => {
@@ -376,5 +376,14 @@ describe('#12 系统 slash 指令认知', () => {
   it('明确禁止 LLM 模仿 / 开头格式 + [系统响应] 格式', () => {
     expect(SLASH_AWARENESS_GUIDANCE).toContain('不要模仿')
     expect(SLASH_AWARENESS_GUIDANCE).toContain('[系统响应')
+  })
+})
+
+describe('#13 目标模式指引', () => {
+  it('四种 terminal status 都有对应的 agent 行为指引', () => {
+    expect(GOAL_MODE_GUIDANCE).toContain('目标是 blocked')
+    expect(GOAL_MODE_GUIDANCE).toContain('连续 N 次同样 audit 失败')
+    expect(GOAL_MODE_GUIDANCE).toContain('目标是 cleared')
+    expect(GOAL_MODE_GUIDANCE).toContain('目标是 complete / budget_limited')
   })
 })

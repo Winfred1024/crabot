@@ -137,6 +137,8 @@ import {
   appendAuditEntry,
   incrementTokens,
   transitionGoalStatus,
+  shouldAutoBlock,
+  TASK_GOAL_BLOCKED_THRESHOLD,
 } from './task-goal.js'
 import { unionResolved } from './permission-resolution.js'
 import { ModelProviderManager } from './model-provider-manager.js'
@@ -3723,8 +3725,11 @@ export class AdminModule extends ModuleBase {
   ): Promise<SetTaskGoalResult> {
     const task = this.tasks.get(params.task_id)
     if (!task) throw new Error(AdminErrorCode.TASK_NOT_FOUND)
-    if (task.goal !== undefined) {
-      throw new Error(`task ${params.task_id} 的 goal 已存在；agent 不可自改 goal`)
+    // 反 specification-gaming：active goal 不允许 agent 中途自改方向；
+    // terminal（blocked / cleared / complete / budget_limited）放行 agent 写新承诺续作
+    // spec: 2026-05-26-goal-audit-loop-completion §2.3
+    if (task.goal?.status === 'active') {
+      throw new Error(`task ${params.task_id} 的 goal 仍在 active 状态，agent 不可自改 goal`)
     }
     const now = generateTimestamp()
     const goal = buildNewTaskGoal({
@@ -3747,6 +3752,13 @@ export class AdminModule extends ModuleBase {
     if (!task.goal) throw new Error(`task ${params.task_id} 没有 goal，无法追加 audit 历史`)
     const now = generateTimestamp()
     task.goal = appendAuditEntry(task.goal, params.entry, now)
+
+    // 系统兜底：连续 N 次 audit fail 且 failed_criteria 集合一致 → 自动 transition blocked
+    // spec: 2026-05-23-goal-mode-design §2.7 / 2026-05-26-goal-audit-loop-completion §2.2
+    if (shouldAutoBlock(task.goal, TASK_GOAL_BLOCKED_THRESHOLD)) {
+      task.goal = transitionGoalStatus(task.goal, 'blocked', now)
+    }
+
     task.updated_at = now
     await this.upsertTask(task)
     this.publishAdminEvent('admin.task_updated', { task })

@@ -509,8 +509,10 @@ self-check 命中以下任一情形，必须 \`send_message(intent='ask_human')\
 - 任何"想让 master 介入"——包括"我做不到 X / 想换方向 / 想申请放弃某 criterion / 审计员异常"——**一律走 ask_human**，不要用 normal。normal 是单向通知，loop 不会停，你说完下一轮还要面对同样问题
 - ask_human 描述清楚：哪条 criterion 过不去 / 你试了什么 / 看到的证据 / 你的建议
 - master 可能通过 \`/清除目标 <task-id>\` slash 清掉你的目标。你下一轮 dequeue 后检查 task.goal 状态：
-  - 目标还在 → 按 master 指示继续尝试
-  - 目标被清掉了（status='cleared'）→ 重新 set_task_goal 写新承诺，或 send_message(intent='final', '总结') 收尾
+  - 目标是 active → 按 master 指示继续尝试
+  - 目标是 blocked → 系统检测到你连续 N 次同样 audit 失败，自动判定原方向走不通。视同被清掉：重新 set_task_goal 写新承诺继续，或调 ask_human 描述阻塞让 master 给方向
+  - 目标是 cleared → master 主动清除了你的目标。重新 set_task_goal 写新承诺，或 send_message(intent='final', '总结') 收尾
+  - 目标是 complete / budget_limited → 系统已判定本目标结束，按上下文决定是否开启新目标
 
 ## 系统 slash 指令认知
 
@@ -1100,8 +1102,10 @@ self-check 命中以下任一情形，必须 \`send_message(intent='ask_human')\
 - 任何"想让 master 介入"——包括"我做不到 X / 想换方向 / 想申请放弃某 criterion / 审计员异常"——**一律走 ask_human**，不要用 normal。normal 是单向通知，loop 不会停，你说完下一轮还要面对同样问题
 - ask_human 描述清楚：哪条 criterion 过不去 / 你试了什么 / 看到的证据 / 你的建议
 - master 可能通过 \`/清除目标 <task-id>\` slash 清掉你的目标。你下一轮 dequeue 后检查 task.goal 状态：
-  - 目标还在 → 按 master 指示继续尝试
-  - 目标被清掉了（status='cleared'）→ 重新 set_task_goal 写新承诺，或 send_message(intent='final', '总结') 收尾
+  - 目标是 active → 按 master 指示继续尝试
+  - 目标是 blocked → 系统检测到你连续 N 次同样 audit 失败，自动判定原方向走不通。视同被清掉：重新 set_task_goal 写新承诺继续，或调 ask_human 描述阻塞让 master 给方向
+  - 目标是 cleared → master 主动清除了你的目标。重新 set_task_goal 写新承诺，或 send_message(intent='final', '总结') 收尾
+  - 目标是 complete / budget_limited → 系统已判定本目标结束，按上下文决定是否开启新目标
 
 ## 系统 slash 指令认知
 
@@ -1623,8 +1627,10 @@ self-check 命中以下任一情形，必须 \`send_message(intent='ask_human')\
 - 任何"想让 master 介入"——包括"我做不到 X / 想换方向 / 想申请放弃某 criterion / 审计员异常"——**一律走 ask_human**，不要用 normal。normal 是单向通知，loop 不会停，你说完下一轮还要面对同样问题
 - ask_human 描述清楚：哪条 criterion 过不去 / 你试了什么 / 看到的证据 / 你的建议
 - master 可能通过 \`/清除目标 <task-id>\` slash 清掉你的目标。你下一轮 dequeue 后检查 task.goal 状态：
-  - 目标还在 → 按 master 指示继续尝试
-  - 目标被清掉了（status='cleared'）→ 重新 set_task_goal 写新承诺，或 send_message(intent='final', '总结') 收尾
+  - 目标是 active → 按 master 指示继续尝试
+  - 目标是 blocked → 系统检测到你连续 N 次同样 audit 失败，自动判定原方向走不通。视同被清掉：重新 set_task_goal 写新承诺继续，或调 ask_human 描述阻塞让 master 给方向
+  - 目标是 cleared → master 主动清除了你的目标。重新 set_task_goal 写新承诺，或 send_message(intent='final', '总结') 收尾
+  - 目标是 complete / budget_limited → 系统已判定本目标结束，按上下文决定是否开启新目标
 
 ## 系统 slash 指令认知
 

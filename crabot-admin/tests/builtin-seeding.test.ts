@@ -267,9 +267,9 @@ describe('SubAgentManager v2 override 存储', () => {
     const files = readdirSync(tmpDir)
     expect(files.some((f) => f.startsWith('.legacy-subagents-'))).toBe(true)
 
-    // builtin 内容字段被代码默认值覆盖（max_turns 回到 50/60/120/60）
+    // builtin 内容字段被代码默认值覆盖（goal_auditor=80 / code_planner=60）
     const goalAuditor = mgr.list().find((e) => e.name === 'goal_auditor')!
-    expect(goalAuditor.max_turns).toBe(50)
+    expect(goalAuditor.max_turns).toBe(80)
     const codePlanner = mgr.list().find((e) => e.name === 'code_planner')!
     expect(codePlanner.max_turns).toBe(60)
 
@@ -409,7 +409,7 @@ describe('getBuiltinSubAgents > goal_auditor', () => {
     if (!g) return
     expect(g.id).toBe('builtin-goal-auditor')
     expect(g.model_role).toBe('powerful')
-    expect(g.max_turns).toBe(50)
+    expect(g.max_turns).toBe(80)
     expect(g.system_only).toBe(true)
     expect(g.is_builtin).toBe(true)
     expect(g.enabled).toBe(true)

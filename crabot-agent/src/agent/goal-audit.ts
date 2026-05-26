@@ -208,3 +208,27 @@ ${safeRaw}
 若你判断某条 criterion 客观上做不到（外部依赖缺失等），调 ask_human 描述给 master，让 master 在 IM 发 \`/清除目标 <task-id>\` 清除当前目标后你才能重新 set_task_goal 走新方向。
 **不要**用 send_message(intent='normal') 上报阻塞——那是异步通知，loop 不会停。`
 }
+
+/**
+ * 把 audit verdict 转成 trace summary + error 字段，供 runGoalAudit 写回 audit trace 顶层。
+ *
+ * - summary 只含 verdict label + failed_criteria 列表（不含 evidence 详情；
+ *   master 想看证据展开 audit trace 的 span 树即可）
+ * - error 仅 fail 时填，便于 admin UI 列表行错误列显示
+ *
+ * Spec: 2026-05-26-goal-audit-loop-completion §2.1.2
+ */
+export function buildAuditVerdictSummary(
+  parsed: ParsedAuditReport,
+): { summary: string; error?: string } {
+  if (parsed.pass) {
+    return { summary: '[audit PASS]' }
+  }
+  const failedSeg = parsed.failedCriteria.length > 0
+    ? ` 不达标: ${parsed.failedCriteria.join(', ')}`
+    : ''
+  return {
+    summary: `[audit FAIL]${failedSeg}`,
+    error: failedSeg.trim() || '审计未通过',
+  }
+}

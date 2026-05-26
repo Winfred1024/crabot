@@ -91,7 +91,7 @@ describe('task-goal RPC handlers', () => {
       expect(task.goal.token_budget).toBe(100_000)
     })
 
-    it('task.goal 已存在时拒绝二次 set（agent 不能自改）', async () => {
+    it('task.goal 为 active 时拒绝二次 set（反 specification-gaming）', async () => {
       await (admin as any).handleSetTaskGoal({
         task_id: taskId,
         objective: 'first',
@@ -103,7 +103,27 @@ describe('task-goal RPC handlers', () => {
           objective: 'second',
           acceptance_criteria: sampleCriteria(),
         })
-      ).rejects.toThrow(/已存在/)
+      ).rejects.toThrow(/仍在 active 状态/)
+    })
+
+    it('task.goal 为 terminal（cleared）时允许二次 set 写新承诺', async () => {
+      // 先 set active goal
+      await (admin as any).handleSetTaskGoal({
+        task_id: taskId,
+        objective: 'first attempt',
+        acceptance_criteria: sampleCriteria(),
+      })
+      // master 通过 clear_task_goal RPC 清掉（模拟 IM /清除目标 slash 路径）
+      await (admin as any).handleClearTaskGoal({ task_id: taskId })
+      // 现在 task.goal.status === 'cleared'，应允许 agent 重新 set
+      const { task } = await (admin as any).handleSetTaskGoal({
+        task_id: taskId,
+        objective: 'second attempt after clear',
+        acceptance_criteria: sampleCriteria(),
+      })
+      expect(task.goal.status).toBe('active')
+      expect(task.goal.objective).toBe('second attempt after clear')
+      // 旧 cleared goal 被新 active goal 覆盖（spec §2.3.2 默认 A：不归档）
     })
 
     it('task 不存在 → 抛 TASK_NOT_FOUND', async () => {
