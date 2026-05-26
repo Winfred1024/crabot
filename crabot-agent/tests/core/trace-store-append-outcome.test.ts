@@ -19,7 +19,7 @@ describe('TraceStore.appendTraceOutcome', () => {
     const { store, cleanup } = makeStore()
     try {
       const trace = store.startTrace({
-        moduleId: 't',
+        module_id: 't',
         trigger: { type: 'sub_agent_call', summary: 'orig' },
       })
       store.endTrace(trace.trace_id, 'completed', { summary: 'old summary' })
@@ -47,7 +47,7 @@ describe('TraceStore.appendTraceOutcome', () => {
     const { store, cleanup } = makeStore()
     try {
       const trace = store.startTrace({
-        moduleId: 't',
+        module_id: 't',
         trigger: { type: 'sub_agent_call', summary: 'orig' },
       })
       store.endTrace(trace.trace_id, 'completed', { summary: 'keep me' })
@@ -73,7 +73,7 @@ describe('TraceStore.appendTraceOutcome', () => {
     const { store, cleanup } = makeStore()
     try {
       const trace = store.startTrace({
-        moduleId: 't',
+        module_id: 't',
         trigger: { type: 'sub_agent_call', summary: 'orig' },
       })
       // 不 endTrace，直接 patch（边界 case）
