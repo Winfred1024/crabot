@@ -24,3 +24,6 @@ coverage/
 # Logs
 *.log
 npm-debug.log*
+
+# Worker 跑出来的产物（如调研报告）—— 运行产物，不入库
+reports/
