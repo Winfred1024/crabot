@@ -164,6 +164,15 @@ export function shouldAutoBlock(goal: TaskGoal, threshold: number): boolean {
   return recent.every((h) => setsEqual(new Set(h.failed_criteria), first))
 }
 
+/**
+ * 连续 N 次 audit fail 且 failed_criteria 集合一致 → 自动 transition 到 blocked。
+ *
+ * 默认 N=3 平衡 legit retry（修了一处但漏看另一处） 与 token 浪费。
+ *
+ * Spec: 2026-05-23-goal-mode-design §3 / 2026-05-26-goal-audit-loop-completion §2.2
+ */
+export const TASK_GOAL_BLOCKED_THRESHOLD = 3
+
 function setsEqual<T>(a: Set<T>, b: Set<T>): boolean {
   if (a.size !== b.size) return false
   for (const x of a) if (!b.has(x)) return false
