@@ -31,6 +31,8 @@ export class HumanMessageQueue {
 
   /** 非消费性等待：只要有新内容 push 进来就 resolve，不取出内容。支持 AbortSignal。 */
   waitForPush(signal?: AbortSignal): Promise<void> {
+    // 如果 pending 已有内容（push 先于 waitForPush 到达），立即 resolve，避免永久挂起
+    if (this.pending.length > 0) return Promise.resolve()
     return new Promise<void>((resolve) => {
       let settled = false
       const finish = (): void => {
