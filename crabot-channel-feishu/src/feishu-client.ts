@@ -124,7 +124,7 @@ export class FeishuClient {
       const data = resp.data ?? {}
       const items = (data.items ?? []).map((it) => ({
         open_id: it.open_id ?? '',
-        name: it.name,
+        name: it.name ?? '',
         ...(it.avatar?.avatar_72 ? { avatar_url: it.avatar.avatar_72 } : {}),
       }))
       return {

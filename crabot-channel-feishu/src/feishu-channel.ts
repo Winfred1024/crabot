@@ -922,9 +922,10 @@ export class FeishuChannel extends ModuleBase {
     const pageSize = params.pagination?.page_size ?? 50
     const raw = await this.client.listContacts({ page_size: pageSize })
 
+    const withName = raw.items.filter((it) => it.name !== '')
     const filtered = params.search
-      ? raw.items.filter((it) => it.name.toLowerCase().includes(params.search!.toLowerCase()))
-      : raw.items
+      ? withName.filter((it) => it.name.toLowerCase().includes(params.search!.toLowerCase()))
+      : withName
 
     const items = filtered.map((it): ContactItem => ({
       platform_user_id: it.open_id,

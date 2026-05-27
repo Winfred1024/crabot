@@ -503,9 +503,10 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
         file_path: z.string().optional().describe('沙盒内本地文件路径（自动转换为主机路径）'),
         filename: z.string().optional().describe('文件名（可选）'),
         mentions: z.array(z.object({
-          friend_id: z.string().describe('熟人 ID'),
+          friend_id: z.string().optional().describe('熟人 ID（与 platform_user_id 二选一）'),
+          platform_user_id: z.string().optional().describe('平台用户 ID（如飞书 open_id，从 list_contacts 获取）。有此字段时跳过熟人查找，可直接 @ 非熟人群成员'),
           at_name: z.string().optional().describe('你在 content 正文里写的 @标记文本（如 "@徐倩"）。提供后系统在正文里做内联高亮替换；不提供则在消息末尾追加 @ 通知'),
-        })).optional().describe('@提及列表。每项包含 friend_id 和可选的 at_name（你在正文里写的 @名字）'),
+        })).optional().describe('@提及列表。每项提供 friend_id（熟人 ID）或 platform_user_id（平台 ID，从 list_contacts 获取）之一，加可选的 at_name'),
         quote_message_id: z.string().optional().describe('引用回复的平台消息 ID'),
       },
       handler: async (args) => {
@@ -517,7 +518,7 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
         const media_url = args.media_url as string | undefined
         const file_path = args.file_path as string | undefined
         const filename = args.filename as string | undefined
-        const mentions = args.mentions as Array<{ friend_id: string; at_name?: string }> | undefined
+        const mentions = args.mentions as Array<{ friend_id?: string; platform_user_id?: string; at_name?: string }> | undefined
         const quote_message_id = args.quote_message_id as string | undefined
 
         // === ask_human：先验证 task context 存在，再继续（不提前切状态） ===
@@ -637,18 +638,24 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
             }
           }
 
-          // 转换 mentions：friend_id → platform_user_id（open_id），同时透传 at_name 供 channel 内联替换
+          // 转换 mentions → { platform_user_id, at_name }[]
+          // 两种路径：直传 platform_user_id（非熟人群成员）或通过 friend_id 查找
           type PlatformMention = { platform_user_id: string; at_name?: string }
           let platformMentions: PlatformMention[] | undefined
           if (mentions && mentions.length > 0) {
             const adminPort = await getAdminPort()
             const resolved = await Promise.all(
-              mentions.map(async ({ friend_id, at_name }) => {
+              mentions.map(async ({ friend_id, platform_user_id, at_name }) => {
+                if (platform_user_id) {
+                  return { platform_user_id, at_name }
+                }
+                if (!friend_id) return null
+                const fid: string = friend_id
                 try {
                   const fResult = await rpcClient.call<
                     { friend_id: string },
                     { friend: Friend }
-                  >(adminPort, 'get_friend', { friend_id }, moduleId)
+                  >(adminPort, 'get_friend', { friend_id: fid }, moduleId)
                   const identity = fResult.friend.channel_identities.find(
                     ci => ci.channel_id === channel_id,
                   )
