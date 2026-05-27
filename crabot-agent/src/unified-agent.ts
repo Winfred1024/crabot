@@ -2583,10 +2583,13 @@ export class UnifiedAgent extends ModuleBase {
       this.traceCleanupInterval = undefined
     }
 
-    // Disconnect external MCP servers
-    await this.mcpConnector.disconnectAll()
-
-    // Stop LSP servers
-    await this.lspManager.stop()
+    // 断开 MCP 和 LSP，限制最长等待时间（避免某个 stdio 进程无响应导致 onStop 卡死）
+    await Promise.race([
+      (async () => {
+        await this.mcpConnector.disconnectAll()
+        await this.lspManager.stop()
+      })(),
+      new Promise<void>((resolve) => setTimeout(resolve, 10_000)),
+    ])
   }
 }

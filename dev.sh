@@ -329,6 +329,8 @@ stop_all() {
   pkill -f "crabot-admin/dist/main.js" 2>/dev/null || true
   pkill -f "crabot-agent/dist/main.js" 2>/dev/null || true
   pkill -f "vite.*crabot-admin/web" 2>/dev/null || true
+  # agent onStop() 可能卡住（MCP/LSP disconnect 无响应），SIGTERM 无效；强杀
+  pkill -9 -f "crabot-agent/dist/main.js" 2>/dev/null || true
 
   # 清理 Crabot 管理的 Chrome 实例
   if [ -f "$DATA_DIR/browser/chrome.pid" ]; then
