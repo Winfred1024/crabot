@@ -3376,9 +3376,10 @@ export class AdminModule extends ModuleBase {
       return
     }
 
-    // === Goal slash 拦截（仅 master + 私聊触发） ===
+    // === Goal slash 拦截（master 触发，私聊 + 群聊均支持） ===
     // 仅已认主 master friend 可触发；其他人发同样字面视为普通消息走 dispatcher（默认下面的 publish 路径）
-    if (friend?.permission === 'master' && message.session.type === 'private') {
+    // 群聊里 slash 不拦截会被 attentionScheduler buffer 后 join 成普通文本，导致 dispatcher 无法确定性匹配
+    if (friend?.permission === 'master') {
       if (body.startsWith(GOAL_SHOW_PREFIX)) {
         await this.handleGoalShowSlash(channelId, message, body)
         return
