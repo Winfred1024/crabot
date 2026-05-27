@@ -126,9 +126,7 @@ export class TraceStore {
 
   /**
    * 启动时加载 traces-running.jsonl —— 上次 agent 死时未结束的 trace。
-   * 不进 traceIndex（覆盖式文件没有稳定 offset），直接放进内存 this.traces 让
-   * searchTraces 合并展示。这些 trace 是"墓碑"——agent 看到它们 status='running'
-   * 但实际进程已死；新 agent 不会复用这些 trace_id。
+   * 把这些 trace 标记为 failed（interrupted），写入日期文件，然后清空 running 文件。
    */
   private loadRunningTraces(): void {
     if (!this.persistDir) return
@@ -142,10 +140,25 @@ export class TraceStore {
           const trace = JSON.parse(line) as AgentTrace
           // 已经 endTrace 过的（rebuildIndex 已读到）跳过
           if (this.traceIndex.some(e => e.trace_id === trace.trace_id)) continue
+          // 标记为 interrupted，写入日期文件让 UI 正确显示
+          const now = new Date()
+          trace.status = 'failed'
+          if (!trace.ended_at) {
+            trace.ended_at = now.toISOString()
+            trace.duration_ms = now.getTime() - new Date(trace.started_at).getTime()
+          }
+          if (!trace.outcome) {
+            trace.outcome = { summary: '[interrupted: agent restarted]' }
+          }
           this.traces.set(trace.trace_id, trace)
+          this.persistTrace(trace)
         } catch { /* skip malformed */ }
       }
-    } catch { /* best effort */ }
+      // 清空 running 文件——这些 trace 已落到日期文件
+      fs.writeFileSync(filePath, '', 'utf-8')
+    } catch (err) {
+      console.warn(`[TraceStore] loadRunningTraces failed: ${err instanceof Error ? err.message : err}`)
+    }
   }
 
   private rebuildIndex(): void {
@@ -167,7 +180,14 @@ export class TraceStore {
           if (!line.trim()) { offset += lineBytes; continue }
           try {
             const trace = JSON.parse(line) as AgentTrace
-            this.traceIndex.push(this.traceToIndexEntry(trace, file, offset))
+            const entry = this.traceToIndexEntry(trace, file, offset)
+            // 同一 trace_id 可能多次写入（endTrace + appendTraceOutcome），保留最新 offset
+            const existingIdx = this.traceIndex.findIndex(e => e.trace_id === trace.trace_id)
+            if (existingIdx !== -1) {
+              this.traceIndex[existingIdx] = entry
+            } else {
+              this.traceIndex.push(entry)
+            }
             if (trace.related_task_id) {
               this.addToTaskIndex(trace.related_task_id, trace.trace_id)
             }
@@ -719,7 +739,14 @@ export class TraceStore {
 
       fs.appendFileSync(filePath, line, 'utf-8')
 
-      this.traceIndex.push(this.traceToIndexEntry(trace, file, fileOffset))
+      // 更新已有 index entry（如 appendTraceOutcome 二次写入），不重复 push
+      const newEntry = this.traceToIndexEntry(trace, file, fileOffset)
+      const existingIdx = this.traceIndex.findIndex(e => e.trace_id === trace.trace_id)
+      if (existingIdx !== -1) {
+        this.traceIndex[existingIdx] = newEntry
+      } else {
+        this.traceIndex.push(newEntry)
+      }
       if (trace.related_task_id) {
         this.addToTaskIndex(trace.related_task_id, trace.trace_id)
       }
