@@ -649,9 +649,7 @@ export class AgentHandler {
       }
 
       // 检查本 task 派出的、仍在运行的异步 bg-agent
-      const pendingChildren = this.bgRegistry
-        ? await this.bgRegistry.list({ spawned_by_task_id: task.task_id, status: ['running'] })
-        : []
+      const pendingChildren = await this.bgRegistry.list({ spawned_by_task_id: task.task_id, status: ['running'] })
 
       if (pendingChildren.length === 0) {
         break  // 无异步子 agent：正常完成路径
@@ -982,14 +980,12 @@ export class AgentHandler {
               traceConfig: subAgentTraceConfig,
               asyncEnabled: isMasterPrivate,
               asyncCtx: {
-                buildSystemPrompt: () => this.buildSystemPrompt(context, subAgentsSnapshot),
                 owner: {
                   friend_id: context.sender_friend?.id ?? `__system_${context.task_origin?.session_id ?? 'unknown'}`,
                   session_id: context.task_origin?.session_id,
                   channel_id: context.task_origin?.channel_id,
                 },
                 adapter,
-                taskOrigin: context.task_origin,
               },
             }),
           }))
@@ -2667,12 +2663,10 @@ export class AgentHandler {
     readonly traceConfig?: SubAgentTraceConfig
     /** 是否允许异步派发（master + 私聊 session）。false 时总走同步。 */
     readonly asyncEnabled?: boolean
-    /** 异步派发时的 subagent 上下文（系统 prompt 构造器、owner 信息等） */
+    /** 异步派发时的 subagent 上下文（owner 信息、adapter） */
     readonly asyncCtx?: {
-      readonly buildSystemPrompt: (subagent: import('../types.js').SubAgentConfig) => string
       readonly owner: import('../engine/bg-entities/types.js').BgEntityOwner
       readonly adapter: import('../engine/llm-adapter.js').LLMAdapter
-      readonly taskOrigin: import('../types.js').TaskOrigin | undefined
     }
   }): RunSubAgentFn {
     return async (subagent, input, ctx) => {
@@ -2694,10 +2688,8 @@ export class AgentHandler {
     subagent: SubAgentConfig,
     input: RunSubAgentInput & { sync?: boolean },
     asyncCtx: {
-      readonly buildSystemPrompt: (subagent: SubAgentConfig) => string
       readonly owner: import('../engine/bg-entities/types.js').BgEntityOwner
       readonly adapter: import('../engine/llm-adapter.js').LLMAdapter
-      readonly taskOrigin: import('../types.js').TaskOrigin | undefined
     },
     deps: {
       readonly parentTools: ReadonlyArray<import('../engine/types.js').ToolDefinition>
@@ -2707,8 +2699,6 @@ export class AgentHandler {
     },
   ): Promise<import('../engine/types.js').ToolCallResult> {
     const { spawnPersistentAgent } = await import('../engine/bg-entities/bg-agent.js')
-    const { filterToolsForSubAgent } = await import('./subagent-tool-filter.js')
-    const { assembleSubAgentPrompt } = await import('./subagent-prompt-assembler.js')
 
     const subModel = subagent.model
     const subAdapter = asyncCtx.adapter
