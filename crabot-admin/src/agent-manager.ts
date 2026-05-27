@@ -144,6 +144,13 @@ const DEFAULT_IMPLEMENTATION: AgentImplementation = {
       type: 'number',
       default: 300000,
     },
+    {
+      key: 'goal_mode_enabled',
+      title: '目标模式',
+      description: '启用后 Worker 可设定任务目标承诺，完成时触发独立审计校验；关闭后直接完成任务无需审计',
+      type: 'boolean',
+      default: true,
+    },
   ],
   version: '0.1.0',
   created_at: '2026-01-01T00:00:00.000Z',
@@ -482,6 +489,8 @@ export class AgentManager {
       ...(params.tools_readonly !== undefined && { tools_readonly: params.tools_readonly }),
       ...(params.timezone !== undefined && { timezone: params.timezone }),
       ...(params.extra !== undefined && { extra: params.extra }),
+      ...(params.timeout_seconds !== undefined && { timeout_seconds: params.timeout_seconds }),
+      ...(params.overdue_reminder_enabled !== undefined && { overdue_reminder_enabled: params.overdue_reminder_enabled }),
     }
 
     this.configs.set(params.instance_id, updated)
