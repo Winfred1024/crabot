@@ -220,17 +220,26 @@ ${safeRaw}
  * - summary 只含 verdict label + failed_criteria 列表（不含 evidence 详情；
  *   master 想看证据展开 audit trace 的 span 树即可）
  * - error 仅 fail 时填，便于 admin UI 列表行错误列显示
+ * - goal 可选；传入时用 criterion 的 rationale/spec 替代裸 id，让 UI 对人类可读
  *
  * Spec: 2026-05-26-goal-audit-loop-completion §2.1.2
  */
 export function buildAuditVerdictSummary(
   parsed: ParsedAuditReport,
+  goal?: GoalAuditTaskGoal,
 ): { summary: string; error?: string } {
   if (parsed.pass) {
     return { summary: '[audit PASS]' }
   }
-  const failedSeg = parsed.failedCriteria.length > 0
-    ? ` 不达标: ${parsed.failedCriteria.join(', ')}`
+  const criterionLabel = (id: string): string => {
+    if (!goal) return id
+    const criterion = goal.acceptance_criteria.find((c) => c.id === id)
+    if (!criterion) return id
+    return criterion.rationale ?? criterion.spec ?? id
+  }
+  const failedLabels = parsed.failedCriteria.map(criterionLabel)
+  const failedSeg = failedLabels.length > 0
+    ? ` 不达标: ${failedLabels.join('; ')}`
     : ''
   return {
     summary: `[audit FAIL]${failedSeg}`,

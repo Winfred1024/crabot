@@ -72,6 +72,7 @@ import type { RunSubAgentFn } from './delegate-task-tool.js'
 import { buildSubAgentFailureOutput } from './subagent-error-classifier.js'
 import { filterToolsForSubAgent } from './subagent-tool-filter.js'
 import { assembleSubAgentPrompt } from './subagent-prompt-assembler.js'
+import { formatSupplementForSubAgent } from './subagent-prompts.js'
 import type { SubAgentConfig } from '../types.js'
 import { HumanMessageQueue } from '../engine/human-message-queue.js'
 import { createCodingExpertHookRegistry, createCliPermissionHook } from '../hooks/defaults.js'
@@ -724,8 +725,9 @@ export class AgentHandler {
       // 但 admin RPC 是 async。折中：启动时 query 一次拍快照到 goalSetCache，
       // 之后 worker 调 set_task_goal 工具时由 callAdminRpc 包装层同步更新 cache，
       // 后续 turn 的 todo / send_message 检查 cache 立即生效，免去重复 RPC。
+      const goalModeEnabled = this.extra?.goal_mode_enabled !== false
       let goalSetCache = false
-      if (this.deps?.getAdminPort && this.deps.rpcClient) {
+      if (goalModeEnabled && this.deps?.getAdminPort && this.deps.rpcClient) {
         try {
           const adminPort = await this.deps.getAdminPort()
           const resp = await this.deps.rpcClient.call<
@@ -902,13 +904,14 @@ export class AgentHandler {
         }
 
         // 3j. todo tool — per-task mutable plan
-        // hasGoal 门控：复杂任务必须先 set_task_goal 才能 todo 写模式
+        // hasGoal 门控：复杂任务必须先 set_task_goal 才能 todo 写模式（goal mode 关闭时透明放行）
         // spec: 2026-05-23-goal-mode-design.md §5
-        tools.push(createTodoTool(taskState.todoStore, { hasGoal: () => goalSetCache }))
+        tools.push(createTodoTool(taskState.todoStore, { hasGoal: goalModeEnabled ? () => goalSetCache : () => true }))
 
         // 3j2. set_task_goal tool — worker 写下完成承诺，触发 audit gate + todo 门控解锁
+        // goal mode 关闭时不注入，agent 无法设定目标，audit gate 透明放行
         // spec: 2026-05-23-goal-mode-design.md §7.3
-        if (this.deps?.getAdminPort && this.deps.rpcClient) {
+        if (goalModeEnabled && this.deps?.getAdminPort && this.deps.rpcClient) {
           const adminDeps = this.deps
           tools.push(createSetTaskGoalTool({
             taskId: task.task_id,
@@ -2271,6 +2274,17 @@ export class AgentHandler {
       }
     }
 
+    // 创建子 queue：supplement push 到父 queue 时，父 queue 的 pending 保留原消息，
+    // 同时转发副本给子 queue（subagent 可以感知纠偏并调整）。
+    // 若直接把父 queue 传给 forkEngine，subagent 会 drainPending() 消费掉父 queue 的
+    // pending，主 engine 恢复后就再也看不到这条 supplement 了。
+    const childQueue = deps.humanQueue
+      ? deps.humanQueue.createChild((content) => {
+          const text = typeof content === 'string' ? content : '[多媒体纠偏消息]'
+          return formatSupplementForSubAgent(text)
+        })
+      : undefined
+
     // TODO(phase-2b): image_paths support for vision subagents
     try {
       const result = await forkEngine({
@@ -2285,7 +2299,7 @@ export class AgentHandler {
         abortSignal: ctx.abortSignal,
         onTurn: subTraceCallback,
         supportsVision: subagent.model.supports_vision,
-        humanMessageQueue: deps.humanQueue,
+        humanMessageQueue: childQueue,
         hookRegistry,
         lspManager,
         permissionConfig: deps.permissionConfig,
@@ -2377,6 +2391,10 @@ export class AgentHandler {
         output: JSON.stringify(failure),
         isError: true,
         ...(subTrace ? { traceId: subTrace.trace_id } : {}),
+      }
+    } finally {
+      if (childQueue && deps.humanQueue) {
+        deps.humanQueue.removeChild(childQueue)
       }
     }
   }
@@ -2480,7 +2498,7 @@ export class AgentHandler {
     //     (spec 2026-05-26-goal-audit-loop-completion §2.1.2)
     const auditTraceId = result.traceId ?? ''
     if (auditTraceId && params.traceConfig?.traceStore) {
-      const verdictSummary = buildAuditVerdictSummary(parsed)
+      const verdictSummary = buildAuditVerdictSummary(parsed, goal)
       params.traceConfig.traceStore.appendTraceOutcome(auditTraceId, verdictSummary)
     }
 

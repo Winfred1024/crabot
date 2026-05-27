@@ -8,14 +8,36 @@ describe('buildAuditVerdictSummary', () => {
     expect(r.error).toBeUndefined()
   })
 
-  it('fail 时 summary 含 [audit FAIL] + 失败 criteria 列表 + error 字段', () => {
+  it('fail 时 summary 含 [audit FAIL] + 失败 criteria 列表 + error 字段（无 goal 时显示 id）', () => {
     const r = buildAuditVerdictSummary({
       pass: false,
       failedCriteria: ['c-typecheck', 'c-tests'],
       rawOutput: '',
     })
-    expect(r.summary).toBe('[audit FAIL] 不达标: c-typecheck, c-tests')
-    expect(r.error).toBe('不达标: c-typecheck, c-tests')
+    expect(r.summary).toBe('[audit FAIL] 不达标: c-typecheck; c-tests')
+    expect(r.error).toBe('不达标: c-typecheck; c-tests')
+  })
+
+  it('传入 goal 时用 rationale 替代裸 id', () => {
+    const goal = {
+      objective: '做 X',
+      acceptance_criteria: [
+        { id: 'c-typecheck', kind: 'cmd' as const, spec: 'tsc --noEmit', rationale: 'TS 编译通过' },
+        { id: 'c-tests', kind: 'cmd' as const, spec: 'pnpm test', rationale: '测试全绿' },
+      ],
+    }
+    const r = buildAuditVerdictSummary({ pass: false, failedCriteria: ['c-typecheck', 'c-tests'], rawOutput: '' }, goal)
+    expect(r.summary).toBe('[audit FAIL] 不达标: TS 编译通过; 测试全绿')
+    expect(r.error).toBe('不达标: TS 编译通过; 测试全绿')
+  })
+
+  it('传入 goal 但 id 不在 criteria 里时回退到 id', () => {
+    const goal = {
+      objective: '做 X',
+      acceptance_criteria: [{ id: 'c-known', kind: 'cmd' as const, spec: 'cmd', rationale: '已知标准' }],
+    }
+    const r = buildAuditVerdictSummary({ pass: false, failedCriteria: ['c-unknown'], rawOutput: '' }, goal)
+    expect(r.summary).toContain('c-unknown')
   })
 
   it('fail 但 failedCriteria 为空（罕见 case）→ 不附 criteria 列表', () => {
