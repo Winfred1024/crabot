@@ -9,6 +9,7 @@ export class HumanMessageQueue {
   private children: Set<{ queue: HumanMessageQueue; transform?: QueueTransform }> = new Set()
   private barrierResolve: (() => void) | null = null
   private barrierTimer: ReturnType<typeof setTimeout> | null = null
+  private pushCallbacks: Set<() => void> = new Set()
 
   push(content: QueueContent): void {
     if (this.waitResolve) {
@@ -23,6 +24,34 @@ export class HumanMessageQueue {
       child.queue.push(transformed)
     }
     this.clearBarrier()
+    for (const cb of this.pushCallbacks) {
+      cb()
+    }
+  }
+
+  /** 非消费性等待：只要有新内容 push 进来就 resolve，不取出内容。支持 AbortSignal。 */
+  waitForPush(signal?: AbortSignal): Promise<void> {
+    return new Promise<void>((resolve) => {
+      let settled = false
+      const finish = (): void => {
+        if (settled) return
+        settled = true
+        resolve()
+      }
+      const pushCb = (): void => {
+        this.pushCallbacks.delete(pushCb)
+        if (signal) signal.removeEventListener('abort', abortCb)
+        finish()
+      }
+      const abortCb = (): void => {
+        this.pushCallbacks.delete(pushCb)
+        finish()
+      }
+      this.pushCallbacks.add(pushCb)
+      if (signal) {
+        signal.addEventListener('abort', abortCb, { once: true })
+      }
+    })
   }
 
   async dequeue(): Promise<QueueContent> {

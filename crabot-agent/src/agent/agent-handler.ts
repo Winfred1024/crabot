@@ -68,11 +68,11 @@ import type { McpConnector } from './mcp-connector.js'
 import { forkEngine } from '../engine/sub-agent.js'
 import type { SubAgentTraceConfig } from '../engine/sub-agent.js'
 import { createDelegateTaskTool } from './delegate-task-tool.js'
-import type { RunSubAgentFn } from './delegate-task-tool.js'
+import type { RunSubAgentFn, RunSubAgentInput } from './delegate-task-tool.js'
+import { createSubagentCoordinatorTools } from './subagent-coordinator-tools.js'
 import { buildSubAgentFailureOutput } from './subagent-error-classifier.js'
 import { filterToolsForSubAgent } from './subagent-tool-filter.js'
 import { assembleSubAgentPrompt } from './subagent-prompt-assembler.js'
-import { formatSupplementForSubAgent } from './subagent-prompts.js'
 import type { SubAgentConfig } from '../types.js'
 import { HumanMessageQueue } from '../engine/human-message-queue.js'
 import { createCodingExpertHookRegistry, createCliPermissionHook } from '../hooks/defaults.js'
@@ -204,6 +204,21 @@ export interface WorkerTraceContext {
 export interface RunWorkerLoopOptions {
   /** Override the initial user prompt sent to LLM. Default: taskMessage built from task. */
   readonly initialPrompt?: string | ContentBlock[]
+  /**
+   * 从已有消息历史恢复，跳过 buildTaskMessage + 初始 createUserMessage。
+   * waiting → executing 续跑路径使用：传入上一轮 finalMessages + 通知消息。
+   */
+  readonly initialMessages?: ReadonlyArray<EngineMessage>
+  /**
+   * 跳过 finally 中的 humanQueues / activeTasks / liveSnapshots 清理。
+   * waiting 循环续跑时由 executeTask 统一负责清理。
+   */
+  readonly skipCleanup?: boolean
+  /**
+   * 复用已有的 HumanMessageQueue（waiting → executing 续跑时传入）。
+   * 若未提供，runWorkerLoop 会新建一个。
+   */
+  readonly providedHumanQueue?: HumanMessageQueue
   /** Extra tools appended to the dynamic tool list (e.g., exit tools for trigger flow). */
   readonly extraTools?: ReadonlyArray<ToolDefinition>
   /**
@@ -606,18 +621,94 @@ export class AgentHandler {
   ): Promise<ExecuteTaskResult> {
     const { task, context } = params
 
+    // waiting 循环：loop 结束后检查异步子 agent，若有则等通知再续跑
     let loopResult: RunWorkerLoopResult | undefined
-    try {
-      loopResult = await this.runWorkerLoop(task, context, traceCallback, traceContext)
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
-      log(`Worker error: ${errorMessage}`)
-      // Check if abort was requested — taskState may already be cleaned up by runWorkerLoop's finally
-      return {
-        task_id: task.task_id,
-        outcome: 'failed',
-        error: `执行失败: ${errorMessage}`,
+    let currentInitialMessages: ReadonlyArray<EngineMessage> | undefined
+    let currentHumanQueue: HumanMessageQueue | undefined
+
+    while (true) {
+      try {
+        loopResult = await this.runWorkerLoop(task, context, traceCallback, traceContext, {
+          skipCleanup: true,
+          ...(currentHumanQueue ? { providedHumanQueue: currentHumanQueue } : {}),
+          ...(currentInitialMessages ? { initialMessages: currentInitialMessages } : {}),
+        })
+      } catch (error) {
+        this.cleanupWorkerLoopResources(task.task_id)
+        const errorMessage = error instanceof Error ? error.message : String(error)
+        log(`Worker error: ${errorMessage}`)
+        return { task_id: task.task_id, outcome: 'failed', error: `执行失败: ${errorMessage}` }
       }
+
+      const { engineResult, taskState, humanQueue } = loopResult
+      currentHumanQueue = humanQueue
+
+      // failed 或被 abort：直接退出，不进 waiting
+      if (engineResult.outcome === 'failed' || taskState.abortController.signal.aborted) {
+        break
+      }
+
+      // 检查本 task 派出的、仍在运行的异步 bg-agent
+      const pendingChildren = this.bgRegistry
+        ? await this.bgRegistry.list({ spawned_by_task_id: task.task_id, status: ['running'] })
+        : []
+
+      if (pendingChildren.length === 0) {
+        break  // 无异步子 agent：正常完成路径
+      }
+
+      // 有 pending children → 进 waiting 态
+      log(`Task ${task.task_id}: waiting for ${pendingChildren.length} async child agent(s)`)
+      try {
+        if (this.deps?.getAdminPort && this.deps.rpcClient) {
+          const adminPort = await this.deps.getAdminPort()
+          await this.deps.rpcClient.call(adminPort, 'update_task_status', {
+            task_id: task.task_id,
+            status: 'waiting',
+          }, this.deps.moduleId)
+        }
+      } catch (err) {
+        log(`Failed to set task ${task.task_id} to waiting: ${err}`)
+      }
+
+      // 等待 humanQueue 有新内容（子 agent 通知 或 用户 supplement）
+      await humanQueue.waitForPush(taskState.abortController.signal as AbortSignal)
+
+      if (taskState.abortController.signal.aborted) {
+        break
+      }
+
+      // 恢复 executing
+      try {
+        if (this.deps?.getAdminPort && this.deps.rpcClient) {
+          const adminPort = await this.deps.getAdminPort()
+          await this.deps.rpcClient.call(adminPort, 'update_task_status', {
+            task_id: task.task_id,
+            status: 'executing',
+          }, this.deps.moduleId)
+        }
+      } catch (err) {
+        log(`Failed to resume task ${task.task_id} to executing: ${err}`)
+      }
+
+      // 拉走所有 pending 通知，拼成新一轮的首条 user message
+      const pendingNotifs = humanQueue.drainPending()
+      const notifText = pendingNotifs
+        .map((m) => (typeof m === 'string' ? m : '[media]'))
+        .join('\n')
+
+      // 下一轮 loop 从上一轮 finalMessages + 通知消息继续
+      currentInitialMessages = [
+        ...engineResult.finalMessages,
+        createUserMessage(notifText),
+      ]
+    }
+
+    // 清理（统一由 executeTask 处理，runWorkerLoop skipCleanup=true 跳过了）
+    this.cleanupWorkerLoopResources(task.task_id)
+
+    if (!loopResult) {
+      return { task_id: task.task_id, outcome: 'failed', error: '无循环结果' }
     }
 
     const { engineResult, taskState } = loopResult
@@ -689,8 +780,8 @@ export class AgentHandler {
       recent_completed: [],
     })
 
-    // Create human message queue for this task
-    const humanQueue = new HumanMessageQueue()
+    // Create human message queue for this task（waiting 续跑时复用已有 queue）
+    const humanQueue = opts?.providedHumanQueue ?? new HumanMessageQueue()
     this.humanQueues.set(task.task_id, humanQueue)
 
     let digest: ProgressDigest | undefined
@@ -725,7 +816,7 @@ export class AgentHandler {
       // 但 admin RPC 是 async。折中：启动时 query 一次拍快照到 goalSetCache，
       // 之后 worker 调 set_task_goal 工具时由 callAdminRpc 包装层同步更新 cache，
       // 后续 turn 的 todo / send_message 检查 cache 立即生效，免去重复 RPC。
-      const goalModeEnabled = this.extra?.goal_mode_enabled !== false
+      const goalModeEnabled = this.extra?.goal_mode_enabled !== false && task.source?.trigger_type !== 'scheduled'
       let goalSetCache = false
       if (goalModeEnabled && this.deps?.getAdminPort && this.deps.rpcClient) {
         try {
@@ -889,6 +980,17 @@ export class AgentHandler {
               humanQueue,
               permissionConfig: baseToolsPermissionConfig,
               traceConfig: subAgentTraceConfig,
+              asyncEnabled: isMasterPrivate,
+              asyncCtx: {
+                buildSystemPrompt: () => this.buildSystemPrompt(context, subAgentsSnapshot),
+                owner: {
+                  friend_id: context.sender_friend?.id ?? `__system_${context.task_origin?.session_id ?? 'unknown'}`,
+                  session_id: context.task_origin?.session_id,
+                  channel_id: context.task_origin?.channel_id,
+                },
+                adapter,
+                taskOrigin: context.task_origin,
+              },
             }),
           }))
         }
@@ -927,7 +1029,17 @@ export class AgentHandler {
           }))
         }
 
-        // 3k. Extra tools from opts (e.g., exit tools for trigger flow)
+        // 3k. Subagent coordinator tools（async 路径：list_active_subagents / get_subagent_output / stop_subagent）
+        // 仅在 asyncEnabled（master + 私聊）时注入，其他场景 subagent 是同步的，无需协调工具
+        if (isMasterPrivate) {
+          tools.push(...createSubagentCoordinatorTools({
+            taskId: task.task_id,
+            bgRegistry: this.bgRegistry,
+            killBgEntity: (entity_id) => this.killBgEntity(entity_id),
+          }))
+        }
+
+        // 3l. Extra tools from opts (e.g., exit tools for trigger flow)
         if (opts?.extraTools) {
           tools.push(...opts.extraTools)
         }
@@ -1089,6 +1201,7 @@ export class AgentHandler {
       const engineResult = await runEngine({
         prompt: taskMessage,
         adapter,
+        ...(opts?.initialMessages ? { initialMessages: [...opts.initialMessages] } : {}),
         options: {
           systemPrompt: buildSystemPromptDynamic,
           tools: buildToolsDynamic,
@@ -1286,21 +1399,39 @@ export class AgentHandler {
 
     } finally {
       digest?.dispose()
-      this.humanQueues.get(task.task_id)?.clearBarrier()
-      this.humanQueues.delete(task.task_id)
-      this.activeTasks.delete(task.task_id)
-      this.liveSnapshots.delete(task.task_id)
-      // Kill all transient shells owned by this task (persistent shells survive)
-      this.transientShells.killAllOwnedBy(task.task_id)
-      // Clean up cursor map entries for this task to avoid memory leak
-      for (const key of this.bgCursorMap.keys()) {
-        if (key.startsWith(`${task.task_id}:`)) {
-          this.bgCursorMap.delete(key)
+      if (!opts?.skipCleanup) {
+        this.humanQueues.get(task.task_id)?.clearBarrier()
+        this.humanQueues.delete(task.task_id)
+        this.activeTasks.delete(task.task_id)
+        this.liveSnapshots.delete(task.task_id)
+        // Kill all transient shells owned by this task (persistent shells survive)
+        this.transientShells.killAllOwnedBy(task.task_id)
+        // Clean up cursor map entries for this task to avoid memory leak
+        for (const key of this.bgCursorMap.keys()) {
+          if (key.startsWith(`${task.task_id}:`)) {
+            this.bgCursorMap.delete(key)
+          }
         }
       }
     }
   }
 
+  /**
+   * 清理 runWorkerLoop 在 skipCleanup=true 模式下跳过的资源。
+   * 由 executeTask 等待循环结束后调用。
+   */
+  private cleanupWorkerLoopResources(taskId: string): void {
+    this.humanQueues.get(taskId)?.clearBarrier()
+    this.humanQueues.delete(taskId)
+    this.activeTasks.delete(taskId)
+    this.liveSnapshots.delete(taskId)
+    this.transientShells.killAllOwnedBy(taskId)
+    for (const key of this.bgCursorMap.keys()) {
+      if (key.startsWith(`${taskId}:`)) {
+        this.bgCursorMap.delete(key)
+      }
+    }
+  }
 
   /**
    * 构造 cli-permission-gate hook 用的内容审核器。
@@ -2274,17 +2405,6 @@ export class AgentHandler {
       }
     }
 
-    // 创建子 queue：supplement push 到父 queue 时，父 queue 的 pending 保留原消息，
-    // 同时转发副本给子 queue（subagent 可以感知纠偏并调整）。
-    // 若直接把父 queue 传给 forkEngine，subagent 会 drainPending() 消费掉父 queue 的
-    // pending，主 engine 恢复后就再也看不到这条 supplement 了。
-    const childQueue = deps.humanQueue
-      ? deps.humanQueue.createChild((content) => {
-          const text = typeof content === 'string' ? content : '[多媒体纠偏消息]'
-          return formatSupplementForSubAgent(text)
-        })
-      : undefined
-
     // TODO(phase-2b): image_paths support for vision subagents
     try {
       const result = await forkEngine({
@@ -2299,7 +2419,6 @@ export class AgentHandler {
         abortSignal: ctx.abortSignal,
         onTurn: subTraceCallback,
         supportsVision: subagent.model.supports_vision,
-        humanMessageQueue: childQueue,
         hookRegistry,
         lspManager,
         permissionConfig: deps.permissionConfig,
@@ -2391,10 +2510,6 @@ export class AgentHandler {
         output: JSON.stringify(failure),
         isError: true,
         ...(subTrace ? { traceId: subTrace.trace_id } : {}),
-      }
-    } finally {
-      if (childQueue && deps.humanQueue) {
-        deps.humanQueue.removeChild(childQueue)
       }
     }
   }
@@ -2540,7 +2655,8 @@ export class AgentHandler {
    * 构造 RunSubAgentFn，注入到 delegate_task 工具。
    * 每次 createWorkerHandler 时调用，deps 绑定当次任务的 humanQueue / permissionConfig 等上下文。
    *
-   * 薄壳：转发到 runSubAgentDirect 并摘掉 traceId（RunSubAgentFn 返回 ToolCallResult）。
+   * 同步路径（sync=true 或非 persistent 模式）：转发到 runSubAgentDirect。
+   * 异步路径（默认）：走 spawnPersistentAgent，工具立即返回 launched，完成时通过 humanQueue 通知。
    */
   private makeRunSubAgent(deps: {
     readonly parentTools: ReadonlyArray<import('../engine/types.js').ToolDefinition>
@@ -2549,10 +2665,101 @@ export class AgentHandler {
     readonly humanQueue?: import('../engine/human-message-queue.js').HumanMessageQueue
     readonly permissionConfig?: import('../engine/types.js').ToolPermissionConfig
     readonly traceConfig?: SubAgentTraceConfig
+    /** 是否允许异步派发（master + 私聊 session）。false 时总走同步。 */
+    readonly asyncEnabled?: boolean
+    /** 异步派发时的 subagent 上下文（系统 prompt 构造器、owner 信息等） */
+    readonly asyncCtx?: {
+      readonly buildSystemPrompt: (subagent: import('../types.js').SubAgentConfig) => string
+      readonly owner: import('../engine/bg-entities/types.js').BgEntityOwner
+      readonly adapter: import('../engine/llm-adapter.js').LLMAdapter
+      readonly taskOrigin: import('../types.js').TaskOrigin | undefined
+    }
   }): RunSubAgentFn {
     return async (subagent, input, ctx) => {
+      const typedInput = input as RunSubAgentInput & { sync?: boolean }
+
+      // 异步路径：asyncEnabled + 没有显式 sync=true
+      if (deps.asyncEnabled && !typedInput.sync && deps.asyncCtx && deps.humanQueue) {
+        return this.runSubAgentAsync(subagent, typedInput, deps.asyncCtx, deps)
+      }
+
+      // 同步路径（默认 fallback / 显式 sync=true）
       const { traceId: _traceId, ...result } = await this.runSubAgentDirect(subagent, input, ctx, deps)
       return result
+    }
+  }
+
+  /** 异步派发 subagent：via spawnPersistentAgent，工具立即返回，完成时通知父 humanQueue。 */
+  private async runSubAgentAsync(
+    subagent: SubAgentConfig,
+    input: RunSubAgentInput & { sync?: boolean },
+    asyncCtx: {
+      readonly buildSystemPrompt: (subagent: SubAgentConfig) => string
+      readonly owner: import('../engine/bg-entities/types.js').BgEntityOwner
+      readonly adapter: import('../engine/llm-adapter.js').LLMAdapter
+      readonly taskOrigin: import('../types.js').TaskOrigin | undefined
+    },
+    deps: {
+      readonly parentTools: ReadonlyArray<import('../engine/types.js').ToolDefinition>
+      readonly parentTaskId: string
+      readonly humanQueue?: import('../engine/human-message-queue.js').HumanMessageQueue
+      readonly traceConfig?: SubAgentTraceConfig
+    },
+  ): Promise<import('../engine/types.js').ToolCallResult> {
+    const { spawnPersistentAgent } = await import('../engine/bg-entities/bg-agent.js')
+    const { filterToolsForSubAgent } = await import('./subagent-tool-filter.js')
+    const { assembleSubAgentPrompt } = await import('./subagent-prompt-assembler.js')
+
+    const subModel = subagent.model
+    const subAdapter = asyncCtx.adapter
+
+    // 子 agent 工具集：从父工具里过滤（同 runSubAgentDirect 路径）
+    const subTools = filterToolsForSubAgent(
+      [...deps.parentTools],
+      subagent.builtin_capabilities,
+      subagent.allowed_mcp_server_ids,
+      subagent.allowed_skill_ids,
+    )
+
+    const finalSystemPrompt = assembleSubAgentPrompt(subagent, {
+      parentTaskId: deps.parentTaskId,
+      callerLabel: 'main worker (async)',
+    })
+
+    const bgTraceCtx = deps.traceConfig
+      ? { traceStore: deps.traceConfig.traceStore, traceId: deps.traceConfig.parentTraceId }
+      : undefined
+
+    const entity_id = await spawnPersistentAgent({
+      task_description: input.task,
+      tools: subTools,
+      systemPrompt: finalSystemPrompt,
+      model: subModel.model_id,
+      ...(subModel.max_tokens !== undefined ? { maxTokens: subModel.max_tokens } : {}),
+      adapter: subAdapter,
+      owner: asyncCtx.owner,
+      spawned_by_task_id: deps.parentTaskId,
+      registry: this.bgRegistry,
+      abortControllers: this.agentAbortControllers,
+      ...(bgTraceCtx ? { traceContext: bgTraceCtx } : {}),
+      onExit: (info) => {
+        if (!deps.humanQueue) return
+        const notification = [
+          '<sub_agent_notification>',
+          `<agent_id>${info.entity_id}</agent_id>`,
+          `<description>${info.task_description.slice(0, 200)}</description>`,
+          `<status>${info.status}</status>`,
+          `<runtime_ms>${info.runtime_ms}</runtime_ms>`,
+          info.result_file ? `<output_file>${info.result_file}</output_file>` : '',
+          '</sub_agent_notification>',
+        ].filter(Boolean).join('\n')
+        deps.humanQueue.push(notification)
+      },
+    })
+
+    return {
+      output: JSON.stringify({ agent_id: entity_id, status: 'launched', output_file: null }),
+      isError: false,
     }
   }
 

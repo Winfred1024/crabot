@@ -121,6 +121,7 @@ export class BgEntityRegistry {
     owner_friend_id?: string
     status?: ReadonlyArray<BgEntityStatus>
     type?: BgEntityType
+    spawned_by_task_id?: string
   }): Promise<BgEntityRecord[]> {
     const file = await this.readFile()
     let records = Object.values(file.entities)
@@ -138,6 +139,11 @@ export class BgEntityRegistry {
     if (filter?.type !== undefined) {
       const type = filter.type
       records = records.filter((r) => r.type === type)
+    }
+
+    if (filter?.spawned_by_task_id !== undefined) {
+      const taskId = filter.spawned_by_task_id
+      records = records.filter((r) => r.spawned_by_task_id === taskId)
     }
 
     return records

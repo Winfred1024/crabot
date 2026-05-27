@@ -4064,24 +4064,28 @@ export class AdminModule extends ModuleBase {
   private async runSelfHealingForAgentRestart(restartCount: number): Promise<void> {
     if (restartCount <= 0) return
 
-    const executing = Array.from(this.tasks.values()).filter((t) => t.status === 'executing')
-    if (executing.length === 0) return
+    // waiting 状态的 task 等价于 executing：agent 重启后关联的 async 子 agent 已丢失，一律标 failed
+    const inFlight = Array.from(this.tasks.values()).filter(
+      (t) => t.status === 'executing' || t.status === 'waiting',
+    )
+    if (inFlight.length === 0) return
 
     const now = generateTimestamp()
-    const interrupted = executing.filter((t) => !t.tags.includes('recovery'))
+    const interrupted = inFlight.filter((t) => !t.tags.includes('recovery'))
 
     // 1. 把所有 in-flight 任务（含 recovery 自身）置 failed
-    for (const t of executing) {
+    for (const t of inFlight) {
+      const oldStatus = t.status
       t.status = 'failed'
       t.error = 'agent_restarted_during_execution'
       t.updated_at = now
       this.publishAdminEvent('admin.task_status_changed', {
         task_id: t.id,
-        old_status: 'executing',
+        old_status: oldStatus,
         new_status: 'failed',
       })
     }
-    console.log(`[Admin] Self-healing: marked ${executing.length} task(s) as failed (incl. ${executing.length - interrupted.length} recovery task)`)
+    console.log(`[Admin] Self-healing: marked ${inFlight.length} task(s) as failed (incl. ${inFlight.length - interrupted.length} recovery task)`)
 
     // 2. 生成 recovery 任务（防雪崩：跳过自身就是 recovery 的）
     const params = buildRecoveryTask(interrupted, restartCount, now)
@@ -4161,8 +4165,8 @@ export class AdminModule extends ModuleBase {
           }
           case 'status': {
             const statusOrder: Record<TaskStatus, number> = {
-              pending: 0, planning: 1, executing: 2, waiting_human: 3,
-              completed: 4, failed: 5, cancelled: 6
+              pending: 0, planning: 1, executing: 2, waiting_human: 3, waiting: 4,
+              completed: 5, failed: 6, cancelled: 7
             }
             comparison = statusOrder[a.status] - statusOrder[b.status]
             break
@@ -4204,8 +4208,9 @@ export class AdminModule extends ModuleBase {
     const validTransitions: Record<TaskStatus, TaskStatus[]> = {
       pending: ['planning', 'cancelled'],
       planning: ['executing', 'failed', 'cancelled'],
-      executing: ['waiting_human', 'completed', 'failed', 'cancelled'],
+      executing: ['waiting_human', 'waiting', 'completed', 'failed', 'cancelled'],
       waiting_human: ['executing', 'cancelled', 'failed'],
+      waiting: ['executing', 'failed', 'cancelled'],
       completed: [],
       failed: [],
       cancelled: [],
@@ -4242,6 +4247,13 @@ export class AdminModule extends ModuleBase {
       task.waiting_human_at = task.updated_at
     } else {
       task.waiting_human_at = undefined
+    }
+
+    // waiting_at：进入 waiting（异步子 agent）写时间戳，离开时清空
+    if (params.status === 'waiting') {
+      task.waiting_at = task.updated_at
+    } else {
+      task.waiting_at = undefined
     }
 
     if (params.error) {
@@ -4414,6 +4426,7 @@ export class AdminModule extends ModuleBase {
         planning: 0,
         executing: 0,
         waiting_human: 0,
+        waiting: 0,
         completed: 0,
         failed: 0,
         cancelled: 0,

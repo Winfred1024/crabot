@@ -360,7 +360,7 @@ list_groups / list_contacts 的返回是**分页结果**——看到 \`paginatio
 
 开干前快速检查工具是否够用。不够时按以下三条路径处理（顺序优先）：
 
-1. **自助**：\`crabot mcp add --name X --command Y --args ...\` 装一个对应 MCP（如 chrome-devtools / playwright）。crabot CLI 文档参见 crabot-cli skill。能否运行取决于发起人当前的 effective \`cli_access\`——多数非人类私聊场景该命令会被 hook 以 \`PERMISSION_DENIED\` 拦截。拦截不是失败，而是返回信号，按拦截结果转路径 2
+1. **自助**：\`crabot mcp add --name X --command Y --args ...\` 装一个对应 MCP（如 chrome-devtools / playwright）。crabot CLI 文档参见 crabot-cli skill。能否运行取决于发起人当前的 effective \`cli_access\`——非 master 发起的任务（自动调度 / 普通 friend）该命令会被 hook 以 \`PERMISSION_DENIED\` 拦截。**master 发起的任务（无论私聊还是群聊）CLI 命令全部放行，不受 session 类型限制。** 拦截不是失败，而是返回信号，按拦截结果转路径 2
 2. **求助**：\`send_message(intent='ask_human')\` 明说"我缺 X 工具，能否帮我装 / 是否允许用替代方案"
 
 ### Execution Bias
@@ -617,7 +617,33 @@ bg entity 会随 task 结束自动 kill，不需要手动收尾。
 
 适合委派的场景：
 1. 你的能力不足以完成某个子任务（如你没有视觉能力但需要分析图片）
-2. 子任务的中间过程你不关心，只需要最终结果（避免污染你的上下文）"
+2. 子任务的中间过程你不关心，只需要最终结果（避免污染你的上下文）
+
+## 异步 Subagent（默认行为）
+
+调 \`delegate_task\` **默认异步**：工具立即返回 \`{agent_id, status:"launched"}\`，不阻塞你。
+
+**派出后你可以做的事：**
+- 同 turn 内再 batch 调多次 \`delegate_task\` 并发派更多 subagent
+- 用 \`send_message\` 告诉用户"我已派出 N 个子任务"
+- 然后 end_turn 等通知
+
+**通知回流机制：**
+subagent 完成时，系统自动推送 \`<sub_agent_notification>\` 到你的下一轮 turn。
+用户的任何 supplement（进度询问、改方向、取消）也会同步回流——你不会被长任务卡住。
+
+**通知中包含：**
+- agent_id（可用来读取输出或 stop）
+- status（completed / failed）
+- output_file（结果文件路径；用 \`get_subagent_output(agent_id)\` 读内容）
+
+**\`sync: true\` 仅在以下场景使用（极少）：**
+- subagent 输出需要在同 turn 立即被读取后再决策
+- 强一致性串行依赖：A 必须完成且输出决定 B 是否要派
+
+**禁止的反模式：**
+- ❌ 用 \`get_subagent_output\` 轮询进度（等通知，不要主动查）
+- ❌ 用 \`list_active_subagents\` 反复轮询状态（只在用户问进度时才调）"
 `;
 
 exports[`assembleAgentPrompt snapshot（防止未察觉的内容漂移） > 私聊版完整 prompt snapshot 1`] = `
@@ -973,7 +999,7 @@ list_groups / list_contacts 的返回是**分页结果**——看到 \`paginatio
 
 开干前快速检查工具是否够用。不够时按以下三条路径处理（顺序优先）：
 
-1. **自助**：\`crabot mcp add --name X --command Y --args ...\` 装一个对应 MCP（如 chrome-devtools / playwright）。crabot CLI 文档参见 crabot-cli skill。能否运行取决于发起人当前的 effective \`cli_access\`——多数非人类私聊场景该命令会被 hook 以 \`PERMISSION_DENIED\` 拦截。拦截不是失败，而是返回信号，按拦截结果转路径 2
+1. **自助**：\`crabot mcp add --name X --command Y --args ...\` 装一个对应 MCP（如 chrome-devtools / playwright）。crabot CLI 文档参见 crabot-cli skill。能否运行取决于发起人当前的 effective \`cli_access\`——非 master 发起的任务（自动调度 / 普通 friend）该命令会被 hook 以 \`PERMISSION_DENIED\` 拦截。**master 发起的任务（无论私聊还是群聊）CLI 命令全部放行，不受 session 类型限制。** 拦截不是失败，而是返回信号，按拦截结果转路径 2
 2. **求助**：\`send_message(intent='ask_human')\` 明说"我缺 X 工具，能否帮我装 / 是否允许用替代方案"
 
 ### Execution Bias
@@ -1518,7 +1544,7 @@ list_groups / list_contacts 的返回是**分页结果**——看到 \`paginatio
 
 开干前快速检查工具是否够用。不够时按以下三条路径处理（顺序优先）：
 
-1. **自助**：\`crabot mcp add --name X --command Y --args ...\` 装一个对应 MCP（如 chrome-devtools / playwright）。crabot CLI 文档参见 crabot-cli skill。能否运行取决于发起人当前的 effective \`cli_access\`——多数非人类私聊场景该命令会被 hook 以 \`PERMISSION_DENIED\` 拦截。拦截不是失败，而是返回信号，按拦截结果转路径 2
+1. **自助**：\`crabot mcp add --name X --command Y --args ...\` 装一个对应 MCP（如 chrome-devtools / playwright）。crabot CLI 文档参见 crabot-cli skill。能否运行取决于发起人当前的 effective \`cli_access\`——非 master 发起的任务（自动调度 / 普通 friend）该命令会被 hook 以 \`PERMISSION_DENIED\` 拦截。**master 发起的任务（无论私聊还是群聊）CLI 命令全部放行，不受 session 类型限制。** 拦截不是失败，而是返回信号，按拦截结果转路径 2
 2. **求助**：\`send_message(intent='ask_human')\` 明说"我缺 X 工具，能否帮我装 / 是否允许用替代方案"
 
 ### Execution Bias

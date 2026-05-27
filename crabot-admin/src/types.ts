@@ -542,6 +542,7 @@ export type TaskStatus =
   | 'planning'
   | 'executing'
   | 'waiting_human'
+  | 'waiting'
   | 'completed'
   | 'failed'
   | 'cancelled'
@@ -689,6 +690,11 @@ export interface Task {
    * 区别于 updated_at——updated_at 会被任何字段改动重置，不可靠。
    */
   waiting_human_at?: string
+  /**
+   * 切到 status='waiting' 的时间戳。仅 status=waiting 时有值。
+   * worker loop 退出、异步子 agent 仍在跑时写入；子 agent 完成通知到达、loop 重入时清空。
+   */
+  waiting_at?: string
   /**
    * Per-task goal（spec: 2026-05-23-goal-mode-design.md §3）。
    * 由 agent 在动手前调 set_task_goal 写入；不存在表示这是简单 task，audit gate 透明放行。
@@ -1522,6 +1528,8 @@ export interface UpdateAgentConfigParams {
   tools_readonly?: boolean
   timezone?: string
   extra?: Record<string, unknown>
+  timeout_seconds?: number
+  overdue_reminder_enabled?: boolean
 }
 
 export interface UpdateAgentConfigResult {

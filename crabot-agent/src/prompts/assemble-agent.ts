@@ -86,7 +86,34 @@ export function assembleAgentPrompt(opts: AssembleAgentPromptOptions): string {
       `1. 你的能力不足以完成某个子任务（如你没有视觉能力但需要分析图片）\n` +
       `2. 子任务的中间过程你不关心，只需要最终结果（避免污染你的上下文）`,
     )
+    parts.push(ASYNC_SUBAGENT_GUIDANCE)
   }
 
   return parts.join('\n\n')
 }
+
+const ASYNC_SUBAGENT_GUIDANCE = `## 异步 Subagent（默认行为）
+
+调 \`delegate_task\` **默认异步**：工具立即返回 \`{agent_id, status:"launched"}\`，不阻塞你。
+
+**派出后你可以做的事：**
+- 同 turn 内再 batch 调多次 \`delegate_task\` 并发派更多 subagent
+- 用 \`send_message\` 告诉用户"我已派出 N 个子任务"
+- 然后 end_turn 等通知
+
+**通知回流机制：**
+subagent 完成时，系统自动推送 \`<sub_agent_notification>\` 到你的下一轮 turn。
+用户的任何 supplement（进度询问、改方向、取消）也会同步回流——你不会被长任务卡住。
+
+**通知中包含：**
+- agent_id（可用来读取输出或 stop）
+- status（completed / failed）
+- output_file（结果文件路径；用 \`get_subagent_output(agent_id)\` 读内容）
+
+**\`sync: true\` 仅在以下场景使用（极少）：**
+- subagent 输出需要在同 turn 立即被读取后再决策
+- 强一致性串行依赖：A 必须完成且输出决定 B 是否要派
+
+**禁止的反模式：**
+- ❌ 用 \`get_subagent_output\` 轮询进度（等通知，不要主动查）
+- ❌ 用 \`list_active_subagents\` 反复轮询状态（只在用户问进度时才调）`

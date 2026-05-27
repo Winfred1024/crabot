@@ -29,6 +29,8 @@ export interface RunEngineParams {
   readonly prompt: string | import('./types').ContentBlock[]
   readonly adapter: LLMAdapter
   readonly options: EngineOptions
+  /** 从已有消息历史恢复，跳过初始 createUserMessage(prompt)。用于 waiting→executing 续跑。 */
+  readonly initialMessages?: EngineMessage[]
 }
 
 const DEFAULT_MAX_TURNS = 200
@@ -57,11 +59,11 @@ const FORCED_SUMMARY_PROMPT =
 // --- Core Loop ---
 
 export async function runEngine(params: RunEngineParams): Promise<EngineResult> {
-  const { prompt, adapter, options } = params
+  const { prompt, adapter, options, initialMessages } = params
   const maxTurns = options.maxTurns ?? DEFAULT_MAX_TURNS
   const abortSignal = options.abortSignal
 
-  const messages: EngineMessage[] = [createUserMessage(prompt)]
+  const messages: EngineMessage[] = initialMessages ? [...initialMessages] : [createUserMessage(prompt)]
   const contextManager = new ContextManager({
     maxContextTokens: DEFAULT_MAX_CONTEXT_TOKENS,
   })
