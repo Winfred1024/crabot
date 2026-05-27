@@ -364,12 +364,12 @@ export const AgentConfig: React.FC = () => {
                       padding: '0.5rem 0.75rem',
                       marginBottom: '0.25rem',
                       borderRadius: '0.375rem',
-                      background: 'var(--bg-tertiary)',
+                      background: 'var(--surface-raised)',
                     }}
                   >
                     <strong style={{ fontSize: '0.875rem' }}>{s.name}</strong>
                     {s.is_builtin && (
-                      <span style={{ marginLeft: '0.5rem', fontSize: '0.75rem', color: 'var(--accent)' }}>
+                      <span style={{ marginLeft: '0.5rem', fontSize: '0.75rem', color: 'var(--primary-light)' }}>
                         [内置]
                       </span>
                     )}
@@ -381,7 +381,7 @@ export const AgentConfig: React.FC = () => {
               </div>
             )}
             <div style={{ marginTop: '0.75rem' }}>
-              <Link to="/mcp-servers" style={{ color: 'var(--accent)', fontSize: '0.8125rem', textDecoration: 'none' }}>
+              <Link to="/mcp-servers" style={{ color: 'var(--primary-light)', fontSize: '0.8125rem', textDecoration: 'none' }}>
                 → 前往 MCP 管理
               </Link>
             </div>
@@ -404,7 +404,7 @@ export const AgentConfig: React.FC = () => {
                       padding: '0.5rem 0.75rem',
                       marginBottom: '0.25rem',
                       borderRadius: '0.375rem',
-                      background: 'var(--bg-tertiary)',
+                      background: 'var(--surface-raised)',
                     }}
                   >
                     <strong style={{ fontSize: '0.875rem' }}>{s.name}</strong>
@@ -416,7 +416,7 @@ export const AgentConfig: React.FC = () => {
               </div>
             )}
             <div style={{ marginTop: '0.75rem' }}>
-              <Link to="/skills" style={{ color: 'var(--accent)', fontSize: '0.8125rem', textDecoration: 'none' }}>
+              <Link to="/skills" style={{ color: 'var(--primary-light)', fontSize: '0.8125rem', textDecoration: 'none' }}>
                 → 前往 Skills 管理
               </Link>
             </div>
@@ -512,7 +512,7 @@ export const AgentConfig: React.FC = () => {
             <h3 style={{ fontSize: '0.9375rem', fontWeight: 600, marginBottom: '0.625rem' }}>触发处理</h3>
             <div style={{ display: 'grid', gap: '0.75rem' }}>
               <label style={{ display: 'block' }}>
-                <span style={{ fontWeight: 500, fontSize: '0.8125rem' }}>Front 升格超时（秒）</span>
+                <span style={{ fontWeight: 500, fontSize: '0.8125rem' }}>升格超时（秒）</span>
                 <input
                   aria-label="Front 升格超时（秒）"
                   type="number"

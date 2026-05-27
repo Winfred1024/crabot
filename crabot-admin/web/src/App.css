@@ -43,6 +43,11 @@
   /* Layout */
   --sidebar-width: 240px;
   --header-height: 56px;
+
+  /* Aliases for legacy usage */
+  --accent: var(--primary-light);
+  --bg-tertiary: var(--surface-raised);
+  --bg-hover: rgba(255, 255, 255, 0.03);
 }
 
 /* Reset */
@@ -5226,4 +5231,35 @@ code, pre, .mono {
   .dlg-body {
     grid-template-columns: 1fr;
   }
+}
+
+/* ===================================================
+   Scrollbar — thin ember style
+   =================================================== */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
 }

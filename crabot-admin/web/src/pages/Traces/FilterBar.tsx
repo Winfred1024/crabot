@@ -39,8 +39,8 @@ export function FilterBar({
             alignItems: 'center',
             gap: 4,
             padding: '4px 8px',
-            background: 'rgba(99,102,241,0.12)',
-            color: '#6366f1',
+            background: 'var(--primary-glow)',
+            color: 'var(--primary-light)',
             borderRadius: 4,
             fontSize: 12,
             fontFamily: 'monospace',
@@ -50,7 +50,7 @@ export function FilterBar({
           <button
             onClick={() => onChange({ ...filter, taskId: '' })}
             title="移除任务筛选"
-            style={{ marginLeft: 4, background: 'transparent', border: 'none', cursor: 'pointer', color: '#6366f1', fontSize: 14, lineHeight: 1, padding: 0 }}
+            style={{ marginLeft: 4, background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--primary-light)', fontSize: 14, lineHeight: 1, padding: 0 }}
           >
             ×
           </button>
@@ -119,7 +119,7 @@ export function FilterBar({
               fontSize: 13,
             }}
           />
-          <span style={{ color: '#9ca3af', fontSize: 13 }}>至</span>
+          <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>至</span>
           <input
             type="datetime-local"
             value={filter.customEnd}

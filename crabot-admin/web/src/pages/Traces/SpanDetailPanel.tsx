@@ -57,24 +57,24 @@ export const SpanDetailPanel: React.FC<{
           <div style={{ fontFamily: 'monospace', fontSize: 12, lineHeight: 1.6 }}>
             <div>
               <span title="未命中输入">{formatTokens(usage.input_tokens)}</span>
-              <span style={{ color: '#9ca3af', margin: '0 4px' }}>未命中 in →</span>
+              <span style={{ color: 'var(--text-muted)', margin: '0 4px' }}>未命中 in →</span>
               <span title="输出">{formatTokens(usage.output_tokens)}</span>
-              <span style={{ color: '#9ca3af', marginLeft: 4 }}>out</span>
+              <span style={{ color: 'var(--text-muted)', marginLeft: 4 }}>out</span>
             </div>
             {(cacheRead > 0 || cacheCreate > 0) && (
-              <div style={{ color: '#6b7280' }}>
+              <div style={{ color: 'var(--text-secondary)' }}>
                 {cacheRead > 0 && (
-                  <span style={{ color: '#10b981' }} title="缓存命中（享受折扣）">
+                  <span style={{ color: 'var(--success)' }} title="缓存命中（享受折扣）">
                     cache 命中 {formatTokens(cacheRead)}
                   </span>
                 )}
                 {cacheRead > 0 && cacheCreate > 0 && <span> · </span>}
                 {cacheCreate > 0 && (
-                  <span style={{ color: '#0ea5e9' }} title="本次写入缓存">
+                  <span style={{ color: 'var(--primary-light)' }} title="本次写入缓存">
                     写入 {formatTokens(cacheCreate)}
                   </span>
                 )}
-                <span style={{ marginLeft: 8, color: '#9ca3af' }}>
+                <span style={{ marginLeft: 8, color: 'var(--text-muted)' }}>
                   全量 {formatTokens(total)}
                   {cacheRead > 0 && ` · 命中 ${hitPct}%`}
                 </span>
@@ -174,7 +174,7 @@ export const SpanDetailPanel: React.FC<{
     <div
       style={{
         padding: '10px 14px 10px 36px',
-        background: 'var(--bg-secondary, #f9fafb)',
+        background: 'var(--bg-secondary)',
         borderBottom: '1px solid var(--border)',
         fontSize: 12,
       }}
@@ -187,7 +187,7 @@ export const SpanDetailPanel: React.FC<{
                 style={{
                   width: 110,
                   padding: '2px 8px 2px 0',
-                  color: '#6b7280',
+                  color: 'var(--text-secondary)',
                   verticalAlign: 'top',
                   fontWeight: 500,
                 }}

@@ -82,14 +82,14 @@ function RelatedTraceTree({
 
   if (loading && !tree) {
     return (
-      <div style={{ padding: '8px 12px', fontSize: 11, color: '#9ca3af' }}>
+      <div style={{ padding: '8px 12px', fontSize: 11, color: 'var(--text-muted)' }}>
         加载关联链路中...
       </div>
     )
   }
   if (error) {
     return (
-      <div style={{ padding: '8px 12px', fontSize: 11, color: '#ef4444' }}>
+      <div style={{ padding: '8px 12px', fontSize: 11, color: 'var(--error)' }}>
         关联链路加载失败：{error}
       </div>
     )
@@ -130,8 +130,8 @@ function RelatedTraceTree({
     <div
       style={{
         padding: '10px 12px',
-        background: 'rgba(99,102,241,0.05)',
-        border: '1px solid rgba(99,102,241,0.2)',
+        background: 'var(--primary-subtle)',
+        border: '1px solid rgba(217,124,74,0.2)',
         borderRadius: 4,
         marginTop: 8,
         display: 'flex',
@@ -139,12 +139,12 @@ function RelatedTraceTree({
         gap: 6,
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#6366f1', fontWeight: 600 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--primary-light)', fontWeight: 600 }}>
         <span>🔗 关联链路</span>
-        <span style={{ color: '#9ca3af', fontWeight: 400, fontFamily: 'monospace' }}>
+        <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontFamily: 'monospace' }}>
           task {taskId.slice(0, 12)}
         </span>
-        <span style={{ color: '#9ca3af', fontWeight: 400 }}>· 共 {total} trace</span>
+        <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>· 共 {total} trace</span>
       </div>
       {renderRole('Dispatch', '#3b82f6', tree.fronts)}
       {tree.worker && renderRole('Task', '#8b5cf6', [tree.worker])}
@@ -172,7 +172,7 @@ function UsageStat({
 }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }} title={hint}>
-      <span style={{ fontSize: 10, color: '#9ca3af', letterSpacing: 0.3 }}>
+      <span style={{ fontSize: 10, color: 'var(--text-muted)', letterSpacing: 0.3 }}>
         {label}
       </span>
       <span style={{ fontSize: 16, color, fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
@@ -213,7 +213,7 @@ function TraceDetailPanel({
 
   if (!trace) {
     return (
-      <div style={{ padding: 32, color: '#9ca3af', fontSize: 13, textAlign: 'center' }}>
+      <div style={{ padding: 32, color: 'var(--text-muted)', fontSize: 13, textAlign: 'center' }}>
         从左侧表格选择一条 Trace 查看详情
       </div>
     )
@@ -224,13 +224,13 @@ function TraceDetailPanel({
   return (
     <div style={{ height: '100%', overflow: 'auto', position: 'relative' }}>
       {loading && (
-        <div style={{ position: 'absolute', top: 8, right: 12, fontSize: 11, color: '#9ca3af' }}>
+        <div style={{ position: 'absolute', top: 8, right: 12, fontSize: 11, color: 'var(--text-muted)' }}>
           加载中...
         </div>
       )}
 
       {/* 顶部：trace 元信息 */}
-      <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--border)', background: 'var(--bg-secondary, #f9fafb)' }}>
+      <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--border)', background: 'var(--bg-secondary)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
           <TriggerBadge type={trace.trigger.type} />
           <AuditBadge taskType={trace.trigger.task_type} />
@@ -252,13 +252,13 @@ function TraceDetailPanel({
             {formatDateTimeLocal(trace.started_at)} · {formatDuration(trace.duration_ms)}
           </span>
           <span style={{ flex: 1 }} />
-          <span style={{ fontSize: 11, color: '#9ca3af', fontFamily: 'monospace' }}>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace' }}>
             {trace.trace_id.slice(0, 8)}
           </span>
         </div>
 
         {trace.parent_trace_id && (
-          <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 4 }}>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
             父 trace: <TraceLink traceId={trace.parent_trace_id} onNavigate={onNavigateTrace} />
           </div>
         )}
@@ -281,10 +281,10 @@ function TraceDetailPanel({
               marginTop: 8,
               padding: '6px 10px',
               borderRadius: 4,
-              background: trace.outcome.error ? 'rgba(239,68,68,0.08)' : 'rgba(16,185,129,0.08)',
-              borderLeft: `3px solid ${trace.outcome.error ? '#ef4444' : '#10b981'}`,
+              background: trace.outcome.error ? 'var(--error-glow)' : 'var(--success-glow)',
+              borderLeft: `3px solid ${trace.outcome.error ? 'var(--error)' : 'var(--success)'}`,
               fontSize: 12,
-              color: trace.outcome.error ? '#dc2626' : 'var(--text-primary)',
+              color: trace.outcome.error ? 'var(--error)' : 'var(--text-primary)',
             }}
           >
             <div>
@@ -307,7 +307,7 @@ function TraceDetailPanel({
               gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))',
               gap: 8,
               padding: '10px 12px',
-              background: 'var(--bg-primary, #fff)',
+              background: 'var(--bg-primary)',
               border: '1px solid var(--border)',
               borderRadius: 4,
             }}
@@ -361,7 +361,7 @@ function TraceDetailPanel({
       {/* Span 树 */}
       <div>
         {trace.spans.length === 0 ? (
-          <div style={{ padding: 16, color: '#9ca3af', fontSize: 13 }}>暂无 Span 数据</div>
+          <div style={{ padding: 16, color: 'var(--text-muted)', fontSize: 13 }}>暂无 Span 数据</div>
         ) : (
           <SpanTree
             spans={trace.spans}
@@ -555,7 +555,7 @@ export const Traces: React.FC = () => {
         {/* 顶部工具栏 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>Agent Traces</h2>
-          <span style={{ fontSize: 12, color: '#9ca3af' }}>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
             观察 Dispatch / Task / Sub-agent 的执行链路与 Token 用量
           </span>
           <span style={{ flex: 1 }} />
@@ -623,8 +623,8 @@ export const Traces: React.FC = () => {
               onClick={() => { setViewMode('grouped'); setPage(1) }}
               style={{
                 padding: '6px 12px',
-                background: viewMode === 'grouped' ? '#6366f1' : 'transparent',
-                color: viewMode === 'grouped' ? '#fff' : 'var(--text-secondary)',
+                background: viewMode === 'grouped' ? 'var(--primary)' : 'transparent',
+                color: viewMode === 'grouped' ? '#1a0d06' : 'var(--text-secondary)',
                 border: 'none',
                 cursor: 'pointer',
                 fontWeight: viewMode === 'grouped' ? 600 : 400,
@@ -637,8 +637,8 @@ export const Traces: React.FC = () => {
               onClick={() => { setViewMode('flat'); setPage(1) }}
               style={{
                 padding: '6px 12px',
-                background: viewMode === 'flat' ? '#6366f1' : 'transparent',
-                color: viewMode === 'flat' ? '#fff' : 'var(--text-secondary)',
+                background: viewMode === 'flat' ? 'var(--primary)' : 'transparent',
+                color: viewMode === 'flat' ? '#1a0d06' : 'var(--text-secondary)',
                 border: 'none',
                 cursor: 'pointer',
                 borderLeft: '1px solid var(--border)',
@@ -661,7 +661,7 @@ export const Traces: React.FC = () => {
               background: '#fef2f2',
               border: '1px solid #fca5a5',
               borderRadius: 6,
-              color: '#dc2626',
+              color: 'var(--error)',
               fontSize: 13,
             }}
           >
@@ -687,7 +687,7 @@ export const Traces: React.FC = () => {
               {listLoading && entries.length === 0 ? (
                 <div style={{ padding: 24 }}><Loading /></div>
               ) : entries.length === 0 ? (
-                <div style={{ padding: 32, color: '#9ca3af', fontSize: 13, textAlign: 'center' }}>
+                <div style={{ padding: 32, color: 'var(--text-muted)', fontSize: 13, textAlign: 'center' }}>
                   暂无 Trace 数据{isFiltered && '（清除筛选试试？）'}
                 </div>
               ) : (
@@ -697,7 +697,7 @@ export const Traces: React.FC = () => {
                       style={{
                         position: 'sticky',
                         top: 0,
-                        background: 'var(--bg-secondary, #f9fafb)',
+                        background: 'var(--bg-secondary)',
                         zIndex: 1,
                       }}
                     >
@@ -750,7 +750,7 @@ export const Traces: React.FC = () => {
                 style={{
                   padding: '8px 12px',
                   borderTop: '1px solid var(--border)',
-                  background: 'var(--bg-secondary, #f9fafb)',
+                  background: 'var(--bg-secondary)',
                   fontSize: 12,
                   color: 'var(--text-secondary)',
                   display: 'flex',
@@ -763,7 +763,7 @@ export const Traces: React.FC = () => {
                   {groups.length} 组 / 最近 {entries.length} trace（共 {total} 条）
                 </span>
                 <span style={{ flex: 1 }} />
-                <span style={{ fontSize: 11, color: '#9ca3af' }}>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
                   想看更早的 → 切到「扁平 + 分页」
                 </span>
               </div>
