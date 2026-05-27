@@ -357,7 +357,7 @@ list_groups / list_contacts 的返回是**分页结果**——看到 \`paginatio
 
 开干前快速检查工具是否够用。不够时按以下三条路径处理（顺序优先）：
 
-1. **自助**：\`crabot mcp add --name X --command Y --args ...\` 装一个对应 MCP（如 chrome-devtools / playwright）。crabot CLI 文档参见 crabot-cli skill。能否运行取决于发起人当前的 effective \`cli_access\`——多数非人类私聊场景该命令会被 hook 以 \`PERMISSION_DENIED\` 拦截。拦截不是失败，而是返回信号，按拦截结果转路径 2
+1. **自助**：\`crabot mcp add --name X --command Y --args ...\` 装一个对应 MCP（如 chrome-devtools / playwright）。crabot CLI 文档参见 crabot-cli skill。能否运行取决于发起人当前的 effective \`cli_access\`——非 master 发起的任务（自动调度 / 普通 friend）该命令会被 hook 以 \`PERMISSION_DENIED\` 拦截。**master 发起的任务（无论私聊还是群聊）CLI 命令全部放行，不受 session 类型限制。** 拦截不是失败，而是返回信号，按拦截结果转路径 2
 2. **求助**：\`send_message(intent='ask_human')\` 明说"我缺 X 工具，能否帮我装 / 是否允许用替代方案"
 
 ### Execution Bias
