@@ -122,9 +122,18 @@ export interface ChannelCapabilities {
   extensions?: ChannelExtensionTool[]
 }
 
+export interface MentionTarget {
+  /** 飞书 open_id（ou_ 前缀），由 crab-messaging 从 friend_id 解析而来 */
+  platform_user_id: string
+  /**
+   * LLM 在 content 正文里写的 @标记文本，例如 "@徐倩"。
+   * 有此字段时 channel 在正文里做内联高亮替换；不提供则在消息末尾追加 @ 通知。
+   */
+  at_name?: string
+}
+
 export interface SendMessageFeatures {
-  /** @ 提及的熟人列表（friend_id），由 channel 解析为飞书 open_id */
-  mentions?: string[]
+  mentions?: MentionTarget[]
   quote_message_id?: string
   thread_id?: string | number
   reply_to_message_id?: string

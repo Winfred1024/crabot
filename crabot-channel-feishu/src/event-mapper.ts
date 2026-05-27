@@ -200,11 +200,56 @@ export function detectMentionCrab(mentions: FeishuMention[], botOpenId: string |
 }
 
 /**
- * 在 text 末尾追加 <at user_id="ou_xxx"></at>，用于发送侧 mention。
- * 飞书原生 text 协议允许嵌入 <at> 标签实现 @用户。
+ * 内联替换：把 text 中出现的 at_name（如 "@徐倩"）替换为 Feishu @mention 标签。
+ * 有 at_name 且在文中找到 → 做替换；找不到或无 at_name → 放入 unmatched，由调用方决定是否末尾追加。
+ * - text 消息：<at user_id="ou_xxx"></at>
+ * - card markdown：<at id="ou_xxx"></at>
  */
-export function injectMentionTags(text: string, mentions: Array<{ open_id: string }>): string {
+export function replaceMentionsInline(
+  text: string,
+  mentions: Array<{ open_id: string; at_name?: string }>,
+  mode: 'text' | 'card',
+): { text: string; unmatched: Array<{ open_id: string }> } {
+  let result = text
+  const unmatched: Array<{ open_id: string }> = []
+  for (const m of mentions) {
+    if (!m.at_name) {
+      unmatched.push({ open_id: m.open_id })
+      continue
+    }
+    const tag =
+      mode === 'card'
+        ? `<at id="${m.open_id}"></at>`
+        : `<at user_id="${m.open_id}"></at>`
+    const escaped = m.at_name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const replaced = result.replace(new RegExp(escaped, 'g'), tag)
+    if (replaced === result) {
+      // at_name 在正文里找不到，降级为末尾追加
+      unmatched.push({ open_id: m.open_id })
+    } else {
+      result = replaced
+    }
+  }
+  return { text: result, unmatched }
+}
+
+/**
+ * 在 text 末尾追加 @mention 标签（无 at_name 的纯通知场景，或内联替换兜底）。
+ * - text 消息：<at user_id="ou_xxx"></at>
+ * - card markdown：<at id="ou_xxx"></at>
+ */
+export function injectMentionTags(
+  text: string,
+  mentions: Array<{ open_id: string }>,
+  mode: 'text' | 'card' = 'text',
+): string {
   if (!mentions.length) return text
-  const tags = mentions.map((m) => `<at user_id="${m.open_id}"></at>`).join(' ')
+  const tags = mentions
+    .map((m) =>
+      mode === 'card'
+        ? `<at id="${m.open_id}"></at>`
+        : `<at user_id="${m.open_id}"></at>`,
+    )
+    .join(' ')
   return text + (text.endsWith(' ') || text === '' ? '' : ' ') + tags
 }

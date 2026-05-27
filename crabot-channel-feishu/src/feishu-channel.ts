@@ -31,6 +31,7 @@ import { splitTextByTableLimit } from './card-table-guard.js'
 import {
   detectMentionCrab,
   injectMentionTags,
+  replaceMentionsInline,
   mapMessageContent,
 } from './event-mapper.js'
 import type {
@@ -63,6 +64,7 @@ import type {
   ListGroupsResult,
   ContactItem,
   GroupItem,
+  MentionTarget,
 } from './types.js'
 
 const MAX_FILE_SIZE = 30 * 1024 * 1024 // 30MB（飞书附件上限）
@@ -535,13 +537,17 @@ export class FeishuChannel extends ModuleBase {
       result = await this.client.sendFile(receive, fileKey)
     } else {
       // 飞书 markdown 卡片每张最多 5 个表格，超出会返回 230099。
-      // 在原始 text 上按段切分，再对每段注入 @ 标签后逐条发送。
+      // 在原始 text 上按段切分，先做 @mention 内联替换，再逐条发送。
       const rawText = params.content.text ?? ''
       const rawChunks = splitTextByTableLimit(rawText)
-      const mentionMap = await this.resolveMentionsToOpenIds(params.features?.mentions)
+      const mentionMap = this.resolveMentions(params.features?.mentions)
       let lastResult!: { message_id: string; create_time: string }
       for (const rawChunk of rawChunks) {
-        const sendText = injectMentionTags(rawChunk, mentionMap)
+        const willUseMarkdown = decideMarkdownEnabled(this.feishuConfig.markdown_format, rawChunk)
+        const mode: 'text' | 'card' = willUseMarkdown ? 'card' : 'text'
+        // 先做内联替换（at_name 匹配），再对未匹配的 mention 末尾追加
+        const { text: inlinedText, unmatched } = replaceMentionsInline(rawChunk, mentionMap, mode)
+        const sendText = injectMentionTags(inlinedText, unmatched, mode)
         const card = this.buildMarkdownCard(sendText)
         lastResult = card
           ? await this.client.sendCard(receive, card)
@@ -577,7 +583,12 @@ export class FeishuChannel extends ModuleBase {
       const fileKey = await this.materializeFile(params.content)
       return { msgType: 'file', contentJson: JSON.stringify({ file_key: fileKey }) }
     }
-    const text = injectMentionTags(params.content.text ?? '', await this.resolveMentionsToOpenIds(params.features?.mentions))
+    const rawText = params.content.text ?? ''
+    const mentionMap = this.resolveMentions(params.features?.mentions)
+    const willUseMarkdown = decideMarkdownEnabled(this.feishuConfig.markdown_format, rawText)
+    const mode: 'text' | 'card' = willUseMarkdown ? 'card' : 'text'
+    const { text: inlinedText, unmatched } = replaceMentionsInline(rawText, mentionMap, mode)
+    const text = injectMentionTags(inlinedText, unmatched, mode)
     const card = this.buildMarkdownCard(text)
     return card
       ? { msgType: 'interactive', contentJson: JSON.stringify(card) }
@@ -629,16 +640,14 @@ export class FeishuChannel extends ModuleBase {
   }
 
   /**
-   * mentions: friend_id 列表（来自 SendMessageFeatures）。
-   * 当前 channel 层不维护 friend_id → open_id 映射（admin 侧统一由 admin/friend manager 管理），
-   * 因此这里假设上层在调用前已经把 friend_id 替换为 open_id。
-   * 若上层未替换，跳过空值并打 warning。
+   * 把 SendMessageFeatures.mentions（MentionTarget[]）转为内部格式 {open_id, at_name?}[]。
+   * platform_user_id 必须以 ou_ 开头（飞书 open_id），否则跳过。
    */
-  private async resolveMentionsToOpenIds(mentions: string[] | undefined): Promise<Array<{ open_id: string }>> {
+  private resolveMentions(mentions: MentionTarget[] | undefined): Array<{ open_id: string; at_name?: string }> {
     if (!mentions?.length) return []
     return mentions
-      .filter((m) => /^ou_/.test(m))
-      .map((openId) => ({ open_id: openId }))
+      .filter((m) => /^ou_/.test(m.platform_user_id))
+      .map((m) => ({ open_id: m.platform_user_id, at_name: m.at_name }))
   }
 
   private buildOutboundStored(messageId: string, content: MessageContent, timestamp: string): StoredMessage {

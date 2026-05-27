@@ -8,6 +8,7 @@ import {
   detectMentionCrab,
   parsePostText,
   injectMentionTags,
+  replaceMentionsInline,
 } from '../src/event-mapper'
 import type { FeishuMention } from '../src/types'
 
@@ -164,7 +165,64 @@ describe('injectMentionTags', () => {
     expect(out).toContain('<at user_id="ou_b"></at>')
   })
 
+  it('appends <at id="..."></at> in card mode', () => {
+    const out = injectMentionTags('Hello', [{ open_id: 'ou_a' }], 'card')
+    expect(out).toContain('<at id="ou_a"></at>')
+  })
+
   it('returns text unchanged when no mentions', () => {
     expect(injectMentionTags('Hello', [])).toBe('Hello')
+  })
+})
+
+describe('replaceMentionsInline', () => {
+  it('replaces at_name in text with <at id> tag (card mode)', () => {
+    const { text, unmatched } = replaceMentionsInline(
+      '你好 @徐倩：请确认一下',
+      [{ open_id: 'ou_abc', at_name: '@徐倩' }],
+      'card',
+    )
+    expect(text).toContain('<at id="ou_abc"></at>')
+    expect(text).not.toContain('@徐倩')
+    expect(unmatched).toHaveLength(0)
+  })
+
+  it('replaces at_name with <at user_id> tag (text mode)', () => {
+    const { text, unmatched } = replaceMentionsInline(
+      '你好 @张三 请回复',
+      [{ open_id: 'ou_xyz', at_name: '@张三' }],
+      'text',
+    )
+    expect(text).toContain('<at user_id="ou_xyz"></at>')
+    expect(unmatched).toHaveLength(0)
+  })
+
+  it('puts unmatched mention (no at_name) into unmatched list', () => {
+    const { text, unmatched } = replaceMentionsInline(
+      '普通消息',
+      [{ open_id: 'ou_abc' }],
+      'card',
+    )
+    expect(text).toBe('普通消息')
+    expect(unmatched).toEqual([{ open_id: 'ou_abc' }])
+  })
+
+  it('puts unmatched mention (at_name not found in text) into unmatched list', () => {
+    const { text, unmatched } = replaceMentionsInline(
+      '这里没有提到任何人',
+      [{ open_id: 'ou_abc', at_name: '@李四' }],
+      'card',
+    )
+    expect(text).toBe('这里没有提到任何人')
+    expect(unmatched).toEqual([{ open_id: 'ou_abc' }])
+  })
+
+  it('replaces all occurrences of at_name', () => {
+    const { text } = replaceMentionsInline(
+      '@王五 你好，@王五 请看',
+      [{ open_id: 'ou_ww', at_name: '@王五' }],
+      'card',
+    )
+    expect(text.match(/<at id="ou_ww"><\/at>/g)).toHaveLength(2)
   })
 })

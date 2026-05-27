@@ -502,7 +502,10 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
         media_url: z.string().optional().describe('媒体 URL（网络地址，与 file_path 二选一）'),
         file_path: z.string().optional().describe('沙盒内本地文件路径（自动转换为主机路径）'),
         filename: z.string().optional().describe('文件名（可选）'),
-        mentions: z.array(z.string()).optional().describe('@提及的熟人 ID 列表'),
+        mentions: z.array(z.object({
+          friend_id: z.string().describe('熟人 ID'),
+          at_name: z.string().optional().describe('你在 content 正文里写的 @标记文本（如 "@徐倩"）。提供后系统在正文里做内联高亮替换；不提供则在消息末尾追加 @ 通知'),
+        })).optional().describe('@提及列表。每项包含 friend_id 和可选的 at_name（你在正文里写的 @名字）'),
         quote_message_id: z.string().optional().describe('引用回复的平台消息 ID'),
       },
       handler: async (args) => {
@@ -514,7 +517,7 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
         const media_url = args.media_url as string | undefined
         const file_path = args.file_path as string | undefined
         const filename = args.filename as string | undefined
-        const mentions = args.mentions as string[] | undefined
+        const mentions = args.mentions as Array<{ friend_id: string; at_name?: string }> | undefined
         const quote_message_id = args.quote_message_id as string | undefined
 
         // === ask_human：先验证 task context 存在，再继续（不提前切状态） ===
@@ -634,21 +637,23 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
             }
           }
 
-          // 转换 mentions：friend_id → platform_user_id（并行解析）
-          let platformMentions: Array<{ platform_user_id: string }> | undefined
+          // 转换 mentions：friend_id → platform_user_id（open_id），同时透传 at_name 供 channel 内联替换
+          type PlatformMention = { platform_user_id: string; at_name?: string }
+          let platformMentions: PlatformMention[] | undefined
           if (mentions && mentions.length > 0) {
             const adminPort = await getAdminPort()
             const resolved = await Promise.all(
-              mentions.map(async (friendId) => {
+              mentions.map(async ({ friend_id, at_name }) => {
                 try {
                   const fResult = await rpcClient.call<
                     { friend_id: string },
                     { friend: Friend }
-                  >(adminPort, 'get_friend', { friend_id: friendId }, moduleId)
+                  >(adminPort, 'get_friend', { friend_id }, moduleId)
                   const identity = fResult.friend.channel_identities.find(
                     ci => ci.channel_id === channel_id,
                   )
-                  return identity ? { platform_user_id: identity.platform_user_id } : null
+                  if (!identity) return null
+                  return { platform_user_id: identity.platform_user_id, at_name }
                 } catch {
                   return null
                 }
@@ -664,7 +669,7 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
                 session_id: string
                 content: MessageContent
                 features?: {
-                  mentions?: Array<{ platform_user_id: string }>
+                  mentions?: PlatformMention[]
                   quote_message_id?: string
                 }
               },
