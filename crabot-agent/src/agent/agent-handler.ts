@@ -93,6 +93,7 @@ import {
   buildHumanQueueReport,
   resolveAuditJudgment,
   type AuditResult,
+  type ConversationEntry,
   type GoalAuditTaskGoal,
 } from './goal-audit.js'
 import { createSubmitAuditResultTool } from './goal-auditor-tools.js'
@@ -240,9 +241,6 @@ export interface RunWorkerLoopOptions {
   /** Called once per turn AFTER traceCallback wiring, with the toolCalls of that turn.
    *  Used by trigger flow to detect send_message. */
   readonly onAfterTurn?: (event: EngineTurnEvent) => void
-  /** 抑制 forced_summary 注入。详见 EngineOptions.suppressForcedSummary。
-   *  unified loop 传 `() => finalSent` 让 silent end_turn 视为完成。 */
-  readonly suppressForcedSummary?: () => boolean
 }
 
 export interface RunWorkerLoopResult {
@@ -816,6 +814,13 @@ export class AgentHandler {
       // 后续 turn 的 todo / send_message 检查 cache 立即生效，免去重复 RPC。
       const goalModeEnabled = this.extra?.goal_mode_enabled !== false && task.source?.trigger_type !== 'scheduled'
       let goalSetCache = false
+      // conversationLog：记录任务期间 agent↔human 双向对话，audit 输入
+      const conversationLog: ConversationEntry[] = []
+      // sentInfoMessage：send_message(intent='info') 成功至少一次；forced_summary 判断依据
+      let sentInfoMessage = false
+      // 任务触发类型：scheduled 任务始终抑制 forced_summary
+      const workerTriggerType: 'scheduled' | 'message' =
+        task.source?.trigger_type === 'scheduled' ? 'scheduled' : 'message'
       if (goalModeEnabled && this.deps?.getAdminPort && this.deps.rpcClient) {
         try {
           const adminPort = await this.deps.getAdminPort()
@@ -848,6 +853,13 @@ export class AgentHandler {
         ? { traceStore: traceContext.traceStore, traceId: traceContext.traceId }
         : undefined
 
+      // baseTools / baseToolsPermissionConfig 是 buildToolsDynamic 内构造的；这里用 outer let
+      // 提前声明，让 endTurnGate 和 mcpConfigFactory 通过 getter 拿到 audit 用的 worker baseTools +
+      // permissionConfig（auditor 调 dangerous 工具如 Bash 时 runtime permission check 才能放行）。
+      // spec: 2026-05-23-goal-mode-design.md §6 / §7.2（auditor 工具来源）
+      let auditBaseTools: ReadonlyArray<ToolDefinition> = []
+      let auditPermissionCfg: ToolPermissionConfig | undefined
+
       // 工具列表构造改为 callback 形式：每轮 LLM 调用前由 query-loop 重新 resolve，
       // 让 admin push config（updateSkills / updateSystemPrompt）能在同一 task 内热生效。
       // 注意：lambda 内捕获 taskState / context / humanQueue 等闭包变量，
@@ -874,13 +886,6 @@ export class AgentHandler {
           }, memoryTaskCtx)
           tools.push(...mcpServerToToolDefinitions(crabMemoryServer, 'crab-memory'))
         }
-
-        // baseTools / baseToolsPermissionConfig 是后面（line ~860+）才构造的；这里用 outer let
-        // 提前声明，让 mcpConfigFactory 通过 getter 拿到 audit 用的 worker baseTools +
-        // permissionConfig（auditor 调 dangerous 工具如 Bash 时 runtime permission check 才能放行）。
-        // spec: 2026-05-23-goal-mode-design.md §6 / §7.2（auditor 工具来源）
-        let auditBaseTools: ReadonlyArray<ToolDefinition> = []
-        let auditPermissionCfg: ToolPermissionConfig | undefined
 
         // 3c. External MCP server tools (crab-messaging, etc.)
         const externalMcpServers = this.mcpConfigFactory?.({
@@ -1220,7 +1225,32 @@ export class AgentHandler {
           ...(context.resolved_permissions ? { resolvedPermissions: context.resolved_permissions } : {}),
           contentReviewer: this.buildContentReviewer(),
           ...(opts?.overdueConfig ? { overdueConfig: opts.overdueConfig } : {}),
-          ...(opts?.suppressForcedSummary ? { suppressForcedSummary: opts.suppressForcedSummary } : {}),
+          suppressForcedSummary: () => workerTriggerType === 'scheduled' || goalSetCache || sentInfoMessage,
+          endTurnGate: goalModeEnabled
+            ? async () => {
+                if (!goalSetCache) return null
+                try {
+                  const audit = await this.runGoalAudit({
+                    taskId: task.task_id,
+                    conversationLog: [...conversationLog],
+                    abortSignal: taskState.abortController.signal as AbortSignal,
+                    ...(subAgentTraceConfig ? { traceConfig: subAgentTraceConfig } : {}),
+                    parentTools: [...auditBaseTools],
+                    ...(auditPermissionCfg ? { permissionConfig: auditPermissionCfg } : {}),
+                  })
+                  if (!audit.pass) {
+                    return audit.detailedReport
+                  }
+                  return null
+                } catch (err) {
+                  console.warn(
+                    '[endTurnGate] goal audit failed open:',
+                    err instanceof Error ? err.message : String(err),
+                  )
+                  return null
+                }
+              }
+            : undefined,
           onSystemInjection: (event) => {
             // 系统注入（supplement / overdue / forced_summary / stop_hook）作为 trace 上的 tool-call 风格 span 暴露
             const label = `__system_${event.type}__`
@@ -1228,6 +1258,10 @@ export class AgentHandler {
             const spanId = traceCallback?.onToolCallStart(label, inputSummary, event.injectedAtMs)
             if (spanId) {
               traceCallback?.onToolCallEnd(spanId, '(engine injected user message)', undefined, event.injectedAtMs)
+            }
+            // 追踪 human supplement 到 conversationLog
+            if (event.type === 'supplement') {
+              conversationLog.push({ role: 'human', content: event.text })
             }
           },
           onCompactionStart: () => {
@@ -1366,6 +1400,25 @@ export class AgentHandler {
                 const text = event.assistantText.trim()
                 if (text.length > 0) {
                   this.sendToUser(taskOrigin, text).catch(() => {})
+                }
+              }
+            }
+
+            // 追踪 agent 发出的消息到 conversationLog（send_message / send_private_message）
+            for (const tc of event.toolCalls) {
+              const bare = tc.name.replace(/^mcp__[^_]+__/, '')
+              if ((bare === 'send_message' || bare === 'send_private_message') && !tc.isError) {
+                const input = tc.input as { intent?: string; content?: string } | undefined
+                const msgContent = input?.content
+                const msgIntent = input?.intent as 'info' | 'ask_human' | undefined
+                if (msgContent !== undefined) {
+                  if (msgIntent === 'ask_human') {
+                    conversationLog.push({ role: 'agent', intent: 'ask_human', content: msgContent })
+                  } else {
+                    // intent='info' 或默认（无 intent）均视为 info
+                    sentInfoMessage = true
+                    conversationLog.push({ role: 'agent', intent: 'info', content: msgContent })
+                  }
                 }
               }
             }
@@ -1579,7 +1632,6 @@ export class AgentHandler {
     }
 
     let sentMessage = false
-    let finalSent = false
 
     // 超期提醒走 ProgressDigest 旁路：到时 fork 主 loop 生成一份汇报发给用户，
     // 不污染主 loop 上下文。digestOverdueMs 是相对于 worker 启动时刻的延迟，
@@ -1595,18 +1647,12 @@ export class AgentHandler {
         initialPrompt,
         extraTools: [],
         ...(digestOverdueMs !== undefined ? { digestOverdueMs } : {}),
-        suppressForcedSummary: () => finalSent,
         onAfterTurn: (event) => {
           for (const tc of event.toolCalls) {
             const bare = tc.name.replace(/^mcp__[^_]+__/, '')
             if (bare === 'send_message' || bare === 'send_private_message') {
-              const intent = (tc.input as { intent?: string } | undefined)?.intent
-              // sentMessage / finalSent 只在消息真正发出（!isError）时才置位。
-              // audit fail 返回 isError=true，不设 finalSent，forced_summary 保持正常
-              // 工作（最多 MAX_SILENT_END_TURN_RETRIES 次），不会无限轰炸。
               if (!tc.isError) {
                 sentMessage = true
-                if (intent === 'final') finalSent = true
               }
             }
           }
@@ -2545,7 +2591,7 @@ export class AgentHandler {
    */
   async runGoalAudit(params: {
     readonly taskId: string
-    readonly pendingContent: string
+    readonly conversationLog: ReadonlyArray<ConversationEntry>
     readonly traceConfig?: SubAgentTraceConfig
     readonly abortSignal?: AbortSignal
     /** worker baseTools；auditor 的 capability filter（file_system+shell）在其上筛子集。
@@ -2582,7 +2628,7 @@ export class AgentHandler {
     // 3. 装输入（系统拼，worker 不插手）
     const promptText = buildAuditPrompt({
       goal,
-      pendingContent: params.pendingContent,
+      conversationLog: params.conversationLog,
       cwd: process.cwd(),
     })
 

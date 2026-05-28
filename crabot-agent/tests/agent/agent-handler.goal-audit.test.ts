@@ -107,7 +107,7 @@ describe('AgentHandler.runGoalAudit', () => {
     })
     const handler = makeHandler({ rpcCall, runSubAgentDirect })
     try {
-      const result = await handler.runGoalAudit({ taskId: 't1', pendingContent: '做完了' })
+      const result = await handler.runGoalAudit({ taskId: 't1', conversationLog: [{ role: 'agent', intent: 'info', content: '做完了' }] })
       expect(result.pass).toBe(true)
       expect(result.failedCriteria).toEqual([])
       expect(result.auditTraceId).toBe('trace-abc')
@@ -146,7 +146,7 @@ describe('AgentHandler.runGoalAudit', () => {
     })
     const handler = makeHandler({ rpcCall, runSubAgentDirect })
     try {
-      const result = await handler.runGoalAudit({ taskId: 't2', pendingContent: '做完了' })
+      const result = await handler.runGoalAudit({ taskId: 't2', conversationLog: [{ role: 'agent', intent: 'info', content: '做完了' }] })
       expect(result.pass).toBe(false)
       expect(result.failedCriteria).toEqual(['c1'])
       expect(result.auditTraceId).toBe('trace-xyz')
@@ -187,7 +187,7 @@ describe('AgentHandler.runGoalAudit', () => {
     })
     const handler = makeHandler({ rpcCall, runSubAgentDirect })
     try {
-      await handler.runGoalAudit({ taskId: 't', pendingContent: 'x' })
+      await handler.runGoalAudit({ taskId: 't', conversationLog: [{ role: 'agent', intent: 'info', content: 'x' }] })
       expect(runSubAgentDirect).toHaveBeenCalledTimes(1)
       const callArgs = runSubAgentDirect.mock.calls[0]
       // callArgs[3] 是 deps 参数
@@ -215,7 +215,7 @@ describe('AgentHandler.runGoalAudit', () => {
     const handler = makeHandler({ rpcCall, runSubAgentDirect })
     try {
       await expect(
-        handler.runGoalAudit({ taskId: 't', pendingContent: 'x' }),
+        handler.runGoalAudit({ taskId: 't', conversationLog: [{ role: 'agent', intent: 'info', content: 'x' }] }),
       ).rejects.toThrow(/has no goal/)
       expect(runSubAgentDirect).not.toHaveBeenCalled()
       // 只调了一次 get_task
@@ -232,7 +232,7 @@ describe('AgentHandler.runGoalAudit', () => {
     const handler = makeHandler({ rpcCall, runSubAgentDirect, subAgents: [] })
     try {
       await expect(
-        handler.runGoalAudit({ taskId: 't', pendingContent: 'x' }),
+        handler.runGoalAudit({ taskId: 't', conversationLog: [{ role: 'agent', intent: 'info', content: 'x' }] }),
       ).rejects.toThrow(/goal_auditor.*not configured/)
       expect(runSubAgentDirect).not.toHaveBeenCalled()
     } finally {

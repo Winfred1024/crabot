@@ -38,7 +38,7 @@ export interface CrabMessagingDeps {
    *  spec: 2026-05-23-goal-mode-design.md §4 */
   runGoalAudit?: (params: {
     taskId: string
-    pendingContent: string
+    conversationLog: ReadonlyArray<import('../agent/goal-audit.js').ConversationEntry>
     /** worker turn 的 sub-agent trace 上下文；让 audit subagent 产生的 sub_agent_call
      *  span 挂到主 worker trace 下，admin UI 才能渲染。缺省则 audit 跑在 standalone
      *  trace 里（auditTraceId 为空，admin UI 看不到）。 */
@@ -546,7 +546,7 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
             try {
               const audit = await deps.runGoalAudit({
                 taskId: taskCtx.taskId,
-                pendingContent: content,
+                conversationLog: [{ role: 'agent', intent: 'info', content }],
                 // 透传 traceConfig 让 audit sub-trace 挂主 worker trace 下，
                 // 否则 auditTraceId 是空串、admin UI 看不到 audit subagent。
                 ...(taskCtx.traceConfig ? { traceConfig: taskCtx.traceConfig } : {}),
