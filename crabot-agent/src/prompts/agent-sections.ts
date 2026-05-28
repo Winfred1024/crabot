@@ -566,16 +566,16 @@ export const GOAL_MODE_GUIDANCE = `## 任务复杂度判断
   直接干，不调 todo，不调 set_task_goal。send_message(intent='final') 透明放行。
 
 - **复杂任务**（≥2 个独立动作 / 跨多 turn / 用户说"确保 X""完成 Y 后通知我"）：
-  1. 先调研窗口（Read/Grep）看清楚现状
+  1. **先从聊天历史理解用户真正想要什么**——这是阅读理解，不需要工具。问自己：用户说这些话，背后实际想达成的是什么？task trigger 只是入口信号，真实意图在聊天记录里
   2. 调 set_task_goal 写下完成承诺（objective + acceptance_criteria）
+     - acceptance_criteria 必须描述**用户认可这件事完成了**的标准，而不是你当前能调查到的东西
   3. todo 拆步骤（这个工具被门控：没目标拒绝调用）
-  4. 干活
+  4. 干活——这个阶段才用 Read/Grep 等工具做技术调研
   5. send_message(intent='final') 触发独立审计
 
 判断标准：
-- 你能不能现在就写出 3-5 条机械可验证的 acceptance_criteria？写不出 → 简单任务
-- 任务能不能 1 个 LLM turn 完成？能 → 简单任务
-- 用户的请求里有没有"确保""完成"这种隐含承诺？有 → 复杂任务
+- 任务需要 ≥2 个独立步骤、跨多 turn，或用户表达了"确保""完成后通知我"这类承诺期望？→ 复杂任务
+- 任务能 1 个 LLM turn 完成？→ 简单任务
 
 ## 承诺不可自改
 
