@@ -150,49 +150,35 @@ describe('FeishuChannel list_contacts handler', () => {
     ])
   })
 
-  it('feishu-client 抛 RpcError 时透传给 handler', async () => {
+  it('listContacts 抛 PERMISSION_DENIED 时静默忽略，回退到群成员（无群则返回空列表）', async () => {
     const listContactsMock = vi.fn().mockRejectedValue(
       new RpcError('PERMISSION_DENIED', '缺 scope', { missing_scope: 'contact:user.base:readonly' }),
     )
-    ;(channel as unknown as { client: { listContacts: typeof listContactsMock } }).client = { listContacts: listContactsMock } as never
+    ;(channel as unknown as { client: { listContacts: typeof listContactsMock; getChatMembers: () => Promise<never[]> } }).client = {
+      listContacts: listContactsMock,
+      getChatMembers: vi.fn().mockResolvedValue([]),
+    } as never
 
-    let caught: unknown
-    try {
-      await (channel as unknown as { handleListContacts(p: unknown): Promise<unknown> })
-        .handleListContacts({})
-    } catch (e) {
-      caught = e
-    }
-    expect(caught).toBeInstanceOf(RpcError)
-    expect((caught as RpcError).code).toBe('PERMISSION_DENIED')
+    const result = await (channel as unknown as { handleListContacts(p: unknown): Promise<{ items: unknown[] }> })
+      .handleListContacts({})
+
+    expect(result.items).toEqual([])
   })
 
-  it('has_more=true 时 total_pages=2', async () => {
-    const channel2 = new FeishuChannel({
-      module_id: 'feishu-test-3',
-      module_type: 'channel',
-      version: '0.0.1',
-      protocol_version: '0.1.0',
-      port: 0,
-      data_dir: fs.mkdtempSync(path.join(os.tmpdir(), 'feishu-list-3-')),
-      feishu: {
-        app_id: 'a',
-        app_secret: 's',
-        domain: 'feishu',
-        only_respond_to_mentions: true,
-        markdown_format: 'auto',
-      },
-    })
+  it('合并 org contacts 与群成员后 total_pages 始终为 1', async () => {
     const listContactsMock = vi.fn().mockResolvedValue({
       items: [{ open_id: 'ou_1', name: '人1' }],
       has_more: true,
     })
-    ;(channel2 as unknown as { client: { listContacts: typeof listContactsMock } }).client = { listContacts: listContactsMock } as never
+    ;(channel as unknown as { client: { listContacts: typeof listContactsMock; getChatMembers: () => Promise<never[]> } }).client = {
+      listContacts: listContactsMock,
+      getChatMembers: vi.fn().mockResolvedValue([]),
+    } as never
 
-    const result = await (channel2 as unknown as { handleListContacts(p: unknown): Promise<{ pagination: { total_pages: number } }> })
+    const result = await (channel as unknown as { handleListContacts(p: unknown): Promise<{ pagination: { total_pages: number } }> })
       .handleListContacts({})
 
-    expect(result.pagination.total_pages).toBe(2)
+    expect(result.pagination.total_pages).toBe(1)
   })
 })
 

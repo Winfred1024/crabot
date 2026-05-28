@@ -920,26 +920,53 @@ export class FeishuChannel extends ModuleBase {
 
   private async handleListContacts(params: ListContactsParams): Promise<ListContactsResult> {
     const pageSize = params.pagination?.page_size ?? 50
-    const raw = await this.client.listContacts({ page_size: pageSize })
 
-    const withName = raw.items.filter((it) => it.name !== '')
+    // 收集所有联系人，org contacts 优先（有头像等更多信息）
+    const merged = new Map<string, ContactItem>()
+
+    // 1. 从通讯录拉取（可能因权限不足失败，非致命）
+    try {
+      const raw = await this.client.listContacts({ page_size: 200 })
+      for (const it of raw.items) {
+        if (it.open_id && it.name) {
+          merged.set(it.open_id, {
+            platform_user_id: it.open_id,
+            display_name: it.name,
+            ...(it.avatar_url ? { avatar_url: it.avatar_url } : {}),
+          })
+        }
+      }
+    } catch {
+      // 应用未开通通讯录权限时跳过，不影响群成员查找
+    }
+
+    // 2. 从所有已知群会话拉取成员（覆盖通讯录没有的群成员）
+    const groupSessions = this.sessionManager.listSessions('group')
+    for (const session of groupSessions) {
+      try {
+        const members = await this.client.getChatMembers(session.platform_session_id)
+        for (const m of members) {
+          if (m.open_id && m.name && !merged.has(m.open_id) && m.open_id !== this.botOpenId) {
+            merged.set(m.open_id, { platform_user_id: m.open_id, display_name: m.name })
+          }
+        }
+      } catch {
+        // 该群查不到成员时跳过
+      }
+    }
+
+    const allItems = Array.from(merged.values()).filter((it) => it.display_name !== '')
     const filtered = params.search
-      ? withName.filter((it) => it.name.toLowerCase().includes(params.search!.toLowerCase()))
-      : withName
-
-    const items = filtered.map((it): ContactItem => ({
-      platform_user_id: it.open_id,
-      display_name: it.name,
-      ...(it.avatar_url ? { avatar_url: it.avatar_url } : {}),
-    }))
+      ? allItems.filter((it) => it.display_name.toLowerCase().includes(params.search!.toLowerCase()))
+      : allItems
 
     return {
-      items,
+      items: filtered.slice(0, pageSize),
       pagination: {
         page: 1,
         page_size: pageSize,
-        total_items: items.length,
-        total_pages: raw.has_more ? 2 : 1,
+        total_items: filtered.length,
+        total_pages: 1,
       },
     }
   }
