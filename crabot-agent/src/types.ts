@@ -103,7 +103,7 @@ export interface SubAgentConfig {
   max_turns: number
   /** 代码内置 hook bundle 名（如 'coding_expert'） */
   hook_preset?: string
-  /** 系统专用：仅由系统隐式触发（如 goal_auditor 由 send_message(intent='final') 触发），
+  /** 系统专用：仅由系统隐式触发（如 goal_auditor 由引擎 endTurnGate 触发），
    *  不出现在 delegate_task 工具的 enum / description 里，worker 无法主动调。
    *  spec: 2026-05-23-goal-mode-design.md §6.4 */
   system_only?: boolean

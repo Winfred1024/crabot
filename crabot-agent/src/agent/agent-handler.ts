@@ -2562,7 +2562,7 @@ export class AgentHandler {
   }
 
   /**
-   * Goal audit gate 入口：crab-messaging send_message(intent='final') 拦截时调用。
+   * Goal audit 入口：engine endTurnGate 在 worker end_turn 时调用。
    *
    * 流程：
    *  1. 拿 admin task → 验证 task.goal 存在
