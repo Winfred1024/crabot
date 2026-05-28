@@ -52,22 +52,8 @@ const MAX_MAX_TOKENS_COMPACT_RETRIES = 2
 // 注意：此 prompt 须对 GPT 系列模型有效——需要明确写出"工具参数名 + 值"，
 // 仅凭函数式伪代码描述（如 send_message(intent='final')）GPT 模型易忽略 intent 参数。
 const FORCED_SUMMARY_PROMPT =
-  '你刚才以 end_turn 结束但没有输出任何文字。任务必须通过工具交付才能完成。\n\n' +
-  '⚠️ **立即调用 send_message 工具，并在参数中明确传 `intent` = `"final"`**（字面值 final，不是 info）。\n' +
-  '- intent="info" 被引擎识别为"仍在进行中"，不触发任务完成，会让你再说一次\n' +
-  '- intent="final" 才是有效交付，触发审计 / 标记完成\n\n' +
-  '如已用 send_message 发过进展报告（intent=info），仍需再调一次 intent="final" 来收尾。\n' +
-  '如需先补充信息可继续用工具，完成后再 send_message(intent="final")。\n' +
-  '内容按 system prompt "## 收尾责任"段：可验证的产出，或**明确阻塞点**（卡在哪、需要什么）。'
-
-// 当上一轮工具执行完后 humanQueue 刚注入了补充内容（如 audit fail 报告）、
-// LLM 在下一轮 silent end_turn 时——注入的报告本身已包含行动指引，
-// 此时不应再喊"马上 send_message"（那会让 LLM 直接重发未修改的内容再次触发 audit fail），
-// 而应提示 LLM 先回看刚收到的反馈、按指示继续操作。
-const SUPPLEMENT_FOLLOWUP_PROMPT =
-  '你刚才以 end_turn 结束但没有输出任何文字。上一步刚有新的系统反馈注入对话——' +
-  '请回看上方最新的消息（带 [crabot 内部 / 仅你可见] 标记的那条），按其中的指示继续操作。\n' +
-  '完成后再用 send_message 交付；如需工具请继续用。'
+  '你刚才以 end_turn 结束但还没有向人类发送任何内容。\n' +
+  '如果本次任务有需要告知的结果或进度，请调用 send_message 工具发出后再 end_turn。'
 
 // --- Core Loop ---
 
@@ -101,10 +87,6 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
   let maxTokensCompactRetryCount = 0
   // 由上一轮追问设置、下一轮 onTurn 消费一次后清零。
   let pendingForcedSummaryAttempt: number | undefined = undefined
-  // 记录最近一次从 humanQueue drain 出 supplement 的 turn number（-1 表示从未发生）。
-  // 当下一轮是 silent end_turn 时，若 supplement 刚在上一轮注入，使用 SUPPLEMENT_FOLLOWUP_PROMPT
-  // 而非 FORCED_SUMMARY_PROMPT，避免 LLM 在 audit fail 后未修缺口就直接重发旧内容。
-  let lastSupplementInjectedAtTurn = -1
 
   // 超期机制：在 turn 结束时检测 elapsed，至多注入一次。
   const overdueConfig = options.overdueConfig
@@ -300,6 +282,19 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
         fireOnTurn(buildSilentTurnEvent(
           totalTurns, processed.text, stopReason, llmCallMs, llmStartedAtMs, forcedSummaryAttempt, response.usage,
         ))
+        if (options.endTurnGate) {
+          const gateResult = await options.endTurnGate()
+          if (gateResult !== null) {
+            messages.push(createUserMessage(gateResult))
+            options.onSystemInjection?.({
+              type: 'forced_summary',
+              text: gateResult,
+              turnNumber: totalTurns,
+              injectedAtMs: Date.now(),
+            })
+            continue
+          }
+        }
         return buildResult('completed', finalText, totalTurns, contextManager, messages, overdueInjected, exitToolCall)
       }
       if (isSilentText && silentEndTurnCount < MAX_SILENT_END_TURN_RETRIES) {
@@ -307,16 +302,10 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
         fireOnTurn(buildSilentTurnEvent(
           totalTurns, processed.text, stopReason, llmCallMs, llmStartedAtMs, forcedSummaryAttempt, response.usage,
         ))
-        // 若上一轮工具执行完后 humanQueue 刚注入了 supplement（如 audit fail 报告），
-        // LLM 有完整指引但仍 silent end_turn——此时 FORCED_SUMMARY_PROMPT 里的
-        // "必须用 send_message" 与报告里的"先补缺口"相矛盾，会导致 LLM 直接重发旧内容再次触发 audit fail。
-        // 改用 SUPPLEMENT_FOLLOWUP_PROMPT，引导 LLM 回看刚注入的反馈再操作。
-        const supplementJustInjected = lastSupplementInjectedAtTurn === totalTurns - 1
-        const injectionPrompt = supplementJustInjected ? SUPPLEMENT_FOLLOWUP_PROMPT : FORCED_SUMMARY_PROMPT
-        messages.push(createUserMessage(injectionPrompt))
+        messages.push(createUserMessage(FORCED_SUMMARY_PROMPT))
         options.onSystemInjection?.({
           type: 'forced_summary',
-          text: injectionPrompt,
+          text: FORCED_SUMMARY_PROMPT,
           turnNumber: totalTurns,
           injectedAtMs: Date.now(),
         })
@@ -329,6 +318,19 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
       fireOnTurn(buildSilentTurnEvent(
         totalTurns, processed.text, stopReason, llmCallMs, llmStartedAtMs, forcedSummaryAttempt, response.usage,
       ))
+      if (options.endTurnGate) {
+        const gateResult = await options.endTurnGate()
+        if (gateResult !== null) {
+          messages.push(createUserMessage(gateResult))
+          options.onSystemInjection?.({
+            type: 'forced_summary',
+            text: gateResult,
+            turnNumber: totalTurns,
+            injectedAtMs: Date.now(),
+          })
+          continue
+        }
+      }
       return buildResult('completed', finalText, totalTurns, contextManager, messages, overdueInjected, exitToolCall)
     }
 
@@ -554,7 +556,6 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
     // Inject any pending human supplement messages
     if (options.humanMessageQueue) {
       const supplements = options.humanMessageQueue.drainPending()
-      if (supplements.length > 0) lastSupplementInjectedAtTurn = totalTurns
       for (const content of supplements) {
         messages.push(createUserMessage(content))
         options.onSystemInjection?.({

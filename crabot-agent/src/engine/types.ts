@@ -304,6 +304,13 @@ export interface EngineOptions {
    */
   readonly suppressForcedSummary?: () => boolean
   /**
+   * end_turn 前的异步决策钩子。engine 在自然退出前调用（suppressForcedSummary=true 的 silent
+   * end_turn 路径，以及有文字/forced_summary 耗尽的路径）。
+   * 返回 string → 注入为 user message 继续 loop；返回 null → 正常退出。
+   * 不传时直接退出。
+   */
+  readonly endTurnGate?: () => Promise<string | null>
+  /**
    * 上下文压缩开始时触发（trace 可见性钩子）。
    * compaction 内部跑一次 LLM call 做摘要，可能耗时几秒——不接 trace 就是黑洞。
    */

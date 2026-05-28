@@ -53,6 +53,13 @@ function baseOptions(overrides: Partial<EngineOptions> = {}): EngineOptions {
   }
 }
 
+function silentEndTurnResponse(): ReadonlyArray<StreamChunk> {
+  return [
+    { type: 'message_start', messageId: 'msg-1' },
+    { type: 'message_end', stopReason: 'end_turn', usage: { inputTokens: 10, outputTokens: 0 } },
+  ]
+}
+
 // --- Tests ---
 
 describe('runEngine', () => {
@@ -270,6 +277,73 @@ describe('runEngine', () => {
     expect((firstContent as any)[1].type).toBe('image')
   })
 
+  describe('endTurnGate', () => {
+    it('suppressForcedSummary=true + silent end_turn: gate 返回 string 时注入并继续 loop', async () => {
+      let callCount = 0
+      const gate = vi.fn(async (): Promise<string | null> => {
+        callCount++
+        return callCount === 1 ? '请先补充内容再退出' : null
+      })
+
+      const adapter = mockAdapter([
+        silentEndTurnResponse(),  // turn 1: silent, gate injects
+        textResponse('好的'),      // turn 2: after gate injection
+      ])
+
+      const result = await runEngine({
+        prompt: 'test',
+        adapter,
+        options: baseOptions({
+          suppressForcedSummary: () => true,
+          endTurnGate: gate,
+        }),
+      })
+
+      expect(gate).toHaveBeenCalledTimes(2)
+      expect(result.outcome).toBe('completed')
+    })
+
+    it('suppressForcedSummary=true + silent end_turn: gate 返回 null 时正常退出', async () => {
+      const gate = vi.fn(async (): Promise<string | null> => null)
+      const adapter = mockAdapter([silentEndTurnResponse()])
+
+      const result = await runEngine({
+        prompt: 'test',
+        adapter,
+        options: baseOptions({
+          suppressForcedSummary: () => true,
+          endTurnGate: gate,
+        }),
+      })
+
+      expect(gate).toHaveBeenCalledOnce()
+      expect(result.outcome).toBe('completed')
+    })
+
+    it('text end_turn: endTurnGate 也会被调用', async () => {
+      const gate = vi.fn(async (): Promise<string | null> => null)
+      const adapter = mockAdapter([textResponse('done')])
+
+      await runEngine({
+        prompt: 'test',
+        adapter,
+        options: baseOptions({ endTurnGate: gate }),
+      })
+
+      expect(gate).toHaveBeenCalledOnce()
+    })
+
+    it('endTurnGate 不传时正常退出，无报错', async () => {
+      const adapter = mockAdapter([silentEndTurnResponse()])
+      const result = await runEngine({
+        prompt: 'test',
+        adapter,
+        options: baseOptions({ suppressForcedSummary: () => true }),
+      })
+      expect(result.outcome).toBe('completed')
+    })
+  })
+
   it('defaults maxTurns to 200 when not specified', async () => {
     const dummyTool = defineTool({
       name: 'dummy',
@@ -332,7 +406,7 @@ describe('runEngine silent end_turn retry', () => {
     // 第二轮的 messages 应包含追问 user msg
     const secondCall = capturedMessages[1] as Array<{ role: string; content: unknown }>
     const lastUserMsg = [...secondCall].reverse().find(m => m.role === 'user')
-    expect(JSON.stringify(lastUserMsg)).toContain('end_turn 结束但没有输出任何文字')
+    expect(JSON.stringify(lastUserMsg)).toContain('end_turn 结束但还没有向人类发送任何内容')
   })
 
   it('gives up after 3 retries and returns empty finalText', async () => {
