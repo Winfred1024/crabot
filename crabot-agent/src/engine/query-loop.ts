@@ -49,12 +49,16 @@ const MAX_MAX_TOKENS_COMPACT_RETRIES = 2
 // 哪条规则、要求重新汇报。把规则写两份会产生维护漂移。
 // 注：unified loop 下 caller 可传 suppressForcedSummary 跳过此机制（agent 已用
 // send_message(intent='final') 显式收尾时）。
+// 注意：此 prompt 须对 GPT 系列模型有效——需要明确写出"工具参数名 + 值"，
+// 仅凭函数式伪代码描述（如 send_message(intent='final')）GPT 模型易忽略 intent 参数。
 const FORCED_SUMMARY_PROMPT =
-  '你刚才以 end_turn 结束但没有输出任何文字。本次任务由用户派发并在等待结果，必须给出最终汇报。\n\n' +
-  '**必须用 `send_message(intent=\'final\', content="...")`** —— 这才是任务终态认证。' +
-  'intent=\'info\' 不算交付（引擎判定你还有工作没做完，会让你再说一次）；intent=\'final\' 才会触发审计 + 标记任务完成。\n' +
-  '内容按 system prompt "## 收尾责任"段：可验证的产出，或**明确阻塞点**（说清楚卡在哪、为什么、需要什么才能继续）。\n' +
-  '如需回看任务历史、重读文档或工具输出再汇报，可继续用工具。'
+  '你刚才以 end_turn 结束但没有输出任何文字。任务必须通过工具交付才能完成。\n\n' +
+  '⚠️ **立即调用 send_message 工具，并在参数中明确传 `intent` = `"final"`**（字面值 final，不是 info）。\n' +
+  '- intent="info" 被引擎识别为"仍在进行中"，不触发任务完成，会让你再说一次\n' +
+  '- intent="final" 才是有效交付，触发审计 / 标记完成\n\n' +
+  '如已用 send_message 发过进展报告（intent=info），仍需再调一次 intent="final" 来收尾。\n' +
+  '如需先补充信息可继续用工具，完成后再 send_message(intent="final")。\n' +
+  '内容按 system prompt "## 收尾责任"段：可验证的产出，或**明确阻塞点**（卡在哪、需要什么）。'
 
 // 当上一轮工具执行完后 humanQueue 刚注入了补充内容（如 audit fail 报告）、
 // LLM 在下一轮 silent end_turn 时——注入的报告本身已包含行动指引，
