@@ -23,11 +23,18 @@ __pycache__/
 venv/
 *.egg-info/
 
-# IDE
+# IDE / AI coding tools (local configs, not project files)
 .vscode/
 .idea/
 *.swp
 *.swo
+.continue/
+.windsurf/
+.agents/
+.devin/
+.trae/
+skills/
+skills-lock.json
 
 # OS
 .DS_Store
