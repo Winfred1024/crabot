@@ -1590,14 +1590,13 @@ export class AgentHandler {
             const bare = tc.name.replace(/^mcp__[^_]+__/, '')
             if (bare === 'send_message' || bare === 'send_private_message') {
               const intent = (tc.input as { intent?: string } | undefined)?.intent
-              // sentMessage 严格追踪"消息成功发送"——失败不算
-              if (!tc.isError) sentMessage = true
-              // finalSent 追踪"worker 已表达交付意图"——只要调了 intent='final'，
-              // 不论 audit 是否通过都算（避免 audit fail → silent end_turn →
-              // forced_summary 反复轰炸的死循环）。audit fail 路径的 humanQueue
-              // 报告会驱动 worker 续作或 ask_human；worker 若 silent end_turn 视为
-              // 主动放弃，不再被 forced_summary 拦截。
-              if (intent === 'final') finalSent = true
+              // sentMessage / finalSent 只在消息真正发出（!isError）时才置位。
+              // audit fail 返回 isError=true，不设 finalSent，forced_summary 保持正常
+              // 工作（最多 MAX_SILENT_END_TURN_RETRIES 次），不会无限轰炸。
+              if (!tc.isError) {
+                sentMessage = true
+                if (intent === 'final') finalSent = true
+              }
             }
           }
         },

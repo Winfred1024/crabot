@@ -301,6 +301,11 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
         continue
       }
 
+      // 有文字的 end_turn / forced_summary 次数耗尽的静默 end_turn：同样属于"早 return 路径"，
+      // 补 fire 让 trace 看到这一轮（同 suppressForcedSummary 路径的处理逻辑）。
+      fireOnTurn(buildSilentTurnEvent(
+        totalTurns, processed.text, stopReason, llmCallMs, llmStartedAtMs, forcedSummaryAttempt, response.usage,
+      ))
       return buildResult('completed', finalText, totalTurns, contextManager, messages, overdueInjected, exitToolCall)
     }
 
