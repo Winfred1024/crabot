@@ -14,11 +14,6 @@ import type { Friend } from '../types.js'
 import * as path from 'path'
 import { annotatePagination } from './pagination-annotator.js'
 import { translateChannelError } from './error-translator.js'
-import type { AuditResult } from '../agent/goal-audit.js'
-
-// Re-export so callers (agent-handler 装配 deps、单测) 可一处 import 拿到。
-export type { AuditResult }
-
 // ============================================================================
 // 依赖注入接口
 // ============================================================================
@@ -34,21 +29,6 @@ export interface CrabMessagingDeps {
    * Front 调用路径返回 null（front 不能调 ask_human，工具内会拒绝）。
    */
   getTaskContext?: () => TaskContext | null
-  /** 可选：goal audit 执行入口。worker 路径 + taskCtx.hasGoal=true 时由 agent-handler 注入。
-   *  spec: 2026-05-23-goal-mode-design.md §4 */
-  runGoalAudit?: (params: {
-    taskId: string
-    conversationLog: ReadonlyArray<import('../agent/goal-audit.js').ConversationEntry>
-    /** worker turn 的 sub-agent trace 上下文；让 audit subagent 产生的 sub_agent_call
-     *  span 挂到主 worker trace 下，admin UI 才能渲染。缺省则 audit 跑在 standalone
-     *  trace 里（auditTraceId 为空，admin UI 看不到）。 */
-    traceConfig?: import('../engine/sub-agent.js').SubAgentTraceConfig
-    /** worker baseTools，auditor 的 capability filter 在其上筛 file_system+shell 子集。
-     *  传空数组会让 auditor 无工具可用，根本无法验证。 */
-    parentTools?: ReadonlyArray<import('../engine/types.js').ToolDefinition>
-    /** worker permissionConfig；缺省时 auditor 调 dangerous 工具（如 Bash）会被拒。 */
-    permissionConfig?: import('../engine/types.js').ToolPermissionConfig
-  }) => Promise<AuditResult>
 }
 
 export interface TaskContext {
@@ -61,21 +41,6 @@ export interface TaskContext {
    *  此处用 getter 形式以便 worker 中途 set_task_goal 后下一次工具调用立即生效。
    *  spec: 2026-05-23-goal-mode-design.md §4.2 */
   hasGoal: () => boolean
-  /** 当前 worker turn 的 sub-agent trace 上下文（traceStore + parentTraceId + relatedTaskId）。
-   *  worker 启动时 agent-handler 构造 TaskContext 时填入，crab-messaging audit gate
-   *  会透传给 runGoalAudit，让 audit subagent 的 sub_agent_call span 挂到主 trace。
-   *  缺省（front 路径等）则 audit 走 standalone trace。 */
-  traceConfig?: import('../engine/sub-agent.js').SubAgentTraceConfig
-  /** worker baseTools 的 getter（forward reference：baseTools 在 mcpConfigFactory
-   *  调用后才构造）。audit gate 透传给 runGoalAudit 作为 audit subagent 的 parentTools；
-   *  auditor 的 capability filter 再筛出 file_system + shell 子集。
-   *  缺省/返回空数组 = auditor 无 Bash/Read/Grep 等工具，无法验证 acceptance_criteria。
-   *  spec: 2026-05-23-goal-mode-design.md §6 / §7.2 */
-  auditParentTools?: () => ReadonlyArray<import('../engine/types.js').ToolDefinition>
-  /** worker 的 permissionConfig 的 getter（同 auditParentTools 的 forward-ref 模式）。
-   *  audit gate 透传给 runGoalAudit；缺省时 runtime permission check 会用 dangerous 工具
-   *  默认拒绝逻辑（Bash 等会被拒），auditor 跑起来就报"Permission denied"。 */
-  auditPermissionConfig?: () => import('../engine/types.js').ToolPermissionConfig | undefined
 }
 
 // ============================================================================
@@ -486,18 +451,17 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
 
 调用 send_message 前先问自己：**人类必须知道这件事吗？** 如果只是 crabot 系统在跟你对账（"audit 卡了 / 系统让我重写 / engine 不让我 end_turn"）——闭嘴，自己消化，换策略或开始干活。**不要把内部黑话（audit / criterion / 审计员 / \`/清除目标\` / blocked / acceptance_criteria / forced_summary）直接搬给人类看**，要翻译成自然语言（"我搞不定 X" / "需要您 Y"）。
 
-## 三个合法场景（intent 参数）
+## 两个合法场景（intent 参数）
 
-唯一对外通道分三档，全部 audience 都是人类：
+唯一对外通道分两档，全部 audience 都是人类：
 
-- **"info"（默认）**：进度告知 / ack / 中间结果。人类会看到、不期待回复。**不用于**"我做不到 / 卡住了 / 想换方向"——这种话发出去人类也只是看到，loop 不会停，下一轮你还得面对同样状态。
-- **"final"**：本任务的最终交付，发完即 end_turn。task 挂了 goal 会触发独立审计。
+- **"info"（默认）**：进度告知 / ack / 中间结果 / 最终交付。人类会看到、不期待回复。**不用于**"我做不到 / 卡住了 / 想换方向"——这种话发出去人类也只是看到，loop 不会停，下一轮你还得面对同样状态。
 - **"ask_human"**：阻塞等人类同步回复（task 切 waiting_human）。**任何想让 master 同步回复才能继续的场景**都用它，不限问句形态——决策分叉 / 求助 / 关键澄清都算。Self-check：你期不期待回复内容会改变下一轮动作？期待→ask_human，不期待→info。滥用会让任务停摆，能自己决策的不要 ask。`,
       schema: {
         channel_id: z.string().describe('Channel 模块实例 ID'),
         session_id: z.string().describe('目标 Session ID'),
         content: z.string().describe('消息内容（给人类看的自然语言；禁止塞 audit/criterion/`/清除目标` 等内部黑话）'),
-        intent: z.enum(['info', 'final', 'ask_human']).optional().describe('意图：info=进度告知（默认，单向，不等回复）；final=最终交付，发完代表任务完成；ask_human=阻塞等人类同步回复'),
+        intent: z.enum(['info', 'ask_human']).optional().describe('意图：info=进度告知 / 最终交付（默认，单向，不等回复）；ask_human=阻塞等人类同步回复'),
         content_type: z.enum(['text', 'image', 'file']).optional().describe('消息类型，默认 text'),
         media_url: z.string().optional().describe('媒体 URL（网络地址，与 file_path 二选一）'),
         file_path: z.string().optional().describe('沙盒内本地文件路径（自动转换为主机路径）'),
@@ -513,7 +477,7 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
         const channel_id = args.channel_id as string
         const session_id = args.session_id as string
         const content = args.content as string
-        const intent = args.intent as 'info' | 'final' | 'ask_human' | undefined
+        const intent = args.intent as 'info' | 'ask_human' | undefined
         const content_type = args.content_type as 'text' | 'image' | 'file' | undefined
         const media_url = args.media_url as string | undefined
         const file_path = args.file_path as string | undefined
@@ -534,53 +498,6 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
                 + "human responder. If you are blocked or have failed, send_message with intent='info' "
                 + 'to report status, then end_turn.',
             })
-          }
-        }
-
-        // === Goal Audit Gate (intent='final' + taskCtx.hasGoal) ===
-        // spec: 2026-05-23-goal-mode-design.md §4.3
-        let auditWarning: string | undefined
-        if (intent === 'final') {
-          const taskCtx = deps.getTaskContext?.()
-          if (taskCtx?.hasGoal() && deps.runGoalAudit) {
-            try {
-              const audit = await deps.runGoalAudit({
-                taskId: taskCtx.taskId,
-                conversationLog: [{ role: 'agent', intent: 'info', content }],
-                // 透传 traceConfig 让 audit sub-trace 挂主 worker trace 下，
-                // 否则 auditTraceId 是空串、admin UI 看不到 audit subagent。
-                ...(taskCtx.traceConfig ? { traceConfig: taskCtx.traceConfig } : {}),
-                // 透传 worker baseTools（getter，懒执行）；缺省会让 auditor 无
-                // Bash/Read/Grep 等工具，实测会回"环境没有工具"导致 audit 永远 fail。
-                ...(taskCtx.auditParentTools ? { parentTools: taskCtx.auditParentTools() } : {}),
-                // 透传 worker permissionConfig；缺省 auditor 调 Bash 会被 dangerous
-                // 默认拒绝逻辑拦下，回"Permission denied: Tool 'Bash' is marked as dangerous"。
-                ...(taskCtx.auditPermissionConfig ? (() => {
-                  const pc = taskCtx.auditPermissionConfig!()
-                  return pc ? { permissionConfig: pc } : {}
-                })() : {}),
-              })
-              if (!audit.pass) {
-                // 注入详细审计报告到 worker 下一轮 user message
-                taskCtx.humanQueue.push(audit.detailedReport)
-                // 区分"审计员故障"和"真不达标"，避免显示"0 条不达标"误导
-                const isAuditFault = audit.failedCriteria.includes('__no_audit_result_emitted__')
-                const errPrefix = isAuditFault
-                  ? `final 交付被审计员侧故障拦截（auditor 未 emit AUDIT_RESULT）。`
-                  : `final 交付未通过目标审计（${audit.failedCriteria.length} 条不达标）。`
-                return wrapText({
-                  error: errPrefix
-                    + `详细审计报告已注入下一轮上下文，请根据缺口续作。`
-                    + `audit_trace_id: ${audit.auditTraceId}`,
-                }, { isError: true })
-              }
-              // audit pass → fall through 走正常发送路径（complete_task_goal 已在 runGoalAudit 内同步调）
-            } catch (err) {
-              // audit 跑挂：失败开放（不堵 worker）+ 留 warning 让 master 兜底
-              const msg = err instanceof Error ? err.message : String(err)
-              auditWarning = `audit 跑挂未拦截：${msg}`
-              console.warn(`[send_message] goal audit failed open: ${msg}`)
-            }
           }
         }
 
@@ -757,7 +674,6 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
             return wrapText({
               ...sendResult,
               ask_human_state_error: stateError,
-              ...(auditWarning ? { audit_warning: auditWarning } : {}),
             })
           }
 
@@ -767,7 +683,6 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
 
         return wrapText({
           ...sendResult,
-          ...(auditWarning ? { audit_warning: auditWarning } : {}),
         })
       },
     },

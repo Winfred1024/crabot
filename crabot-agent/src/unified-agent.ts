@@ -297,8 +297,6 @@ export class UnifiedAgent extends ModuleBase {
     // MCP config factory: creates fresh in-process McpServer instances per task
     // External MCP servers are managed by this.mcpConnector (connected in onStart)
     //
-    // runGoalAudit 通过 agent-handler 转发：factory 在 buildToolsDynamic 中 per-turn 被调用，
-    // 此时 this.agentHandler 已设置；用箭头函数延迟绑定，避免 factory 构造时 agentHandler 未初始化。
     const createMcpConfigs = (taskCtx?: TaskContext): Record<string, McpServer> => ({
       'crab-messaging': createCrabMessagingServer({
         rpcClient: this.rpcClient,
@@ -306,10 +304,6 @@ export class UnifiedAgent extends ModuleBase {
         getAdminPort: () => this.getAdminPort(),
         resolveChannelPort: (channelId) => this.getChannelPort(channelId),
         ...(taskCtx ? { getTaskContext: () => taskCtx } : {}),
-        runGoalAudit: (params) => {
-          if (!this.agentHandler) throw new Error('runGoalAudit: agentHandler not initialized')
-          return this.agentHandler.runGoalAudit(params)
-        },
       }, this.sandboxPathMappingsRef),
     })
 
@@ -2120,10 +2114,6 @@ export class UnifiedAgent extends ModuleBase {
               getAdminPort: () => this.getAdminPort(),
               resolveChannelPort: (channelId) => this.getChannelPort(channelId),
               ...(taskCtx ? { getTaskContext: () => taskCtx } : {}),
-              runGoalAudit: (params) => {
-                if (!this.agentHandler) throw new Error('runGoalAudit: agentHandler not initialized')
-                return this.agentHandler.runGoalAudit(params)
-              },
             }, this.sandboxPathMappingsRef),
           })
           this.agentHandler = this.createWorkerHandler(

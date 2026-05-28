@@ -897,11 +897,6 @@ export class AgentHandler {
           // 透传 sub-agent trace 上下文：让 audit gate 触发的 audit subagent
           // 产生的 sub_agent_call span 挂到主 worker trace 下，admin UI 能渲染。
           // spec: 2026-05-23-goal-mode-design.md §4.2
-          ...(subAgentTraceConfig ? { traceConfig: subAgentTraceConfig } : {}),
-          // getter 形式 forward-reference：baseTools 在下方 ~line 860 构造，
-          // audit gate 真正触发时 baseTools / permissionConfig 已就位。
-          auditParentTools: () => auditBaseTools,
-          auditPermissionConfig: () => auditPermissionCfg,
         }) ?? {}
         for (const [serverName, server] of Object.entries(externalMcpServers)) {
           tools.push(...mcpServerToToolDefinitions(server, serverName))
