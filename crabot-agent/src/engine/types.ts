@@ -298,7 +298,7 @@ export interface EngineOptions {
    *
    * 设计动机：老 worker 路径下 finalText 是交付，silent end_turn 是异常→需要 forced_summary
    * 兜底。新 unified loop 下交付走 send_message 工具，silent end_turn 是设计预期。caller
-   * （unified handler）传 `() => finalSent` 来表达"agent 已用 intent='final' 发过最终交付"。
+   * caller 传 `() => sentInfoMessage || hasGoal || isScheduled` 来表达当前上下文下 silent end_turn 是预期行为。
    *
    * 不传时维持现有行为：始终启用 forced_summary。
    */

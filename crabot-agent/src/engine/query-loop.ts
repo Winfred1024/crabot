@@ -47,10 +47,7 @@ const MAX_MAX_TOKENS_COMPACT_RETRIES = 2
 // 规则细节由 agent 自己的 system prompt 维护（assembleAgentPrompt 的 end_turn
 // self-check + 收尾责任段），这里只做 engine 层的机制兜底钩子——告诉模型违反了
 // 哪条规则、要求重新汇报。把规则写两份会产生维护漂移。
-// 注：unified loop 下 caller 可传 suppressForcedSummary 跳过此机制（agent 已用
-// send_message(intent='final') 显式收尾时）。
-// 注意：此 prompt 须对 GPT 系列模型有效——需要明确写出"工具参数名 + 值"，
-// 仅凭函数式伪代码描述（如 send_message(intent='final')）GPT 模型易忽略 intent 参数。
+// 注：caller 可传 suppressForcedSummary 跳过此机制（已发 info 消息 / 有 goal / scheduled 任务时）。
 const FORCED_SUMMARY_PROMPT =
   '你刚才以 end_turn 结束但还没有向人类发送任何内容。\n' +
   '如果本次任务有需要告知的结果或进度，请调用 send_message 工具发出后再 end_turn。'

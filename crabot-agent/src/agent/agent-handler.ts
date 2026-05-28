@@ -1867,7 +1867,7 @@ export class AgentHandler {
 
     // ── 行动提醒 ──
     parts.push(`\n## 行动提醒`)
-    parts.push(`- 给人类回复用 \`send_message\` 工具（channel_id="${channelId}"，session_id="${sessionId}"）；最终交付用 intent="final"。`)
+    parts.push(`- 给人类回复用 \`send_message\` 工具（channel_id="${channelId}"，session_id="${sessionId}"）；最终交付也用 intent="info"，发完直接 end_turn。`)
     if (isGroup) {
       parts.push(`- 若本批消息与你无关（群成员之间的讨论），调 \`stay_silent\` 退出 loop。`)
     }
