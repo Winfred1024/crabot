@@ -1565,7 +1565,18 @@ export class AgentHandler {
     const { triggerArrivedAtMs, timeoutMs = 30_000, overdueReminderEnabled = true } = params
     const { taskId, registered, task, context } = pre
 
-    const triggerPrompt = this.buildTriggerUserPrompt(params)
+    const triggerText = this.buildTriggerUserPrompt(params)
+
+    // If VLM is supported, attach image blocks from the current trigger messages.
+    // buildTriggerUserPrompt returns a plain string, so images must be injected here.
+    let initialPrompt: string | ContentBlock[] = triggerText
+    if (this.sdkEnv.supportsVision) {
+      const imageBlocks = await resolveImageBlocks([...params.messages])
+      if (imageBlocks.length > 0) {
+        const strippedText = triggerText.replace(/\[图片: [^\]]*\]\n?/g, '')
+        initialPrompt = [{ type: 'text' as const, text: strippedText }, ...imageBlocks]
+      }
+    }
 
     let sentMessage = false
     let finalSent = false
@@ -1581,7 +1592,7 @@ export class AgentHandler {
     let loopResult: RunWorkerLoopResult
     try {
       loopResult = await this.runWorkerLoop(task, context, traceCallback, traceContext, {
-        initialPrompt: triggerPrompt,
+        initialPrompt,
         extraTools: [],
         ...(digestOverdueMs !== undefined ? { digestOverdueMs } : {}),
         suppressForcedSummary: () => finalSent,
@@ -2903,8 +2914,10 @@ export class AgentHandler {
     if (this.sdkEnv.supportsVision && context.trigger_messages?.length) {
       const imageBlocks = await resolveImageBlocks(context.trigger_messages)
       if (imageBlocks.length > 0) {
+        // Strip [图片: /path] text references — the image is already in the VLM blocks below.
+        const vlmTextContent = textContent.replace(/\[图片: [^\]]*\]\n?/g, '')
         return [
-          { type: 'text' as const, text: textContent },
+          { type: 'text' as const, text: vlmTextContent },
           ...imageBlocks,
         ]
       }
