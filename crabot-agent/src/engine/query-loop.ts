@@ -56,6 +56,15 @@ const FORCED_SUMMARY_PROMPT =
   '内容按 system prompt "## 收尾责任"段：可验证的产出，或**明确阻塞点**（说清楚卡在哪、为什么、需要什么才能继续）。\n' +
   '如需回看任务历史、重读文档或工具输出再汇报，可继续用工具。'
 
+// 当上一轮工具执行完后 humanQueue 刚注入了补充内容（如 audit fail 报告）、
+// LLM 在下一轮 silent end_turn 时——注入的报告本身已包含行动指引，
+// 此时不应再喊"马上 send_message"（那会让 LLM 直接重发未修改的内容再次触发 audit fail），
+// 而应提示 LLM 先回看刚收到的反馈、按指示继续操作。
+const SUPPLEMENT_FOLLOWUP_PROMPT =
+  '你刚才以 end_turn 结束但没有输出任何文字。上一步刚有新的系统反馈注入对话——' +
+  '请回看上方最新的消息（带 [crabot 内部 / 仅你可见] 标记的那条），按其中的指示继续操作。\n' +
+  '完成后再用 send_message 交付；如需工具请继续用。'
+
 // --- Core Loop ---
 
 export async function runEngine(params: RunEngineParams): Promise<EngineResult> {
@@ -88,6 +97,10 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
   let maxTokensCompactRetryCount = 0
   // 由上一轮追问设置、下一轮 onTurn 消费一次后清零。
   let pendingForcedSummaryAttempt: number | undefined = undefined
+  // 记录最近一次从 humanQueue drain 出 supplement 的 turn number（-1 表示从未发生）。
+  // 当下一轮是 silent end_turn 时，若 supplement 刚在上一轮注入，使用 SUPPLEMENT_FOLLOWUP_PROMPT
+  // 而非 FORCED_SUMMARY_PROMPT，避免 LLM 在 audit fail 后未修缺口就直接重发旧内容。
+  let lastSupplementInjectedAtTurn = -1
 
   // 超期机制：在 turn 结束时检测 elapsed，至多注入一次。
   const overdueConfig = options.overdueConfig
@@ -290,10 +303,16 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
         fireOnTurn(buildSilentTurnEvent(
           totalTurns, processed.text, stopReason, llmCallMs, llmStartedAtMs, forcedSummaryAttempt, response.usage,
         ))
-        messages.push(createUserMessage(FORCED_SUMMARY_PROMPT))
+        // 若上一轮工具执行完后 humanQueue 刚注入了 supplement（如 audit fail 报告），
+        // LLM 有完整指引但仍 silent end_turn——此时 FORCED_SUMMARY_PROMPT 里的
+        // "必须用 send_message" 与报告里的"先补缺口"相矛盾，会导致 LLM 直接重发旧内容再次触发 audit fail。
+        // 改用 SUPPLEMENT_FOLLOWUP_PROMPT，引导 LLM 回看刚注入的反馈再操作。
+        const supplementJustInjected = lastSupplementInjectedAtTurn === totalTurns - 1
+        const injectionPrompt = supplementJustInjected ? SUPPLEMENT_FOLLOWUP_PROMPT : FORCED_SUMMARY_PROMPT
+        messages.push(createUserMessage(injectionPrompt))
         options.onSystemInjection?.({
           type: 'forced_summary',
-          text: FORCED_SUMMARY_PROMPT,
+          text: injectionPrompt,
           turnNumber: totalTurns,
           injectedAtMs: Date.now(),
         })
@@ -531,6 +550,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
     // Inject any pending human supplement messages
     if (options.humanMessageQueue) {
       const supplements = options.humanMessageQueue.drainPending()
+      if (supplements.length > 0) lastSupplementInjectedAtTurn = totalTurns
       for (const content of supplements) {
         messages.push(createUserMessage(content))
         options.onSystemInjection?.({
