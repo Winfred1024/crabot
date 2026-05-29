@@ -24,6 +24,8 @@ import {
 } from 'crabot-shared'
 
 import { FeishuClient, FeishuClientError, type SendReceive } from './feishu-client.js'
+import { FeishuDocReader } from './feishu-doc-reader.js'
+import { parseFeishuDocUrl, extractFeishuDocUrls } from './feishu-url.js'
 import { WsSubscriber } from './ws-subscriber.js'
 import { SessionManager } from './session-manager.js'
 import { MessageStore, type StoredMessage } from './message-store.js'
@@ -86,6 +88,7 @@ export class FeishuChannel extends ModuleBase {
   private readonly subscriber: WsSubscriber
   private readonly sessionManager: SessionManager
   private readonly messageStore: MessageStore
+  private readonly docReader: FeishuDocReader
 
   private botOpenId: string | null = null
   private botName: string | null = null
@@ -122,6 +125,7 @@ export class FeishuChannel extends ModuleBase {
     })
     this.sessionManager = new SessionManager(config.module_id, config.data_dir)
     this.messageStore = new MessageStore(config.data_dir)
+    this.docReader = new FeishuDocReader(this.client)
 
     fs.mkdirSync(path.join(this.dataDir, 'media'), { recursive: true })
     this.registerMethods()
@@ -508,6 +512,7 @@ export class FeishuChannel extends ModuleBase {
     this.registerMethod('list_groups', this.handleListGroups.bind(this))
     this.registerMethod('get_config', this.handleGetConfig.bind(this))
     this.registerMethod('update_config', this.handleUpdateConfig.bind(this))
+    this.registerMethod('read_document', this.handleReadDocument.bind(this))
   }
 
   private async handleSendMessage(params: SendMessageParams): Promise<SendMessageResult> {
@@ -1114,6 +1119,37 @@ export class FeishuChannel extends ModuleBase {
 
     const masked = this.handleGetConfig().config
     return { config: masked, requires_restart: requiresRestart }
+  }
+
+  private async handleReadDocument(params: { url: string; max_chars?: number }): Promise<{
+    type: 'docx' | 'wiki' | 'sheets'
+    title: string
+    text: string
+    truncated: boolean
+    url: string
+  }> {
+    const { url, max_chars } = params
+    if (!url || typeof url !== 'string') throwError('INVALID_ARGUMENT', 'url is required')
+
+    const ref = parseFeishuDocUrl(url)
+    if (!ref) throwError('INVALID_ARGUMENT', `不是飞书云文档 URL：${url}`)
+    if (ref.kind === 'unknown') {
+      throwError('UNSUPPORTED', `本期不支持读取此类型飞书文档，支持：docx / wiki / sheets。URL: ${url}`)
+    }
+
+    try {
+      const result = await this.docReader.read(ref, { maxChars: max_chars })
+      return { ...result, url }
+    } catch (err: unknown) {
+      const code = (err as { code?: string }).code ?? ''
+      if (code === 'PERMISSION_DENIED') {
+        throwError('PERMISSION_DENIED',
+          `没有读取此文档的权限。请在飞书开发者后台把应用（或应用所在群）加为文档/文件夹/知识空间的协作者。原始错误：${(err as Error).message}`)
+      }
+      if (code === 'NOT_FOUND') throwError('NOT_FOUND', `文档不存在或已删除：${url}`)
+      if (code === 'UNSUPPORTED') throwError('UNSUPPORTED', (err as Error).message)
+      throw err
+    }
   }
 
   // ── health ────────────────────────────────────────────────────────────────
