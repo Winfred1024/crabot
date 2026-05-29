@@ -155,6 +155,22 @@ describe('deliverHumanResponse 渲染媒体', () => {
     expect(pushed[0]).toMatch(/第一条\n第二条/)
   })
 
+  it('投递真实 supplement → 发放改目标券（goalRevisionUnlocked=true）', () => {
+    handler.deliverHumanResponse('task-test' as TaskId, [
+      msg({ content: { type: 'text', text: '删除吧' } as any }),
+    ])
+    const taskState = (handler as any).activeTasks.get('task-test')
+    expect(taskState.goalRevisionUnlocked).toBe(true)
+  })
+
+  it('全空消息（无内容投递）→ 不发券', () => {
+    handler.deliverHumanResponse('task-test' as TaskId, [
+      msg({ content: { type: 'text', text: '' } }),
+    ])
+    const taskState = (handler as any).activeTasks.get('task-test')
+    expect(taskState.goalRevisionUnlocked).toBeFalsy()
+  })
+
   it('全为空消息（无 text 也无 media）不 push humanQueue，但 status 仍更新为 executing', () => {
     handler.deliverHumanResponse('task-test' as TaskId, [
       // 既无 text 也无 media_url——formatMessageContent 返回 EMPTY_MESSAGE_PLACEHOLDER

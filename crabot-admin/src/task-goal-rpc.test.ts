@@ -91,19 +91,21 @@ describe('task-goal RPC handlers', () => {
       expect(task.goal.token_budget).toBe(100_000)
     })
 
-    it('task.goal 为 active 时拒绝二次 set（反 specification-gaming）', async () => {
+    it('task.goal 为 active 时允许重设并覆盖（反 specification-gaming 锁权已移到 engine 改目标券）', async () => {
       await (admin as any).handleSetTaskGoal({
         task_id: taskId,
         objective: 'first',
         acceptance_criteria: sampleCriteria(),
       })
-      await expect(
-        (admin as any).handleSetTaskGoal({
-          task_id: taskId,
-          objective: 'second',
-          acceptance_criteria: sampleCriteria(),
-        })
-      ).rejects.toThrow(/仍在 active 状态/)
+      const { task } = await (admin as any).handleSetTaskGoal({
+        task_id: taskId,
+        objective: 'second',
+        acceptance_criteria: sampleCriteria(),
+      })
+      expect(task.goal.status).toBe('active')
+      expect(task.goal.objective).toBe('second')
+      // 新 goal 全新对象：audit_history 清空，不被旧 fail 历史拖进 blocked
+      expect(task.goal.audit_history).toEqual([])
     })
 
     it('task.goal 为 terminal（cleared）时允许二次 set 写新承诺', async () => {

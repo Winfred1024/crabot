@@ -45,6 +45,11 @@ export interface ConversationEntry {
   readonly intent?: 'info' | 'ask_human'
 }
 
+/**
+ * Goal 状态。与 crabot-admin/src/types.ts 的 TaskGoalStatus 对齐（inline，不 import admin 包）。
+ */
+export type GoalStatus = 'active' | 'complete' | 'blocked' | 'budget_limited' | 'cleared'
+
 /** Crab-messaging audit gate 拿到的结果；Task 8 会从这里 import */
 export interface AuditResult {
   readonly pass: boolean
@@ -53,6 +58,10 @@ export interface AuditResult {
   readonly detailedReport: string
   /** Audit subagent 子 trace id（追溯锚点；无 trace context 时为空串） */
   readonly auditTraceId: string
+  /** append_task_goal_audit_entry 之后 admin 侧的 goal 状态（连续 N 次同 fail 会自动切 blocked）。 */
+  readonly goalStatus?: GoalStatus
+  /** goalStatus='blocked' 时预构建的"换方向"提示；endTurnGate 一次性注入。 */
+  readonly blockedGuidance?: string
 }
 
 export interface BuildAuditPromptParams {
@@ -231,6 +240,80 @@ ${safeRaw}
 3. 人类如果通过对话决定换方向，他可能会用 IM slash 指令清掉这个目标——你下一轮自然会看到 task.goal 状态变了，按那个状态行事即可。你不需要、也不应该指挥人类去操作 slash 命令
 
 **不要**用 send_message(intent='info') 上报阻塞——info 是单向播报，loop 不会停，问题也没人能同步处理。`
+}
+
+/**
+ * goal 被系统判定 blocked（连续 N 次同 fail，原方向走不通）时，给 worker 的一次性"换方向"提示。
+ *
+ * 与 buildHumanQueueReport 的"补齐缺口再重交"不同：blocked 意味着同一套做法已反复失败，
+ * 系统授权你换方向（此时已发一张改目标券），别再原样重试。
+ *
+ * spec: 2026-05-23-goal-mode-design.md §2.7（blocked）
+ */
+export function buildBlockedGuidance(
+  goal: GoalAuditTaskGoal,
+  failedCriteria: ReadonlyArray<string>,
+): string {
+  const failedSeg =
+    failedCriteria.length > 0 ? `\n反复没满足的承诺项：${failedCriteria.join('、')}` : ''
+  return `[crabot 内部 / 仅你可见] 自检反复未通过，系统判定原方向走不通——这是你和系统之间的事，人类看不见，**不要把这段内容转给人类**。
+
+## 你的承诺
+${goal.objective}${failedSeg}
+
+## 怎么处理（同一套做法已经失败多次，别再原样重试）
+你现在有两条出路，自己判断选一条：
+1. **换个方向**：如果你想到了新做法，重新调一次 set_task_goal 写下新承诺继续（此次已为你解锁一次重设）
+2. **叫人**：如果没思路，用 ask_human 跟人类**用自然语言**描述——你想做什么、卡在哪、试过什么、需要人类做什么
+
+**禁止**：把这段内部报告原样贴出去；出现 "audit / 审计 / criterion / 承诺项 c-xxx / blocked / \`/清除目标\`" 等 crabot 黑话；用 send_message(intent='info') 上报阻塞（info 单向播报，解决不了问题）。`
+}
+
+/** endTurnGate 决策结果：是否拦截 + 是否发券 + 是否标记已通知。 */
+export interface EndTurnGateDecision {
+  /** null = 放行 end_turn；string = 拦截并把该文本作为 user message 注入下一轮。 */
+  readonly inject: string | null
+  /** 是否发放一张改目标券（blocked 首次 = 系统授权换一次方向）。 */
+  readonly grantRevisionToken: boolean
+  /** 是否把本任务标记为"blocked 已通知"（避免重复拦截）。 */
+  readonly markBlockedNotified: boolean
+}
+
+/**
+ * endTurnGate 的纯决策逻辑（IO 留在闭包里）：
+ * - audit pass → 放行
+ * - blocked 且未通知过 → 注入一次性换方向提示 + 发券 + 标记已通知
+ * - blocked 且已通知过 → 放行（不再无限重放 forced_summary）
+ * - 普通 fail → 拦截并注入 detailedReport
+ *
+ * spec: 2026-05-23-goal-mode-design.md §2.7 / 2026-05-26-goal-audit-loop-completion §2.2
+ */
+export function decideEndTurnGate(params: {
+  audit: {
+    pass: boolean
+    failedCriteria: ReadonlyArray<string>
+    detailedReport: string
+    goalStatus?: GoalStatus
+    blockedGuidance?: string
+  }
+  blockedAlreadyNotified: boolean
+  /** 仅当 audit.blockedGuidance 缺失时用来兜底构建提示；runGoalAudit 已预构建则可省略。 */
+  goal?: GoalAuditTaskGoal
+}): EndTurnGateDecision {
+  const { audit, blockedAlreadyNotified, goal } = params
+  if (audit.pass) {
+    return { inject: null, grantRevisionToken: false, markBlockedNotified: false }
+  }
+  if (audit.goalStatus === 'blocked') {
+    if (blockedAlreadyNotified) {
+      return { inject: null, grantRevisionToken: false, markBlockedNotified: false }
+    }
+    const guidance =
+      audit.blockedGuidance ??
+      (goal ? buildBlockedGuidance(goal, audit.failedCriteria) : audit.detailedReport)
+    return { inject: guidance, grantRevisionToken: true, markBlockedNotified: true }
+  }
+  return { inject: audit.detailedReport, grantRevisionToken: false, markBlockedNotified: false }
 }
 
 /**

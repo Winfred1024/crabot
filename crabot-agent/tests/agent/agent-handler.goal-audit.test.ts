@@ -176,6 +176,45 @@ describe('AgentHandler.runGoalAudit', () => {
     }
   })
 
+  it('append 返回 goal 已 blocked → 透出 goalStatus=blocked + blockedGuidance', async () => {
+    const rpcCall = vi.fn()
+      .mockResolvedValueOnce({ task: { id: 't3', goal: sampleGoal() } }) // get_task
+      .mockResolvedValueOnce({ task: { id: 't3', goal: { ...sampleGoal(), status: 'blocked' } } }) // append → 已 blocked
+    const runSubAgentDirect = vi.fn().mockResolvedValue({
+      output: 'AUDIT_RESULT: fail\nFAILED_CRITERIA: [c1]\n\nAUDIT_REPORT_END',
+      isError: false,
+      traceId: 'trace-blk',
+    })
+    const handler = makeHandler({ rpcCall, runSubAgentDirect })
+    try {
+      const result = await handler.runGoalAudit({ taskId: 't3', conversationLog: [{ role: 'agent', intent: 'info', content: 'x' }] })
+      expect(result.pass).toBe(false)
+      expect(result.goalStatus).toBe('blocked')
+      expect(result.blockedGuidance).toContain('仅你可见')
+    } finally {
+      handler.dispose()
+    }
+  })
+
+  it('append 返回仍 active → goalStatus=active 且无 blockedGuidance', async () => {
+    const rpcCall = vi.fn()
+      .mockResolvedValueOnce({ task: { id: 't4', goal: sampleGoal() } })
+      .mockResolvedValueOnce({ task: { id: 't4', goal: { ...sampleGoal(), status: 'active' } } })
+    const runSubAgentDirect = vi.fn().mockResolvedValue({
+      output: 'AUDIT_RESULT: fail\nFAILED_CRITERIA: [c1]\n\nAUDIT_REPORT_END',
+      isError: false,
+      traceId: 'trace-act',
+    })
+    const handler = makeHandler({ rpcCall, runSubAgentDirect })
+    try {
+      const result = await handler.runGoalAudit({ taskId: 't4', conversationLog: [{ role: 'agent', intent: 'info', content: 'x' }] })
+      expect(result.goalStatus).toBe('active')
+      expect(result.blockedGuidance).toBeUndefined()
+    } finally {
+      handler.dispose()
+    }
+  })
+
   it('runSubAgentDirect 收到 traceSummaryPrefix="[goal_audit]" 和 traceTaskType="goal_audit"（M4）', async () => {
     const rpcCall = vi.fn()
       .mockResolvedValueOnce({ task: { id: 't', goal: sampleGoal() } })

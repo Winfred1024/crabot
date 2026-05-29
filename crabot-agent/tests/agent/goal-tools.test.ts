@@ -71,6 +71,83 @@ describe('set_task_goal 工具', () => {
     expect(schema.properties.acceptance_criteria.minItems).toBe(1)
   })
 
+  describe('改目标券门控（人类 supplement 授权重设）', () => {
+    it('已设过 goal 但无券 → 拒绝重设，不调 admin', async () => {
+      const rpcCall = vi.fn().mockResolvedValue({ task: {} })
+      const tool = createSetTaskGoalTool({
+        taskId: 't1',
+        callAdminRpc: rpcCall,
+        hasExistingGoal: () => true,
+        hasRevisionToken: () => false,
+        consumeRevisionToken: vi.fn(),
+      })
+      const result = await tool.call!({
+        objective: '改小的目标',
+        acceptance_criteria: [{ id: 'c1', kind: 'cmd', spec: 'true' }],
+      }, {} as never)
+      expect(result.isError).toBe(true)
+      expect(rpcCall).not.toHaveBeenCalled()
+    })
+
+    it('已设过 goal 且持券 → 放行重设、调 admin 并消费券', async () => {
+      const rpcCall = vi.fn().mockResolvedValue({ task: {} })
+      const consume = vi.fn()
+      const tool = createSetTaskGoalTool({
+        taskId: 't1',
+        callAdminRpc: rpcCall,
+        hasExistingGoal: () => true,
+        hasRevisionToken: () => true,
+        consumeRevisionToken: consume,
+      })
+      const result = await tool.call!({
+        objective: '换方向：删除而非禁用',
+        acceptance_criteria: [{ id: 'c1', kind: 'cmd', spec: 'true' }],
+      }, {} as never)
+      expect(result.isError).toBeFalsy()
+      expect(rpcCall).toHaveBeenCalledWith('set_task_goal', expect.objectContaining({
+        objective: '换方向：删除而非禁用',
+      }))
+      expect(consume).toHaveBeenCalledTimes(1)
+    })
+
+    it('首次设 goal（无既有 goal）→ 放行且不碰券', async () => {
+      const rpcCall = vi.fn().mockResolvedValue({ task: {} })
+      const consume = vi.fn()
+      const tool = createSetTaskGoalTool({
+        taskId: 't1',
+        callAdminRpc: rpcCall,
+        hasExistingGoal: () => false,
+        hasRevisionToken: () => false,
+        consumeRevisionToken: consume,
+      })
+      const result = await tool.call!({
+        objective: '首个目标',
+        acceptance_criteria: [{ id: 'c1', kind: 'cmd', spec: 'true' }],
+      }, {} as never)
+      expect(result.isError).toBeFalsy()
+      expect(rpcCall).toHaveBeenCalledTimes(1)
+      expect(consume).not.toHaveBeenCalled()
+    })
+
+    it('重设时 admin 抛错 → 不消费券（券留待重试）', async () => {
+      const rpcCall = vi.fn().mockRejectedValue(new Error('admin 故障'))
+      const consume = vi.fn()
+      const tool = createSetTaskGoalTool({
+        taskId: 't1',
+        callAdminRpc: rpcCall,
+        hasExistingGoal: () => true,
+        hasRevisionToken: () => true,
+        consumeRevisionToken: consume,
+      })
+      const result = await tool.call!({
+        objective: 'x',
+        acceptance_criteria: [{ id: 'c1', kind: 'cmd', spec: 'true' }],
+      }, {} as never)
+      expect(result.isError).toBe(true)
+      expect(consume).not.toHaveBeenCalled()
+    })
+  })
+
   it('inputSchema 限制 kind 枚举为 cmd|file|semantic', () => {
     const tool = createSetTaskGoalTool({ taskId: 't', callAdminRpc: vi.fn() })
     const schema = tool.inputSchema as {

@@ -91,10 +91,13 @@ import {
   buildAuditPrompt,
   buildAuditVerdictSummary,
   buildHumanQueueReport,
+  buildBlockedGuidance,
+  decideEndTurnGate,
   resolveAuditJudgment,
   type AuditResult,
   type ConversationEntry,
   type GoalAuditTaskGoal,
+  type GoalStatus,
 } from './goal-audit.js'
 import { createSubmitAuditResultTool } from './goal-auditor-tools.js'
 
@@ -820,6 +823,9 @@ export class AgentHandler {
       const conversationLog: ConversationEntry[] = []
       // sentInfoMessage：send_message(intent='info') 成功至少一次；forced_summary 判断依据
       let sentInfoMessage = false
+      // blockedNoticeShown：goal 进入 blocked 后只注入一次"换方向"提示，之后放行 end_turn，
+      // 避免无限重放 forced_summary（P0 兜底）。
+      let blockedNoticeShown = false
       // 任务触发类型：scheduled 任务始终抑制 forced_summary
       const workerTriggerType: 'scheduled' | 'message' =
         task.source?.trigger_type === 'scheduled' ? 'scheduled' : 'message'
@@ -1024,6 +1030,11 @@ export class AgentHandler {
               }
               return result
             },
+            // 改目标券：已有 goal 时重设需消费一张人类授权的券（deliverHumanResponse 发放）。
+            // taskState 与 activeTasks 里同引用，能读到 supplement 到达时的置位。
+            hasExistingGoal: () => goalSetCache,
+            hasRevisionToken: () => taskState.goalRevisionUnlocked === true,
+            consumeRevisionToken: () => { taskState.goalRevisionUnlocked = false },
           }))
         }
 
@@ -1235,10 +1246,12 @@ export class AgentHandler {
                     parentTools: [...auditBaseTools],
                     ...(auditPermissionCfg ? { permissionConfig: auditPermissionCfg } : {}),
                   })
-                  if (!audit.pass) {
-                    return audit.detailedReport
-                  }
-                  return null
+                  // blocked（连续 N 次同 fail）→ 注入一次性"换方向"提示 + 发改目标券 + 放行，
+                  // 不再无限重放 forced_summary。普通 fail → 注入 detailedReport 拦截续作。
+                  const decision = decideEndTurnGate({ audit, blockedAlreadyNotified: blockedNoticeShown })
+                  if (decision.grantRevisionToken) taskState.goalRevisionUnlocked = true
+                  if (decision.markBlockedNotified) blockedNoticeShown = true
+                  return decision.inject
                 } catch (err) {
                   console.warn(
                     '[endTurnGate] goal audit failed open:',
@@ -2171,10 +2184,14 @@ export class AgentHandler {
           `[实时纠偏 - 来自用户]\n` +
           `用户在任务执行期间发来了补充指示：\n\n` +
           `"${supplement}"\n\n` +
-          `请结合当前任务进展，调整你的执行方向。`,
+          `请结合当前任务进展，调整你的执行方向。\n` +
+          `如果这条指示改变了原定要求，而你已用 set_task_goal 写过承诺，` +
+          `你现在可以重新调一次 set_task_goal 把目标改成新方向。`,
         )
         log(`[supplement] pushed to humanMessageQueue for task ${taskId}`)
       }
+      // 发放"改目标券"：真实人类 supplement 到达 = 授权 worker 重设一次 goal（上限 1，不叠加）。
+      taskState.goalRevisionUnlocked = true
     }
 
     // Also store in pendingHumanMessages for backward compat with task state
@@ -2666,8 +2683,8 @@ export class AgentHandler {
       params.traceConfig.traceStore.appendTraceOutcome(auditTraceId, verdictSummary)
     }
 
-    // 6. 写 audit_history
-    await this.deps.rpcClient.call<unknown, unknown>(
+    // 6. 写 audit_history —— admin 侧连续 N 次同 fail 会把 goal 自动切 blocked，读回状态。
+    const appendResp = await this.deps.rpcClient.call<unknown, { task?: { goal?: { status?: GoalStatus } } }>(
       adminPort,
       'append_task_goal_audit_entry',
       {
@@ -2681,6 +2698,7 @@ export class AgentHandler {
       },
       moduleId,
     )
+    const goalStatus = appendResp?.task?.goal?.status
 
     // 7. pass 路径同步把 goal 切 complete
     if (parsed.pass) {
@@ -2697,6 +2715,10 @@ export class AgentHandler {
       failedCriteria: parsed.failedCriteria,
       detailedReport: buildHumanQueueReport(parsed, goal),
       auditTraceId,
+      ...(goalStatus ? { goalStatus } : {}),
+      ...(goalStatus === 'blocked'
+        ? { blockedGuidance: buildBlockedGuidance(goal, parsed.failedCriteria) }
+        : {}),
     }
   }
 

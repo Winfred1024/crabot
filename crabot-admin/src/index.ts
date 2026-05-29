@@ -3806,12 +3806,11 @@ export class AdminModule extends ModuleBase {
   ): Promise<SetTaskGoalResult> {
     const task = this.tasks.get(params.task_id)
     if (!task) throw new Error(AdminErrorCode.TASK_NOT_FOUND)
-    // 反 specification-gaming：active goal 不允许 agent 中途自改方向；
-    // terminal（blocked / cleared / complete / budget_limited）放行 agent 写新承诺续作
+    // 反 specification-gaming 的"active goal 不可自改"锁，已移到 engine 侧 set_task_goal 工具的
+    // "改目标券"门控（人类 supplement 到达才发券，worker 无券不能重设）。admin 这里不再硬拒——
+    // 它只是唯一调用方（worker 工具）的执行端；终态（blocked/cleared/complete/budget_limited）
+    // 重设续作也走这条路。
     // spec: 2026-05-26-goal-audit-loop-completion §2.3
-    if (task.goal?.status === 'active') {
-      throw new Error(`task ${params.task_id} 的 goal 仍在 active 状态，agent 不可自改 goal`)
-    }
     const now = generateTimestamp()
     const goal = buildNewTaskGoal({
       objective: params.objective,

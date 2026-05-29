@@ -760,6 +760,11 @@ export interface WorkerTaskState {
   taskOrigin?: TaskOrigin
   /** Per-task mutable todo plan store; created on task start, dropped on cleanup. */
   todoStore: import('./agent/worker-todo-store.js').TodoStore
+  /**
+   * "改目标券"：人类 supplement 到达时置 true（上限 1，不叠加）。
+   * set_task_goal 重设已有 goal 时消费它——没券不许 worker 自改目标（反 specification-gaming）。
+   */
+  goalRevisionUnlocked?: boolean
 }
 
 export interface SupplementTaskDecision {

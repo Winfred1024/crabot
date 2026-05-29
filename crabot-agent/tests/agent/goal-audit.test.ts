@@ -3,6 +3,8 @@ import {
   buildAuditPrompt,
   parseAuditReport,
   buildHumanQueueReport,
+  buildBlockedGuidance,
+  decideEndTurnGate,
   resolveAuditJudgment,
   AUDIT_PARSE_FAILURE_SENTINEL,
 } from '../../src/agent/goal-audit.js'
@@ -276,5 +278,70 @@ describe('resolveAuditJudgment', () => {
       },
     })
     expect(r.failedCriteria).toEqual([])
+  })
+})
+
+describe('buildBlockedGuidance', () => {
+  it('内部可见标记 + 换方向/ask_human 出路 + 含 objective，且不泄露黑话', () => {
+    const msg = buildBlockedGuidance(sampleGoal(), ['c1', 'c2'])
+    expect(msg).toContain('仅你可见')
+    expect(msg).toContain('实现功能 X')
+    // 明示两条出路
+    expect(msg).toMatch(/set_task_goal/)
+    expect(msg).toMatch(/ask_human/)
+    // 提示别原样重试
+    expect(msg).toMatch(/不要.*原样|换.*方向|走不通/)
+  })
+})
+
+describe('decideEndTurnGate', () => {
+  const fail = (over: Partial<Parameters<typeof decideEndTurnGate>[0]['audit']> = {}) => ({
+    pass: false,
+    failedCriteria: ['c1'],
+    detailedReport: '【普通 fail 报告】',
+    ...over,
+  })
+
+  it('audit pass → 放行（inject=null），不发券不标记', () => {
+    const d = decideEndTurnGate({
+      audit: { pass: true, failedCriteria: [], detailedReport: '' },
+      blockedAlreadyNotified: false,
+      goal: sampleGoal(),
+    })
+    expect(d.inject).toBeNull()
+    expect(d.grantRevisionToken).toBe(false)
+    expect(d.markBlockedNotified).toBe(false)
+  })
+
+  it('普通 fail（未 blocked）→ 拦截并注入 detailedReport', () => {
+    const d = decideEndTurnGate({
+      audit: fail({ goalStatus: 'active' }),
+      blockedAlreadyNotified: false,
+      goal: sampleGoal(),
+    })
+    expect(d.inject).toBe('【普通 fail 报告】')
+    expect(d.grantRevisionToken).toBe(false)
+  })
+
+  it('首次 blocked → 注入换方向提示 + 发券 + 标记已通知', () => {
+    const d = decideEndTurnGate({
+      audit: fail({ goalStatus: 'blocked' }),
+      blockedAlreadyNotified: false,
+      goal: sampleGoal(),
+    })
+    expect(d.inject).toContain('仅你可见')
+    expect(d.inject).toContain('实现功能 X')
+    expect(d.grantRevisionToken).toBe(true)
+    expect(d.markBlockedNotified).toBe(true)
+  })
+
+  it('已通知过的 blocked → 放行（inject=null），不再无限重放', () => {
+    const d = decideEndTurnGate({
+      audit: fail({ goalStatus: 'blocked' }),
+      blockedAlreadyNotified: true,
+      goal: sampleGoal(),
+    })
+    expect(d.inject).toBeNull()
+    expect(d.grantRevisionToken).toBe(false)
   })
 })
