@@ -78,4 +78,9 @@ describe('FeishuDocReader.readMeta()', () => {
     const meta = await reader.readMeta({ kind: 'sheets', token: 'S' })
     expect(meta).toEqual({ type: 'sheets', title: 'Sheet1' })
   })
+
+  it('throws UNSUPPORTED for unknown kind in readMeta', async () => {
+    const reader = new FeishuDocReader(makeClient())
+    await expect(reader.readMeta({ kind: 'unknown', token: '' })).rejects.toMatchObject({ code: 'UNSUPPORTED' })
+  })
 })

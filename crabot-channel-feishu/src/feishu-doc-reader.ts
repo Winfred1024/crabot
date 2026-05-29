@@ -49,7 +49,7 @@ export class FeishuDocReader {
         const { title } = await this.client.getSheetMeta(ref.token)
         return { type: 'sheets', title }
       }
-      default: return { type: 'docx', title: '' }
+      default: throw Object.assign(new Error(`本期不支持读取此类型飞书文档（kind=${ref.kind}）`), { code: 'UNSUPPORTED' })
     }
   }
 
@@ -63,6 +63,7 @@ export class FeishuDocReader {
       this.client.getDocxMeta(documentId),
     ])
     const truncated = rawText.length > maxChars
+    // url 由 RPC 调用方填充，reader 层不持有原始 URL
     return {
       type: resultType,
       title: meta.title,
@@ -83,12 +84,14 @@ export class FeishuDocReader {
   private async readSheetsFull(spreadsheetToken: string, maxChars: number): Promise<DocReadResult> {
     const meta = await this.client.getSheetMeta(spreadsheetToken)
     if (meta.sheets.length === 0) {
+      // url 由 RPC 调用方填充，reader 层不持有原始 URL
       return { type: 'sheets', title: meta.title, text: '（表格为空）', truncated: false, url: '' }
     }
     const firstSheet = meta.sheets[0]
     const values = await this.client.getSheetValues(spreadsheetToken, `${firstSheet.sheet_id}!A1:Z1000`)
     const text = values.map(row => (row as unknown[]).join('\t')).join('\n')
     const truncated = text.length > maxChars
+    // url 由 RPC 调用方填充，reader 层不持有原始 URL
     return {
       type: 'sheets',
       title: meta.title,
