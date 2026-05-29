@@ -39,6 +39,32 @@ export interface FeishuOnboarderOptions {
   delayMs?: (ms: number) => Promise<void>
 }
 
+export const ONBOARD_SCOPES: readonly string[] = [
+  // IM — 必備
+  'im:message',
+  'im:message:send_as_bot',
+  'im:chat:readonly',
+  'im:resource',
+  // 聯繫人 — 必備
+  'contact:user.base:readonly',
+  'contact:contact.base:readonly',
+  // 雲文檔只讀 — 必備（P1）
+  'docx:document:readonly',
+  'wiki:wiki:readonly',
+  'sheets:spreadsheet:readonly',
+  // 前瞻只讀
+  'drive:drive:readonly',
+  'bitable:app:readonly',
+  'minutes:minutes:readonly',
+  'vc:meeting:readonly',
+  'calendar:calendar:readonly',
+]
+
+export function buildScopeGrantUrl(appId: string): string {
+  const q = ONBOARD_SCOPES.join(',')
+  return `https://open.feishu.cn/app/${appId}/auth?q=${encodeURIComponent(q)}&op_from=openapi&token_type=tenant`
+}
+
 const SESSION_TTL_MS = 10 * 60 * 1000
 const GC_INTERVAL_MS = 60 * 1000
 
@@ -194,7 +220,11 @@ export class FeishuOnboarder implements Onboarder {
     }
     if (open_id) env.FEISHU_OWNER_OPEN_ID = open_id
     this.sessions.delete(sessionId)
-    return { env }
+    return {
+      env,
+      suggested_name: undefined,
+      scope_grant_url: buildScopeGrantUrl(app_id),
+    } as OnboarderFinishResult & { scope_grant_url: string }
   }
 
   cancel(sessionId: string): void {
