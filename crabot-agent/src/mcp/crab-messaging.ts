@@ -29,6 +29,8 @@ export interface CrabMessagingDeps {
    * Front 调用路径返回 null（front 不能调 ask_human，工具内会拒绝）。
    */
   getTaskContext?: () => TaskContext | null
+  /** 是否啟用飛書文檔讀取工具（有飛書 channel 時才注入） */
+  enableFeishuDocTool?: boolean
 }
 
 export interface TaskContext {
@@ -858,6 +860,70 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
         }
       },
     },
+    // ================================================================
+    // 8. read_feishu_document — 讀取飛書雲文檔正文（有飛書 channel 時才注入）
+    // ================================================================
+    ...(deps.enableFeishuDocTool ? [{
+      name: 'read_feishu_document',
+      description: '讀取飛書雲文檔正文（支持 docx / wiki / sheets）。傳入飛書文檔 URL，返回標題和純文本正文。遇到權限不足時返回授權指引。注意：讀取 wiki/docx 需要把本應用（或應用所在群）加為文檔/文件夾/知識空間的協作者。',
+      schema: {
+        url: z.string().describe('飛書雲文檔 URL，例如 https://xxx.feishu.cn/docx/TOKEN 或 /wiki/TOKEN 或 /sheets/TOKEN'),
+        channel_id: z.string().optional().describe('飛書 channel 實例 ID（有多個飛書 channel 時必須指定）'),
+        max_chars: z.number().optional().describe('正文最大字符數（默認 50000）'),
+      },
+      handler: async (args: Record<string, unknown>) => {
+        const url = args.url as string
+        const maxChars = typeof args.max_chars === 'number' ? args.max_chars : undefined
+
+        // 解析目標 channel
+        let targetChannelId = args.channel_id as string | undefined
+        if (!targetChannelId) {
+          const adminPort = await getAdminPort()
+          let feishuChannels: Array<{ id: string }> = []
+          try {
+            const result = await rpcClient.call<
+              { pagination: { page: number; page_size: number } },
+              { items: Array<{ id: string; implementation_id: string }> }
+            >(adminPort, 'list_channel_instances', { pagination: { page: 1, page_size: 50 } }, moduleId)
+            feishuChannels = result.items.filter(c => c.implementation_id === 'channel-feishu')
+          } catch {
+            return wrapText({ error_code: 'CHANNEL_UNAVAILABLE', error: '無法獲取飛書 channel 列表' })
+          }
+          if (feishuChannels.length === 0) {
+            return wrapText({ error_code: 'CHANNEL_UNAVAILABLE', error: '沒有找到飛書 channel，無法讀取飛書文檔' })
+          }
+          if (feishuChannels.length > 1) {
+            return wrapText({
+              error_code: 'AMBIGUOUS',
+              error: '有多個飛書 channel，請通過 channel_id 參數指定',
+              available_channels: feishuChannels.map(c => c.id),
+            })
+          }
+          targetChannelId = feishuChannels[0].id
+        }
+
+        let channelPort: number
+        try {
+          channelPort = await resolveChannelPort(targetChannelId)
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err)
+          return wrapText({ error_code: 'CHANNEL_UNAVAILABLE', error: `飛書 Channel ${targetChannelId} 不可用: ${msg}` })
+        }
+        if (!channelPort) {
+          return wrapText({ error_code: 'CHANNEL_UNAVAILABLE', error: `飛書 Channel ${targetChannelId} 不可用` })
+        }
+
+        try {
+          const result = await rpcClient.call<
+            { url: string; max_chars?: number },
+            { type: string; title: string; text: string; truncated: boolean; url: string }
+          >(channelPort, 'read_document', { url, ...(maxChars !== undefined ? { max_chars: maxChars } : {}) }, moduleId)
+          return wrapText(result)
+        } catch (err: unknown) {
+          return wrapText(translateChannelError(err))
+        }
+      },
+    } as MessagingTool] : []),
   ]
 }
 

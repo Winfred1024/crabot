@@ -164,6 +164,8 @@ export class UnifiedAgent extends ModuleBase {
   // Session memory_scopes 缓存（TTL 60s，session config 变更不频繁）
   private sessionScopesCache: Map<string, { scopes: string[]; expiresAt: number }> = new Map()
   private channelPorts: Map<ModuleId, number> = new Map()
+  /** 是否有可用的飛書 channel（啟動時探測，決定是否注入 read_feishu_document 工具） */
+  private feishuChannelAvailable = false
   /** 運行時已知的 secret 值集合，用於 trace 脫敏 */
   private readonly knownSecrets: Set<string> = new Set()
 
@@ -312,6 +314,7 @@ export class UnifiedAgent extends ModuleBase {
         moduleId: this.config.moduleId,
         getAdminPort: () => this.getAdminPort(),
         resolveChannelPort: (channelId) => this.getChannelPort(channelId),
+        enableFeishuDocTool: this.feishuChannelAvailable,
         ...(taskCtx ? { getTaskContext: () => taskCtx } : {}),
       }, this.sandboxPathMappingsRef),
     })
@@ -2122,6 +2125,7 @@ export class UnifiedAgent extends ModuleBase {
               moduleId: this.config.moduleId,
               getAdminPort: () => this.getAdminPort(),
               resolveChannelPort: (channelId) => this.getChannelPort(channelId),
+              enableFeishuDocTool: this.feishuChannelAvailable,
               ...(taskCtx ? { getTaskContext: () => taskCtx } : {}),
             }, this.sandboxPathMappingsRef),
           })
@@ -2534,11 +2538,26 @@ export class UnifiedAgent extends ModuleBase {
     this.watchdogInterval.unref?.()
   }
 
+  private async detectFeishuChannel(): Promise<void> {
+    try {
+      const adminPort = await this.getAdminPort()
+      const result = await this.rpcClient.call<
+        { pagination: { page: number; page_size: number } },
+        { items: Array<{ implementation_id: string }> }
+      >(adminPort, 'list_channel_instances', { pagination: { page: 1, page_size: 50 } }, this.config.moduleId)
+      this.feishuChannelAvailable = result.items.some(c => c.implementation_id === 'channel-feishu')
+    } catch {
+      this.feishuChannelAvailable = false
+    }
+  }
+
   protected override async onStart(): Promise<void> {
     this.startEventLoopWatchdog()
     // trace 的 in-flight 持久化：每 15s 覆盖写 traces-running.jsonl，让 agent
     // 被 SIGKILL 时主 task trace 仍能保留到最后一次 flush 的状态。
     this.traceStore.startFlushTimer(15_000)
+    // 探測是否有飛書 channel，決定是否注入 read_feishu_document 工具
+    this.detectFeishuChannel().catch(() => {/* 探测失败不影响启动 */})
     this.sessionManager.startCleanup()
 
     // Connect to external MCP servers (Admin-configured)
