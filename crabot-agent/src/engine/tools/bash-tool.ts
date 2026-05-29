@@ -183,6 +183,14 @@ async function runBg(command: string, bgCtx: BashBgContext): Promise<ToolCallRes
   }
 }
 
+const SENSITIVE_CMD_PATTERNS = [
+  /channel-configs[/\\]/,
+]
+
+function containsSensitivePath(command: string): boolean {
+  return SENSITIVE_CMD_PATTERNS.some(p => p.test(command))
+}
+
 export function createBashTool(cwd: string, defaultTimeout?: number, bgCtx?: BashBgContext): ToolDefinition {
   const effectiveDefault = defaultTimeout ?? DEFAULT_TIMEOUT_MS
   return defineTool({
@@ -209,6 +217,15 @@ export function createBashTool(cwd: string, defaultTimeout?: number, bgCtx?: Bas
     permissionLevel: 'dangerous',
     call: async (input: Record<string, unknown>, context: ToolCallContext): Promise<ToolCallResult> => {
       const command = input.command as string
+
+      // 軟攔截：命令中直接引用 channel-configs 路徑
+      if (containsSensitivePath(command)) {
+        return {
+          output: '命令引用了渠道憑證路徑（channel-configs/），禁止直接訪問。要讀取飛書文檔請使用 read_feishu_document 工具。',
+          isError: true,
+        }
+      }
+
       const bg = input.run_in_background === true
 
       if (bg) {

@@ -41,6 +41,15 @@ function containsNullBytes(buffer: Buffer): boolean {
   return false
 }
 
+const SENSITIVE_PATH_PATTERNS = [
+  /[/\\]data[/\\]admin[/\\]channel-configs[/\\]/,
+  /[/\\]data[/\\]admin[/\\]model_providers[/\\]/,
+]
+
+function isSensitivePath(filePath: string): boolean {
+  return SENSITIVE_PATH_PATTERNS.some(p => p.test(filePath))
+}
+
 export function createReadTool(cwd: string): ToolDefinition {
   return defineTool({
     name: 'Read',
@@ -73,6 +82,14 @@ export function createReadTool(cwd: string): ToolDefinition {
       const filePath = path.isAbsolute(input.file_path as string)
         ? (input.file_path as string)
         : path.resolve(cwd, input.file_path as string)
+
+      // 敏感路徑守衛：禁止直接讀取渠道憑證文件
+      if (isSensitivePath(filePath)) {
+        return {
+          output: '此路徑包含渠道憑證，禁止直接讀取。要讀取飛書文檔請使用 read_feishu_document 工具；要查看 channel 配置請通過 Admin Web 或 crabot CLI。',
+          isError: true,
+        }
+      }
 
       const offset = typeof input.offset === 'number' ? input.offset : 0
       const limit = typeof input.limit === 'number' ? input.limit : DEFAULT_LIMIT
