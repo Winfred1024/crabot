@@ -261,6 +261,79 @@ export class FeishuClient {
     return await streamToBuffer(stream)
   }
 
+  // ── 云文档 ────────────────────────────────────────────────────────────────
+
+  /** docx v1 文档纯文本：GET /open-apis/docx/v1/documents/:id/raw_content */
+  async getDocxRawContent(documentId: string, lang = 0): Promise<string> {
+    const resp = await this.client.request<{ code?: number; msg?: string; data?: { content?: string } }>({
+      url: `/open-apis/docx/v1/documents/${documentId}/raw_content?lang=${lang}`,
+      method: 'GET',
+    })
+    if (resp.code && resp.code !== 0) {
+      throw new FeishuClientError({ code: this.mapDocCode(resp.code), message: resp.msg ?? `docx raw_content failed (code=${resp.code})` })
+    }
+    return resp.data?.content ?? ''
+  }
+
+  /** docx v1 文档元数据（含标题）：GET /open-apis/docx/v1/documents/:id */
+  async getDocxMeta(documentId: string): Promise<{ title: string }> {
+    const resp = await this.client.request<{ code?: number; msg?: string; data?: { document?: { title?: string } } }>({
+      url: `/open-apis/docx/v1/documents/${documentId}`,
+      method: 'GET',
+    })
+    if (resp.code && resp.code !== 0) {
+      throw new FeishuClientError({ code: this.mapDocCode(resp.code), message: resp.msg ?? `docx meta failed (code=${resp.code})` })
+    }
+    return { title: resp.data?.document?.title ?? '' }
+  }
+
+  /** wiki v2 节点信息：GET /open-apis/wiki/v2/spaces/get_node?token=&obj_type=wiki */
+  async getWikiNode(token: string): Promise<{ obj_token: string; obj_type: string }> {
+    const resp = await this.client.request<{ code?: number; msg?: string; data?: { node?: { obj_token?: string; obj_type?: string } } }>({
+      url: `/open-apis/wiki/v2/spaces/get_node?token=${encodeURIComponent(token)}&obj_type=wiki`,
+      method: 'GET',
+    })
+    if (resp.code && resp.code !== 0) {
+      throw new FeishuClientError({ code: this.mapDocCode(resp.code), message: resp.msg ?? `wiki get_node failed (code=${resp.code})` })
+    }
+    return {
+      obj_token: resp.data?.node?.obj_token ?? '',
+      obj_type: resp.data?.node?.obj_type ?? '',
+    }
+  }
+
+  /** sheets v3 工作表元数据：GET /open-apis/sheets/v3/spreadsheets/:token/sheets/query */
+  async getSheetMeta(spreadsheetToken: string): Promise<{ title: string; sheets: Array<{ sheet_id: string; title: string }> }> {
+    const resp = await this.client.request<{ code?: number; msg?: string; data?: { sheets?: Array<{ sheet_id?: string; title?: string }> } }>({
+      url: `/open-apis/sheets/v3/spreadsheets/${spreadsheetToken}/sheets/query`,
+      method: 'GET',
+    })
+    if (resp.code && resp.code !== 0) {
+      throw new FeishuClientError({ code: this.mapDocCode(resp.code), message: resp.msg ?? `sheets meta failed (code=${resp.code})` })
+    }
+    const sheets = (resp.data?.sheets ?? []).map(s => ({ sheet_id: s.sheet_id ?? '', title: s.title ?? '' }))
+    return { title: sheets[0]?.title ?? '', sheets }
+  }
+
+  /** sheets v2 读取单个 range 的值：GET /open-apis/sheets/v2/spreadsheets/:token/values/:range */
+  async getSheetValues(spreadsheetToken: string, range: string): Promise<unknown[][]> {
+    const resp = await this.client.request<{ code?: number; msg?: string; data?: { valueRange?: { values?: unknown[][] } } }>({
+      url: `/open-apis/sheets/v2/spreadsheets/${spreadsheetToken}/values/${encodeURIComponent(range)}?valueRenderOption=ToString`,
+      method: 'GET',
+    })
+    if (resp.code && resp.code !== 0) {
+      throw new FeishuClientError({ code: this.mapDocCode(resp.code), message: resp.msg ?? `sheets values failed (code=${resp.code})` })
+    }
+    return resp.data?.valueRange?.values ?? []
+  }
+
+  private mapDocCode(code: number): string {
+    // 99991663/99991672: 权限不足  230001: 文档不存在
+    if (code === 99991663 || code === 99991672 || code === 403) return 'PERMISSION_DENIED'
+    if (code === 230001 || code === 404) return 'NOT_FOUND'
+    return 'CHANNEL_SEND_FAILED'
+  }
+
   /** 历史消息查询：im.v1.message.list */
   async listMessages(params: { container_id_type: 'chat'; container_id: string; start_time?: string; end_time?: string; page_size?: number; page_token?: string; sort_type?: 'ByCreateTimeAsc' | 'ByCreateTimeDesc' }): Promise<{ items: Array<Record<string, unknown>>; page_token?: string; has_more: boolean }> {
     const resp = await this.client.im.message.list({
