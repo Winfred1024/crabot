@@ -26,6 +26,7 @@ import {
   type ProxyConfig,
   CLAIM_COMMANDS,
   CLAIM_PAIR_COMMANDS,
+  normalizeSlash,
   UNCLAIMED_HINT_TEXT,
   ALREADY_CLAIMED_HINT_TEXT,
   GOAL_SHOW_PREFIX,
@@ -165,7 +166,7 @@ import { createMemoryV2RestRouter } from './memory-v2-rest.js'
 import { OnboardingManager } from './onboarding-manager.js'
 import type { Onboarder } from 'crabot-shared'
 import { tailLogFile } from './module-log-tail.js'
-import { buildRecoveryTask, cleanupStaleInflightTasks } from './recovery-handler.js'
+import { buildRecoveryTask, cleanupStaleInflightTasks, isAgentRestartStale } from './recovery-handler.js'
 import { getBuiltinSkills } from './builtin-skills.js'
 import { getBuiltinSubAgents } from './builtin-subagents.js'
 import { parseCleanupParams } from './trace-cleanup-cron.js'
@@ -3351,7 +3352,9 @@ export class AdminModule extends ModuleBase {
 
     // 认主类指令在 admin 层完整处理：不放行到 agent，避免 agent 看到指令字面后鹦鹉学舌。
     // 已知 friend 发命令属于无意义/误触，回固定话术；未知发信人按现有 pending 队列流程。
-    const body = (message.content.type === 'text' ? (message.content.text ?? '') : '').trim()
+    // 用 normalizeSlash 而非裸 trim：IM/复制粘贴常在 slash 词尾带零宽字符，
+    // 裸 trim 去不掉，会让 "/认主" 精确匹配失败、漏到 dispatcher 触发无谓 LLM 调用。
+    const body = normalizeSlash(message.content.type === 'text' ? message.content.text : '')
     if (CLAIM_COMMANDS.has(body)) {
       if (message.session.type !== 'private') {
         // 群聊里发命令现在没有特别语义，直接静默丢弃
@@ -3659,9 +3662,10 @@ export class AdminModule extends ModuleBase {
       console.log('[Admin] No existing schedules data')
     }
 
-    // Task 加载 + 重启清扫：admin 重启意味着 worker 进程内存状态已丢，
-    // 任何 pending/planning/executing 的任务对调用方都是僵尸——一律 failed。
-    // waiting_human 是例外（不依赖 worker 进程活着），cleanupStaleInflightTasks 保留之。
+    // Task 加载 + 重启清扫：admin 重启时 pending/planning/executing 一律 failed。
+    // waiting_human 例外保留——admin 重启不代表 agent 也重启，其 worker loop 可能仍活着、
+    // parked 在 humanQueue 上，人类一回复即可 resume（详见 cleanupStaleInflightTasks）。
+    // agent 自己重启的清扫是另一条路径（runSelfHealingForAgentRestart），那里 waiting_human 会被标 failed。
     try {
       const tasksData = await fs.readFile(this.tasksFilePath, 'utf-8')
       const loaded = JSON.parse(tasksData) as Task[]
@@ -4064,10 +4068,9 @@ export class AdminModule extends ModuleBase {
   private async runSelfHealingForAgentRestart(restartCount: number): Promise<void> {
     if (restartCount <= 0) return
 
-    // waiting 状态的 task 等价于 executing：agent 重启后关联的 async 子 agent 已丢失，一律标 failed
-    const inFlight = Array.from(this.tasks.values()).filter(
-      (t) => t.status === 'executing' || t.status === 'waiting',
-    )
+    // agent 重启后内存里的 worker loop 全部销毁：executing / waiting（等 async 子 agent）/
+    // waiting_human（等人类回复但已无 loop 接收，详见 isAgentRestartStale）一律算僵尸，标 failed。
+    const inFlight = Array.from(this.tasks.values()).filter((t) => isAgentRestartStale(t.status))
     if (inFlight.length === 0) return
 
     const now = generateTimestamp()

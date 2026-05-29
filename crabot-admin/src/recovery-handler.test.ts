@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildRecoveryTask, cleanupStaleInflightTasks } from './recovery-handler.js'
+import { buildRecoveryTask, cleanupStaleInflightTasks, isAgentRestartStale } from './recovery-handler.js'
 import type { Task, TaskStatus } from './types.js'
 
 function fakeTask(overrides: Partial<Task>): Task {
@@ -103,5 +103,22 @@ describe('cleanupStaleInflightTasks', () => {
     const original = fakeTask({ id: 'a', status: 'executing' })
     cleanupStaleInflightTasks([original], NOW)
     expect(original.status).toBe('executing') // 入参未被改写
+  })
+})
+
+describe('isAgentRestartStale', () => {
+  // agent 进程重启 → 内存里的 worker loop 必然全死，以下状态都依赖那个 loop 活着
+  it('treats executing / waiting / waiting_human as stale', () => {
+    expect(isAgentRestartStale('executing')).toBe(true)
+    expect(isAgentRestartStale('waiting')).toBe(true)
+    expect(isAgentRestartStale('waiting_human')).toBe(true)
+  })
+
+  // pending 还没被 worker 接走，无内存状态可丢；终态本就不该动
+  it('leaves pending / terminal states untouched', () => {
+    expect(isAgentRestartStale('pending')).toBe(false)
+    expect(isAgentRestartStale('completed')).toBe(false)
+    expect(isAgentRestartStale('failed')).toBe(false)
+    expect(isAgentRestartStale('cancelled')).toBe(false)
   })
 })

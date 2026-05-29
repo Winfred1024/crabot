@@ -13,13 +13,16 @@ import type { CreateTaskParams, Task, TaskStatus } from './types.js'
 /**
  * Admin 重启后对磁盘上 loaded tasks 做的状态清扫。
  *
- * 触发场景：admin 进程死后重启（不一定 agent 也重启）。磁盘上仍写着
+ * 触发场景：admin 进程死后重启（**不一定 agent 也重启**）。磁盘上仍写着
  * status='executing' 之类的"看起来在跑"的任务，但 admin 进程刚活过来，
  * 对应的 worker 进程内存状态早就丢了——任务对调用方而言就是僵尸。
  *
  * 处理：把所有"非终态、非 waiting_human"的任务一律标 failed。
- * waiting_human 是例外：它本来就不依赖 worker 进程活着（worker 已经
- * end_turn 了，等 dispatcher 收到人类回复重新拉起即可），跨重启天然可恢复。
+ * waiting_human 在这条路径上是例外：admin 重启不代表 agent 也重启，agent 可能仍
+ * 活着、其 worker loop 仍 parked 在 humanQueue 上，人类一回复就能正常 resume——
+ * 此时标 failed 会误杀活着的 loop。故保留。
+ * （agent **自己**重启时则相反：loop 必死，那条路径见 isAgentRestartStale，会把
+ * waiting_human 一并标 failed。两条路径处理不同，勿混。）
  *
  * @returns 新数组 + 实际清扫了几条（用于日志）
  */
@@ -45,6 +48,25 @@ export function cleanupStaleInflightTasks(
     }
   })
   return { tasks: next, staleCount }
+}
+
+/**
+ * agent 进程重启后，判断某 task 状态是否属于"依赖已死的 worker loop、需标 failed"的遗留态。
+ *
+ * agent 重启意味着内存里的 worker loop 全部销毁，对话状态没有落盘 checkpoint。因此：
+ * - executing / waiting（等 async 子 agent）：loop 已死，僵尸，标 failed。
+ * - waiting_human：loop 同样已死。它的 pending_question 留在 admin，但没有任何机制
+ *   在重启后把 parked loop 拉回内存——dispatcher 仍把它列为 supplement 目标，
+ *   而 pushSupplement 永远 hasActiveTask=false 兜底成 new_task。一律标 failed，
+ *   既让状态诚实，也让它退出 dispatcher 的活跃任务集合（不再被误判成 supplement）。
+ * - pending：还没被 worker 接走，无内存状态可丢，原样保留待重新调度。
+ * - planning / 终态：维持既有行为，不在此扫除。
+ *
+ * 注意：仅适用于 **agent 重启** 路径。admin 单独重启时 agent 可能仍活着、loop 仍 parked，
+ * 那条路径（cleanupStaleInflightTasks）必须继续保留 waiting_human。
+ */
+export function isAgentRestartStale(status: TaskStatus): boolean {
+  return status === 'executing' || status === 'waiting' || status === 'waiting_human'
 }
 
 /**
