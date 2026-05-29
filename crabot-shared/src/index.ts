@@ -73,6 +73,7 @@ export {
   GOAL_LIST_EXACT,
   GOAL_SHOW_BARE,
   GOAL_CLEAR_BARE,
+  normalizeSlash,
   isClaimCommand,
   isClaimSystemHint,
   isSlashSystemResponse,

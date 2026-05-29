@@ -9,6 +9,19 @@
  * Spec: 2026-05-25-goal-slash-commands-design.md §6
  */
 
+/**
+ * Slash 字面规整：裸 trim() 不去零宽 / 变体选择符，IM 与复制粘贴常在词尾带上
+ * 零宽空格（U+200B）等不可见字符，导致 "/认主​" 精确匹配失败、漏到 dispatcher。
+ * 这里统一去掉这些不可见字符 + NFC 归一 + trim，所有 slash 拦截判定都过这一层。
+ */
+// 零宽空格/连接符(200B-200D)、word joiner(2060)、BOM(FEFF)、变体选择符(FE00-FE0F)
+const INVISIBLE_CHARS_RE = /[\u200B-\u200D\u2060\uFEFF\uFE00-\uFE0F]/g
+
+export function normalizeSlash(text: string | undefined | null): string {
+  if (typeof text !== 'string') return ''
+  return text.replace(INVISIBLE_CHARS_RE, '').normalize('NFC').trim()
+}
+
 // === 认主类 slash（全部中文，英文 /pair /apply 已废） ===
 export const CLAIM_PAIR_COMMANDS: ReadonlySet<string> = new Set(['/认主'])
 export const CLAIM_COMMANDS: ReadonlySet<string> = new Set(['/认主', '/加好友'])
@@ -56,7 +69,7 @@ export const ALREADY_CLAIMED_HINT_TEXT =
 // === 老式谓词，保留旧名转调（避免现有 import 大改） ===
 export function isClaimCommand(text: string | undefined | null): boolean {
   if (typeof text !== 'string') return false
-  return CLAIM_COMMANDS.has(text.trim())
+  return CLAIM_COMMANDS.has(normalizeSlash(text))
 }
 
 const SYSTEM_HINT_TEXTS: ReadonlySet<string> = new Set([

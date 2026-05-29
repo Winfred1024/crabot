@@ -10,6 +10,7 @@ import {
   GOAL_CLEAR_BARE,
   UNCLAIMED_HINT_TEXT,
   ALREADY_CLAIMED_HINT_TEXT,
+  normalizeSlash,
   isClaimCommand,
   isClaimSystemHint,
   isSlashSystemResponse,
@@ -76,9 +77,30 @@ describe('isClaimCommand（保留旧名）', () => {
   it('trim 后匹配', () => {
     assert.equal(isClaimCommand('  /认主  '), true)
   })
+  it('尾部带零宽字符仍匹配（IM/复制粘贴常见，裸 trim 去不掉）', () => {
+    assert.equal(isClaimCommand("/认主\u200B"), true)       // 尾零宽空格
+    assert.equal(isClaimCommand("/认主\uFEFF"), true)       // 尾 BOM
+    assert.equal(isClaimCommand("\u2060/加好友\u200D"), true) // 首尾 word joiner + ZWJ
+  })
   it('非字符串安全', () => {
     assert.equal(isClaimCommand(null), false)
     assert.equal(isClaimCommand(undefined), false)
+  })
+})
+
+describe('normalizeSlash', () => {
+  it('去掉零宽 / 变体选择符 + trim', () => {
+    assert.equal(normalizeSlash("/认主\u200B"), "/认主")
+    assert.equal(normalizeSlash("\uFEFF/认主\u200D"), "/认主")
+    assert.equal(normalizeSlash("  /目标 a3f8\u2060  "), "/目标 a3f8")
+  })
+  it('NFC 归一', () => {
+    // 'é' 组合形式 (e + U+0301) → NFC 单码点
+    assert.equal(normalizeSlash("e\u0301"), "\u00E9")
+  })
+  it('非字符串安全', () => {
+    assert.equal(normalizeSlash(null), '')
+    assert.equal(normalizeSlash(undefined), '')
   })
 })
 
