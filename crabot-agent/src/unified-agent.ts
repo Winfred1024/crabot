@@ -243,8 +243,8 @@ export class UnifiedAgent extends ModuleBase {
 
     // 初始化群聊注意力调度（从 extra 读取配置，fallback 到协议默认值）
     const attentionConfig: AttentionConfig = {
-      group_attention_min_ms: (config.extra?.group_attention_min_ms as number) ?? 5000,
-      group_attention_max_ms: (config.extra?.group_attention_max_ms as number) ?? 300000,
+      group_attention_min_ms: (config.extra?.group_attention_min_ms as number) ?? 120000,
+      group_attention_max_ms: (config.extra?.group_attention_max_ms as number) ?? 1800000,
     }
     this.attentionScheduler = new AttentionScheduler(
       attentionConfig,

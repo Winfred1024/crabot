@@ -149,7 +149,9 @@ function getReportMode(
       ? extra.progress_report_master_private
       : extra.progress_report_other_private
   if (raw === 'silent' || raw === 'text_forward' || raw === 'digest') return raw
-  return 'digest'
+  // 未配置时的默认行为需与 admin extra_schema 默认值保持一致：
+  // master 私聊 digest，群聊 / 其他私聊 silent。
+  return isMasterPrivate ? 'digest' : 'silent'
 }
 
 const LOG_FILE = path.join(process.cwd(), '../data/agent-handler-debug.log')
@@ -1116,7 +1118,7 @@ export class AgentHandler {
           const ex = this.extra
           const intervalSec = typeof ex.progress_digest_interval_seconds === 'number'
             ? ex.progress_digest_interval_seconds
-            : 120
+            : 1800
 
           const digestConfig: ProgressDigestConfig = {
             intervalMs: intervalSec * 1000,

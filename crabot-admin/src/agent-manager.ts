@@ -77,7 +77,7 @@ const DEFAULT_IMPLEMENTATION: AgentImplementation = {
       title: '其他私聊汇报',
       description: '非 Master 的普通好友私聊场景下的进度汇报行为',
       type: 'select',
-      default: 'digest',
+      default: 'silent',
       options: [
         { value: 'silent', label: '静默' },
         { value: 'text_forward', label: '文本转发' },
@@ -89,7 +89,7 @@ const DEFAULT_IMPLEMENTATION: AgentImplementation = {
       title: '群聊汇报',
       description: '群聊场景下的进度汇报行为',
       type: 'select',
-      default: 'digest',
+      default: 'silent',
       options: [
         { value: 'silent', label: '静默' },
         { value: 'text_forward', label: '文本转发' },
@@ -101,7 +101,7 @@ const DEFAULT_IMPLEMENTATION: AgentImplementation = {
       title: '摘要间隔（秒）',
       description: '定期摘要模式下的汇报间隔',
       type: 'number',
-      default: 120,
+      default: 1800,
       visible_when: {
         any_of: [
           'progress_report_master_private',
@@ -135,14 +135,14 @@ const DEFAULT_IMPLEMENTATION: AgentImplementation = {
       title: '群聊最小巡检间隔（ms）',
       description: 'Agent 刚回复后的最小巡检间隔',
       type: 'number',
-      default: 5000,
+      default: 120000,
     },
     {
       key: 'group_attention_max_ms',
       title: '群聊最大巡检间隔（ms）',
       description: '群聊巡检间隔的上限',
       type: 'number',
-      default: 300000,
+      default: 1800000,
     },
     {
       key: 'goal_mode_enabled',
