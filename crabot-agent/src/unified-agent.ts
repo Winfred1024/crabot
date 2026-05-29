@@ -55,6 +55,7 @@ import { getAgentTraceDir } from './core/data-paths.js'
 import { PromptManager } from './prompt-manager.js'
 import { createLSPManager, type LSPManager } from './lsp/lsp-manager.js'
 import type { BgEntityRecord, BgEntityStatus, BgEntityType } from './engine/bg-entities/types.js'
+import { redactSecrets } from './engine/redact-secrets.js'
 
 const BARRIER_TIMEOUT_MS = 8_000
 
@@ -163,6 +164,14 @@ export class UnifiedAgent extends ModuleBase {
   // Session memory_scopes 缓存（TTL 60s，session config 变更不频繁）
   private sessionScopesCache: Map<string, { scopes: string[]; expiresAt: number }> = new Map()
   private channelPorts: Map<ModuleId, number> = new Map()
+  /** 運行時已知的 secret 值集合，用於 trace 脫敏 */
+  private readonly knownSecrets: Set<string> = new Set()
+
+  /** 注冊需要脫敏的 secret 值（channel config 注入時調用） */
+  registerSecret(value: string): void {
+    if (value && value.length >= 6) this.knownSecrets.add(value)
+  }
+
   /** Crabot 群昵称缓存: channel_id → display_name */
   private crabDisplayNames: Map<ModuleId, string> = new Map()
 
@@ -2248,6 +2257,7 @@ export class UnifiedAgent extends ModuleBase {
    */
   private buildTraceCallback(traceId: string): TraceCallback {
     const store = this.traceStore
+    const knownSecrets = this.knownSecrets
     // 闭包追踪父 span ID，用于建立 llm_call / tool_call 的父子关系
     let currentLoopSpanId: string | undefined
     let currentLlmSpanId: string | undefined
@@ -2288,16 +2298,17 @@ export class UnifiedAgent extends ModuleBase {
       },
 
       onLlmCallEnd(spanId: string, result: { stopReason?: string; outputSummary?: string; toolCallsCount?: number; fullInput?: string; fullOutput?: string; error?: string; forcedSummaryAttempt?: number }, endedAtMs?: number): void {
+        const secrets = [...knownSecrets]
         store.endSpan(
           traceId,
           spanId,
           result.error ? 'failed' : 'completed',
           {
             stop_reason: result.stopReason,
-            output_summary: result.error ?? result.outputSummary,
+            output_summary: redactSecrets(result.error ?? result.outputSummary ?? '', secrets),
             tool_calls_count: result.toolCallsCount,
-            full_input: result.fullInput,
-            full_output: result.fullOutput,
+            full_input: result.fullInput ? redactSecrets(result.fullInput, secrets) : undefined,
+            full_output: result.fullOutput ? redactSecrets(result.fullOutput, secrets) : undefined,
             forced_summary_attempt: result.forcedSummaryAttempt,
           } as Partial<import('./types.js').LlmCallDetails>,
           endedAtMs,
@@ -2309,23 +2320,27 @@ export class UnifiedAgent extends ModuleBase {
         // 优先挂到当前 LLM span 下（正常工具调用都发生在 LLM turn 内）；
         // 若 LLM span 已结束（如 engine 主动注入的 __system_* 伪工具发生在两个 turn 之间），
         // 降级挂到 loop span 下，保留时序可见性。
+        const secrets = [...knownSecrets]
+        const redacted = redactSecrets(inputSummary, secrets)
         const parentSpanId = currentLlmSpanId ?? currentLoopSpanId
         const span = store.startSpan(traceId, {
           type: 'tool_call',
           ...(parentSpanId !== undefined ? { parent_span_id: parentSpanId } : {}),
-          details: { tool_name: toolName, input_summary: inputSummary },
+          details: { tool_name: toolName, input_summary: redacted },
           ...(startedAtMs !== undefined ? { started_at_ms: startedAtMs } : {}),
         })
         return span.span_id
       },
 
       onToolCallEnd(spanId: string, outputSummary: string, error?: string, endedAtMs?: number, childTraceId?: string): void {
+        const secrets = [...knownSecrets]
+        const redacted = redactSecrets(outputSummary, secrets)
         store.endSpan(
           traceId,
           spanId,
           error ? 'failed' : 'completed',
           {
-            output_summary: outputSummary,
+            output_summary: redacted,
             error,
             ...(childTraceId !== undefined ? { child_trace_id: childTraceId } : {}),
           } as Partial<import('./types.js').ToolCallDetails>,
