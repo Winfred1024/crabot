@@ -100,6 +100,9 @@ export class FeishuChannel extends ModuleBase {
   private static readonly DISPLAY_NAME_NEG_TTL_MS = 5 * 60 * 1000
   private static readonly DISPLAY_NAME_CACHE_MAX = 2000
 
+  private readonly docTitleCache: Map<string, { title: string; fetchedAt: number }> = new Map()
+  private static readonly DOC_TITLE_TTL_MS = 60 * 60 * 1000 // 1h
+
   constructor(config: FeishuChannelInitConfig) {
     const moduleConfig: ModuleConfig = {
       moduleId: config.module_id,
@@ -228,10 +231,11 @@ export class FeishuChannel extends ModuleBase {
     const mapped = mapMessageContent(message.message_type ?? 'text', message.content ?? '{}', mentions)
 
     // sender 昵称解析（contact API）和媒体下载彼此独立，并行节省 ~100ms
-    const [senderName, content] = await Promise.all([
+    const [senderName, rawContent] = await Promise.all([
       senderOpenId ? this.resolveDisplayName(senderOpenId) : Promise.resolve(''),
       this.applyMediaContent(mapped, message.message_id),
     ])
+    const content = await this.enrichContentWithDocTitles(rawContent)
 
     const placeholderTitle = isGroup
       ? await this.resolveGroupTitle(message.chat_id)
@@ -385,6 +389,40 @@ export class FeishuChannel extends ModuleBase {
       console.warn(`[FeishuChannel] resolveGroupTitle ${chatId} failed:`, err)
     }
     return chatId
+  }
+
+  /**
+   * 對 text 內容中出現的飛書 URL，嘗試取標題注解（僅輕量取 title，不取全文）。
+   * 失敗降級為 [飛書文檔] url，絕不阻塞消息。
+   */
+  private async enrichContentWithDocTitles(content: MessageContent): Promise<MessageContent> {
+    if (content.type !== 'text' || !content.text) return content
+    const urls = extractFeishuDocUrls(content.text)
+    if (urls.length === 0) return content
+
+    let text = content.text
+    for (const url of urls) {
+      const ref = parseFeishuDocUrl(url)
+      if (!ref || ref.kind === 'unknown') continue
+      const annotation = await this.fetchDocTitleAnnotation(ref)
+      text = text.replace(url, `${annotation} ${url}`)
+    }
+    return { ...content, text }
+  }
+
+  private async fetchDocTitleAnnotation(ref: NonNullable<ReturnType<typeof parseFeishuDocUrl>>): Promise<string> {
+    const cached = this.docTitleCache.get(ref.token)
+    if (cached && Date.now() - cached.fetchedAt < FeishuChannel.DOC_TITLE_TTL_MS) {
+      return cached.title ? `[飛書文檔·${cached.title}]` : '[飛書文檔]'
+    }
+    try {
+      const meta = await this.docReader.readMeta(ref)
+      const label = meta.title ? `[飛書文檔·${meta.title}]` : '[飛書文檔]'
+      this.docTitleCache.set(ref.token, { title: meta.title, fetchedAt: Date.now() })
+      return label
+    } catch {
+      return '[飛書文檔]'
+    }
   }
 
   private async handleBotAdded(data: { chat_id?: string; name?: string; type?: string }): Promise<void> {
