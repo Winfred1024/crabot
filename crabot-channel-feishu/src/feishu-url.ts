@@ -19,5 +19,8 @@ export function parseFeishuDocUrl(raw: string): FeishuDocRef | null {
 const URL_RE = /https?:\/\/[^\s<>"']+/g
 
 export function extractFeishuDocUrls(text: string): string[] {
-  return (text.match(URL_RE) ?? []).filter(u => parseFeishuDocUrl(u) !== null)
+  return (text.match(URL_RE) ?? []).filter(u => {
+    const ref = parseFeishuDocUrl(u)
+    return ref !== null && ref.kind !== 'unknown'
+  })
 }

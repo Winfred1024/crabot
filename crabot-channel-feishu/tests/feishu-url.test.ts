@@ -46,4 +46,9 @@ describe('extractFeishuDocUrls', () => {
   it('returns empty array when no feishu urls', () => {
     expect(extractFeishuDocUrls('no urls here')).toEqual([])
   })
+
+  it('excludes unknown-kind feishu urls (e.g. /base/)', () => {
+    const text = 'https://bcnme6vi1icq.feishu.cn/base/QlQ2b 和 https://bcnme6vi1icq.feishu.cn/docx/ABC'
+    expect(extractFeishuDocUrls(text)).toEqual(['https://bcnme6vi1icq.feishu.cn/docx/ABC'])
+  })
 })
