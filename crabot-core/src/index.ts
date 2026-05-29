@@ -746,6 +746,11 @@ export class ModuleManager {
         ...envOverride,
         Crabot_MODULE_ID: moduleId,
         Crabot_PORT: String(runtime.port),
+        // MM 是自身端口的权威来源：显式注入回连端口/地址。
+        // 否则动态注册的模块（如 channel）env 里没有 CRABOT_MM_PORT，
+        // RpcClient 会 fallback 到默认 19000，在多实例/端口偏移部署下连到错误的 MM。
+        CRABOT_MM_PORT: String(this.config.port),
+        CRABOT_MM_ENDPOINT: `http://localhost:${this.config.port}`,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
