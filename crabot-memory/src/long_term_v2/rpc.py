@@ -453,22 +453,29 @@ class LongTermV2Rpc:
             type_=type_, status=status,
             tags=tags, limit=limit, offset=offset, sort=sort,
         )
-        items: list[dict] = []
-        for r in rows:
-            try:
-                entry = self.store.read(r["status"], r["type"], r["id"])
-            except FileNotFoundError:
-                continue
-            if author and entry.frontmatter.author != author:
-                continue
-            items.append({
-                "id": r["id"],
-                "type": r["type"],
-                "status": r["status"],
-                "brief": entry.frontmatter.brief,
-                "frontmatter": entry.frontmatter.model_dump(exclude_none=True, mode="json"),
-            })
+        items = [
+            item for r in rows
+            if (item := self._hydrate_entry_item(r)) is not None
+            and (not author or item["frontmatter"].get("author") == author)
+        ]
         return {"items": items, "total": len(items)}
+
+    def _hydrate_entry_item(self, row: dict) -> dict | None:
+        """把 index row 读盘 hydrate 成带 frontmatter 的可渲染 item（entry 文件缺失返回 None）。
+
+        list_entries / keyword_search 共用，确保返回 shape 不漂移——Admin 表格直接渲染需要 frontmatter。
+        """
+        try:
+            entry = self.store.read(row["status"], row["type"], row["id"])
+        except FileNotFoundError:
+            return None
+        return {
+            "id": row["id"],
+            "type": row["type"],
+            "status": row["status"],
+            "brief": entry.frontmatter.brief,
+            "frontmatter": entry.frontmatter.model_dump(exclude_none=True, mode="json"),
+        }
 
     async def keyword_search(self, params: dict) -> dict:
         query = (params.get("query") or "").strip()
@@ -480,7 +487,8 @@ class LongTermV2Rpc:
             status = None
         limit = int(params.get("limit", 50))
         rows = self.index.keyword_search(query, type_=type_, status=status, limit=limit)
-        return {"items": rows}
+        items = [item for r in rows if (item := self._hydrate_entry_item(r)) is not None]
+        return {"items": items}
 
     async def restore_memory(self, params: dict) -> dict:
         """从 trash 恢复到 inbox。"""

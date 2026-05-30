@@ -347,10 +347,12 @@ function sortEntries(entries: MemoryEntryV2[], sort: SortState): MemoryEntryV2[]
   const asc = sort.direction === 'asc' ? 1 : -1
   return [...entries].sort((a, b) => {
     if (sort.column === 'ingestion_time') {
-      return asc * (a.frontmatter!.ingestion_time.localeCompare(b.frontmatter!.ingestion_time))
+      const ta = a.frontmatter?.ingestion_time ?? ''
+      const tb = b.frontmatter?.ingestion_time ?? ''
+      return asc * ta.localeCompare(tb)
     }
-    const ca = a.frontmatter!.source_trust * a.frontmatter!.content_confidence
-    const cb = b.frontmatter!.source_trust * b.frontmatter!.content_confidence
+    const ca = (a.frontmatter?.source_trust ?? 0) * (a.frontmatter?.content_confidence ?? 0)
+    const cb = (b.frontmatter?.source_trust ?? 0) * (b.frontmatter?.content_confidence ?? 0)
     return asc * (ca - cb)
   })
 }

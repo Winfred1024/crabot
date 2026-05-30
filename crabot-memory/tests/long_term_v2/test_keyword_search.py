@@ -79,3 +79,18 @@ async def test_keyword_search_excludes_trash_by_default(tmp_path):
     r = await rpc.keyword_search({"query": "macOS"})
     ids = [x["id"] for x in r["items"]]
     assert ids == ["good"]
+
+
+@pytest.mark.asyncio
+async def test_keyword_search_items_include_frontmatter(tmp_path):
+    """Admin 表格直接渲染需 frontmatter，shape 必须与 list_entries 对齐。"""
+    store = MemoryStore(str(tmp_path / "lt"))
+    index = SqliteIndex(str(tmp_path / "v2.db"))
+    rpc = LongTermV2Rpc(store=store, index=index)
+    _seed(store, index, "m1", brief="macOS 终端技巧", body="pbcopy")
+    r = await rpc.keyword_search({"query": "macOS"})
+    assert len(r["items"]) == 1
+    item = r["items"][0]
+    assert item["frontmatter"]["id"] == "m1"
+    assert item["frontmatter"]["ingestion_time"] == "2026-04-01T00:00:00Z"
+    assert item["frontmatter"]["author"] == "system"
