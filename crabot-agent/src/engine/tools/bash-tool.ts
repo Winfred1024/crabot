@@ -183,12 +183,10 @@ async function runBg(command: string, bgCtx: BashBgContext): Promise<ToolCallRes
   }
 }
 
-const SENSITIVE_CMD_PATTERNS = [
-  /channel-configs[/\\]/,
-]
+const SENSITIVE_CMD_RE = /channel-configs[/\\]/
 
 function containsSensitivePath(command: string): boolean {
-  return SENSITIVE_CMD_PATTERNS.some(p => p.test(command))
+  return SENSITIVE_CMD_RE.test(command)
 }
 
 export function createBashTool(cwd: string, defaultTimeout?: number, bgCtx?: BashBgContext): ToolDefinition {

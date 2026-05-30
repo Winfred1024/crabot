@@ -2261,7 +2261,8 @@ export class UnifiedAgent extends ModuleBase {
    */
   private buildTraceCallback(traceId: string): TraceCallback {
     const store = this.traceStore
-    const knownSecrets = this.knownSecrets
+    // 快照一次：trace 生命週期內 knownSecrets 幾乎不變，避免每個 span 重複展開 Set
+    const secrets = [...this.knownSecrets]
     // 闭包追踪父 span ID，用于建立 llm_call / tool_call 的父子关系
     let currentLoopSpanId: string | undefined
     let currentLlmSpanId: string | undefined
@@ -2302,7 +2303,6 @@ export class UnifiedAgent extends ModuleBase {
       },
 
       onLlmCallEnd(spanId: string, result: { stopReason?: string; outputSummary?: string; toolCallsCount?: number; fullInput?: string; fullOutput?: string; error?: string; forcedSummaryAttempt?: number }, endedAtMs?: number): void {
-        const secrets = [...knownSecrets]
         store.endSpan(
           traceId,
           spanId,
@@ -2324,7 +2324,6 @@ export class UnifiedAgent extends ModuleBase {
         // 优先挂到当前 LLM span 下（正常工具调用都发生在 LLM turn 内）；
         // 若 LLM span 已结束（如 engine 主动注入的 __system_* 伪工具发生在两个 turn 之间），
         // 降级挂到 loop span 下，保留时序可见性。
-        const secrets = [...knownSecrets]
         const redacted = redactSecrets(inputSummary, secrets)
         const parentSpanId = currentLlmSpanId ?? currentLoopSpanId
         const span = store.startSpan(traceId, {
@@ -2337,7 +2336,6 @@ export class UnifiedAgent extends ModuleBase {
       },
 
       onToolCallEnd(spanId: string, outputSummary: string, error?: string, endedAtMs?: number, childTraceId?: string): void {
-        const secrets = [...knownSecrets]
         const redacted = redactSecrets(outputSummary, secrets)
         store.endSpan(
           traceId,

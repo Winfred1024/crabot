@@ -133,7 +133,6 @@ export class FeishuClient {
         has_more: data.has_more ?? false,
       }
     } catch (err: unknown) {
-      // 飞书 SDK 错误码：99991672 = 应用未开通通讯录权限；99991663 = 通讯录读取权限未授予
       const code = (err as { code?: number }).code
       if (code === 99991672 || code === 99991663) {
         throw new RpcError(

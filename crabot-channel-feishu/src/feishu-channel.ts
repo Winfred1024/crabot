@@ -102,6 +102,7 @@ export class FeishuChannel extends ModuleBase {
 
   private readonly docTitleCache: Map<string, { title: string; fetchedAt: number }> = new Map()
   private static readonly DOC_TITLE_TTL_MS = 60 * 60 * 1000 // 1h
+  private static readonly DOC_TITLE_CACHE_MAX = 500
 
   constructor(config: FeishuChannelInitConfig) {
     const moduleConfig: ModuleConfig = {
@@ -400,12 +401,13 @@ export class FeishuChannel extends ModuleBase {
     const urls = extractFeishuDocUrls(content.text)
     if (urls.length === 0) return content
 
+    // 並行獲取所有 URL 的標題注解，再統一替換
+    const refs = urls.map(url => ({ url, ref: parseFeishuDocUrl(url)! }))
+    const annotations = await Promise.all(refs.map(({ ref }) => this.fetchDocTitleAnnotation(ref)))
+
     let text = content.text
-    for (const url of urls) {
-      const ref = parseFeishuDocUrl(url)
-      if (!ref || ref.kind === 'unknown') continue
-      const annotation = await this.fetchDocTitleAnnotation(ref)
-      text = text.replace(url, `${annotation} ${url}`)
+    for (let i = 0; i < refs.length; i++) {
+      text = text.replace(refs[i].url, `${annotations[i]} ${refs[i].url}`)
     }
     return { ...content, text }
   }
@@ -413,13 +415,16 @@ export class FeishuChannel extends ModuleBase {
   private async fetchDocTitleAnnotation(ref: NonNullable<ReturnType<typeof parseFeishuDocUrl>>): Promise<string> {
     const cached = this.docTitleCache.get(ref.token)
     if (cached && Date.now() - cached.fetchedAt < FeishuChannel.DOC_TITLE_TTL_MS) {
-      return cached.title ? `[飛書文檔·${cached.title}]` : '[飛書文檔]'
+      return docTitleLabel(cached.title)
     }
     try {
       const meta = await this.docReader.readMeta(ref)
-      const label = meta.title ? `[飛書文檔·${meta.title}]` : '[飛書文檔]'
+      if (this.docTitleCache.size >= FeishuChannel.DOC_TITLE_CACHE_MAX) {
+        const firstKey = this.docTitleCache.keys().next().value
+        if (firstKey !== undefined) this.docTitleCache.delete(firstKey)
+      }
       this.docTitleCache.set(ref.token, { title: meta.title, fetchedAt: Date.now() })
-      return label
+      return docTitleLabel(meta.title)
     } catch {
       return '[飛書文檔]'
     }
@@ -1310,4 +1315,8 @@ function throwError(code: string, message: string): never {
   const err = new Error(message)
   ;(err as Error & { code: string }).code = code
   throw err
+}
+
+function docTitleLabel(title: string): string {
+  return title ? `[飛書文檔·${title}]` : '[飛書文檔]'
 }

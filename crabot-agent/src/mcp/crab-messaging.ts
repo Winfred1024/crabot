@@ -909,9 +909,6 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
           const msg = err instanceof Error ? err.message : String(err)
           return wrapText({ error_code: 'CHANNEL_UNAVAILABLE', error: `飛書 Channel ${targetChannelId} 不可用: ${msg}` })
         }
-        if (!channelPort) {
-          return wrapText({ error_code: 'CHANNEL_UNAVAILABLE', error: `飛書 Channel ${targetChannelId} 不可用` })
-        }
 
         try {
           const result = await rpcClient.call<

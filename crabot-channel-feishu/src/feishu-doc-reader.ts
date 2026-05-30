@@ -49,7 +49,7 @@ export class FeishuDocReader {
         const { title } = await this.client.getSheetMeta(ref.token)
         return { type: 'sheets', title }
       }
-      default: throw Object.assign(new Error(`本期不支持读取此类型飞书文档（kind=${ref.kind}）`), { code: 'UNSUPPORTED' })
+      default: throw unsupportedError(`本期不支持读取此类型飞书文档（kind=${ref.kind}）`)
     }
   }
 
