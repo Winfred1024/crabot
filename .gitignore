@@ -35,6 +35,7 @@ venv/
 .trae/
 skills/
 skills-lock.json
+!crabot-admin/builtins/skills/
 
 # OS
 .DS_Store
