@@ -7,7 +7,10 @@ import path from 'node:path'
 import { UnifiedAgent } from './unified-agent.js'
 import { RpcClient } from 'crabot-shared'
 import { ConfigLoader } from './core/config-loader.js'
+import { startHeapSampler } from './diagnostics/heap-sampler.js'
 import type { UnifiedAgentConfig } from './types.js'
+
+startHeapSampler({ intervalMs: 30_000 })
 
 // 未捕获错误兜底：写到 fatal.log 并退出（让 MM 看到 code≠0 → status=error）
 // 此前 agent 静默猝死无栈，是因为 process.on('unhandledRejection'/'uncaughtException') 缺失

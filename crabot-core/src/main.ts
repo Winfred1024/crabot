@@ -90,7 +90,9 @@ const CORE_MODULES: Array<ModuleDefinition & Record<string, unknown>> = [
     module_type: 'agent',
     version: '0.2.0',
     protocol_version: '0.2.0',
-    entry: 'node dist/main.js',
+    // --heapsnapshot-near-heap-limit=3：V8 在接近 heap 上限时自动 dump 最多 3 个
+    //   .heapsnapshot 到 cwd（AGENT_DIR），用于定位 OOM 时的 retainer。
+    entry: 'node --heapsnapshot-near-heap-limit=3 dist/main.js',
     cwd: AGENT_DIR,
     auto_start: fs.existsSync(path.join(AGENT_DIR, 'dist', 'main.js')),
     auto_restart: true,

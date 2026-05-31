@@ -47,6 +47,9 @@ coverage/
 .coverage
 htmlcov/
 
+# V8 heap snapshots（OOM 自动 dump 的诊断文件，体积大）
+*.heapsnapshot
+
 # Claude Code (local settings, not project config)
 .claude/
 
