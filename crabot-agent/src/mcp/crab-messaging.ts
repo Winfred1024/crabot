@@ -39,6 +39,11 @@ export interface TaskContext {
   /** 任务来源类型——schedule 触发的任务禁止调用 send_message(intent='ask_human')。
    *  与 Task.source.trigger_type 同名同枚举。 */
   triggerType: 'message' | 'scheduled'
+  /** 任务子分类（来自 Schedule.task_template.type 或人类指派）。
+   *  现仅 'daily_reflection' 用于 messaging 工具白名单过滤——反思任务工具集合卡死到
+   *  send_master_private + 只读工具，避免反思内容被发到任意群/私聊。
+   *  其他 scheduled 任务（用户自建的推送 / 巡检 / 数据采集）不受白名单影响。 */
+  taskType?: string
   /** 当前 task 是否挂了 goal；agent-handler 在装 deps 时由 admin task 查询结果维护 cache，
    *  此处用 getter 形式以便 worker 中途 set_task_goal 后下一次工具调用立即生效。
    *  spec: 2026-05-23-goal-mode-design.md §4.2 */
@@ -158,13 +163,37 @@ function clampPageSize(n: number, max = 100): number {
 // buildMessagingTools — 可单测的纯函数，返回 8 个工具数组
 // ============================================================================
 
+/**
+ * daily-reflection 任务允许的 messaging 工具白名单。
+ *
+ * 背景：反思任务没有 task_origin（无对话方），prompt 不会给 channel/session 锚点；产出的报告
+ * 又是 crabot 内部产物（trace 数据 / Evolution Mode / case→rule 等黑话）。若不限制工具，
+ * agent 可能 lookup_friend / list_sessions 自行挑一个 session 把内部产物发出去
+ * （已发生：2026-05-30 daily-reflection 把反思报告发到群"全栈工程师哈哈 & Mr.Wu"）。
+ *
+ * 仅对 task_type='daily_reflection' 生效：
+ *   - 对外唯一通道：send_master_private（admin 按 permission='master' 定位，封死目标）
+ *   - 只读分析工具：get_history / get_message / read_feishu_document（用 trace 里拿到的 channel/session 查历史）
+ *   - 其他工具不暴露：lookup_friend、list_contacts、list_groups、list_sessions、send_message、send_private_message
+ *
+ * 其他 scheduled 任务（如用户自建的 GitHub 新闻推送 / 群通报巡检）**不受此白名单影响**，
+ * 走完整 messaging 工具集——它们本来就是要往群里发的合理用途。
+ */
+const DAILY_REFLECTION_ALLOWED_TOOLS = new Set([
+  'send_master_private',
+  'get_history',
+  'get_message',
+  'read_feishu_document',
+])
+
 export function buildMessagingTools(
   deps: CrabMessagingDeps,
   sandboxPathMappingsRef?: { current: PathMapping[] },
 ): MessagingTool[] {
   const { rpcClient, moduleId, getAdminPort, resolveChannelPort } = deps
+  const isDailyReflection = deps.getTaskContext?.()?.taskType === 'daily_reflection'
 
-  return [
+  const allTools: MessagingTool[] = [
     // ================================================================
     // 1. lookup_friend — 查找熟人
     // ================================================================
@@ -437,6 +466,106 @@ export function buildMessagingTools(
           const msg = err instanceof Error ? err.message : String(err)
           return wrapText({ error: `发送失败: ${msg}` })
         }
+      },
+    },
+
+    // ================================================================
+    // 4b. send_master_private — 给 master 发私聊（按 permission='master' 自动定位）
+    // ================================================================
+    {
+      name: 'send_master_private',
+      description: `给 master 发私聊消息。
+
+唯一入口：scheduled 任务（每日反思 / 记忆整理等）需要对外通知 master 时必须用此工具。
+内部行为：admin 按 permission='master' 定位 master friend → 在指定 channel 上 find_or_create 私聊 session → 发出。
+找不到 master 时**直接返回 error，不退化、不外发任何 channel**。
+
+注意：发出的内容会被人类看到——禁止塞 trace 数据 / Evolution Mode / case→rule / Audit 等内部黑话，必须翻译成一行人话（"今日整理 X 条经验，无重大发现"这种），多行长报告请走 task outcome 不要外发。`,
+      schema: {
+        content: z.string().describe('给 master 看的一句人话（已翻译，无内部黑话）'),
+        channel_id: z.string().optional().describe('指定走哪个 channel。不传则按 master.channel_identities 顺序尝试第一个可用的'),
+      },
+      handler: async (args) => {
+        const content = args.content as string
+        const preferredChannelId = args.channel_id as string | undefined
+
+        const adminPort = await getAdminPort()
+        const masterResult = await rpcClient.call<
+          Record<string, never>,
+          { friend: Friend | null }
+        >(adminPort, 'find_master_friend', {}, moduleId)
+
+        const master = masterResult.friend
+        if (!master) {
+          return wrapText({ error: 'No master friend configured; cannot send_master_private' })
+        }
+
+        const identities = master.channel_identities
+        if (!identities || identities.length === 0) {
+          return wrapText({ error: `Master friend ${master.display_name} has no channel identities` })
+        }
+
+        // preferredChannelId 指定时只尝试该 channel，不可用直接报错
+        const candidates = preferredChannelId
+          ? identities.filter(ci => ci.channel_id === preferredChannelId)
+          : identities
+
+        if (preferredChannelId && candidates.length === 0) {
+          return wrapText({
+            error: `Master has no identity on channel ${preferredChannelId}`,
+            available_channels: identities.map(ci => ci.channel_id),
+          })
+        }
+
+        let lastError = ''
+        for (const identity of candidates) {
+          let channelPort: number
+          try {
+            channelPort = await resolveChannelPort(identity.channel_id)
+          } catch (err) {
+            lastError = err instanceof Error ? err.message : String(err)
+            continue
+          }
+          if (!channelPort) {
+            lastError = `Channel ${identity.channel_id} 不可用`
+            continue
+          }
+
+          try {
+            const sessionResult = await rpcClient.call<
+              { platform_user_id: string },
+              { session_id: string; created: boolean }
+            >(channelPort, 'find_or_create_private_session', {
+              platform_user_id: identity.platform_user_id,
+            }, moduleId)
+
+            const sendResult = await withRetry(async () => {
+              return rpcClient.call<
+                { session_id: string; content: { type: string; text: string } },
+                { platform_message_id: string; sent_at: string }
+              >(channelPort, 'send_message', {
+                session_id: sessionResult.session_id,
+                content: { type: 'text', text: content },
+              }, moduleId)
+            })
+
+            return wrapText({
+              ...sendResult,
+              channel_id: identity.channel_id,
+              session_id: sessionResult.session_id,
+              friend_id: master.id,
+            })
+          } catch (err) {
+            lastError = err instanceof Error ? err.message : String(err)
+            continue
+          }
+        }
+
+        return wrapText({
+          error: preferredChannelId
+            ? `Channel ${preferredChannelId} 发送失败: ${lastError}`
+            : `All master channels failed: ${lastError}`,
+        })
       },
     },
 
@@ -922,6 +1051,10 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
       },
     } as MessagingTool] : []),
   ]
+
+  return isDailyReflection
+    ? allTools.filter(t => DAILY_REFLECTION_ALLOWED_TOOLS.has(t.name))
+    : allTools
 }
 
 // ============================================================================

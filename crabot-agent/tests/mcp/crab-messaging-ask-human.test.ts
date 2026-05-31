@@ -155,6 +155,54 @@ describe('send_message intent=ask_human', () => {
     expect(parsed.error).toMatch(/intent='?info'?/)
   })
 
+  it('daily_reflection 任务的工具白名单不暴露 send_message / send_private_message / list_*，唯一对外通道是 send_master_private', async () => {
+    // daily-reflection 反思任务专用：避免反思内容（trace 数据 / Evolution Mode 等内部黑话）被发到任意 channel/session。
+    // 其他 scheduled 任务（用户自建的群推送 / 巡检）不受此白名单影响——它们走 triggerType='scheduled' 但 taskType 不是 'daily_reflection'。
+    const queue = new HumanMessageQueue()
+
+    const tools = buildMessagingTools({
+      rpcClient: { call: vi.fn() } as never,
+      moduleId: 'worker-test',
+      getAdminPort: async () => 19001,
+      resolveChannelPort: async () => 19009,
+      getTaskContext: () => ({
+        taskId: 't1', humanQueue: queue,
+        triggerType: 'scheduled' as const,
+        taskType: 'daily_reflection',
+        hasGoal: () => false,
+      }),
+    })
+
+    expect(tools.find(t => t.name === 'send_message')).toBeUndefined()
+    expect(tools.find(t => t.name === 'send_private_message')).toBeUndefined()
+    expect(tools.find(t => t.name === 'lookup_friend')).toBeUndefined()
+    expect(tools.find(t => t.name === 'list_groups')).toBeUndefined()
+    expect(tools.find(t => t.name === 'send_master_private')).toBeDefined()
+  })
+
+  it('非 daily_reflection 的 scheduled 任务（用户自建推送等）保留完整 messaging 工具集', async () => {
+    const queue = new HumanMessageQueue()
+
+    const tools = buildMessagingTools({
+      rpcClient: { call: vi.fn() } as never,
+      moduleId: 'worker-test',
+      getAdminPort: async () => 19001,
+      resolveChannelPort: async () => 19009,
+      getTaskContext: () => ({
+        taskId: 't1', humanQueue: queue,
+        triggerType: 'scheduled' as const,
+        taskType: 'news_briefing',
+        hasGoal: () => false,
+      }),
+    })
+
+    expect(tools.find(t => t.name === 'send_message')).toBeDefined()
+    expect(tools.find(t => t.name === 'send_private_message')).toBeDefined()
+    expect(tools.find(t => t.name === 'lookup_friend')).toBeDefined()
+    expect(tools.find(t => t.name === 'list_groups')).toBeDefined()
+    expect(tools.find(t => t.name === 'send_master_private')).toBeDefined()
+  })
+
   it('message 任务调用 ask_human 不在 scheduled 闸门被拒（仍可走后续流程）', async () => {
     const queue = new HumanMessageQueue()
 

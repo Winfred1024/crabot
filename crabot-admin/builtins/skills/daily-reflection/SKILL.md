@@ -1,8 +1,14 @@
 ---
 name: daily-reflection
 description: "深度反思（每日 1 次）：读 trace、委派 sub-agent 分析失败任务、提炼经验写入长期记忆。仅当任务标题以'每日反思'开头或 trigger=daily_reflection 时使用，与 memory-curate 互斥（memory-curate 用于机械的 inbox 去重打分，不读 trace、不委派 sub-agent）。"
-version: "1.4.0"
+version: "1.5.0"
 ---
+
+> **铁则（必须在动手前看一遍）**：
+> 1. 反思的全过程都是 **crabot 内部产物**——trace 数据、Evolution Mode、case→rule、quick_capture、Audit、记忆维护等都属于 crabot 黑话。
+> 2. **结构化报告只作为 task outcome 落库，永不外发到任何 channel/session。**
+> 3. 整个 skill 中**唯一允许对外的工具**是 `mcp__crab-messaging__send_master_private`（见第六步），且 scheduled task 工具白名单也只放行了它。
+> 4. 即使对 master 私聊汇报，发出去的内容必须是**翻译成一行人话**的人类视角摘要，禁止粘内部术语 / 完整列表 / 数字明细。
 
 # 每日反思技能
 
@@ -41,7 +47,7 @@ search_traces({
 2. span_count > 30 或 duration > 5 分钟的任务（轮数异常 = 反复尝试）
 3. 对话中人类情绪明显的任务（催促、不满、重复要求）
 
-**快速退出**：筛选后无值得分析的任务 → 直接跳到第六步，输出"本周期无值得深入反思的任务"并结束。
+**快速退出**：筛选后无值得分析的任务 → 把"本周期无值得深入反思的任务"写到 task outcome，**不发任何 channel**，直接结束 task。第六步对外汇报的逻辑也跳过。
 
 ### 第四步：委派 Sub-Agent 深入分析
 
@@ -109,20 +115,44 @@ mcp__crab-memory__quick_capture({
 - 好：`"macOS 终端输入中文时键盘模拟不可行，必须使用剪贴板(pbcopy+Cmd+V)"`
 - 差：`"在飞书操作时遇到了中文输入问题并解决了"`
 
-### 第六步：生成报告并汇报
+### 第六步：生成报告（落 outcome，不外发）
 
-生成结构化报告作为任务输出，包含：
+生成结构化报告作为 **task outcome**（task 的执行结果，落库后由 Admin UI / get_task_details 查看），内容包含：
 - 反思时间范围
 - 分析的任务数量
 - 提炼的经验数量
 - 每条经验的 brief
 
-如果本次反思有 importance >= 8 的发现：
-1. `mcp__crab-messaging__lookup_friend({ name: "master" })` 获取 master 信息
-2. `mcp__crab-messaging__list_sessions({ channel_id: "<channel_id>" })` 找到可用会话
-3. `mcp__crab-messaging__send_message(...)` 发送简要汇报
+**这份报告永不外发到任何 channel/session。** daily-reflection 任务的工具白名单已经把 send_message / send_private_message / list_sessions / lookup_friend 等通用消息工具都屏蔽了，唯一能用的对外工具是 `send_master_private`。（其他 scheduled 任务如 GitHub 新闻推送、巡检通报等不受此白名单影响，仍保留完整 messaging 工具集。）
 
-如果无重大发现或找不到 master 会话，跳过汇报。
+### 第六步 b：仅在确有重大发现时，向 master 发**一行人话**
+
+判断条件（**全部满足**才发，任一不满足就跳过）：
+1. 本次反思至少有一条 `importance_factors.surprisal >= 0.7` 的发现
+2. 这条发现可以用**一句不含内部黑话**的人话表达（"今天发现 X 类任务有 Y 问题"）
+
+满足时调一次：
+
+```
+mcp__crab-messaging__send_master_private({
+  content: "<一行人话摘要，≤80 字。禁止出现 trace / Evolution Mode / case→rule / Audit / quick_capture / inbox / harden / trash 等内部术语；禁止粘报告列表>",
+  // channel_id 可选；master 有多个 channel 身份时，默认按 channel_identities 顺序发第一个可用的
+})
+```
+
+工具内部会按 `permission='master'` 自动定位 master friend，并 find_or_create 私聊 session 发出。**不需要也不允许**自己调 lookup_friend / list_sessions。
+
+返回 error（如 `No master friend configured`）时直接跳过对外汇报，不退化到其他 channel。
+
+**好的 content 示例**：
+- `"今天发现「数据/研究任务先核对用户指定数据源」是反复出错的点，已写入经验库。"`
+- `"昨天的 video_app 配置类改造踩到了 4 个坑，已沉淀成 1 条规则。"`
+
+**禁止的 content 示例**：
+- `"每日反思已完成。范围：2026-05-29T18:06:47Z ~ 2026-05-30T18:00:00Z..."`（粘报告）
+- `"获取并筛查任务概览：121 条 completed trace、4 条 failed trace。"`（trace 黑话）
+- `"Evolution Mode: 保持 harden；清理 trash 56 条。"`（彻底的内部黑话）
+- `"补充：本次有较重要发现，但未找到名为 master 的联系人..."`（暴露失败实现细节）
 
 ### 第七步：场景画像反思
 

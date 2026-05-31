@@ -441,6 +441,10 @@ export class AdminModule extends ModuleBase {
     // 注册 Admin 协议方法
       this.registerMethod('list_friends', this.handleListFriends.bind(this))
     this.registerMethod('get_friend', this.handleGetFriend.bind(this))
+    this.registerMethod('find_master_friend', async () => {
+      const friend = this.findMasterFriend()
+      return { friend: friend ?? null }
+    })
     this.registerMethod('create_friend', async (params: CreateFriendParams) => {
       const result = this.handleCreateFriend(params)
       await this.saveData()
@@ -4866,7 +4870,7 @@ export class AdminModule extends ModuleBase {
         task_template: {
           type: 'daily_reflection',
           title: '每日反思 — {{date}}',
-          description: '第一步必须调用 Skill("daily-reflection")，禁止加载其他 reflection skill。反思时间范围：{{watermark}} 到 {{datetime}}。标准流程：1）获取此时间范围内的任务概览；2）筛选值得深入分析的任务（排除 daily_reflection 类型，优先关注失败、轮数异常、人类情绪明显的）；3）对每个选中任务委派 sub-agent 深入分析（trace span + 对话历史），返回分析结果和经验建议；4）综合所有 sub-agent 结果，跨任务去重，统一写入长期记忆；5）重大发现向 master 汇报。',
+          description: '第一步必须调用 Skill("daily-reflection")，禁止加载其他 reflection skill。反思时间范围：{{watermark}} 到 {{datetime}}。标准流程：1）获取此时间范围内的任务概览；2）筛选值得深入分析的任务（排除 daily_reflection 类型，优先关注失败、轮数异常、人类情绪明显的）；3）对每个选中任务委派 sub-agent 深入分析（trace span + 对话历史），返回分析结果和经验建议；4）综合所有 sub-agent 结果，跨任务去重，统一写入长期记忆；5）反思全过程是 crabot 内部产物：结构化报告只落 task outcome，永不外发；仅当存在 surprisal≥0.7 的发现且可翻译成一行人话时，调 send_master_private 发出一句人类视角摘要，否则保持沉默。禁止把 trace 数据 / Evolution Mode / 数字明细发出去。',
           priority: 'low',
           tags: ['daily_reflection', 'builtin'],
         },

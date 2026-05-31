@@ -900,6 +900,7 @@ export class AgentHandler {
           taskId: task.task_id,
           humanQueue,
           triggerType: task.source?.trigger_type === 'scheduled' ? 'scheduled' : 'message',
+          taskType: task.task_type,
           // 用 getter 形式封装本地 cache，worker 中途 set_task_goal 后下一轮工具调用立即生效。
           hasGoal: () => goalSetCache,
           // 透传 sub-agent trace 上下文：让 audit gate 触发的 audit subagent
