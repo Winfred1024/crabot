@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 const SHARED_MODULE = 'crabot-shared'
@@ -22,13 +23,17 @@ const PY_MODULE = 'crabot-memory'
 // 所以走「拼成单字符串 + shell:true + args 空数组」：args 不是数组就不触发警告，
 // 单字符串也让 shell 自动按 PATHEXT 找 .cmd shim。
 // 安全：本文件所有 cmd/args 都是源码硬编码字符串，无用户输入，无注入风险。
+const quoteWin = (s) => (/\s/.test(s) ? `"${s}"` : s)
+
 function runCmd(cmd, args, cwd, logger) {
   return new Promise((resolve, reject) => {
     const display = `${cmd} ${args.join(' ')}`
     logger.info(`$ ${display}    (cwd: ${cwd})`)
     const isWin = process.platform === 'win32'
+    // cmd 可能是绝对路径（如 findUv() 返回 C:\Users\Foo Bar\.local\bin\uv.exe），含空格要 quote
+    const winCmdLine = `${quoteWin(cmd)} ${args.map(quoteWin).join(' ')}`
     const proc = isWin
-      ? spawn(display, [], { cwd, stdio: 'inherit', shell: true })
+      ? spawn(winCmdLine, [], { cwd, stdio: 'inherit', shell: true })
       : spawn(cmd, args, { cwd, stdio: 'inherit' })
     proc.on('error', reject)
     proc.on('exit', (code) => {
@@ -36,6 +41,25 @@ function runCmd(cmd, args, cwd, logger) {
       else reject(new Error(`${display} exited with code ${code}`))
     })
   })
+}
+
+// uv installer（https://astral.sh/uv）默认装到 ~/.local/bin/uv，但 Windows 上
+// 写 user PATH 的传播有延迟——刚 install 完新开 cmd 也可能读不到。所以主动按
+// 已知安装位置探测，绕开 PATH 不确定性。Windows shim 是 uv.exe，*nix 是 uv。
+function findUv() {
+  const isWin = process.platform === 'win32'
+  const binName = isWin ? 'uv.exe' : 'uv'
+  const candidates = [
+    join(homedir(), '.local', 'bin', binName),
+  ]
+  if (isWin) {
+    // 备用：旧版 astral installer 可能放过这里
+    candidates.push(join(process.env.LOCALAPPDATA || '', 'Programs', 'uv', binName))
+  }
+  for (const c of candidates) {
+    if (c && existsSync(c)) return c
+  }
+  return 'uv' // fallback：寄希望于 PATH，找不到再让用户看到清晰错误
 }
 
 // 所有 pnpm 调用走 corepack，避免被用户机器上抢占 PATH 的全局 pnpm 干扰
@@ -74,13 +98,13 @@ export async function runSourceUpgrade(crabotHome, logger) {
 
   const memoryDir = join(crabotHome, PY_MODULE)
   if (existsSync(memoryDir)) {
-    await runCmd('uv', ['sync'], memoryDir, logger)
+    await runCmd(findUv(), ['sync'], memoryDir, logger)
   }
 }
 
 export async function syncPythonDeps(crabotHome, logger) {
   const memoryDir = join(crabotHome, PY_MODULE)
   if (existsSync(memoryDir)) {
-    await runCmd('uv', ['sync'], memoryDir, logger)
+    await runCmd(findUv(), ['sync'], memoryDir, logger)
   }
 }
