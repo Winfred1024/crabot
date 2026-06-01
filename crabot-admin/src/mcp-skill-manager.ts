@@ -723,31 +723,34 @@ export class SkillManager {
       return 0
     }
 
+    const subdirs = dirEntries.filter(d => d.isDirectory())
+    const reads = await Promise.all(
+      subdirs.map(async (dirent) => {
+        const skillDir = path.join(agentSkillsDir, dirent.name)
+        try {
+          const content = await fs.readFile(path.join(skillDir, 'SKILL.md'), 'utf-8')
+          return { skillDir, content }
+        } catch {
+          return null
+        }
+      })
+    )
+
     let added = 0
-    for (const dirent of dirEntries) {
-      if (!dirent.isDirectory()) continue
-      const skillDir = path.join(agentSkillsDir, dirent.name)
-      const skillMdPath = path.join(skillDir, 'SKILL.md')
-
-      let content: string
-      try {
-        content = await fs.readFile(skillMdPath, 'utf-8')
-      } catch {
-        continue
-      }
-
-      const parsed = parseSkillMd(content)
+    const now = generateTimestamp()
+    for (const result of reads) {
+      if (!result) continue
+      const parsed = parseSkillMd(result.content)
       if (!parsed.name) continue
       if (this.findByName(parsed.name)) continue
 
-      const now = generateTimestamp()
       const entry: SkillRegistryEntry = {
         id: generateId(),
         name: parsed.name,
         description: parsed.description,
         version: parsed.version,
-        content,
-        skill_dir: skillDir,
+        content: result.content,
+        skill_dir: result.skillDir,
         source_type: 'scanned',
         is_builtin: false,
         is_essential: false,

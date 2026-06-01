@@ -651,10 +651,9 @@ export class AdminModule extends ModuleBase {
     console.log(`[Admin] Seeded ${getBuiltinSkills().length} builtin skills`)
 
     // 扫描工作区 skill（来自 WORKSPACE_DIR/.agents/skills/）
-    const workspaceDir = process.env.WORKSPACE_DIR || path.dirname(this.adminConfig.data_dir)
-    const scannedCount = await this.skillManager.scanWorkspaceSkills(workspaceDir)
+    const scannedCount = await this.skillManager.scanWorkspaceSkills(this.workspaceDir)
     if (scannedCount > 0) {
-      console.log(`[SkillManager] 扫描发现 ${scannedCount} 个新 skill（来自 ${workspaceDir}/.agents/skills/）`)
+      console.log(`[SkillManager] 扫描发现 ${scannedCount} 个新 skill（来自 ${this.workspaceDir}/.agents/skills/）`)
     }
 
     // 初始化必要工具配置管理器
@@ -6189,12 +6188,16 @@ export class AdminModule extends ModuleBase {
     }
   }
 
+  private get workspaceDir(): string {
+    return process.env.WORKSPACE_DIR || path.dirname(this.adminConfig.data_dir)
+  }
+
   private async handleScanWorkspaceSkillsApi(
     _req: IncomingMessage,
     res: ServerResponse
   ): Promise<void> {
     try {
-      const workspaceDir = process.env.WORKSPACE_DIR || path.dirname(this.adminConfig.data_dir)
+      const workspaceDir = this.workspaceDir
       const added = await this.skillManager.scanWorkspaceSkills(workspaceDir)
       this.triggerPushAfter('skill scan-workspace')
       res.writeHead(200, { 'Content-Type': 'application/json' })
