@@ -31,3 +31,10 @@ export function getBgEntitiesLogsDir(): string {
 export function getBgEntitiesRegistryPath(): string {
   return path.join(getBgEntitiesDir(), 'registry.json')
 }
+
+export function getWorkspaceDir(): string {
+  if (process.env.WORKSPACE_DIR) {
+    return path.resolve(process.env.WORKSPACE_DIR)
+  }
+  return path.dirname(path.resolve(process.env.DATA_DIR ?? './data'))
+}

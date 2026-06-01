@@ -16,6 +16,8 @@ const DATA_DIR = process.env.DATA_DIR || path.join(CRABOT_ROOT,
     ? `data-${process.env.CRABOT_PORT_OFFSET}`
     : 'data'
 )
+const WORKSPACE_DIR = process.env.WORKSPACE_DIR || path.dirname(DATA_DIR)
+process.env.WORKSPACE_DIR = WORKSPACE_DIR
 
 // 加载环境变量文件（统一从根目录 .env 读取）
 const envFiles = [
