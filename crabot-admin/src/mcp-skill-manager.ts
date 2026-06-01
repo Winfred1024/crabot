@@ -113,6 +113,7 @@ export interface SkillRegistryEntry {
   skill_dir?: string
   /** 触发短语（用于 LLM 匹配） */
   trigger_phrases?: string[]
+  source_type: 'builtin' | 'imported' | 'scanned'
   is_builtin: boolean
   is_essential: boolean
   can_disable: boolean
@@ -453,6 +454,11 @@ export class SkillManager {
     try {
       const raw = await fs.readFile(this.filePath, 'utf-8')
       const entries: SkillRegistryEntry[] = JSON.parse(raw)
+      for (const entry of entries) {
+        if (!entry.source_type) {
+          entry.source_type = entry.is_builtin ? 'builtin' : 'imported'
+        }
+      }
       this.skills = new Map(entries.map((e) => [e.id, e]))
     } catch {
       this.skills = new Map()
@@ -547,6 +553,7 @@ export class SkillManager {
     trigger_phrases?: string[]
     source_market?: string
     source_package?: string
+    source_type?: 'builtin' | 'imported' | 'scanned'
   }): Promise<SkillRegistryEntry> {
     const now = generateTimestamp()
     const entry: SkillRegistryEntry = {
@@ -556,6 +563,7 @@ export class SkillManager {
       version: params.version ?? '1.0.0',
       content: params.content,
       trigger_phrases: params.trigger_phrases,
+      source_type: params.source_type ?? 'imported',
       is_builtin: false,
       is_essential: false,
       can_disable: true,
@@ -683,6 +691,7 @@ export class SkillManager {
         version: parsed.version,
         content,
         skill_dir: skillDir,
+        source_type: 'builtin',
         is_builtin: true,
         is_essential: false,
         can_disable: true,

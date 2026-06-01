@@ -177,6 +177,7 @@ export interface SkillRegistryEntry {
   version: string
   content: string
   trigger_phrases?: string[]
+  source_type?: 'builtin' | 'imported' | 'scanned'
   is_builtin: boolean
   is_essential: boolean
   can_disable: boolean
