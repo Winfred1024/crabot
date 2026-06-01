@@ -5,9 +5,12 @@
 
 import { existsSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
+
+// Windows 上 ESM dynamic import 不接受 C:\... 绝对路径，必须转 file:///C:/...
+const importPath = (p) => import(pathToFileURL(p).href)
 
 // 让下游（auth.ts、scripts/*）能在任意 cwd 下找到安装根目录
 if (!process.env.CRABOT_HOME) {
@@ -20,11 +23,11 @@ const command = args[0] ?? 'help'
 const bootstrapCommands = new Set(['start', 'stop', 'check', 'help', 'upgrade'])
 
 if (command === 'password') {
-  await import(resolve(__dirname, 'scripts/password.mjs'))
+  await importPath(resolve(__dirname, 'scripts/password.mjs'))
 } else if (bootstrapCommands.has(command)) {
   const scriptPath = resolve(__dirname, `scripts/${command}.mjs`)
   if (existsSync(scriptPath)) {
-    await import(scriptPath)
+    await importPath(scriptPath)
   } else {
     console.error(`Bootstrap command "${command}" not yet available in cli.mjs.`)
     process.exit(1)
@@ -35,6 +38,6 @@ if (command === 'password') {
     console.error('CLI not built. Run "crabot start" first or build with "pnpm run build:cli".')
     process.exit(1)
   }
-  const { run } = await import(cliEntry)
+  const { run } = await importPath(cliEntry)
   run(process.argv)
 }
