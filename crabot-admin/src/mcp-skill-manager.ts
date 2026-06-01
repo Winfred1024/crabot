@@ -709,6 +709,61 @@ export class SkillManager {
     }
   }
 
+  /**
+   * 扫描 workspaceDir/.agents/skills/ 目录，将新发现的 skill 注入注册表。
+   * Additive-only：已在注册表中（按 name 匹配）的跳过。
+   * 返回本次新增数量。
+   */
+  async scanWorkspaceSkills(workspaceDir: string): Promise<number> {
+    const agentSkillsDir = path.join(workspaceDir, '.agents', 'skills')
+    let dirEntries: import('fs').Dirent[]
+    try {
+      dirEntries = await fs.readdir(agentSkillsDir, { withFileTypes: true })
+    } catch {
+      return 0
+    }
+
+    let added = 0
+    for (const dirent of dirEntries) {
+      if (!dirent.isDirectory()) continue
+      const skillDir = path.join(agentSkillsDir, dirent.name)
+      const skillMdPath = path.join(skillDir, 'SKILL.md')
+
+      let content: string
+      try {
+        content = await fs.readFile(skillMdPath, 'utf-8')
+      } catch {
+        continue
+      }
+
+      const parsed = parseSkillMd(content)
+      if (!parsed.name) continue
+      if (this.findByName(parsed.name)) continue
+
+      const now = generateTimestamp()
+      const entry: SkillRegistryEntry = {
+        id: generateId(),
+        name: parsed.name,
+        description: parsed.description,
+        version: parsed.version,
+        content,
+        skill_dir: skillDir,
+        source_type: 'scanned',
+        is_builtin: false,
+        is_essential: false,
+        can_disable: true,
+        enabled: true,
+        created_at: now,
+        updated_at: now,
+      }
+      this.skills.set(entry.id, entry)
+      added++
+    }
+
+    if (added > 0) await this.save()
+    return added
+  }
+
   /** 将注册表条目转换为 Agent 所需的 SkillConfig 格式 */
   toAgentConfig(entry: SkillRegistryEntry): {
     id: string
