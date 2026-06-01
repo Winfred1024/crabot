@@ -15,11 +15,19 @@ const JS_MODULES = [
 ]
 const PY_MODULE = 'crabot-memory'
 
+// Windows 上 corepack/pnpm/uv/npx 这些都是 .cmd shim，spawn 不开 shell 不会按
+// PATHEXT 匹配后缀，必须显式拼 .cmd。开 shell:true 又会触发 Node 24 的 DEP0190
+// 警告（args 数组未转义有注入风险），所以走「显式后缀 + 不开 shell」。
+const WIN_CMD_SHIMS = new Set(['corepack', 'pnpm', 'npm', 'npx', 'yarn', 'uv', 'tsx'])
+function resolveBin(cmd) {
+  if (process.platform !== 'win32') return cmd
+  return WIN_CMD_SHIMS.has(cmd) ? `${cmd}.cmd` : cmd
+}
+
 function runCmd(cmd, args, cwd, logger) {
   return new Promise((resolve, reject) => {
     logger.info(`$ ${cmd} ${args.join(' ')}    (cwd: ${cwd})`)
-    // Windows 上 corepack/pnpm/uv 都是 .cmd shim，spawn 不开 shell 找不到
-    const proc = spawn(cmd, args, { cwd, stdio: 'inherit', shell: process.platform === 'win32' })
+    const proc = spawn(resolveBin(cmd), args, { cwd, stdio: 'inherit' })
     proc.on('error', reject)
     proc.on('exit', (code) => {
       if (code === 0) resolve()
@@ -36,15 +44,11 @@ async function installAndBuild(moduleDir, logger) {
   await runCmd('corepack', ['pnpm', 'run', 'build'], moduleDir, logger)
 }
 
-async function ensurePnpm(crabotHome, logger) {
-  // 通过 corepack 激活根 package.json packageManager 字段指定的 pnpm 版本
-  await runCmd('corepack', ['enable'], crabotHome, logger)
-  await runCmd('corepack', ['prepare', '--activate'], crabotHome, logger)
-}
-
 export async function runSourceUpgrade(crabotHome, logger) {
-  await ensurePnpm(crabotHome, logger)
-
+  // 注意：不调 `corepack enable` —— 它会尝试往 Node 安装目录（Windows 下是
+  // Program Files）写 pnpm/yarn 系统 shim，需要管理员权限。我们已经显式用
+  // `corepack pnpm ...` 调用，corepack 会按 package.json 的 packageManager
+  // 字段按需下载到用户 cache（%LOCALAPPDATA%\node\corepack）执行，不需要 enable。
   await runCmd('corepack', ['pnpm', 'install', '--prefer-offline'], crabotHome, logger)
 
   const sharedDir = join(crabotHome, SHARED_MODULE)
