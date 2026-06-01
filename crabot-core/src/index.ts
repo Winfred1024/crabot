@@ -45,6 +45,7 @@ import {
 import { PortAllocator } from './port-allocator.js'
 import { scheduleRestart } from './restart-policy.js'
 import { checkDiskLow } from './disk-watcher.js'
+import { resolveExecutable } from './executable-resolver.js'
 
 // ============================================================================
 // 类型定义
@@ -729,7 +730,9 @@ export class ModuleManager {
 
     // 替换 entry 中的 {PORT} 模板
     const entry = (entryOverride ?? runtime.entry).replace(/{PORT}/g, String(runtime.port))
-    const [command, ...args] = this.parseEntry(entry)
+    const [rawCommand, ...args] = this.parseEntry(entry)
+    // 把 uv 这类用户级 installer 装的工具解析成绝对路径，避开 user PATH 传播延迟
+    const command = resolveExecutable(rawCommand)
 
     // 子进程日志同时落盘到 ${DATA_DIR}/logs/<moduleId>.log，
     // 避免子进程崩溃时 console pipe 里的栈被丢失看不到。
