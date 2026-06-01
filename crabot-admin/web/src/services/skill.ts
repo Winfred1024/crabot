@@ -50,6 +50,10 @@ export const skillService = {
   async importFromUpload(base64_content: string, filename: string, overwrite?: boolean): Promise<SkillRegistryEntry> {
     return api.post<SkillRegistryEntry>('/skills/import-upload', { base64_content, filename, overwrite })
   },
+
+  async scanWorkspace(): Promise<{ added: number; workspace_dir: string }> {
+    return api.post('/skills/scan-workspace', {})
+  },
 }
 
 /**

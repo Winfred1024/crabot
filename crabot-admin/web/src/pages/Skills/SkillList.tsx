@@ -291,13 +291,30 @@ export const SkillList: React.FC = () => {
 
   const handleDelete = async (s: SkillRegistryEntry) => {
     if (s.is_builtin) { toast.error('内置 Skill 不可删除'); return }
-    if (!confirm(`确定删除 "${s.name}"？`)) return
+    const hint = s.source_type === 'scanned'
+      ? `\n\n注意：源文件不会被删除。重新扫描后该 skill 将重新出现。`
+      : ''
+    if (!confirm(`确定删除 "${s.name}"？${hint}`)) return
     try {
       await skillService.delete(s.id)
       toast.success('已删除')
       await load()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '删除失败')
+    }
+  }
+
+  const handleRescan = async () => {
+    try {
+      const result = await skillService.scanWorkspace()
+      if (result.added > 0) {
+        toast.success(`扫描完成，新增 ${result.added} 个 skill`)
+        await load()
+      } else {
+        toast.success('扫描完成，未发现新 skill')
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '扫描失败')
     }
   }
 
@@ -318,7 +335,10 @@ export const SkillList: React.FC = () => {
     <MainLayout>
       <div style={{ marginBottom: '2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h1 style={{ fontSize: '2rem', fontWeight: 700 }}>Skills</h1>
-        <Button variant="primary" onClick={openCreate}>添加 Skill</Button>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <Button variant="secondary" onClick={handleRescan}>重新扫描</Button>
+          <Button variant="primary" onClick={openCreate}>添加 Skill</Button>
+        </div>
       </div>
 
       {showForm && (
@@ -501,6 +521,9 @@ export const SkillList: React.FC = () => {
                     <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>v{s.version}</span>
                     {s.is_builtin && (
                       <span style={{ fontSize: '0.75rem', padding: '0.1rem 0.5rem', background: 'rgba(139,92,246,0.15)', color: '#8b5cf6', borderRadius: '4px' }}>内置</span>
+                    )}
+                    {s.source_type === 'scanned' && (
+                      <span style={{ fontSize: '0.75rem', padding: '0.1rem 0.5rem', background: 'rgba(249,115,22,0.15)', color: '#f97316', borderRadius: '4px' }}>扫描发现</span>
                     )}
                     {s.is_essential && (
                       <span style={{ fontSize: '0.75rem', padding: '0.1rem 0.5rem', background: 'rgba(59,130,246,0.15)', color: '#3b82f6', borderRadius: '4px' }}>必要</span>
