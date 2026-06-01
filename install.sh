@@ -112,10 +112,10 @@ ensure_pnpm() {
     error "corepack not found (Node 16.13+ required). Reinstall Node.js."
     exit 1
   fi
-  section "Activating pnpm via corepack"
-  corepack enable
-  # 读取根 package.json 的 packageManager 字段并激活
-  corepack prepare --activate
+  # 不调 `corepack enable` —— 它会往 Node 安装目录写 pnpm/yarn 系统 shim，
+  # 在 Linux 系统 Node 安装下需 sudo；Windows 上更直接 EPERM。后续所有
+  # `corepack pnpm ...` 会按 packageManager 字段按需下载到用户 cache 执行，
+  # 不需要 enable。
   info "pnpm $(corepack pnpm --version) ready"
 }
 

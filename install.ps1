@@ -109,9 +109,9 @@ function Ensure-Pnpm {
         Write-Err "corepack not found (Node 16.13+ required). Reinstall Node.js."
         exit 1
     }
-    Write-Info "Activating pnpm via corepack..."
-    corepack enable
-    corepack prepare --activate
+    # 不调 `corepack enable` —— 它会往 Node 安装目录（Program Files）写 pnpm/yarn
+    # 系统 shim，非管理员 cmd 必然 EPERM。后续所有 `corepack pnpm ...` 调用会按
+    # packageManager 字段按需下载到用户 cache 执行，不需要 enable。
     $pnpmVer = (corepack pnpm --version)
     Write-Info "pnpm $pnpmVer ready"
 }
@@ -190,13 +190,21 @@ if ($currentPath -notlike "*$crabotDir*") {
     [Environment]::SetEnvironmentVariable("Path", "$crabotDir;$currentPath", "User")
     Write-Info "Added $crabotDir to user PATH"
 }
+# 同步更新当前 session 的 $env:Path——SetEnvironmentVariable 只写注册表，
+# 当前进程的 PATH 不会自动刷新。同 session 后续操作（如 crabot start）能立即用。
+if ($env:Path -notlike "*$crabotDir*") {
+    $env:Path = "$crabotDir;$env:Path"
+}
 
 # 创建 crabot.cmd 如果不存在
 $cmdPath = Join-Path $crabotDir "crabot.cmd"
 if (-not (Test-Path $cmdPath)) {
-    '@echo off`nnode "%~dp0cli.mjs" %*' | Out-File -FilePath $cmdPath -Encoding ASCII
+    # 注意：PowerShell 单引号字符串不转义 `n（会写出字面 `n 而非换行），必须用
+    # 数组 + Set-Content 保证 Windows CRLF 行尾正确写两行。
+    @('@echo off', 'node "%~dp0cli.mjs" %*') | Set-Content -Path $cmdPath -Encoding ASCII
 }
 
 Write-Host "`n== Done! ==`n" -ForegroundColor Cyan
 Write-Info "Run 'crabot start' to start Crabot (will prompt for admin password on first run)."
 Write-Info "Run 'crabot --help' for all commands."
+Write-Warn "如果新开的终端找不到 crabot 命令，请重启资源管理器（任务管理器 → Windows 资源管理器 → 重启）或注销重登一次，让 user PATH 广播生效。"
