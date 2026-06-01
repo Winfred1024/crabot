@@ -79,10 +79,11 @@ import { createCodingExpertHookRegistry, createCliPermissionHook } from '../hook
 import { HookRegistry } from '../hooks/hook-registry.js'
 import type { ContentReviewer } from '../hooks/types.js'
 import { reviewCliContent } from './cli-content-reviewer.js'
-import { PromptManager, formatChannelMessageLine, formatShortTermMemoryLine } from '../prompt-manager.js'
+import { PromptManager, formatChannelMessageLine, formatShortTermMemoryLine, type QuotedMessageEntry } from '../prompt-manager.js'
 import { resolveSenderIdentity } from '../utils/sender-identity.js'
+import { prefetchQuotedMessages } from './quoted-message-prefetcher.js'
 import { formatNow, formatChannelMessageTime, formatTaskCreatedAt, resolveTimezone, formatRuntimeMs } from '../utils/time.js'
-import { getInstanceSkillsDir } from '../core/data-paths.js'
+import { getInstanceSkillsDir, getAgentDataDir, getWorkspaceDir } from '../core/data-paths.js'
 import { llmUsageToTrace } from '../core/trace-usage.js'
 import { TodoStore } from './worker-todo-store.js'
 import { createTodoTool } from './worker-todo-tool.js'
@@ -157,7 +158,7 @@ function getReportMode(
   return isMasterPrivate ? 'digest' : 'silent'
 }
 
-const LOG_FILE = path.join(process.cwd(), '../data/agent-handler-debug.log')
+const LOG_FILE = path.join(getAgentDataDir(), 'agent-handler-debug.log')
 
 function log(msg: string) {
   const ts = new Date().toISOString()
@@ -1262,6 +1263,18 @@ export class AgentHandler {
                 }
               }
             : undefined,
+          ...(traceContext ? {
+            onPromptDump: (event) => {
+              traceContext.traceStore.appendPromptDump({
+                trace_id: traceContext.traceId,
+                iteration: event.turn,
+                source: 'worker',
+                model: event.model,
+                system_prompt: event.systemPrompt,
+                messages: event.messages,
+              })
+            },
+          } : {}),
           onSystemInjection: (event) => {
             // 系统注入（supplement / overdue / forced_summary / stop_hook）作为 trace 上的 tool-call 风格 span 暴露
             const label = `__system_${event.type}__`
@@ -1629,7 +1642,7 @@ export class AgentHandler {
     const { triggerArrivedAtMs, timeoutMs = 30_000, overdueReminderEnabled = true } = params
     const { taskId, registered, task, context } = pre
 
-    const triggerText = this.buildTriggerUserPrompt(params)
+    const triggerText = await this.buildTriggerUserPrompt(params)
 
     // If VLM is supported, attach image blocks from the current trigger messages.
     // buildTriggerUserPrompt returns a plain string, so images must be injected here.
@@ -1734,11 +1747,37 @@ export class AgentHandler {
    * - 新增尾部提醒：用 send_message 工具回复（含 channel_id / session_id）
    * - 场景画像从 frontContext 读取（已在 system prompt 里，此处不再重复渲染）
    */
-  private buildTriggerUserPrompt(params: ExecuteTriggerMessageParams): string {
+  private async buildTriggerUserPrompt(params: ExecuteTriggerMessageParams): Promise<string> {
     const { messages, activeTasks, isGroup, senderFriend, channelId, sessionId, frontContext } = params
     const parts: string[] = []
     const timezone = this.getTimezone()
     const now = new Date()
+    const recentMessages = frontContext.recent_messages ?? []
+    const sessionType: 'private' | 'group' = isGroup ? 'group' : 'private'
+    const identityResolver = (msg: ChannelMessage) =>
+      resolveSenderIdentity({
+        msg,
+        senderFriend,
+        crabDisplayName: frontContext.crab_display_name,
+        isGroup,
+      })
+    // 引用消息预拉：避免 helper 同步无 I/O 限制。命中后嵌套渲染 <quoted_message>，
+    // 未命中只输出 reply_to / quote 属性，agent 仍可调 get_message 兜底。
+    const quotedMessages = this.deps
+      ? await prefetchQuotedMessages(
+          [...messages, ...recentMessages],
+          recentMessages,
+          channelId,
+          sessionId,
+          sessionType,
+          {
+            rpcClient: this.deps.rpcClient,
+            moduleId: this.deps.moduleId,
+            resolveChannelPort: this.deps.resolveChannelPort,
+          },
+          identityResolver,
+        )
+      : new Map<string, QuotedMessageEntry>()
 
     parts.push(`当前时间: ${formatNow(timezone, now)}`)
     parts.push('')
@@ -1848,7 +1887,6 @@ export class AgentHandler {
       timezone,
       now,
     )
-    const recentMessages = frontContext.recent_messages ?? []
     parts.push(`\n## 聊天历史（当前 session，最近 ${recentHours} 小时 = ${recentSinceLabel} 之后，${recentMessages.length} 条）`)
     parts.push(`summary: ${recentSinceLabel} 之前的本会话历史不在此上下文里。`)
     if (recentMessages.length > 0) {
@@ -1857,13 +1895,11 @@ export class AgentHandler {
         const distFromEnd = total - 1 - i
         const maxLen = distFromEnd < 3 ? 2000 : distFromEnd < 10 ? 600 : 300
         const msg = recentMessages[i]
-        const identity = resolveSenderIdentity({
-          msg,
-          senderFriend,
-          crabDisplayName: frontContext.crab_display_name,
-          isGroup,
-        })
-        parts.push(formatChannelMessageLine(msg, { timezone, now, maxLen, identity }))
+        parts.push(formatChannelMessageLine(msg, {
+          timezone, now, maxLen,
+          identity: identityResolver(msg),
+          quotedMessages,
+        }))
       }
     } else {
       parts.push(`此窗口（${recentSinceLabel} 之后）本会话无消息。`)
@@ -1872,13 +1908,11 @@ export class AgentHandler {
     // ── 当前消息 ──
     parts.push(`\n## 当前消息`)
     for (const msg of messages) {
-      const identity = resolveSenderIdentity({
-        msg,
-        senderFriend,
-        crabDisplayName: frontContext.crab_display_name,
-        isGroup,
-      })
-      parts.push(formatChannelMessageLine(msg, { timezone, now, maxLen: 2000, identity }))
+      parts.push(formatChannelMessageLine(msg, {
+        timezone, now, maxLen: 2000,
+        identity: identityResolver(msg),
+        quotedMessages,
+      }))
     }
 
     // ── 行动提醒 ──
@@ -2644,7 +2678,7 @@ export class AgentHandler {
     const promptText = buildAuditPrompt({
       goal,
       conversationLog: params.conversationLog,
-      cwd: process.cwd(),
+      cwd: getWorkspaceDir(),
     })
 
     // 4. 跑 subagent（独立 trace, task_type='goal_audit'），注入 submit_audit_result 工具。
@@ -2877,6 +2911,33 @@ export class AgentHandler {
     parts.push(`当前时间: ${formatNow(timezone, now)}`)
     parts.push('')
 
+    // 引用消息预拉：trigger_messages + recent_messages 一起扫，命中 quotedMessages
+    // 后 formatChannelMessageLine 会嵌套渲染 <quoted_message>。
+    const triggerMsgs = context.trigger_messages ?? []
+    const recentMsgsForPrefetch = context.recent_messages ?? []
+    const identityResolver = (msg: ChannelMessage) =>
+      resolveSenderIdentity({
+        msg,
+        senderFriend: context.sender_friend,
+        crabDisplayName: undefined,
+      })
+    const quotedMessages: ReadonlyMap<string, QuotedMessageEntry> =
+      this.deps && context.task_origin
+        ? await prefetchQuotedMessages(
+            [...triggerMsgs, ...recentMsgsForPrefetch],
+            recentMsgsForPrefetch,
+            context.task_origin.channel_id,
+            context.task_origin.session_id,
+            context.task_origin.session_type === 'group' ? 'group' : 'private',
+            {
+              rpcClient: this.deps.rpcClient,
+              moduleId: this.deps.moduleId,
+              resolveChannelPort: this.deps.resolveChannelPort,
+            },
+            identityResolver,
+          )
+        : new Map<string, QuotedMessageEntry>()
+
     if (context.scene_profile) {
       const escaped = context.scene_profile.content.replace(/<\/scene_profile>/g, '&lt;/scene_profile&gt;')
       parts.push('## 场景画像')
@@ -2891,19 +2952,16 @@ export class AgentHandler {
     if (task.plan) { parts.push(`- 计划: ${task.plan}`) }
 
     // trigger_messages: 用户的原始请求（核心内容）
-    // 多行格式保留：trigger 可能含完整的用户原文，单行渲染会强制截断
+    // 统一走 formatChannelMessageLine，所有结构化字段（reply_to / quote / mentions / id 等）
+    // 由 helper 渲染；引用原文在 quotedMessages 命中时嵌套 <quoted_message>。
     if (context.trigger_messages && context.trigger_messages.length > 0) {
       parts.push(`\n## 用户请求（共 ${context.trigger_messages.length} 条消息）`)
       for (const msg of context.trigger_messages) {
-        const time = msg.platform_timestamp ? formatChannelMessageTime(msg.platform_timestamp, timezone, now) : ''
-        const stamp = time ? ` [${time}]` : ''
-        parts.push(`\n### ${msg.sender.platform_display_name}${stamp}`)
-        // 当前消息携带引用锚点时显式列出，worker 可直接 mcp__crab-messaging__get_message 拉原消息
-        const refMsgId = msg.features.reply_to_message_id ?? msg.features.quote_message_id
-        if (refMsgId) {
-          parts.push(`引用消息 ID: ${refMsgId}（可用 \`mcp__crab-messaging__get_message\` 查完整原文与对应 task 详情）`)
-        }
-        parts.push(formatMessageContent(msg))
+        parts.push(formatChannelMessageLine(msg, {
+          timezone, now, maxLen: 2000,
+          identity: identityResolver(msg),
+          quotedMessages,
+        }))
       }
       if (task.task_description) {
         parts.push(`\n## 任务分类\n${task.task_description}`)
@@ -2950,8 +3008,11 @@ export class AgentHandler {
     parts.push(`\n## 最近相关消息（当前 session，最近 ${recentHours} 小时，${context.recent_messages?.length ?? 0} 条）`)
     if (context.recent_messages && context.recent_messages.length > 0) {
       for (const m of context.recent_messages) {
-        const identity = resolveSenderIdentity({ msg: m })
-        parts.push(formatChannelMessageLine(m, { timezone, now, maxLen: 500, identity }))
+        parts.push(formatChannelMessageLine(m, {
+          timezone, now, maxLen: 500,
+          identity: identityResolver(m),
+          quotedMessages,
+        }))
       }
     } else {
       parts.push(`过去 ${recentHours} 小时本会话无消息。如需更早的本会话历史，调 \`get_history\` 工具。`)

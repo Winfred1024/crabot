@@ -51,7 +51,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { McpConnector } from './agent/mcp-connector.js'
 import { createCrabMessagingServer, type PathMapping, type TaskContext } from './mcp/crab-messaging.js'
 import { TraceStore } from './core/trace-store.js'
-import { getAgentTraceDir } from './core/data-paths.js'
+import { getAgentTraceDir, getWorkspaceDir } from './core/data-paths.js'
 import { PromptManager } from './prompt-manager.js'
 import { createLSPManager, type LSPManager } from './lsp/lsp-manager.js'
 import type { BgEntityRecord, BgEntityStatus, BgEntityType } from './engine/bg-entities/types.js'
@@ -333,7 +333,7 @@ export class UnifiedAgent extends ModuleBase {
         this.sdkEnvWorker = this.buildSdkEnv(workerModelConfig)
 
         // 启动 LSP Manager（subagent 可能需要）
-        void this.lspManager.start(process.cwd())
+        void this.lspManager.start(getWorkspaceDir())
 
         this.agentHandler = this.createWorkerHandler(
           this.sdkEnvWorker, workerPersonality,
@@ -619,11 +619,15 @@ export class UnifiedAgent extends ModuleBase {
       }
 
       const traceCallbackPrivate = this.buildDispatchTraceCallback(trace.trace_id)
+      const dumpPromptPrivate = this.buildDispatchPromptDumpCallback(trace.trace_id)
       const { actions } = await dispatch(dispatchCtx, {
         adapter: adapterFromSdkEnv(this.sdkEnvWorker),
         modelId: this.sdkEnvWorker.modelId,
         sendErrorToUser,
         trace: traceCallbackPrivate,
+        dumpPrompt: dumpPromptPrivate,
+        quotedPrefetchDeps: this.buildQuotedPrefetchDeps(),
+        timezone: this.getTimezone(),
         laneBatchSize: messages.length,
       })
 
@@ -816,11 +820,15 @@ export class UnifiedAgent extends ModuleBase {
       }
 
       const traceCallbackGroup = this.buildDispatchTraceCallback(trace.trace_id)
+      const dumpPromptGroup = this.buildDispatchPromptDumpCallback(trace.trace_id)
       const { actions } = await dispatch(dispatchCtx, {
         adapter: adapterFromSdkEnv(this.sdkEnvWorker),
         modelId: this.sdkEnvWorker.modelId,
         sendErrorToUser,
         trace: traceCallbackGroup,
+        dumpPrompt: dumpPromptGroup,
+        quotedPrefetchDeps: this.buildQuotedPrefetchDeps(),
+        timezone: this.getTimezone(),
         laneBatchSize: batch.length,
       })
 
@@ -1589,11 +1597,15 @@ export class UnifiedAgent extends ModuleBase {
       }
 
       const traceCallbackAdmin = this.buildDispatchTraceCallback(trace.trace_id)
+      const dumpPromptAdmin = this.buildDispatchPromptDumpCallback(trace.trace_id)
       const { actions } = await dispatch(dispatchCtx, {
         adapter: adapterFromSdkEnv(this.sdkEnvWorker),
         modelId: this.sdkEnvWorker.modelId,
         sendErrorToUser,
         trace: traceCallbackAdmin,
+        dumpPrompt: dumpPromptAdmin,
+        quotedPrefetchDeps: this.buildQuotedPrefetchDeps(),
+        timezone: this.getTimezone(),
       })
 
       // 执行动作
@@ -1721,6 +1733,7 @@ export class UnifiedAgent extends ModuleBase {
     task_type?: string
     title: string
     description: string
+    input?: Record<string, unknown>
     preferred_worker_specialization?: string
     /** Admin 解析后下发的执行权限（按 schedule.creator 或系统内置 master_private 计算） */
     resolved_permissions?: ResolvedPermissions
@@ -1730,6 +1743,7 @@ export class UnifiedAgent extends ModuleBase {
       task_type,
       title,
       description,
+      input,
       preferred_worker_specialization,
       resolved_permissions,
     } = params
@@ -1766,7 +1780,7 @@ export class UnifiedAgent extends ModuleBase {
             source_module_id: this.config.moduleId,
             trigger_type: 'scheduled',
           },
-          input: { schedule_id },
+          input: { ...(input ?? {}), schedule_id },
         },
         this.config.moduleId
       )
@@ -1778,9 +1792,31 @@ export class UnifiedAgent extends ModuleBase {
       )
 
       const workerContext = await this.contextAssembler.assembleScheduledTaskContext()
-      const workerContextWithPerms: WorkerAgentContext = resolved_permissions
-        ? { ...workerContext, resolved_permissions }
+
+      const targetChannelId = typeof input?.target_channel_id === 'string'
+        ? input.target_channel_id
+        : undefined
+      const targetSessionId = typeof input?.target_session_id === 'string'
+        ? input.target_session_id
+        : undefined
+      const targetSessionType = input?.target_session_type === 'private' || input?.target_session_type === 'group'
+        ? input.target_session_type
+        : undefined
+
+      const workerContextWithTarget: WorkerAgentContext = targetChannelId && targetSessionId
+        ? {
+            ...workerContext,
+            task_origin: {
+              channel_id: targetChannelId,
+              session_id: targetSessionId,
+              ...(targetSessionType ? { session_type: targetSessionType } : {}),
+            },
+          }
         : workerContext
+
+      const workerContextWithPerms: WorkerAgentContext = resolved_permissions
+        ? { ...workerContextWithTarget, resolved_permissions }
+        : workerContextWithTarget
 
       this.scheduledTaskRunner.executeScheduledTaskInBackground(
         {
@@ -2156,6 +2192,37 @@ export class UnifiedAgent extends ModuleBase {
       endSpan(spanId, status, details) {
         store.endSpan(traceId, spanId, status, details as never)
       },
+    }
+  }
+
+  /** UnifiedAgent 当前时区——直接用 agentConfig.timezone 解析；dispatcher 和 agent-handler 都用。 */
+  private getTimezone(): string {
+    return resolveTimezone(this.agentConfig?.timezone)
+  }
+
+  /** 给 dispatcher / 复用模块的引用消息预拉依赖。 */
+  private buildQuotedPrefetchDeps(): import('./agent/quoted-message-prefetcher').PrefetchQuotedDeps {
+    return {
+      rpcClient: this.rpcClient,
+      moduleId: this.config.moduleId,
+      resolveChannelPort: (channelId) => this.getChannelPort(channelId),
+    }
+  }
+
+  /**
+   * 构建 dispatcher 的 prompt dump 回调，每次 LLM 调用前把完整 prompt 落到
+   * prompts-*.jsonl，trace_id 由本闭包带；caller 三处复用。
+   */
+  private buildDispatchPromptDumpCallback(
+    traceId: string,
+  ): (record: { span_id?: string; attempt: number; model: string; system_prompt: string; messages: ReadonlyArray<unknown> }) => void {
+    const store = this.traceStore
+    return (record) => {
+      store.appendPromptDump({
+        trace_id: traceId,
+        source: 'dispatcher',
+        ...record,
+      })
     }
   }
 

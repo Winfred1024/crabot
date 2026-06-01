@@ -22,6 +22,7 @@ import { formatError } from './error-utils'
 import type { HookInput } from '../hooks/types'
 import { executeHooks } from '../hooks/hook-executor'
 import * as fs from 'fs'
+import { getWorkspaceDir } from '../core/data-paths.js'
 
 // --- Public Interface ---
 
@@ -98,7 +99,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
     return Date.now() - engineStartedAtMs > overdueConfig.timeoutMs
   }
 
-  const workingDirectory = process.cwd()
+  const workingDirectory = getWorkspaceDir()
   const hooks: HookConfig | undefined = options.hookRegistry ? {
     registry: options.hookRegistry,
     context: {
@@ -135,6 +136,16 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
       : options.tools
     const llmStartedAtMs = Date.now()
     let llmCallMs = 0
+    if (options.onPromptDump) {
+      // 即将开始的这一轮：turn 与 onTurn.turnNumber 对齐（onTurn 在 totalTurns++ 之后触发，
+      // 我们在 totalTurns++ 之前，所以这里 +1）。
+      options.onPromptDump({
+        turn: totalTurns + 1,
+        systemPrompt: currentSystemPrompt,
+        messages,
+        model: options.model,
+      })
+    }
     try {
       response = await callNonStreaming(adapter, {
         messages,
