@@ -18,7 +18,8 @@ const PY_MODULE = 'crabot-memory'
 function runCmd(cmd, args, cwd, logger) {
   return new Promise((resolve, reject) => {
     logger.info(`$ ${cmd} ${args.join(' ')}    (cwd: ${cwd})`)
-    const proc = spawn(cmd, args, { cwd, stdio: 'inherit' })
+    // Windows 上 corepack/pnpm/uv 都是 .cmd shim，spawn 不开 shell 找不到
+    const proc = spawn(cmd, args, { cwd, stdio: 'inherit', shell: process.platform === 'win32' })
     proc.on('error', reject)
     proc.on('exit', (code) => {
       if (code === 0) resolve()

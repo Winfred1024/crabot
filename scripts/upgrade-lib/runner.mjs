@@ -22,7 +22,8 @@ export function runScript(scriptPath, dataDir) {
   const cwd = dirname(dirname(scriptPath))
 
   return new Promise((resolve, reject) => {
-    const proc = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+    // Windows 上 uv/npx 是 .cmd shim，spawn 不开 shell 找不到
+    const proc = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32' })
     let stdout = ''
     let stderr = ''
     proc.stdout.on('data', (chunk) => {
