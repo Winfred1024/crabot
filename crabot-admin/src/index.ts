@@ -388,6 +388,10 @@ export class AdminModule extends ModuleBase {
   // 数据加载完成前 saveData 必须拒绝，否则会用空内存覆盖磁盘真实数据
   private dataLoaded = false
 
+  // saveData 串行化锁：防止并发 saveData 在 atomicWriteFile 的 write(.tmp) + rename 上竞态
+  // 典型场景：trigger_now 的 fire-and-forget saveData 与 admin.stop() 的 saveData 同时进行
+  private saveDataLock: Promise<void> | null = null
+
   constructor(
     moduleConfig: ModuleConfig,
     adminConfig: Partial<AdminConfig> = {}
@@ -645,6 +649,13 @@ export class AdminModule extends ModuleBase {
     // Seed builtin skills（幂等）
     await this.skillManager.seedBuiltinSkills(getBuiltinSkills())
     console.log(`[Admin] Seeded ${getBuiltinSkills().length} builtin skills`)
+
+    // 扫描工作区 skill（来自 WORKSPACE_DIR/.agents/skills/）
+    const workspaceDir = process.env.WORKSPACE_DIR || path.dirname(this.adminConfig.data_dir)
+    const scannedCount = await this.skillManager.scanWorkspaceSkills(workspaceDir)
+    if (scannedCount > 0) {
+      console.log(`[SkillManager] 扫描发现 ${scannedCount} 个新 skill（来自 ${workspaceDir}/.agents/skills/）`)
+    }
 
     // 初始化必要工具配置管理器
     await this.essentialToolsManager.initialize()
@@ -1291,6 +1302,11 @@ export class AdminModule extends ModuleBase {
 
       if (pathname === '/api/skills/import-upload' && req.method === 'POST') {
         await this.handleImportSkillUploadApi(req, res)
+        return
+      }
+
+      if (pathname === '/api/skills/scan-workspace' && req.method === 'POST') {
+        await this.handleScanWorkspaceSkillsApi(req, res)
         return
       }
 
@@ -3705,6 +3721,26 @@ export class AdminModule extends ModuleBase {
       console.warn('[Admin] saveData skipped: data not loaded yet')
       return
     }
+
+    // 串行化：等待前一个 saveData 完成后再执行，防止并发 atomicWriteFile 在 write(.tmp) + rename 上竞态
+    // 竞态现象：两个 saveData 先后 writeFile(friends.json.tmp)，然后先后 rename → 第二个 rename 拿到 ENOENT
+    while (this.saveDataLock) {
+      await this.saveDataLock
+    }
+
+    const promise = this.saveDataImpl()
+    this.saveDataLock = promise
+    try {
+      await promise
+    } finally {
+      if (this.saveDataLock === promise) {
+        this.saveDataLock = null
+      }
+    }
+  }
+
+  /** saveData 的实际实现，由 saveData 串行化调用 */
+  private async saveDataImpl(): Promise<void> {
     const friendsArray = Array.from(this.friends.values())
     await this.atomicWriteFile(this.friendsFilePath, JSON.stringify(friendsArray, null, 2))
 
@@ -4737,8 +4773,26 @@ export class AdminModule extends ModuleBase {
         .replace(/\{\{schedule_name\}\}/g, schedule.name)
         .replace(/\{\{watermark\}\}/g, schedule.watermark ?? schedule.created_at)
 
+    const renderTemplateValue = (value: unknown): unknown => {
+      if (typeof value === 'string') return replaceVars(value)
+      if (Array.isArray(value)) return value.map(renderTemplateValue)
+      if (value && typeof value === 'object') {
+        return Object.fromEntries(
+          Object.entries(value as Record<string, unknown>).map(([key, nestedValue]) => [
+            key,
+            renderTemplateValue(nestedValue),
+          ]),
+        )
+      }
+      return value
+    }
+
     const title = replaceVars(schedule.task_template.title)
     const description = replaceVars(schedule.task_template.description ?? '')
+
+    const input = schedule.task_template.input
+      ? renderTemplateValue(schedule.task_template.input) as Record<string, unknown>
+      : undefined
 
     // 解析触发后任务的执行权限：
     //   - 系统内置 / 没填 creator：按 master_private 系统模板（最高权限）跑；
@@ -4761,6 +4815,7 @@ export class AdminModule extends ModuleBase {
           task_type?: string
           title: string
           description: string
+          input?: Record<string, unknown>
           resolved_permissions?: ResolvedPermissions
         },
         { task_id: string; assigned_worker: string }
@@ -4772,6 +4827,7 @@ export class AdminModule extends ModuleBase {
           task_type: schedule.task_template.type,
           title,
           description,
+          ...(input ? { input } : {}),
           ...(resolvedPermissions ? { resolved_permissions: resolvedPermissions } : {}),
         },
         this.config.moduleId
@@ -6130,6 +6186,22 @@ export class AdminModule extends ModuleBase {
       }
       res.writeHead(400, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'import failed' }))
+    }
+  }
+
+  private async handleScanWorkspaceSkillsApi(
+    _req: IncomingMessage,
+    res: ServerResponse
+  ): Promise<void> {
+    try {
+      const workspaceDir = process.env.WORKSPACE_DIR || path.dirname(this.adminConfig.data_dir)
+      const added = await this.skillManager.scanWorkspaceSkills(workspaceDir)
+      this.triggerPushAfter('skill scan-workspace')
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ added, workspace_dir: workspaceDir }))
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: err instanceof Error ? err.message : '扫描失败' }))
     }
   }
 
