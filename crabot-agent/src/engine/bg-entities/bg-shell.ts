@@ -79,8 +79,37 @@ export async function spawnPersistentShell(opts: SpawnPersistentShellOpts): Prom
   const logFile = path.join(logsDir, `${entity_id}.log`)
   const logFd = await fs.promises.open(logFile, 'a')
 
+  // `registeredPromise` resolves after registry.register() succeeds, ensuring
+  // that exit/error handlers don't call registry.update() before the record exists.
+  // Create it BEFORE spawn so error handler (attached synchronously below) can
+  // reference it without TDZ issues.
+  let resolveRegistered!: () => void
+  const registeredPromise = new Promise<void>((resolve) => {
+    resolveRegistered = resolve
+  })
+
   const child = spawnBash(opts.command, {
     stdio: ['ignore', logFd.fd, logFd.fd],
+  })
+
+  // CRITICAL: 'error' listener MUST attach BEFORE any await. Node emits spawn
+  // failures (ENOENT etc.) asynchronously on next tick. If any await runs
+  // between spawn() and on('error'), the error fires unhandled → uncaughtException
+  // → main.ts handler kills the whole agent. Past incidents: see fatal.log
+  // history of `Error: spawn bash ENOENT` with `onErrorNT` in stack.
+  child.on('error', (err) => {
+    console.error('[bg-shell] child process error:', err)
+    void registeredPromise
+      .then(() =>
+        opts.registry.update(entity_id, {
+          status: 'failed',
+          exit_code: -1,
+          ended_at: new Date().toISOString(),
+        } as Partial<BgShellRegistryRecord>),
+      )
+      .catch(() => {
+        // swallow — nothing we can do
+      })
   })
 
   // Close our copy of the fd — child holds its own reference via stdio inheritance.
@@ -90,16 +119,8 @@ export async function spawnPersistentShell(opts: SpawnPersistentShellOpts): Prom
     throw new Error('[bg-shell] Failed to spawn child process: no pid returned')
   }
 
-  // `registeredPromise` resolves after registry.register() succeeds, ensuring
-  // that exit/error handlers don't call registry.update() before the record exists.
-  // We create it now (before any awaits) so fast-exiting processes don't miss it.
-  let resolveRegistered!: () => void
-  const registeredPromise = new Promise<void>((resolve) => {
-    resolveRegistered = resolve
-  })
-
-  // Attach exit/error listeners synchronously — before any further awaits —
-  // so fast-exiting processes (e.g. `exit 0`) are captured.
+  // Attach exit listener — exit only fires for processes that successfully
+  // spawned, so the timing isn't as tight as error.
   child.on('exit', (code) => {
     const exitCode = code ?? -1
     const exitedAt = Date.now()
@@ -140,21 +161,6 @@ export async function spawnPersistentShell(opts: SpawnPersistentShellOpts): Prom
       })
       .catch((err: unknown) => {
         console.error(`[bg-shell] exit registry update failed for ${entity_id}:`, err)
-      })
-  })
-
-  child.on('error', (err) => {
-    console.error('[bg-shell] child process error:', err)
-    void registeredPromise
-      .then(() =>
-        opts.registry.update(entity_id, {
-          status: 'failed',
-          exit_code: -1,
-          ended_at: new Date().toISOString(),
-        } as Partial<BgShellRegistryRecord>),
-      )
-      .catch(() => {
-        // swallow — nothing we can do
       })
   })
 
