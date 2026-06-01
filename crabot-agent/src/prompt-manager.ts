@@ -20,26 +20,120 @@ function escapeAttr(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
+/** 调用方预拉的引用原文映射：platform_message_id → {msg, identity}。helper 命中即嵌套 <quoted_message>。 */
+export interface QuotedMessageEntry {
+  readonly msg: ChannelMessage
+  readonly identity: SenderIdentity
+}
+
+export interface FormatChannelMessageOpts {
+  readonly timezone: string
+  readonly now?: Date
+  readonly maxLen?: number
+  readonly identity: SenderIdentity
+  /**
+   * 引用原文映射（platform_message_id → 原消息 + 它的 identity）。命中时嵌套渲染
+   * `<quoted_message>` 子标签；未命中只输出 reply_to / quote 属性，agent 仍可用
+   * `mcp__crab-messaging__get_message` 拉。
+   *
+   * 调用方负责异步并发预拉（agent-handler 在 buildTriggerUserPrompt 前做），helper
+   * 本身无 I/O，保持同步。
+   */
+  readonly quotedMessages?: ReadonlyMap<string, QuotedMessageEntry>
+  /** 嵌套深度（递归保护）。默认 1：当前消息可展开 1 层引用；嵌套消息再嵌套就只出属性。 */
+  readonly maxQuoteDepth?: number
+}
+
+const QUOTED_MAX_LEN = 800
+
 /**
- * 统一渲染 channel 历史消息为 XML <message> 标签。
- * 输出格式：<message ts="HH:MM" from="sender" identity="..." [media="..."] [mention="@you"]>\n内容\n</message>
+ * 统一渲染 channel 消息为 XML `<message>` 标签。
+ *
+ * 输出（属性按存在性增量出现）：
+ * ```
+ * <message ts="HH:MM" id="..." from="..." from_id="..." identity="..."
+ *   [media="image|file"] [media_url="..."] [filename="..."]
+ *   [mention="@you"] [mentions="@a,@b"]
+ *   [reply_to="..."] [quote="..."] [thread="..."]>
+ *   [<quoted_message ...>原文</quoted_message>]
+ *   正文
+ * </message>
+ * ```
+ *
+ * 设计：所有 ChannelMessage 结构化字段（features / sender / id / content metadata）
+ * 都按存在性输出为属性，避免 agent 因 prompt 渲染丢字段而看不到 quote/mention/媒体
+ * 引用等语义。早期 markdown 版本用 `> ` 前缀区分引用内容；XML 版本用嵌套
+ * `<quoted_message>` 子标签作为等价实现，避免引用内容和正文 markdown 混淆。
+ *
  * 内容超过 maxLen 时截断并附 `...[内容截断]`。
  */
 export function formatChannelMessageLine(
   msg: ChannelMessage,
-  opts: { timezone: string; now?: Date; maxLen?: number; identity: SenderIdentity },
+  opts: FormatChannelMessageOpts,
 ): string {
-  const { timezone, now, maxLen = 2000, identity } = opts
+  return renderMessageTag(msg, opts, 'message', opts.maxLen ?? 2000)
+}
+
+/** 内部：递归渲染 message 或 quoted_message 标签。 */
+function renderMessageTag(
+  msg: ChannelMessage,
+  opts: FormatChannelMessageOpts,
+  tagName: 'message' | 'quoted_message',
+  maxLen: number,
+): string {
+  const { timezone, now, identity, quotedMessages, maxQuoteDepth = 1 } = opts
   const sender = msg.sender.platform_display_name
   const time = msg.platform_timestamp
     ? formatChannelMessageTime(msg.platform_timestamp, timezone, now ?? new Date())
     : ''
   const fullText = formatMessageContent(msg)
   const truncated = fullText.length > maxLen ? fullText.slice(0, maxLen) + '...[内容截断]' : fullText
-  const escaped = truncated.replace(/<\/message>/g, '&lt;/message&gt;')
-  const mediaAttr = msg.content.type !== 'text' ? ` media="${msg.content.type}"` : ''
-  const mentionAttr = msg.features.is_mention_crab ? ' mention="@you"' : ''
-  return `<message ts="${time}" from="${escapeAttr(sender)}" identity="${identity}"${mediaAttr}${mentionAttr}>\n${escaped}\n</message>`
+  // 正文里出现 </message> 或 </quoted_message> 都要转义，避免提前闭合外层标签
+  const escaped = truncated
+    .replace(/<\/message>/g, '&lt;/message&gt;')
+    .replace(/<\/quoted_message>/g, '&lt;/quoted_message&gt;')
+
+  // ── 属性按存在性增量拼装 ──
+  const attrs: string[] = []
+  attrs.push(`ts="${time}"`)
+  if (msg.platform_message_id) attrs.push(`id="${escapeAttr(msg.platform_message_id)}"`)
+  attrs.push(`from="${escapeAttr(sender)}"`)
+  if (msg.sender.platform_user_id) attrs.push(`from_id="${escapeAttr(msg.sender.platform_user_id)}"`)
+  attrs.push(`identity="${identity}"`)
+  if (msg.content.type !== 'text') attrs.push(`media="${msg.content.type}"`)
+  if (msg.content.media_url) attrs.push(`media_url="${escapeAttr(msg.content.media_url)}"`)
+  if (msg.content.filename) attrs.push(`filename="${escapeAttr(msg.content.filename)}"`)
+  if (msg.features.is_mention_crab) attrs.push(`mention="@you"`)
+  const mentions = msg.features.mentions
+  if (mentions && mentions.length > 0) {
+    const list = mentions
+      .map((m) => `@${m.display_name ?? m.user_id}`)
+      .join(',')
+    attrs.push(`mentions="${escapeAttr(list)}"`)
+  }
+  if (msg.features.reply_to_message_id) attrs.push(`reply_to="${escapeAttr(msg.features.reply_to_message_id)}"`)
+  if (msg.features.quote_message_id) attrs.push(`quote="${escapeAttr(msg.features.quote_message_id)}"`)
+  if (msg.features.thread_id) attrs.push(`thread="${escapeAttr(msg.features.thread_id)}"`)
+
+  // ── 引用嵌套渲染（depth > 0 + 命中 quotedMessages）──
+  let quotedBlock = ''
+  const refId = msg.features.reply_to_message_id ?? msg.features.quote_message_id
+  if (refId && quotedMessages && maxQuoteDepth > 0) {
+    const entry = quotedMessages.get(refId)
+    if (entry) {
+      const innerOpts: FormatChannelMessageOpts = {
+        timezone,
+        ...(now !== undefined ? { now } : {}),
+        identity: entry.identity,
+        ...(quotedMessages !== undefined ? { quotedMessages } : {}),
+        maxQuoteDepth: maxQuoteDepth - 1,
+      }
+      const inner = renderMessageTag(entry.msg, innerOpts, 'quoted_message', QUOTED_MAX_LEN)
+      quotedBlock = `\n${inner}`
+    }
+  }
+
+  return `<${tagName} ${attrs.join(' ')}>${quotedBlock}\n${escaped}\n</${tagName}>`
 }
 
 /**

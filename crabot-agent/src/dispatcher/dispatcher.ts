@@ -12,10 +12,13 @@
 import type { LLMAdapter } from '../engine/llm-adapter-types.js'
 import { callNonStreaming, extractText } from '../engine/llm-adapter-types.js'
 import type { EngineUserMessage } from '../engine/types.js'
-import { formatMessageContent } from '../agent/media-resolver.js'
+import type { ChannelMessage } from '../types.js'
 import type { DispatchContext, DispatchResult, DispatchAction, DispatchTraceCallback } from './dispatcher-types.js'
 import { MAX_ACTIONS_PER_DISPATCH } from './dispatcher-types.js'
 import { assembleDispatcherPrompt } from './dispatcher-prompt.js'
+import { formatChannelMessageLine, type QuotedMessageEntry } from '../prompt-manager.js'
+import { resolveSenderIdentity } from '../utils/sender-identity.js'
+import { prefetchQuotedMessages, type PrefetchQuotedDeps } from '../agent/quoted-message-prefetcher.js'
 
 export interface DispatchDeps {
   readonly adapter: LLMAdapter
@@ -24,8 +27,28 @@ export interface DispatchDeps {
   readonly maxParseRetries?: number
   /** trace 写入回调（可选）。注入后 dispatch() 在 DispatchContext 指定的 trace 下写 dispatch_call span。 */
   readonly trace?: DispatchTraceCallback
+  /**
+   * 每次 LLM 调用前的完整 prompt 拍照回调（可选）。注入后 dispatch() 在每次 attempt
+   * 调 LLM 前把 systemPrompt + userMessage 落到 prompts-*.jsonl（trace_id / source
+   * 由 caller 闭包带）。仅用于 debug。
+   */
+  readonly dumpPrompt?: (record: {
+    span_id?: string
+    attempt: number
+    model: string
+    system_prompt: string
+    messages: ReadonlyArray<unknown>
+  }) => void
   /** 调用方注入的 batch 大小（SessionLane take 整批时传入）。仅用于 dispatch_call span 观测。 */
   readonly laneBatchSize?: number
+  /**
+   * 引用消息预拉依赖（可选）。注入后 dispatcher 在调 LLM 前 await prefetch，
+   * formatChannelMessageLine 嵌套渲染 <quoted_message>。不注入时 dispatcher 仅靠
+   * 本地命中（ctx.messages / recentMessages 间互相引用），跨日 quote 看不到原文。
+   */
+  readonly quotedPrefetchDeps?: PrefetchQuotedDeps
+  /** IANA 时区名（如 "Asia/Shanghai"），用于 message 标签里 ts 属性的本地化。不传默认 'UTC'。 */
+  readonly timezone?: string
 }
 
 const DEFAULT_MAX_PARSE_RETRIES = 3
@@ -33,7 +56,29 @@ const DEFAULT_MAX_PARSE_RETRIES = 3
 export async function dispatch(ctx: DispatchContext, deps: DispatchDeps): Promise<DispatchResult> {
   const maxRetries = deps.maxParseRetries ?? DEFAULT_MAX_PARSE_RETRIES
   const systemPrompt = assembleDispatcherPrompt(ctx)
-  const baseUserContent = buildUserPrompt(ctx)
+
+  // 引用消息预拉：跨日 / 跨窗口的 quote 在本地拿不到原文时走 channel RPC 拉一次。
+  // 不注入 quotedPrefetchDeps 时回退到空 Map（仅靠本地 messages/recentMessages 命中）。
+  const isGroup = ctx.sessionType === 'group'
+  const identityResolver = (msg: ChannelMessage) =>
+    resolveSenderIdentity({
+      msg,
+      senderFriend: ctx.senderFriend,
+      isGroup,
+    })
+  let quotedMessages: ReadonlyMap<string, QuotedMessageEntry> = new Map()
+  if (deps.quotedPrefetchDeps) {
+    quotedMessages = await prefetchQuotedMessages(
+      [...ctx.messages, ...ctx.recentMessages],
+      ctx.recentMessages,
+      ctx.channelId,
+      ctx.sessionId,
+      isGroup ? 'group' : 'private',
+      deps.quotedPrefetchDeps,
+      identityResolver,
+    )
+  }
+  const baseUserContent = buildUserPrompt(ctx, { quotedMessages, timezone: deps.timezone ?? 'UTC' })
 
   // 写 dispatch_call span（若调用方注入了 trace callback）
   const span = deps.trace?.startSpan({
@@ -59,6 +104,15 @@ export async function dispatch(ctx: DispatchContext, deps: DispatchDeps): Promis
       role: 'user',
       content: userContent,
       timestamp: Date.now(),
+    }
+    if (deps.dumpPrompt) {
+      deps.dumpPrompt({
+        ...(span ? { span_id: span.span_id } : {}),
+        attempt,
+        model: deps.modelId,
+        system_prompt: systemPrompt,
+        messages: [userMessage],
+      })
     }
     try {
       const response = await callNonStreaming(deps.adapter, {
@@ -96,10 +150,22 @@ export async function dispatch(ctx: DispatchContext, deps: DispatchDeps): Promis
   return { actions: [] }
 }
 
-/** Exported for regression tests; renders file / image media as `[文件: name]` / `[图片: url]`
- *  and includes recent_messages chat history for indirect-reference judgments. */
-export function buildUserPrompt(ctx: DispatchContext): string {
+/** Exported for regression tests; renders messages via formatChannelMessageLine so dispatcher
+ *  sees the same structured fields (reply_to / quote / mentions / id 等) as worker. */
+export function buildUserPrompt(
+  ctx: DispatchContext,
+  opts: {
+    quotedMessages?: ReadonlyMap<string, QuotedMessageEntry>
+    timezone?: string
+  } = {},
+): string {
   const lines: string[] = []
+  const isGroup = ctx.sessionType === 'group'
+  const identityResolver = (msg: ChannelMessage) =>
+    resolveSenderIdentity({ msg, senderFriend: ctx.senderFriend, isGroup })
+  const quotedMessages = opts.quotedMessages ?? new Map<string, QuotedMessageEntry>()
+  const timezone = opts.timezone ?? 'UTC'
+  const now = new Date()
 
   // 最近聊天历史：剔除当前批次已含的消息（contextAssembler 拉的 recent_messages 通常会包含 trigger）
   const currentIds = new Set(ctx.messages.map((m) => m.platform_message_id))
@@ -107,14 +173,22 @@ export function buildUserPrompt(ctx: DispatchContext): string {
   if (history.length > 0) {
     lines.push('## 最近聊天历史')
     for (const m of history) {
-      lines.push(`[${m.sender.platform_display_name}] ${formatMessageContent(m).slice(0, 2000)}`)
+      lines.push(formatChannelMessageLine(m, {
+        timezone, now, maxLen: 2000,
+        identity: identityResolver(m),
+        quotedMessages,
+      }))
     }
     lines.push('')
   }
 
   lines.push('## 当前消息批次')
   for (const m of ctx.messages) {
-    lines.push(`[${m.sender.platform_display_name}] ${formatMessageContent(m).slice(0, 2000)}`)
+    lines.push(formatChannelMessageLine(m, {
+      timezone, now, maxLen: 2000,
+      identity: identityResolver(m),
+      quotedMessages,
+    }))
   }
   if (ctx.activeTasks.length > 0) {
     lines.push('\n## 活跃任务')

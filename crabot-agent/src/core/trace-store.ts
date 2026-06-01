@@ -376,6 +376,50 @@ export class TraceStore {
     this.persistTrace(trace)
   }
 
+  /**
+   * 把单次 LLM 调用的完整 prompt 落到 prompts-YYYY-MM-DD.jsonl。
+   *
+   * 跟 traces-*.jsonl 同目录、按日切片；cleanupOldTraces 会按相同 cutoff 一起清。
+   * 写入失败仅 warn，不阻塞主流程。
+   *
+   * 用途：trace span 里只存 input_summary（task_title 切 150 字），调试"agent
+   * 为啥这么干"类问题时无法事后还原模型实际看到的内容。这里存完整 system_prompt
+   * + messages 拍照，trace_id / span_id 关联回 trace。
+   */
+  appendPromptDump(record: {
+    trace_id: string
+    span_id?: string
+    iteration?: number
+    attempt?: number
+    source: 'dispatcher' | 'worker' | 'subagent'
+    model?: string
+    system_prompt: string
+    messages: ReadonlyArray<unknown>
+  }): void {
+    if (!this.persistDir) return
+    try {
+      const timestamp = new Date().toISOString()
+      const date = timestamp.slice(0, 10)
+      const file = `prompts-${date}.jsonl`
+      const filePath = path.join(this.persistDir, file)
+      const line = JSON.stringify({
+        timestamp,
+        trace_id: record.trace_id,
+        ...(record.span_id !== undefined ? { span_id: record.span_id } : {}),
+        ...(record.iteration !== undefined ? { iteration: record.iteration } : {}),
+        ...(record.attempt !== undefined ? { attempt: record.attempt } : {}),
+        source: record.source,
+        ...(record.model !== undefined ? { model: record.model } : {}),
+        system_prompt: record.system_prompt,
+        messages: record.messages,
+      }) + '\n'
+      fs.appendFileSync(filePath, line, 'utf-8')
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.warn(`[TraceStore] appendPromptDump failed for ${record.trace_id}: ${msg}`)
+    }
+  }
+
   updateTrace(traceId: string, updates: { related_task_id?: string }): void {
     const trace = this.traces.get(traceId)
     if (!trace) return
@@ -622,27 +666,36 @@ export class TraceStore {
     const toDelete: string[] = []
 
     try {
+      // 同时清 traces-YYYY-MM-DD.jsonl 和 prompts-YYYY-MM-DD.jsonl —— 后者是
+      // appendPromptDump 写入的 LLM 完整 prompt 拍照，跟 trace 同生命周期。
       const files = fs.readdirSync(this.persistDir)
-        .filter(f => f.startsWith('traces-') && f.endsWith('.jsonl'))
+        .filter(f => (f.startsWith('traces-') || f.startsWith('prompts-')) && f.endsWith('.jsonl'))
       for (const file of files) {
-        const dateStr = file.slice('traces-'.length, 'traces-'.length + 10)
+        const prefix = file.startsWith('traces-') ? 'traces-' : 'prompts-'
+        const dateStr = file.slice(prefix.length, prefix.length + 10)
         if (dateStr >= cutoffStr) continue
         const filePath = path.join(this.persistDir, file)
         const stat = fs.statSync(filePath)
         affectedBytes += stat.size
-        const content = fs.readFileSync(filePath, 'utf-8')
-        const ids: string[] = []
-        for (const line of content.split('\n')) {
-          if (!line.trim()) continue
-          try {
-            const trace = JSON.parse(line) as { trace_id?: string }
-            if (trace.trace_id) ids.push(trace.trace_id)
-          } catch { /* skip malformed */ }
+        // 只对 traces-* 抓 trace_id 进 deletedIds（语义保持原状：返回的是被删的 trace 数）。
+        // prompts-* 文件被一起删，但不计入 affected_count——它的"条数"跟 trace 条数没对位关系。
+        if (prefix === 'traces-') {
+          const content = fs.readFileSync(filePath, 'utf-8')
+          const ids: string[] = []
+          for (const line of content.split('\n')) {
+            if (!line.trim()) continue
+            try {
+              const trace = JSON.parse(line) as { trace_id?: string }
+              if (trace.trace_id) ids.push(trace.trace_id)
+            } catch { /* skip malformed */ }
+          }
+          affectedTraces += ids.length
+          if (!dryRun) {
+            deletedIds.push(...ids)
+          }
         }
-        affectedTraces += ids.length
         if (!dryRun) {
           toDelete.push(file)
-          deletedIds.push(...ids)
         }
       }
       if (!dryRun) {

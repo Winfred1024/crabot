@@ -463,6 +463,154 @@ describe('TraceStore.cleanupOldTraces', () => {
       fs.rmSync(dir, { recursive: true })
     }
   })
+
+  it('also deletes prompts-*.jsonl for past-cutoff dates (kept together)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-clean-prompts-'))
+    try {
+      const oldDate = new Date(Date.now() - 86400_000 * 60)
+      const oldDateStr = oldDate.toISOString().slice(0, 10)
+      const tracesFile = `traces-${oldDateStr}.jsonl`
+      const promptsFile = `prompts-${oldDateStr}.jsonl`
+      fs.writeFileSync(path.join(dir, tracesFile), JSON.stringify({
+        trace_id: 'old1', module_id: 'a', started_at: oldDate.toISOString(),
+        status: 'completed', trigger: { type: 'message', summary: 'old' }, spans: [],
+      }) + '\n')
+      fs.writeFileSync(path.join(dir, promptsFile), JSON.stringify({
+        timestamp: oldDate.toISOString(), trace_id: 'old1', source: 'worker',
+        system_prompt: 'sys', messages: [],
+      }) + '\n')
+
+      const store = new TraceStore(10, dir)
+      const result = store.cleanupOldTraces(30, false)
+
+      // affected_count 仍是 trace 条数（prompts 文件不计入）
+      expect(result.affected_count).toBe(1)
+      expect(result.deleted_trace_ids).toEqual(['old1'])
+      // 两个文件都被删
+      expect(fs.existsSync(path.join(dir, tracesFile))).toBe(false)
+      expect(fs.existsSync(path.join(dir, promptsFile))).toBe(false)
+    } finally {
+      fs.rmSync(dir, { recursive: true })
+    }
+  })
+
+  it('does not delete prompts-*.jsonl that are within retention', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-clean-prompts-keep-'))
+    try {
+      const todayStr = new Date().toISOString().slice(0, 10)
+      const promptsFile = `prompts-${todayStr}.jsonl`
+      fs.writeFileSync(path.join(dir, promptsFile), JSON.stringify({
+        timestamp: new Date().toISOString(), trace_id: 'new1', source: 'worker',
+        system_prompt: 'sys', messages: [],
+      }) + '\n')
+
+      const store = new TraceStore(10, dir)
+      const result = store.cleanupOldTraces(30, false)
+      expect(result.affected_count).toBe(0)
+      expect(fs.existsSync(path.join(dir, promptsFile))).toBe(true)
+    } finally {
+      fs.rmSync(dir, { recursive: true })
+    }
+  })
+
+  it('dryRun=true does not delete prompts-*.jsonl either', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-clean-prompts-dry-'))
+    try {
+      const oldDate = new Date(Date.now() - 86400_000 * 60)
+      const oldDateStr = oldDate.toISOString().slice(0, 10)
+      const promptsFile = `prompts-${oldDateStr}.jsonl`
+      fs.writeFileSync(path.join(dir, promptsFile), 'x\n')
+
+      const store = new TraceStore(10, dir)
+      store.cleanupOldTraces(30, true)
+      expect(fs.existsSync(path.join(dir, promptsFile))).toBe(true)
+    } finally {
+      fs.rmSync(dir, { recursive: true })
+    }
+  })
+})
+
+describe('TraceStore.appendPromptDump', () => {
+  it('appends to prompts-YYYY-MM-DD.jsonl in persistDir', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-prompt-append-'))
+    try {
+      const store = new TraceStore(10, dir)
+      store.appendPromptDump({
+        trace_id: 'tr-1',
+        span_id: 'sp-1',
+        iteration: 3,
+        attempt: 0,
+        source: 'worker',
+        model: 'claude-x',
+        system_prompt: 'system text',
+        messages: [{ role: 'user', content: 'hello' }],
+      })
+
+      const todayStr = new Date().toISOString().slice(0, 10)
+      const fpath = path.join(dir, `prompts-${todayStr}.jsonl`)
+      expect(fs.existsSync(fpath)).toBe(true)
+      const lines = fs.readFileSync(fpath, 'utf-8').trim().split('\n')
+      expect(lines.length).toBe(1)
+      const rec = JSON.parse(lines[0])
+      expect(rec.trace_id).toBe('tr-1')
+      expect(rec.span_id).toBe('sp-1')
+      expect(rec.iteration).toBe(3)
+      expect(rec.attempt).toBe(0)
+      expect(rec.source).toBe('worker')
+      expect(rec.model).toBe('claude-x')
+      expect(rec.system_prompt).toBe('system text')
+      expect(rec.messages).toEqual([{ role: 'user', content: 'hello' }])
+      expect(typeof rec.timestamp).toBe('string')
+    } finally {
+      fs.rmSync(dir, { recursive: true })
+    }
+  })
+
+  it('omits undefined optional fields from the JSONL record', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-prompt-omit-'))
+    try {
+      const store = new TraceStore(10, dir)
+      store.appendPromptDump({
+        trace_id: 'tr-2',
+        source: 'dispatcher',
+        system_prompt: 'sys',
+        messages: [],
+      })
+
+      const todayStr = new Date().toISOString().slice(0, 10)
+      const lines = fs.readFileSync(path.join(dir, `prompts-${todayStr}.jsonl`), 'utf-8').trim().split('\n')
+      const rec = JSON.parse(lines[0])
+      expect('span_id' in rec).toBe(false)
+      expect('iteration' in rec).toBe(false)
+      expect('attempt' in rec).toBe(false)
+      expect('model' in rec).toBe(false)
+    } finally {
+      fs.rmSync(dir, { recursive: true })
+    }
+  })
+
+  it('appends multiple records into the same daily file', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-prompt-multi-'))
+    try {
+      const store = new TraceStore(10, dir)
+      store.appendPromptDump({ trace_id: 'tr-a', source: 'worker', system_prompt: '', messages: [] })
+      store.appendPromptDump({ trace_id: 'tr-b', source: 'subagent', system_prompt: '', messages: [] })
+
+      const todayStr = new Date().toISOString().slice(0, 10)
+      const lines = fs.readFileSync(path.join(dir, `prompts-${todayStr}.jsonl`), 'utf-8').trim().split('\n')
+      expect(lines.length).toBe(2)
+      expect(JSON.parse(lines[0]).trace_id).toBe('tr-a')
+      expect(JSON.parse(lines[1]).trace_id).toBe('tr-b')
+    } finally {
+      fs.rmSync(dir, { recursive: true })
+    }
+  })
+
+  it('no-op when persistDir is not configured', () => {
+    const store = new TraceStore(10)
+    // Should not throw
+    store.appendPromptDump({ trace_id: 'tr-x', source: 'worker', system_prompt: '', messages: [] })
+  })
 })
 
 describe('TraceStore getSpansAtDepth', () => {
