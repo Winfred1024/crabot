@@ -17,6 +17,7 @@ const DATA_DIR = process.env.DATA_DIR || path.join(CRABOT_ROOT,
     : 'data'
 )
 const WORKSPACE_DIR = process.env.WORKSPACE_DIR || path.dirname(DATA_DIR)
+// 写回 process.env 确保子进程通过 process.env spread 时能继承此值
 process.env.WORKSPACE_DIR = WORKSPACE_DIR
 
 // 加载环境变量文件（统一从根目录 .env 读取）
@@ -102,6 +103,7 @@ const CORE_MODULES: Array<ModuleDefinition & Record<string, unknown>> = [
     env: {
       CONFIG_PATH: path.join(AGENT_DIR, 'config.yaml'),
       DATA_DIR: path.join(DATA_DIR, 'agent'),
+      WORKSPACE_DIR: WORKSPACE_DIR,
       // 传递 New API token 给 Agent 使用
       NEW_API_TOKEN: process.env.CRABOT_NEW_API_ADMIN_TOKEN || '',
       // 传递 Admin endpoint，用于从 Admin 获取配置

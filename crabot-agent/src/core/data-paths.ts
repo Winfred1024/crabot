@@ -36,5 +36,6 @@ export function getWorkspaceDir(): string {
   if (process.env.WORKSPACE_DIR) {
     return path.resolve(process.env.WORKSPACE_DIR)
   }
-  return path.dirname(path.resolve(process.env.DATA_DIR ?? './data'))
+  // fallback：agent DATA_DIR 是 {root}/data/agent，上两级得到 workspace 根目录
+  return path.dirname(path.dirname(path.resolve(process.env.DATA_DIR ?? './data')))
 }
