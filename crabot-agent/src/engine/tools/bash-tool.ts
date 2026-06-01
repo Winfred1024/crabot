@@ -9,6 +9,7 @@ import type { WorkerAgentContext } from '../../types.js'
 import { spawnPersistentShell } from '../bg-entities/bg-shell.js'
 import { isPersistentMode } from '../bg-entities/permission.js'
 import { BG_ENTITY_LIMIT_PER_OWNER } from '../bg-entities/types.js'
+import { resolveBashPath, BASH_NOT_FOUND_MESSAGE } from '../../utils/resolve-bash-path.js'
 
 const MAX_OUTPUT_LENGTH = 100000
 const DEFAULT_TIMEOUT_MS = 120000
@@ -64,9 +65,13 @@ function execCommand(
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<ToolCallResult> {
+  const bashPath = resolveBashPath()
+  if (bashPath === null) {
+    return Promise.resolve({ output: BASH_NOT_FOUND_MESSAGE, isError: true })
+  }
   return new Promise((resolve) => {
     const child = execFile(
-      '/bin/sh',
+      bashPath,
       ['-c', command],
       {
         cwd,

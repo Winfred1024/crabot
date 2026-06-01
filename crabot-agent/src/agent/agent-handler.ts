@@ -18,7 +18,7 @@ import {
   filterToolsByPermission,
 } from '../engine/index.js'
 import { BgEntityRegistry } from '../engine/bg-entities/registry.js'
-import { TransientShellRegistry } from '../engine/bg-entities/bg-shell.js'
+import { TransientShellRegistry, killShellTree } from '../engine/bg-entities/bg-shell.js'
 import type { BgEntityOwner, BgEntityRecord, BgEntityStatus, BgEntityType } from '../engine/bg-entities/types.js'
 import type { BashBgContext } from '../engine/tools/index.js'
 import type { BgToolDeps } from '../engine/tools/index.js'
@@ -3095,12 +3095,7 @@ export class AgentHandler {
       if (!rec) return { ok: false, message: 'Entity not found' }
       if (rec.status !== 'running') return { ok: false, message: `Already ${rec.status}` }
       if (rec.type !== 'shell') return { ok: false, message: 'Mismatched type' }
-      try {
-        process.kill(-rec.pgid, 'SIGTERM')
-        setTimeout(() => {
-          try { process.kill(-rec.pgid, 'SIGKILL') } catch { /* already dead */ }
-        }, 3000).unref()
-      } catch { /* already dead */ }
+      killShellTree(rec.pgid)
       await this.bgRegistry.update(entity_id, {
         status: 'killed',
         ended_at: new Date().toISOString(),

@@ -36,6 +36,72 @@ function Ensure-Uv {
     Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
 }
 
+# --- Git Bash ---
+# crabot-agent 的 Bash 工具依赖 bash.exe。Windows 上三段式探测：
+#   1. CRABOT_BASH_PATH env（已配置）
+#   2. PATH 里的 bash.exe
+#   3. PATH 里的 git.exe 推 ..\..\bin\bash.exe（Git for Windows 默认 PATH 选项的常见情况）
+# 都没有 → 下载 PortableGit 自解压到 $InstallDir\PortableGit，写 user env CRABOT_BASH_PATH。
+$PortableGitVersion = "2.54.0"
+function Ensure-Bash {
+    if ($env:CRABOT_BASH_PATH -and (Test-Path $env:CRABOT_BASH_PATH)) {
+        Write-Info "bash configured via CRABOT_BASH_PATH: $env:CRABOT_BASH_PATH"
+        return
+    }
+    $bashCmd = Get-Command bash -ErrorAction SilentlyContinue
+    if ($bashCmd) {
+        Write-Info "bash found at $($bashCmd.Source)"
+        return
+    }
+    $gitCmd = Get-Command git -ErrorAction SilentlyContinue
+    if ($gitCmd) {
+        $candidate = [System.IO.Path]::GetFullPath((Join-Path (Split-Path $gitCmd.Source -Parent) "..\..\bin\bash.exe"))
+        if (Test-Path $candidate) {
+            Write-Info "bash found via git path: $candidate"
+            [Environment]::SetEnvironmentVariable("CRABOT_BASH_PATH", $candidate, "User")
+            $env:CRABOT_BASH_PATH = $candidate
+            return
+        }
+    }
+    if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64') {
+        Write-Err "Detected $env:PROCESSOR_ARCHITECTURE — auto-install only supports x64."
+        Write-Err "Please install Git for Windows manually: https://git-scm.com/downloads/win"
+        exit 1
+    }
+
+    $filename = "PortableGit-$PortableGitVersion-64-bit.7z.exe"
+    $url = "https://github.com/git-for-windows/git/releases/download/v$PortableGitVersion.windows.1/$filename"
+    $exe = Join-Path $env:TEMP $filename
+    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+    $dest = Join-Path $InstallDir "PortableGit"
+
+    Write-Info "Installing PortableGit $PortableGitVersion (~65MB) to $dest..."
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $exe -UseBasicParsing
+    } catch {
+        Write-Err "Failed to download PortableGit from $url: $_"
+        Write-Err "Install Git for Windows manually: https://git-scm.com/downloads/win"
+        exit 1
+    }
+
+    # PortableGit 是 7-zip SFX 自解压包，-o<dir> -y 静默解压
+    $proc = Start-Process -FilePath $exe -ArgumentList @("-o`"$dest`"", "-y") -Wait -NoNewWindow -PassThru
+    Remove-Item $exe -ErrorAction SilentlyContinue
+    if ($proc.ExitCode -ne 0) {
+        Write-Err "PortableGit extraction failed with exit code $($proc.ExitCode)"
+        exit 1
+    }
+
+    $bashPath = Join-Path $dest "bin\bash.exe"
+    if (-not (Test-Path $bashPath)) {
+        Write-Err "PortableGit extracted but bash.exe missing at $bashPath"
+        exit 1
+    }
+    [Environment]::SetEnvironmentVariable("CRABOT_BASH_PATH", $bashPath, "User")
+    $env:CRABOT_BASH_PATH = $bashPath
+    Write-Info "PortableGit installed. CRABOT_BASH_PATH set to $bashPath"
+}
+
 # --- pnpm（仅源码安装路径需要） ---
 function Ensure-Pnpm {
     $corepackCmd = Get-Command corepack -ErrorAction SilentlyContinue
@@ -55,6 +121,7 @@ Write-Host "`n== Crabot Installer ==`n" -ForegroundColor Cyan
 
 Ensure-Node
 Ensure-Uv
+Ensure-Bash
 
 if ($FromSource) {
     Ensure-Pnpm

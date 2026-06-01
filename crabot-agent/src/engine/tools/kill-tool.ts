@@ -7,6 +7,7 @@
 import { defineTool } from '../tool-framework'
 import type { ToolDefinition } from '../types'
 import type { BgToolDeps } from './output-tool'
+import { killShellTree } from '../bg-entities/bg-shell.js'
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -43,31 +44,21 @@ async function killShell(
     return { output: `Already ${record.status}, no-op`, isError: false }
   }
 
-  // Send SIGTERM to process group
-  try {
-    process.kill(-record.pgid, 'SIGTERM')
-  } catch {
-    // Process may already be dead — proceed with registry update
-  }
+  // Cross-platform: POSIX sends SIGTERM (+ SIGKILL after 3s) to the process
+  // group; Windows runs `taskkill /F /T /PID` to forcefully terminate the
+  // whole child tree in one call.
+  killShellTree(record.pgid)
 
-  // Immediately update registry
   await deps.registry.update(entityId, {
     status: 'killed',
     exit_code: -1,
     ended_at: new Date().toISOString(),
   })
 
-  // SIGKILL fallback after 3 seconds
-  const pgid = record.pgid
-  setTimeout(() => {
-    try {
-      process.kill(-pgid, 'SIGKILL')
-    } catch {
-      // Already dead — ignore
-    }
-  }, 3000).unref()
-
-  return { output: `Sent SIGTERM to persistent shell ${entityId} (SIGKILL fallback in 3s)`, isError: false }
+  const msg = process.platform === 'win32'
+    ? `taskkill /F /T issued for persistent shell ${entityId}`
+    : `Sent SIGTERM to persistent shell ${entityId} (SIGKILL fallback in 3s)`
+  return { output: msg, isError: false }
 }
 
 async function killAgent(

@@ -5,17 +5,39 @@
  * Plan: crabot-docs/superpowers/plans/2026-05-01-long-running-agent-plan-2.md  Task 4
  */
 
-import { spawn, execFile } from 'node:child_process'
+import { spawn, execFile, type SpawnOptions, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { promisify } from 'node:util'
 import { getBgEntitiesLogsDir } from '../../core/data-paths.js'
+import { resolveBashPath, BASH_NOT_FOUND_MESSAGE } from '../../utils/resolve-bash-path.js'
 import type { BgEntityOwner, BgShellRegistryRecord } from './types.js'
 import type { BgEntityRegistry } from './registry.js'
 import { emitInstantSpan, type BgEntityTraceContext } from './trace.js'
 
 const execFileAsync = promisify(execFile)
+
+/**
+ * Spawn `bash -c <command>` with the cross-platform defaults bg-shell needs:
+ * detached on POSIX (so the process group survives parent exit; lets us
+ * SIGTERM the whole tree by negative pid); attached on Windows (no process
+ * groups, and `detached: true` would pop a console window). Caller-supplied
+ * `extraOpts` override the defaults via spread order.
+ *
+ * Throws BASH_NOT_FOUND_MESSAGE when bash cannot be located.
+ */
+function spawnBash(command: string, extraOpts: SpawnOptions = {}): ChildProcess {
+  const bashPath = resolveBashPath()
+  if (bashPath === null) {
+    throw new Error(BASH_NOT_FOUND_MESSAGE)
+  }
+  return spawn(bashPath, ['-c', command], {
+    detached: process.platform !== 'win32',
+    env: process.env,
+    ...extraOpts,
+  })
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -57,10 +79,8 @@ export async function spawnPersistentShell(opts: SpawnPersistentShellOpts): Prom
   const logFile = path.join(logsDir, `${entity_id}.log`)
   const logFd = await fs.promises.open(logFile, 'a')
 
-  const child = spawn('bash', ['-c', opts.command], {
-    detached: true,
+  const child = spawnBash(opts.command, {
     stdio: ['ignore', logFd.fd, logFd.fd],
-    env: process.env,
   })
 
   // Close our copy of the fd — child holds its own reference via stdio inheritance.
@@ -152,7 +172,9 @@ export async function spawnPersistentShell(opts: SpawnPersistentShellOpts): Prom
     command: opts.command,
     log_file: logFile,
     pid: child.pid,
-    pgid: child.pid, // detached: pgid === pid on Linux/macOS
+    // Linux/macOS: detached=true → pgid === pid. Windows: no process groups,
+    // pgid is the pid itself (taskkill /T uses the pid as the tree root).
+    pgid: child.pid,
     process_started_at: processStartedAt,
     owner: opts.owner,
     spawned_by_task_id: opts.spawned_by_task_id,
@@ -174,8 +196,6 @@ export async function spawnPersistentShell(opts: SpawnPersistentShellOpts): Prom
 // TransientShellRegistry — in-memory only, no disk, task-bound lifecycle
 // ---------------------------------------------------------------------------
 
-import { spawn as nodeSpawn } from 'node:child_process'
-import type { ChildProcess } from 'node:child_process'
 import type { BgEntityStatus } from './types.js'
 import { BG_TRANSIENT_RING_BUFFER_BYTES } from './types.js'
 
@@ -223,10 +243,7 @@ export class TransientShellRegistry {
     const spawnedAtMs = Date.now()
     const now = new Date(spawnedAtMs).toISOString()
 
-    const child = nodeSpawn('bash', ['-c', opts.command], {
-      detached: true,
-      env: process.env,
-    })
+    const child = spawnBash(opts.command)
 
     const state: TransientShellState = {
       entity_id,
@@ -326,26 +343,14 @@ export class TransientShellRegistry {
     })
   }
 
-  /** 显式 kill 单个 shell（SIGTERM，3s 后 SIGKILL 兜底） */
+  /** 显式 kill 单个 shell（SIGTERM，3s 后 SIGKILL 兜底；Windows 用 taskkill /F /T） */
   kill(entity_id: string): void {
     const state = this.shells.get(entity_id)
     if (!state || state.status !== 'running') return
     state.status = 'killed'
     state.ended_at = new Date().toISOString()
     if (state.child.pid) {
-      try {
-        process.kill(-state.child.pid, 'SIGTERM')
-      } catch {
-        /* already dead */
-      }
-      const pid = state.child.pid
-      setTimeout(() => {
-        try {
-          process.kill(-pid, 'SIGKILL')
-        } catch {
-          /* already dead */
-        }
-      }, 3000).unref()
+      killShellTree(state.child.pid)
     }
   }
 
@@ -370,7 +375,8 @@ export class TransientShellRegistry {
 
 /**
  * Read the actual start time of `pid` via `ps -o lstart=`.
- * Falls back to `now` if ps fails (e.g. process already exited).
+ * Falls back to `now` if ps fails (e.g. process already exited, or Windows
+ * where ps is unavailable — wall-clock is accurate enough since we just spawned).
  */
 async function readProcStartTime(pid: number): Promise<string> {
   try {
@@ -379,7 +385,39 @@ async function readProcStartTime(pid: number): Promise<string> {
     if (!trimmed) throw new Error('empty ps output')
     return new Date(trimmed).toISOString()
   } catch {
-    // Fallback: just spawned, so wall-clock now is accurate enough.
+    // Windows (no ps), process already exited, etc. Wall-clock is accurate
+    // enough — we just spawned.
     return new Date().toISOString()
   }
+}
+
+/**
+ * Cross-platform shell process tree termination.
+ *
+ * POSIX: SIGTERM → 3s grace → SIGKILL the process group (negative pid).
+ * Windows: `taskkill /F /T /PID <pid>` — single forceful call kills the whole
+ *   child tree (no SIGTERM/SIGKILL distinction; no process groups on Windows).
+ *
+ * Both forms swallow "already dead" errors silently.
+ */
+export function killShellTree(pid: number): void {
+  if (process.platform === 'win32') {
+    execFile('taskkill', ['/F', '/T', '/PID', String(pid)], () => {
+      // Errors (process already exited, access denied for system-level pids)
+      // are non-actionable here — the registry update already marks status=killed.
+    })
+    return
+  }
+  try {
+    process.kill(-pid, 'SIGTERM')
+  } catch {
+    /* already dead */
+  }
+  setTimeout(() => {
+    try {
+      process.kill(-pid, 'SIGKILL')
+    } catch {
+      /* already dead */
+    }
+  }, 3000).unref()
 }
