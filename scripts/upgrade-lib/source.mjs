@@ -15,23 +15,25 @@ const JS_MODULES = [
 ]
 const PY_MODULE = 'crabot-memory'
 
-// Windows 上 corepack/pnpm/uv/npx 这些都是 .cmd shim，spawn 不开 shell 不会按
-// PATHEXT 匹配后缀，必须显式拼 .cmd。开 shell:true 又会触发 Node 24 的 DEP0190
-// 警告（args 数组未转义有注入风险），所以走「显式后缀 + 不开 shell」。
-const WIN_CMD_SHIMS = new Set(['corepack', 'pnpm', 'npm', 'npx', 'yarn', 'uv', 'tsx'])
-function resolveBin(cmd) {
-  if (process.platform !== 'win32') return cmd
-  return WIN_CMD_SHIMS.has(cmd) ? `${cmd}.cmd` : cmd
-}
-
+// Windows 上 corepack/pnpm/uv/npx 是 .cmd shim：
+// - 不开 shell → ENOENT（找不到 .cmd 后缀）；显式拼 .cmd 后缀 → Node 21+ 因
+//   CVE-2024-27980 强制要求 .cmd 必须走 shell，否则 EINVAL。
+// - 开 shell:true + args 数组 → 触发 Node 24 的 DEP0190 警告。
+// 所以走「拼成单字符串 + shell:true + args 空数组」：args 不是数组就不触发警告，
+// 单字符串也让 shell 自动按 PATHEXT 找 .cmd shim。
+// 安全：本文件所有 cmd/args 都是源码硬编码字符串，无用户输入，无注入风险。
 function runCmd(cmd, args, cwd, logger) {
   return new Promise((resolve, reject) => {
-    logger.info(`$ ${cmd} ${args.join(' ')}    (cwd: ${cwd})`)
-    const proc = spawn(resolveBin(cmd), args, { cwd, stdio: 'inherit' })
+    const display = `${cmd} ${args.join(' ')}`
+    logger.info(`$ ${display}    (cwd: ${cwd})`)
+    const isWin = process.platform === 'win32'
+    const proc = isWin
+      ? spawn(display, [], { cwd, stdio: 'inherit', shell: true })
+      : spawn(cmd, args, { cwd, stdio: 'inherit' })
     proc.on('error', reject)
     proc.on('exit', (code) => {
       if (code === 0) resolve()
-      else reject(new Error(`${cmd} ${args.join(' ')} exited with code ${code}`))
+      else reject(new Error(`${display} exited with code ${code}`))
     })
   })
 }

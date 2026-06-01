@@ -8,13 +8,9 @@ const RUNNERS = {
   '.ts': ['npx', ['tsx']],
 }
 
-// Windows 上 uv/npx 是 .cmd shim，必须显式拼后缀；shell:true 会触发 Node 24
-// 的 DEP0190（args 数组未转义）。node.exe / node 不需要后缀，spawn 能直接找到。
-const WIN_CMD_SHIMS = new Set(['uv', 'npx'])
-function resolveBin(cmd) {
-  if (process.platform !== 'win32') return cmd
-  return WIN_CMD_SHIMS.has(cmd) ? `${cmd}.cmd` : cmd
-}
+// Windows shell 调用见 source.mjs 的注释。这里 args 含路径（scriptPath/dataDir），
+// 可能带空格，必须用双引号包裹。
+const quoteWin = (s) => (/\s/.test(s) ? `"${s}"` : s)
 
 export function runScript(scriptPath, dataDir) {
   const ext = extname(scriptPath)
@@ -30,7 +26,10 @@ export function runScript(scriptPath, dataDir) {
   const cwd = dirname(dirname(scriptPath))
 
   return new Promise((resolve, reject) => {
-    const proc = spawn(resolveBin(cmd), args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+    const isWin = process.platform === 'win32'
+    const proc = isWin
+      ? spawn(`${cmd} ${args.map(quoteWin).join(' ')}`, [], { cwd, stdio: ['ignore', 'pipe', 'pipe'], shell: true })
+      : spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
     let stdout = ''
     let stderr = ''
     proc.stdout.on('data', (chunk) => {
