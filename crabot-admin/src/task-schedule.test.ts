@@ -2,10 +2,11 @@
  * Admin 模块 Task 和 Schedule 管理测试
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import http from 'node:http'
 import fs from 'node:fs/promises'
 import AdminModule from './index.js'
+import { RpcClient } from 'crabot-shared'
 import type { Friend, Task, Schedule } from './types.js'
 
 const TEST_PROTOCOL_PORT = 19802
@@ -609,36 +610,91 @@ describe('AdminModule - Schedule Management', () => {
   })
 
   describe('trigger_now', () => {
-    it('should trigger a schedule via Agent RPC or fail gracefully', async () => {
-      // 先创建调度
+    let triggerCallSpy: ReturnType<typeof vi.spyOn>
+
+    beforeAll(() => {
+      triggerCallSpy = vi.spyOn(RpcClient.prototype, 'call').mockImplementation(
+        (_port: unknown, method: string, _params: unknown) => {
+          if (method === 'resolve') {
+            return Promise.resolve({ modules: [{ module_id: 'mock-agent', port: 19999, module_type: 'agent' }] })
+          }
+          if (method === 'create_task_from_schedule') {
+            return Promise.resolve({ task_id: 'mock-task-id', assigned_worker: 'mock-worker' })
+          }
+          return Promise.resolve({})
+        }
+      )
+    })
+
+    afterAll(() => {
+      triggerCallSpy.mockRestore()
+    })
+
+    it('should trigger a schedule via Agent RPC', async () => {
       const createResponse = await makeProtocolRequest<{ schedule: Schedule }>(
         TEST_PROTOCOL_PORT,
         'create_schedule',
         {
           name: 'Trigger Test Schedule',
           trigger: { type: 'cron', expression: '0 0 * * *' },
-          task_template: { type: 'routine', title: 'Triggered Task', priority: 'normal' },
+          task_template: { type: 'routine', title: 'Scheduled Task', priority: 'normal', tags: [] },
         }
       )
 
       const scheduleId = createResponse.data.schedule.id
 
-      // trigger_now goes through Agent RPC (create_task_from_schedule).
-      // If Agent is available (dev env running), it succeeds; otherwise fails.
       const response = await makeProtocolRequest<{ task_id: string; schedule: Schedule }>(
         TEST_PROTOCOL_PORT,
         'trigger_now',
         { schedule_id: scheduleId }
       )
 
-      if (response.success) {
-        // Agent was available — schedule state should be updated
-        expect(response.data.schedule.last_triggered_at).toBeDefined()
-        expect(response.data.schedule.execution_count).toBeGreaterThanOrEqual(1)
-      } else {
-        // Agent not available — error is expected
-        expect(response.error).toBeDefined()
-      }
+      expect(response.success).toBe(true)
+      expect(response.data.schedule.last_triggered_at).toBeDefined()
+      expect(response.data.schedule.execution_count).toBeGreaterThanOrEqual(1)
+    })
+
+    it('passes rendered task_template.input to create_task_from_schedule', async () => {
+      const schedResult = await makeProtocolRequest<{ schedule: Schedule }>(
+        TEST_PROTOCOL_PORT,
+        'create_schedule',
+        {
+          name: 'Template Input Propagation Schedule',
+          trigger: { type: 'cron', expression: '0 0 * * *' },
+          task_template: {
+            type: 'routine',
+            title: 'Targeted Task {{date}}',
+            description: 'Send update at {{datetime}}',
+            priority: 'normal',
+            tags: [],
+            input: {
+              target_channel_id: 'feishu-fengyan',
+              target_session_id: 'e283b6c6-373a-4568-ab6f-db134fa71790',
+              target_session_type: 'group',
+              rendered_marker: 'watermark={{watermark}}',
+              nested: { date: '{{date}}' },
+            },
+          },
+        }
+      )
+
+      expect(schedResult.success).toBe(true)
+      const scheduleId = schedResult.data!.schedule.id
+
+      await makeProtocolRequest(TEST_PROTOCOL_PORT, 'trigger_now', { schedule_id: scheduleId })
+
+      // 用 findLast 取最近一次 create_task_from_schedule 调用（前一个 test 同样 trigger_now 了一条无 input 的 schedule）
+      const agentCall = triggerCallSpy.mock.calls.findLast((call) => call[1] === 'create_task_from_schedule')
+      expect(agentCall).toBeTruthy()
+      const payload = agentCall![2] as Record<string, unknown>
+      expect(payload.input).toMatchObject({
+        target_channel_id: 'feishu-fengyan',
+        target_session_id: 'e283b6c6-373a-4568-ab6f-db134fa71790',
+        target_session_type: 'group',
+      })
+      expect((payload.input as Record<string, unknown>).rendered_marker).toContain('watermark=')
+      const nested = (payload.input as Record<string, unknown>).nested as Record<string, unknown>
+      expect((nested as { date: string }).date).toMatch(/^\d{4}-\d{2}-\d{2}$/)
     })
   })
 

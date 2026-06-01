@@ -207,6 +207,32 @@ describe('AgentHandler', () => {
       expect(callArgs.prompt).toContain('## 场景画像')
       expect(callArgs.prompt).toContain('<scene_profile label="空画像">')
     })
+
+    it('includes scheduled target channel and session in the worker prompt when task_origin is set', async () => {
+      mockRunEngine.mockResolvedValue(makeEngineResult())
+
+      const handler = makeHandler()
+      await handler.executeTask({
+        task: makeTask({
+          task_id: 'scheduled-task-1',
+          source: { trigger_type: 'scheduled' },
+        }),
+        context: {
+          ...makeContext(),
+          task_origin: {
+            channel_id: 'feishu-fengyan',
+            session_id: 'e283b6c6-373a-4568-ab6f-db134fa71790',
+            session_type: 'group',
+          },
+        },
+      })
+
+      expect(mockRunEngine).toHaveBeenCalledTimes(1)
+      const callArgs = mockRunEngine.mock.calls[0][0]
+      expect(callArgs.prompt).toContain('## 任务来源（crab-messaging 工具请使用这些 ID）')
+      expect(callArgs.prompt).toContain('- Channel ID: feishu-fengyan')
+      expect(callArgs.prompt).toContain('- Session ID: e283b6c6-373a-4568-ab6f-db134fa71790')
+    })
   })
 
   describe('deliverHumanResponse', () => {
