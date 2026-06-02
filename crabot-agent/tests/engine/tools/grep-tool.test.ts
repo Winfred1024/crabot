@@ -178,9 +178,10 @@ describe('createGrepTool', () => {
   })
 
   it('truncates content output when total bytes exceed 200KB cap', async () => {
-    // 单行 1KB，写 500 行 → 500KB，远超 200KB cap
-    const longLine = 'x'.repeat(1024) + ' MATCH_ME'
-    const lines = Array.from({ length: 500 }, () => longLine)
+    // 单行 ~400 字节（在 ripgrep --max-columns=500 之内不被压成占位符），
+    // 写 600 行 → ~240KB 总字节，超 200KB cap
+    const longLine = 'x'.repeat(400) + ' MATCH_ME'
+    const lines = Array.from({ length: 600 }, () => longLine)
     fs.writeFileSync(path.join(tmpDir, 'src', 'huge.txt'), lines.join('\n'))
 
     const result = await tool.call(
