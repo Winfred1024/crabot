@@ -58,6 +58,7 @@ export class FeishuClient {
       appSecret: opts.app_secret,
       domain: opts.domain === 'lark' ? lark.Domain.Lark : lark.Domain.Feishu,
       disableTokenCache: false,
+      logger: createLarkLogger(),
     })
   }
 
@@ -85,10 +86,15 @@ export class FeishuClient {
 
   /** 取单个 chat 详情：/open-apis/im/v1/chats/{chat_id}。仅用 name 字段做群名解析 */
   async getChat(chatId: string): Promise<{ chat_id: string; name: string }> {
-    const resp = await this.client.im.chat.get({ path: { chat_id: chatId } })
-    return {
-      chat_id: chatId,
-      name: resp.data?.name ?? '',
+    try {
+      const resp = await this.client.im.chat.get({ path: { chat_id: chatId } })
+      return {
+        chat_id: chatId,
+        name: resp.data?.name ?? '',
+      }
+    } catch (err: unknown) {
+      mapFeishuPermissionError(err, 'im:chat:readonly', '飞书应用缺少群信息读取权限')
+      throw err
     }
   }
 
@@ -133,35 +139,33 @@ export class FeishuClient {
         has_more: data.has_more ?? false,
       }
     } catch (err: unknown) {
-      const code = (err as { code?: number }).code
-      if (code === 99991672 || code === 99991663) {
-        throw new RpcError(
-          'PERMISSION_DENIED',
-          (err as { msg?: string }).msg ?? '飞书应用缺少通讯录读取权限',
-          { missing_scope: 'contact:user.base:readonly' },
-        )
-      }
+      mapFeishuPermissionError(err, 'contact:user.base:readonly', '飞书应用缺少通讯录读取权限')
       throw err
     }
   }
 
   async getChatMembers(chatId: string): Promise<Array<{ open_id: string; name: string }>> {
-    const all: Array<{ open_id: string; name: string }> = []
-    let pageToken: string | undefined = undefined
-    while (true) {
-      const resp = await this.client.im.chatMembers.get({
-        path: { chat_id: chatId },
-        params: { member_id_type: 'open_id', page_size: 100, page_token: pageToken },
-      })
-      const items = resp.data?.items ?? []
-      for (const it of items) {
-        if (it.member_id) all.push({ open_id: it.member_id, name: it.name ?? '' })
+    try {
+      const all: Array<{ open_id: string; name: string }> = []
+      let pageToken: string | undefined = undefined
+      while (true) {
+        const resp = await this.client.im.chatMembers.get({
+          path: { chat_id: chatId },
+          params: { member_id_type: 'open_id', page_size: 100, page_token: pageToken },
+        })
+        const items = resp.data?.items ?? []
+        for (const it of items) {
+          if (it.member_id) all.push({ open_id: it.member_id, name: it.name ?? '' })
+        }
+        if (!resp.data?.has_more) break
+        pageToken = resp.data?.page_token
+        if (!pageToken) break
       }
-      if (!resp.data?.has_more) break
-      pageToken = resp.data?.page_token
-      if (!pageToken) break
+      return all
+    } catch (err: unknown) {
+      mapFeishuPermissionError(err, 'im:chat.members:read', '飞书应用缺少群成员读取权限')
+      throw err
     }
-    return all
   }
 
   async getUser(openId: string): Promise<{ open_id: string; name: string; avatar_url?: string }> {
@@ -368,4 +372,55 @@ async function streamToBuffer(stream: Readable): Promise<Buffer> {
     stream.on('end', () => resolve(Buffer.concat(chunks)))
     stream.on('error', reject)
   })
+}
+
+/**
+ * 飞书业务错误码 99991672 / 99991663 = 应用 scope 缺失。
+ * 把它统一翻译成带 missing_scope 的 RpcError(PERMISSION_DENIED)，调用方据此决定降级或上报。
+ * 其他错误原样冒泡。
+ */
+export function mapFeishuPermissionError(err: unknown, missingScope: string, defaultMsg: string): void {
+  const code = (err as { code?: number }).code
+  if (code === 99991672 || code === 99991663) {
+    throw new RpcError(
+      'PERMISSION_DENIED',
+      (err as { msg?: string }).msg ?? defaultMsg,
+      { missing_scope: missingScope },
+    )
+  }
+}
+
+/**
+ * 自定义 lark.Client logger：屏蔽 SDK 内部对 99991672 / 99991663（应用 scope 缺失）
+ * 的 console.error 巨型 axios 对象输出。这类错由应用层 catch 后自己 warn 单行，
+ * 不需要 SDK 重复打。其他错误透传到 console.error，保持可观测性。
+ */
+export function createLarkLogger(): {
+  error: (...msg: unknown[]) => void
+  warn: (...msg: unknown[]) => void
+  info: (...msg: unknown[]) => void
+  debug: (...msg: unknown[]) => void
+  trace: (...msg: unknown[]) => void
+} {
+  return {
+    error: (...msg: unknown[]) => {
+      if (isFeishuPermissionLog(msg)) return
+      console.error('[lark-sdk]', ...msg)
+    },
+    warn: (...msg: unknown[]) => console.warn('[lark-sdk]', ...msg),
+    info: () => {},
+    debug: () => {},
+    trace: () => {},
+  }
+}
+
+function isFeishuPermissionLog(msg: unknown[]): boolean {
+  for (const arg of msg) {
+    if (!Array.isArray(arg)) continue
+    for (const item of arg) {
+      const code = (item as { code?: number } | null)?.code
+      if (code === 99991672 || code === 99991663) return true
+    }
+  }
+  return false
 }

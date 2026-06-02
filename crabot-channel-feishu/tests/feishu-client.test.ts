@@ -228,3 +228,85 @@ describe('FeishuClient.listContacts', () => {
     expect((caught as RpcError).details?.missing_scope).toBe('contact:user.base:readonly')
   })
 })
+
+describe('FeishuClient.getChatMembers permission errors', () => {
+  it('SDK 返回 99991672 时抛 RpcError(PERMISSION_DENIED) 携带 im:chat.members:read', async () => {
+    const fakeApi = {
+      im: {
+        chatMembers: {
+          get: vi.fn().mockRejectedValue({ code: 99991672, msg: '应用未开通群成员读取权限' }),
+        },
+      },
+    }
+    const client = new FeishuClient({ app_id: 'a', app_secret: 's', domain: 'feishu' })
+    ;(client as unknown as { client: typeof fakeApi }).client = fakeApi as never
+
+    let caught: unknown
+    try {
+      await client.getChatMembers('oc_x')
+    } catch (e) {
+      caught = e
+    }
+    expect(caught).toBeInstanceOf(RpcError)
+    expect((caught as RpcError).code).toBe('PERMISSION_DENIED')
+    expect((caught as RpcError).details?.missing_scope).toBe('im:chat.members:read')
+  })
+
+  it('SDK 返回 99991663 同样转为 PERMISSION_DENIED', async () => {
+    const fakeApi = {
+      im: {
+        chatMembers: {
+          get: vi.fn().mockRejectedValue({ code: 99991663, msg: 'no permission' }),
+        },
+      },
+    }
+    const client = new FeishuClient({ app_id: 'a', app_secret: 's', domain: 'feishu' })
+    ;(client as unknown as { client: typeof fakeApi }).client = fakeApi as never
+
+    let caught: unknown
+    try {
+      await client.getChatMembers('oc_x')
+    } catch (e) {
+      caught = e
+    }
+    expect((caught as RpcError).code).toBe('PERMISSION_DENIED')
+  })
+
+  it('非权限错原样冒泡', async () => {
+    const fakeApi = {
+      im: {
+        chatMembers: {
+          get: vi.fn().mockRejectedValue(new Error('network')),
+        },
+      },
+    }
+    const client = new FeishuClient({ app_id: 'a', app_secret: 's', domain: 'feishu' })
+    ;(client as unknown as { client: typeof fakeApi }).client = fakeApi as never
+
+    await expect(client.getChatMembers('oc_x')).rejects.toThrow('network')
+  })
+})
+
+describe('FeishuClient.getChat permission errors', () => {
+  it('SDK 返回 99991672 时抛 RpcError(PERMISSION_DENIED) 携带 im:chat:readonly', async () => {
+    const fakeApi = {
+      im: {
+        chat: {
+          get: vi.fn().mockRejectedValue({ code: 99991672, msg: '应用未开通群信息读取权限' }),
+        },
+      },
+    }
+    const client = new FeishuClient({ app_id: 'a', app_secret: 's', domain: 'feishu' })
+    ;(client as unknown as { client: typeof fakeApi }).client = fakeApi as never
+
+    let caught: unknown
+    try {
+      await client.getChat('oc_x')
+    } catch (e) {
+      caught = e
+    }
+    expect(caught).toBeInstanceOf(RpcError)
+    expect((caught as RpcError).code).toBe('PERMISSION_DENIED')
+    expect((caught as RpcError).details?.missing_scope).toBe('im:chat:readonly')
+  })
+})

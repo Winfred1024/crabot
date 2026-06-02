@@ -21,6 +21,7 @@ import {
   type Event,
   decideMarkdownEnabled,
   MARKDOWN_FORMAT_VALUES,
+  RpcError,
 } from 'crabot-shared'
 
 import { FeishuClient, FeishuClientError, type SendReceive } from './feishu-client.js'
@@ -188,6 +189,10 @@ export class FeishuChannel extends ModuleBase {
           await this.publishSessionChanged('updated', updated)
         }
       } catch (err) {
+        if (isPermissionDenied(err)) {
+          this.warnScopeMissing('im:chat:readonly', '群名补齐', err)
+          return
+        }
         console.warn(`[FeishuChannel] repair title ${s.platform_session_id} failed:`, err)
       }
     }
@@ -438,7 +443,11 @@ export class FeishuChannel extends ModuleBase {
         const chat = await this.client.getChat(data.chat_id)
         title = chat.name?.trim() || data.chat_id
       } catch (err) {
-        console.warn(`[FeishuChannel] getChat ${data.chat_id} failed:`, err)
+        if (isPermissionDenied(err)) {
+          this.warnScopeMissing('im:chat:readonly', '群名查询', err)
+        } else {
+          console.warn(`[FeishuChannel] getChat ${data.chat_id} failed:`, err)
+        }
         title = data.chat_id
       }
     }
@@ -447,7 +456,11 @@ export class FeishuChannel extends ModuleBase {
       const members = await this.client.getChatMembers(data.chat_id)
       participants = members.map((m) => ({ platform_user_id: m.open_id, role: 'member' as const }))
     } catch (err) {
-      console.warn(`[FeishuChannel] getChatMembers failed for ${data.chat_id}:`, err)
+      if (isPermissionDenied(err)) {
+        this.warnScopeMissing('im:chat.members:read', '群成员查询', err)
+      } else {
+        console.warn(`[FeishuChannel] getChatMembers failed for ${data.chat_id}:`, err)
+      }
     }
     const { session, created } = this.sessionManager.upsertGroupSessionFromSnapshot({
       platform_session_id: data.chat_id,
@@ -514,25 +527,54 @@ export class FeishuChannel extends ModuleBase {
   private async bootstrapGroupSessions(): Promise<void> {
     let pageToken: string | undefined = undefined
     let total = 0
+    let membersScopeMissing = false
     while (true) {
-      const { items, page_token, has_more } = await this.client.listChats({ page_token: pageToken, page_size: 50 })
-      for (const it of items) {
-        try {
-          const members = await this.client.getChatMembers(it.chat_id)
-          this.sessionManager.upsertGroupSessionFromSnapshot({
-            platform_session_id: it.chat_id,
-            title: it.name || it.chat_id,
-            participants: members.map((m) => ({ platform_user_id: m.open_id, role: 'member' as const })),
-          })
-          total += 1
-        } catch (err) {
-          console.warn(`[FeishuChannel] bootstrap skip ${it.chat_id}:`, err)
+      let chatPage: { items: Array<{ chat_id: string; name: string }>; page_token?: string; has_more: boolean }
+      try {
+        chatPage = await this.client.listChats({ page_token: pageToken, page_size: 50 })
+      } catch (err) {
+        if (isPermissionDenied(err)) {
+          this.warnScopeMissing('im:chat:readonly', '群列表读取', err)
+          return
         }
+        throw err
       }
-      if (!has_more || !page_token) break
-      pageToken = page_token
+
+      for (const it of chatPage.items) {
+        let participants: Array<{ platform_user_id: string; role: 'member' }> = []
+        if (!membersScopeMissing) {
+          try {
+            const members = await this.client.getChatMembers(it.chat_id)
+            participants = members.map((m) => ({ platform_user_id: m.open_id, role: 'member' as const }))
+          } catch (err) {
+            if (isPermissionDenied(err)) {
+              membersScopeMissing = true
+              this.warnScopeMissing('im:chat.members:read', '群成员同步', err)
+            } else {
+              console.warn(`[FeishuChannel] bootstrap skip members ${it.chat_id}:`, err)
+            }
+          }
+        }
+        this.sessionManager.upsertGroupSessionFromSnapshot({
+          platform_session_id: it.chat_id,
+          title: it.name || it.chat_id,
+          participants,
+        })
+        total += 1
+      }
+      if (!chatPage.has_more || !chatPage.page_token) break
+      pageToken = chatPage.page_token
     }
-    console.log(`[FeishuChannel] bootstrap done: ${total} groups synced`)
+    console.log(
+      `[FeishuChannel] bootstrap done: ${total} groups synced${membersScopeMissing ? '（成员未拉，待事件补齐）' : ''}`,
+    )
+  }
+
+  private warnScopeMissing(missingScope: string, label: string, err: unknown): void {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.warn(
+      `[FeishuChannel] ${label}降级：缺 scope ${missingScope}。请去飞书开发者后台为应用申请该权限并等待审批通过。原始错误：${msg}`,
+    )
   }
 
   // ============================================================================
@@ -1319,4 +1361,8 @@ function throwError(code: string, message: string): never {
 
 function docTitleLabel(title: string): string {
   return title ? `[飛書文檔·${title}]` : '[飛書文檔]'
+}
+
+function isPermissionDenied(err: unknown): boolean {
+  return err instanceof RpcError && err.code === 'PERMISSION_DENIED'
 }
