@@ -224,7 +224,7 @@ export class FeishuOnboarder implements Onboarder {
       env,
       suggested_name: undefined,
       scope_grant_url: buildScopeGrantUrl(app_id),
-    } as OnboarderFinishResult & { scope_grant_url: string }
+    }
   }
 
   cancel(sessionId: string): void {

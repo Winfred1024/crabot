@@ -18,13 +18,16 @@ import { channelService } from '../../services/channel'
 import { useToast } from '../../contexts/ToastContext'
 import type { ChannelImplementation, ChannelOnboardingMethod, OnboardBeginResult, OnboardPollEvent } from '../../types'
 
-type Step = 'idle' | 'starting' | 'pending' | 'authorized' | 'creating' | 'done' | 'error' | 'expired'
+type Step = 'idle' | 'starting' | 'pending' | 'authorized' | 'creating' | 'scope_grant' | 'done' | 'error' | 'expired'
 
 interface Status {
   step: Step
   message?: string
   begin?: OnboardBeginResult
   qrSvg?: string
+  scopeGrantUrl?: string
+  pendingInstanceId?: string
+  pendingInstanceName?: string
 }
 
 const NAME_PATTERN = /^[a-z0-9-]{3,32}$/
@@ -143,10 +146,29 @@ export const NewChannelOnboarding: React.FC = () => {
     try {
       const r = await channelService.onboardFinish(implId, methodId, sessionId, instanceName)
       sessionIdRef.current = null
-      setStatus({ step: 'done', message: '实例已创建' })
-      toast.success(`Channel "${instanceName}" 创建成功，已自动启动`)
       const instanceId = r.instance?.id
-      navigate(instanceId ? `/channels/config?selected=${encodeURIComponent(instanceId)}` : '/channels/config')
+      const target = instanceId ? `/channels/config?selected=${encodeURIComponent(instanceId)}` : '/channels/config'
+      if (r.push_sent) {
+        // 自动认主 + 私聊推送都成功：去飞书查链接就好，Admin Web 不再停留
+        toast.success(`Channel "${instanceName}" 创建成功，授权链接已通过飞书私聊发送，请去飞书查看`)
+        setStatus({ step: 'done', message: '实例已创建' })
+        navigate(target)
+        return
+      }
+      if (r.scope_grant_url) {
+        // 私聊推送失败：保留橙色卡片兜底，让用户在 Admin Web 上手动去申请
+        toast.success(`Channel "${instanceName}" 创建成功`)
+        setStatus({
+          step: 'scope_grant',
+          scopeGrantUrl: r.scope_grant_url,
+          pendingInstanceId: instanceId,
+          pendingInstanceName: instanceName,
+        })
+        return
+      }
+      toast.success(`Channel "${instanceName}" 创建成功，已自动启动`)
+      setStatus({ step: 'done', message: '实例已创建' })
+      navigate(target)
     } catch (err) {
       setStatus({ step: 'error', message: err instanceof Error ? err.message : '创建失败' })
     }
@@ -288,6 +310,42 @@ export const NewChannelOnboarding: React.FC = () => {
                 inProgress={inProgress}
               />
             )}
+          </div>
+        )}
+
+        {/* scope_grant：OAuth 扫码已完成，但还要去平台后台批准 scopes */}
+        {status.step === 'scope_grant' && status.scopeGrantUrl && (
+          <div style={{ background: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.45)', borderRadius: 8, padding: '1.25rem' }}>
+            <h3 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+              扫码成功，还差最后一步：去飞书后台批准权限
+            </h3>
+            <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', marginTop: '0.5rem', lineHeight: 1.6 }}>
+              实例 <strong>{status.pendingInstanceName}</strong> 已创建并启动。但飞书应用刚扫码完是没有任何 API 作用域的，
+              必须由你去开发者后台勾选权限并提交审批，否则群消息接收、@提及、群信息读取等功能会全部报权限错误。
+            </p>
+            <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', marginTop: '0.5rem', lineHeight: 1.6 }}>
+              点下方按钮跳到飞书开发者后台 → 勾选 / 申请全部所需权限 → 提交审批（自建应用通常即时通过） → 回到此页面点"我已完成"。
+            </p>
+            <div style={{ marginTop: '1.25rem', display: 'flex', gap: '0.625rem', flexWrap: 'wrap' }}>
+              <Button
+                variant="primary"
+                onClick={() => window.open(status.scopeGrantUrl, '_blank', 'noopener,noreferrer')}
+              >
+                打开飞书后台批准权限 →
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  const id = status.pendingInstanceId
+                  navigate(id ? `/channels/config?selected=${encodeURIComponent(id)}` : '/channels/config')
+                }}
+              >
+                我已完成，去管理 Channel
+              </Button>
+            </div>
+            <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.875rem', wordBreak: 'break-all' }}>
+              授权链接：{status.scopeGrantUrl}
+            </p>
           </div>
         )}
 

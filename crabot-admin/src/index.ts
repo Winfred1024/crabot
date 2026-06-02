@@ -164,6 +164,11 @@ import {
 } from './dialog-objects.js'
 import { createMemoryV2RestRouter } from './memory-v2-rest.js'
 import { OnboardingManager } from './onboarding-manager.js'
+import {
+  mergeMasterChannelIdentity,
+  buildOnboardingPushMessage,
+  ONBOARDING_MASTER_DEFAULT_DISPLAY_NAME,
+} from './onboarding-master.js'
 import type { Onboarder } from 'crabot-shared'
 import { tailLogFile } from './module-log-tail.js'
 import { buildRecoveryTask, cleanupStaleInflightTasks, isAgentRestartStale } from './recovery-handler.js'
@@ -1780,7 +1785,26 @@ export class AdminModule extends ModuleBase {
             auto_start: true,
             env: finishResult.env,
           })
-          return { instance }
+          const ownerOpenId = finishResult.env.FEISHU_OWNER_OPEN_ID
+          let masterFriendId: FriendId | undefined
+          let pushSent = false
+          if (ownerOpenId && instance?.id) {
+            const ensured = await this.ensureMasterForOnboarding(instance.id as ModuleId, ownerOpenId)
+            masterFriendId = ensured?.friend_id
+            if (finishResult.scope_grant_url) {
+              pushSent = await this.pushOnboardingGuide(
+                instance.id as ModuleId,
+                ownerOpenId,
+                finishResult.scope_grant_url,
+              )
+            }
+          }
+          return {
+            instance,
+            ...(masterFriendId ? { master_friend_id: masterFriendId } : {}),
+            ...(finishResult.scope_grant_url ? { scope_grant_url: finishResult.scope_grant_url } : {}),
+            push_sent: pushSent,
+          }
         })
         return
       }
@@ -5092,6 +5116,130 @@ export class AdminModule extends ModuleBase {
       if (friend.permission === 'master') return friend
     }
     return undefined
+  }
+
+  // ============================================================================
+  // Channel onboarding 自动认主 + 引导推送
+  // ============================================================================
+
+  /**
+   * 扫码 onboarding 完成后，把 (channel_id, owner_open_id) 写入 master Friend。
+   * 没有 master 则创建一个；有则合并 channel_identities。
+   * 不抛错（设计目标：onboarding 锦上添花，不阻塞 finish）。
+   */
+  private async ensureMasterForOnboarding(
+    channelId: ModuleId,
+    ownerOpenId: string,
+  ): Promise<{ friend_id: FriendId; created: boolean } | undefined> {
+    try {
+      const existing = this.findMasterFriend()
+      const now = generateTimestamp()
+      if (!existing) {
+        const initialIdentity: ChannelIdentity = {
+          channel_id: channelId,
+          platform_user_id: ownerOpenId,
+          platform_display_name: ONBOARDING_MASTER_DEFAULT_DISPLAY_NAME,
+        }
+        const friend: Friend = {
+          id: generateId(),
+          display_name: ONBOARDING_MASTER_DEFAULT_DISPLAY_NAME,
+          permission: 'master',
+          channel_identities: [initialIdentity],
+          created_at: now,
+          updated_at: now,
+        }
+        this.channelIdentityIndex.set(this.getChannelIdentityKey(initialIdentity), friend.id)
+        this.friends.set(friend.id, friend)
+        await this.saveData()
+        console.log(`[Admin] onboarding: master friend ${friend.id} 已创建 (channel=${channelId})`)
+        return { friend_id: friend.id, created: true }
+      }
+      const merge = mergeMasterChannelIdentity(existing.channel_identities, channelId, ownerOpenId)
+      if (!merge.changed) {
+        return { friend_id: existing.id, created: false }
+      }
+      if (merge.removedIdentity) {
+        this.channelIdentityIndex.delete(this.getChannelIdentityKey(merge.removedIdentity))
+      }
+      const updated: Friend = {
+        ...existing,
+        channel_identities: merge.identities,
+        updated_at: now,
+      }
+      for (const identity of merge.identities) {
+        this.channelIdentityIndex.set(this.getChannelIdentityKey(identity), updated.id)
+      }
+      this.friends.set(updated.id, updated)
+      await this.saveData()
+      console.log(`[Admin] onboarding: master friend ${updated.id} 已合并新 channel identity (channel=${channelId})`)
+      return { friend_id: updated.id, created: false }
+    } catch (err) {
+      console.warn(`[Admin] onboarding ensureMaster failed (channel=${channelId}):`, err)
+      return undefined
+    }
+  }
+
+  /**
+   * 给 master 私聊推送 onboarding 引导文案（含 scope_grant_url）。
+   * 整段不抛错；任何步骤失败都 return false，caller 据此决定是否走 fallback UI。
+   */
+  private async pushOnboardingGuide(
+    channelId: ModuleId,
+    ownerOpenId: string,
+    scopeGrantUrl: string,
+    opts: { readyTimeoutMs?: number; pollIntervalMs?: number } = {},
+  ): Promise<boolean> {
+    const readyTimeoutMs = opts.readyTimeoutMs ?? 5000
+    const pollIntervalMs = opts.pollIntervalMs ?? 200
+    const deadline = Date.now() + readyTimeoutMs
+    let modulePort: number | undefined
+    while (Date.now() < deadline) {
+      try {
+        const modules = await this.rpcClient.resolve({ module_id: channelId }, this.config.moduleId)
+        const mod = modules[0]
+        if (mod && mod.status === 'running' && typeof mod.port === 'number') {
+          modulePort = mod.port
+          break
+        }
+      } catch {
+        // resolve 失败也算未就绪，继续轮询
+      }
+      await new Promise((r) => setTimeout(r, pollIntervalMs))
+    }
+    if (!modulePort) {
+      console.warn(`[Admin] onboarding push: channel ${channelId} 未在 ${readyTimeoutMs}ms 内就绪，跳过私聊推送`)
+      return false
+    }
+    try {
+      const sessionResp = await this.rpcClient.call<
+        { platform_user_id: string },
+        { session: { id: string } }
+      >(
+        modulePort,
+        'find_or_create_private_session',
+        { platform_user_id: ownerOpenId },
+        this.config.moduleId,
+      )
+      const sessionId = sessionResp?.session?.id
+      if (!sessionId) {
+        console.warn(`[Admin] onboarding push: find_or_create_private_session 未返回 session.id`)
+        return false
+      }
+      await this.rpcClient.call(
+        modulePort,
+        'send_message',
+        {
+          session_id: sessionId,
+          content: { type: 'text', text: buildOnboardingPushMessage(scopeGrantUrl) },
+        },
+        this.config.moduleId,
+      )
+      console.log(`[Admin] onboarding push: scope_grant_url 已通过 ${channelId} 私聊推送给 ${ownerOpenId}`)
+      return true
+    } catch (err) {
+      console.warn(`[Admin] onboarding push to ${ownerOpenId} via ${channelId} failed:`, err)
+      return false
+    }
   }
 
   private async handleGetScheduleApi(

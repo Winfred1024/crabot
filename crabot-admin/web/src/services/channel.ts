@@ -119,7 +119,12 @@ export const channelService = {
   },
 
   async onboardFinish(implementationId: string, methodId: string, sessionId: string, name: string) {
-    return api.post<{ instance: ChannelInstance }>('/channels/onboard/finish', {
+    return api.post<{
+      instance: ChannelInstance
+      master_friend_id?: string
+      scope_grant_url?: string
+      push_sent?: boolean
+    }>('/channels/onboard/finish', {
       implementation_id: implementationId,
       method_id: methodId,
       session_id: sessionId,

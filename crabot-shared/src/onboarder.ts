@@ -29,6 +29,11 @@ export interface OnboarderFinishResult {
   env: Record<string, string>
   /** 推荐的实例名（admin 可不采用） */
   suggested_name?: string
+  /**
+   * OAuth 类 onboarder 完成后，若仍需用户去平台后台批准 scopes，提供深链。
+   * Admin UI 应在创建实例后明显引导用户点击，否则首次 API 调用会因权限缺失报错。
+   */
+  scope_grant_url?: string
 }
 
 export interface Onboarder {
