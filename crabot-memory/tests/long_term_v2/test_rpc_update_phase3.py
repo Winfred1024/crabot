@@ -134,3 +134,98 @@ async def test_update_lesson_tags_preserves_lesson_meta(tmp_path):
     assert after.frontmatter.tags == ["new-tag"]
     assert after.frontmatter.lesson_meta.use_count == 3, "use_count lost on tags update"
     assert after.frontmatter.lesson_meta.scenario == "x", "scenario lost on tags update"
+
+
+def _seed_inbox(tmp_path, *, type_, maturity):
+    """跟 _seed 同结构但直接落 inbox。复现"反思 LLM 用 quick_capture 写入 inbox/case lesson"。"""
+    store = MemoryStore(str(tmp_path / "lt"))
+    index = SqliteIndex(str(tmp_path / "v2.db"))
+    fm = MemoryFrontmatter(
+        id="m1", type=type_, maturity=maturity,
+        brief="b", author="system",
+        source_ref=SourceRef(type="manual"),
+        source_trust=3, content_confidence=3,
+        importance_factors=ImportanceFactors(
+            proximity=0.5, surprisal=0.5, entity_priority=0.5, unambiguity=0.5,
+        ),
+        event_time="2026-04-23T00:00:00Z",
+        ingestion_time="2026-04-23T00:00:00Z",
+        lesson_meta=LessonMeta(scenario="x", outcome="success") if type_ == "lesson" else None,
+    )
+    e = MemoryEntry(frontmatter=fm, body="body")
+    store.write(e, status="inbox")
+    index.upsert(e, path=entry_path(store.data_root, "inbox", type_, "m1"), status="inbox")
+    rpc = LongTermV2Rpc(store=store, index=index)
+    return rpc, store, index
+
+
+@pytest.mark.asyncio
+async def test_status_auto_sync_lesson_case_to_rule(tmp_path):
+    """patch maturity=rule 应同步把 inbox/lesson/m1 迁到 confirmed/lesson/m1。
+
+    修历史 bug：反思 LLM 用 update_long_term({maturity:'rule'}) 绕过 promote_to_rule，
+    导致 maturity=rule 卡在 inbox（默认 keyword_search 搜不到）。
+    """
+    import os
+    rpc, store, index = _seed_inbox(tmp_path, type_="lesson", maturity="case")
+
+    out = await rpc.update_long_term({"id": "m1", "patch": {"maturity": "rule"}})
+    assert out["status"] == "ok"
+
+    # index 应升到 confirmed
+    loc = index.locate("m1")
+    assert loc[0] == "confirmed", f"expected status=confirmed, got {loc[0]}"
+
+    # 文件落 confirmed/lesson/，inbox/lesson/ 应已无
+    confirmed_path = entry_path(store.data_root, "confirmed", "lesson", "m1")
+    inbox_path = entry_path(store.data_root, "inbox", "lesson", "m1")
+    assert os.path.exists(confirmed_path), "新版本未落到 confirmed/"
+    assert not os.path.exists(inbox_path), "inbox/ 旧文件未被 move 清掉"
+
+    # 内容里 maturity 也应该是 rule
+    entry = store.read("confirmed", "lesson", "m1")
+    assert entry.frontmatter.maturity == "rule"
+
+
+@pytest.mark.asyncio
+async def test_status_auto_sync_fact_observed_to_confirmed(tmp_path):
+    """fact: patch maturity=confirmed 时 inbox 同步升 confirmed。"""
+    import os
+    rpc, store, index = _seed_inbox(tmp_path, type_="fact", maturity="observed")
+
+    out = await rpc.update_long_term({"id": "m1", "patch": {"maturity": "confirmed"}})
+    assert out["status"] == "ok"
+
+    loc = index.locate("m1")
+    assert loc[0] == "confirmed"
+    assert os.path.exists(entry_path(store.data_root, "confirmed", "fact", "m1"))
+    assert not os.path.exists(entry_path(store.data_root, "inbox", "fact", "m1"))
+
+
+@pytest.mark.asyncio
+async def test_no_status_sync_when_maturity_not_terminal(tmp_path):
+    """反向：patch maturity 到非终态（observed），status 应保持 inbox 不动。"""
+    import os
+    rpc, store, index = _seed_inbox(tmp_path, type_="fact", maturity="observed")
+
+    # observed → observed（同值），或 observed → stale（非提升终态）：status 都不该变
+    out = await rpc.update_long_term({"id": "m1", "patch": {"maturity": "stale"}})
+    assert out["status"] == "ok"
+
+    loc = index.locate("m1")
+    assert loc[0] == "inbox", "非高熟度终态不应触发 status 同步"
+    assert os.path.exists(entry_path(store.data_root, "inbox", "fact", "m1"))
+
+
+@pytest.mark.asyncio
+async def test_no_status_sync_when_patch_unrelated_to_maturity(tmp_path):
+    """反向：patch brief / tags 不动 maturity 时，status 保持原状。"""
+    import os
+    rpc, store, index = _seed_inbox(tmp_path, type_="lesson", maturity="case")
+
+    out = await rpc.update_long_term({"id": "m1", "patch": {"brief": "new"}})
+    assert out["status"] == "ok"
+
+    loc = index.locate("m1")
+    assert loc[0] == "inbox"
+    assert os.path.exists(entry_path(store.data_root, "inbox", "lesson", "m1"))

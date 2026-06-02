@@ -323,3 +323,191 @@ async def test_write_long_term_accepts_brief_at_boundary_80(rpc):
         "event_time": "2026-04-23T10:00:00Z",
     })
     assert res["status"] == "ok"
+
+
+# ============================================================================
+# quick_capture 项目实体信号默认抬：fact + (entities 非空 or tags ≥ 2)
+# → entity_priority=0.7, content_confidence=4
+# 让 memory-curate 的"项目实体单独通道"能命中，避免高价值项目 fact 永远卡 inbox
+# ============================================================================
+
+async def _read_fact(rpc, mem_id):
+    """快捷读：quick_capture 后 entry 应在 inbox/fact/。"""
+    return rpc.store.read("inbox", "fact", mem_id)
+
+
+@pytest.mark.asyncio
+async def test_quick_capture_fact_with_entities_boosts(rpc):
+    """fact + entities 非空 → entity_priority 抬到 0.7、confidence 抬到 4。"""
+    res = await rpc.quick_capture({
+        "type": "fact",
+        "brief": "quant-signal Futu OpenD 运行在 home-m2u",
+        "content": "...",
+        "author": "agent",
+        "entities": [{"id": "quant-signal", "type": "project", "name": "quant-signal"}],
+    })
+    assert res["status"] == "ok"
+    fm = (await _read_fact(rpc, res["id"])).frontmatter
+    assert fm.importance_factors.entity_priority == 0.7
+    assert fm.content_confidence == 4
+
+
+@pytest.mark.asyncio
+async def test_quick_capture_fact_with_two_tags_boosts(rpc):
+    """fact + tags 数量 ≥ 2 → 同样抬。tags 是 LLM 给项目/实体 fact 最常用的信号载体。"""
+    res = await rpc.quick_capture({
+        "type": "fact",
+        "brief": "非 crypto 数据走 Futu OpenD",
+        "content": "...",
+        "author": "agent",
+        "tags": ["quant-signal", "futu-opend"],
+    })
+    assert res["status"] == "ok"
+    fm = (await _read_fact(rpc, res["id"])).frontmatter
+    assert fm.importance_factors.entity_priority == 0.7
+    assert fm.content_confidence == 4
+
+
+@pytest.mark.asyncio
+async def test_quick_capture_fact_with_single_tag_does_not_boost(rpc):
+    """fact + 仅 1 个 tag → 不抬。单 tag 不算具名实体信号。"""
+    res = await rpc.quick_capture({
+        "type": "fact",
+        "brief": "x",
+        "content": "...",
+        "author": "agent",
+        "tags": ["random"],
+    })
+    fm = (await _read_fact(rpc, res["id"])).frontmatter
+    assert fm.importance_factors.entity_priority == 0.5
+    assert fm.content_confidence == 3
+
+
+@pytest.mark.asyncio
+async def test_quick_capture_lesson_with_two_tags_does_not_boost(rpc):
+    """lesson + tags ≥ 2 → 仍不抬。lesson 不享受单条晋升通道（case→rule 才是出路）。"""
+    res = await rpc.quick_capture({
+        "type": "lesson",
+        "brief": "x",
+        "content": "...",
+        "author": "agent",
+        "tags": ["a", "b"],
+        "lesson_meta": {"scenario": "s", "outcome": "success"},
+    })
+    fm = rpc.store.read("inbox", "lesson", res["id"]).frontmatter
+    assert fm.importance_factors.entity_priority == 0.5
+    assert fm.content_confidence == 3
+
+
+@pytest.mark.asyncio
+async def test_quick_capture_respects_explicit_entity_priority(rpc):
+    """LLM 显式传 entity_priority=0.3 时，不被默认抬覆盖。"""
+    res = await rpc.quick_capture({
+        "type": "fact",
+        "brief": "x",
+        "content": "...",
+        "author": "agent",
+        "tags": ["a", "b"],
+        "importance_factors": {
+            "proximity": 0.5, "surprisal": 0.5,
+            "entity_priority": 0.3,
+            "unambiguity": 0.5,
+        },
+    })
+    fm = (await _read_fact(rpc, res["id"])).frontmatter
+    assert fm.importance_factors.entity_priority == 0.3, "LLM 显式值不应被默认覆盖"
+
+
+@pytest.mark.asyncio
+async def test_quick_capture_respects_explicit_content_confidence(rpc):
+    """LLM 显式传 content_confidence=2 时，不被默认 4 覆盖。"""
+    res = await rpc.quick_capture({
+        "type": "fact",
+        "brief": "x",
+        "content": "...",
+        "author": "agent",
+        "tags": ["a", "b"],
+        "content_confidence": 2,
+    })
+    fm = (await _read_fact(rpc, res["id"])).frontmatter
+    assert fm.content_confidence == 2
+
+
+@pytest.mark.asyncio
+async def test_quick_capture_partial_importance_factors_merged(rpc):
+    """LLM 只传部分 importance_factors 字段时，与默认值合并，不丢字段。"""
+    res = await rpc.quick_capture({
+        "type": "fact",
+        "brief": "x",
+        "content": "...",
+        "author": "agent",
+        "tags": ["a", "b"],
+        "importance_factors": {"surprisal": 0.9},  # 只传 surprisal
+    })
+    fm = (await _read_fact(rpc, res["id"])).frontmatter
+    assert fm.importance_factors.surprisal == 0.9, "LLM 传的 surprisal 保留"
+    assert fm.importance_factors.entity_priority == 0.7, "LLM 未传的字段走 boost 默认"
+
+
+@pytest.mark.asyncio
+async def test_quick_capture_boosts_when_explicit_default_value(rpc):
+    """LLM 显式传完整 importance_factors 但 entity_priority 仍是 0.5 时，仍触发抬。
+
+    这是 store_memory MCP 工具的常态：importanceToFactors(importance) 总会生成
+    {proximity:0.5, surprisal:<importance/10>, entity_priority:0.5, unambiguity:0.5}，
+    即便 LLM 没主动表达，也总有 entity_priority=0.5 这个"形式上的显式值"。
+    如果不抬，store_memory 路径下的 fact 永远 entity_priority=0.5，永远过不了项目实体通道。
+    """
+    res = await rpc.quick_capture({
+        "type": "fact",
+        "brief": "x",
+        "content": "...",
+        "author": "agent",
+        "tags": ["quant-signal", "futu"],
+        "importance_factors": {
+            "proximity": 0.5, "surprisal": 0.5,
+            "entity_priority": 0.5,  # ← store_memory 自动填的默认值
+            "unambiguity": 0.5,
+        },
+    })
+    fm = (await _read_fact(rpc, res["id"])).frontmatter
+    assert fm.importance_factors.entity_priority == 0.7, \
+        "形式上的默认 0.5 应被识别为'未表达'并抬到 0.7"
+
+
+@pytest.mark.asyncio
+async def test_quick_capture_preserves_low_entity_priority(rpc):
+    """LLM 显式传 entity_priority < 0.5（如 0.3）时是主动表达"很弱"，不抬。"""
+    res = await rpc.quick_capture({
+        "type": "fact",
+        "brief": "x",
+        "content": "...",
+        "author": "agent",
+        "tags": ["a", "b"],
+        "importance_factors": {
+            "proximity": 0.5, "surprisal": 0.5,
+            "entity_priority": 0.3,
+            "unambiguity": 0.5,
+        },
+    })
+    fm = (await _read_fact(rpc, res["id"])).frontmatter
+    assert fm.importance_factors.entity_priority == 0.3
+
+
+@pytest.mark.asyncio
+async def test_quick_capture_preserves_high_entity_priority(rpc):
+    """LLM 显式传 entity_priority > 0.5（如 0.8）时是主动表达"很强"，也不动。"""
+    res = await rpc.quick_capture({
+        "type": "fact",
+        "brief": "x",
+        "content": "...",
+        "author": "agent",
+        "tags": ["a", "b"],
+        "importance_factors": {
+            "proximity": 0.5, "surprisal": 0.5,
+            "entity_priority": 0.8,
+            "unambiguity": 0.5,
+        },
+    })
+    fm = (await _read_fact(rpc, res["id"])).frontmatter
+    assert fm.importance_factors.entity_priority == 0.8

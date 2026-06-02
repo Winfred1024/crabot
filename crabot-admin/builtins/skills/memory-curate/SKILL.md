@@ -45,15 +45,19 @@ score = 0.4 * importance_factors.proximity
       + 0.1 * importance_factors.unambiguity
 ```
 
-### Step 4：晋升决策（无 LLM）
+### Step 4：晋升决策（无 LLM，按 type 分流）
 
-| 条件 | 动作 |
+> 设计原则：默认门槛保持 spec §6.1 的严格水平，但给"特征强烈"的 fact 增加两条 OR 通道，避免高 importance / 项目实体类 fact 因为 confidence 默认 3 永远卡 inbox。lesson 单条不晋升，case→rule 是 daily-reflection 第九步职责。
+
+**对 `type=fact` 或 `type=concept` 候选**，满足任一条件即晋升 confirmed：
+
+| 通道 | 条件 |
 |---|---|
-| `score >= 0.75 AND content_confidence >= 4` | `update_long_term({ id, patch: { maturity: "confirmed" } })` |
-| `score < 0.3` | `delete_memory({ id })`（进 trash） |
-| 其他 | 留给 daily-reflection |
+| **A 默认门槛**（spec 原通道） | `score >= 0.75 AND content_confidence >= 4` |
+| **B 高 importance 单独通道** | `surprisal >= 0.9 AND content_confidence >= 3` |
+| **C 项目实体单独通道** | `entity_priority >= 0.7 AND len(tags) >= 2 AND content_confidence >= 3` |
 
-晋升到 confirmed 时同时设置观察期：
+晋升动作（设观察期）：
 
 ```
 update_long_term({
@@ -64,6 +68,24 @@ update_long_term({
   },
 })
 ```
+
+工具层会在 maturity 升到 confirmed 且 status='inbox' 时自动把文件迁到 `confirmed/<type>/`（无须再 patch status）。
+
+**对 `type=lesson` 候选**（maturity=case 的反思产物）：
+
+| 条件 | 动作 |
+|---|---|
+| `score < 0.3` | `delete_memory({ id })`（明显噪音，进 trash） |
+| 其他 | **保留在 inbox**，**不单条晋升**——case→rule 涌升由 daily-reflection 第九步按 ≥3 source_cases 门槛走 `promote_to_rule` 处理 |
+
+> 为什么 lesson 不走单条晋升：spec §6.4 的 rule 是从 ≥3 同 scenario case 抽象出来的**新条目**（写到 `confirmed/lesson/<rule_uuid>.md`，原 case 留 inbox 作实证）。单条 case 直接改 maturity=rule 会产出无 source_cases 依据的低质量 rule。
+
+**剩余动作（fact / concept / lesson 共用）**：
+
+| 条件 | 动作 |
+|---|---|
+| `score < 0.3` | `delete_memory({ id })`（进 trash） |
+| 其他 | 留给 daily-reflection |
 
 ### Step 5：报告
 

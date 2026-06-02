@@ -166,7 +166,12 @@ mcp__crab-messaging__send_master_private({
    - LLM 综合现状 + 新证据生成新版 content（保留仍成立的旧规则；用新证据替换被推翻的旧规则；追加新归纳；保持一段连贯的描述）
    - `mcp__crab-memory__set_scene_profile({ scene, label, content: <新版描述>, source_memory_ids: [...] })` 覆盖整条画像
 3. **清理无效**：整条画像被新证据完全推翻且无替代 → `mcp__crab-memory__delete_scene_profile({ scene })`。
-4. **黑名单合规检查**：扫描近 24h 新增 long-term 条目，命中黑名单（一次性快照、时效新闻、细碎 tip、已解决 bug 细节、中间猜测、偶尔一次表述）的 → `mcp__crab-memory__delete_memory` 回收。
+4. **黑名单合规检查**（必须先看 body 再删，禁止只看 brief 批量拉黑）：
+   - 用 `mcp__crab-memory__list_recent({ window_days: 1 })` 扫近 24h 新增条目，仅根据 brief 列出**疑似命中黑名单**的候选 ID
+   - **对每条候选**：必须先调一次 `mcp__crab-memory__get_memory_detail({ id: <候选 id>, include: "full" })` 拿完整 body
+   - **仅当 brief 和 body 同时命中黑名单**（一次性快照、时效新闻、细碎 tip、已解决 bug 细节、中间猜测）才调 `mcp__crab-memory__delete_memory` 回收
+   - **禁止并行批量 delete**：每个 delete_memory 调用都必须有同一 mem_id 对应的 get_memory_detail 前置调用作为证据。只看 brief 模糊匹配 → 高价值经验会被误删（详见反例 trace `41fa2594`：32 条并行 delete 全程未调用一次 get_memory_detail）
+   - **黑名单不含"偶尔一次表述"**：worker 端 prompt 已删除此条（避免反向劝退用户纠正的 capture），反思端同步保持一致
 
 **不新增反思频次**：第七步与前六步同一 run 内执行。
 
@@ -183,6 +188,12 @@ mcp__crab-messaging__send_master_private({
 ### 第九步：Case → Rule 涌现
 
 对今日新增的 case 类 lesson，按 scenario 聚类，**自动晋升进观察期**（spec §6.4 / v2-ui §12.1：无人工 confirm 步骤）：
+
+> **路径区分（别搞混）**：
+> - **case→rule 涌升（本步职责）**：≥3 条同 scenario case 抽象出新 rule → 必须用 `promote_to_rule`，它在 `confirmed/lesson/<rule_uuid>.md` 写**新 rule 条目**并启动观察期，原 case 留 inbox 作实证。不要用 `update_long_term({maturity:"rule"})` 给单条 case 改 maturity 来代替——绕过 ≥3 source_cases 门槛会产出低质量 rule。
+> - **单条 fact/lesson 升 confirmed（不归本步）**：是 memory-curate skill 的职责（spec §6.1），它在每小时 schedule 中按多因子打分 + confidence 阈值用 `update_long_term({maturity:"confirmed"})` 升级。反思任务不要重复做。
+>
+> 工具层兜底：`update_long_term` 现在会在 patch.maturity ∈ {rule, confirmed, established} 且 status='inbox' 时自动把 status 同步迁到 confirmed（修历史 LLM 漏写 status 字段的 bug）。
 
 1. `mcp__crab-memory__search_long_term({ query: <scenario>, filters: { type: "lesson" }, k: 10 })` 拉同 scenario 候选
 2. 筛选 outcome 一致的 case（`maturity == "case"` 且 `lesson_meta.outcome` 一致）

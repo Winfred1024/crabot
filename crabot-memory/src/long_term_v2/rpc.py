@@ -31,6 +31,12 @@ _UPDATABLE_FIELDS = frozenset({
     "importance_factors", "invalidated_by", "lesson_meta", "observation",
 })
 
+# 各 type 的 maturity 高熟度终态——patch 改到这些值时 status 必须同步到 confirmed。
+# lesson: rule（已晋升）/ retired 走废弃路径，不在此列
+# fact:   confirmed（已确认）/ stale 是衰退态，不在此列
+# concept: established（已固化）
+_MATURITY_TERMINALS = frozenset({"rule", "confirmed", "established"})
+
 
 class LongTermV2Rpc:
     def __init__(self, store, index, llm=None, reranker=None):
@@ -195,9 +201,24 @@ class LongTermV2Rpc:
 
         body = patch["body"] if "body" in patch else entry.body
         new_entry = entry.model_copy(update={"frontmatter": new_fm, "body": body})
-        self.store.write(new_entry, status=status)
-        path = entry_path(self.store.data_root, status, type_, mem_id)
-        self.index.upsert(new_entry, path=path, status=status)
+
+        # Status auto-sync：patch 把 maturity 升到高熟度终态时，inbox 必须同步迁到 confirmed。
+        # 修历史 bug：反思 LLM 会用 update_long_term({maturity:'rule'}) 直接给 inbox 的 case
+        # 打 rule 标，绕过 promote_to_rule。结果 maturity=rule 卡在 inbox/lesson/，默认
+        # keyword_search/search_long_term 搜不到 → 用户感觉"记了等于没记"。
+        # 这里兜底同步 status，但反思 skill 仍应优先走 promote_to_rule（≥3 source_cases 门槛）。
+        target_status = status
+        if (
+            "maturity" in fm_updates
+            and fm_updates["maturity"] in _MATURITY_TERMINALS
+            and status == "inbox"
+        ):
+            self.store.move(mem_id, type_, from_status="inbox", to_status="confirmed")
+            target_status = "confirmed"
+
+        self.store.write(new_entry, status=target_status)
+        path = entry_path(self.store.data_root, target_status, type_, mem_id)
+        self.index.upsert(new_entry, path=path, status=target_status)
         return {"id": mem_id, "version": new_fm.version, "status": "ok"}
 
     async def get_entry_version(self, params: dict) -> dict:
@@ -256,18 +277,51 @@ class LongTermV2Rpc:
 
         与 write_long_term 的区别：给反思场景常用的字段填默认值，让 Agent 一次调用
         只传 type/brief/content/tags 就能落盘。
+
+        实体信号默认抬：fact 类型 + 有具名实体信号（entities 非空 OR tags 数量 ≥ 2）
+        → entity_priority 升到 0.7、content_confidence 升到 4，让 memory-curate 的
+        "项目实体单独通道"（entity_priority>=0.7 AND tags>=2 AND confidence>=3）能命中。
+
+        boost 的边界：
+        - 仅 type=fact 触发（lesson 不享受单条晋升通道，case→rule 才是出路）
+        - 仅当字段是默认值（entity_priority=0.5 / confidence=3）或未传时才抬——
+          LLM 显式表达"很弱"（≤0.4 / ≤2）或"很强"（≥0.6 / ≥4）时尊重其判断
         """
+        is_fact = params.get("type") == "fact"
+        has_entity_signal = (
+            bool(params.get("entities"))
+            or len(params.get("tags") or []) >= 2
+        )
+        boost_for_entity = is_fact and has_entity_signal
+
+        # 合并 importance_factors：默认值 + LLM 传的覆盖
+        base_factors = {
+            "proximity": 0.5, "surprisal": 0.5,
+            "entity_priority": 0.5, "unambiguity": 0.5,
+        }
+        user_factors = dict(params.get("importance_factors") or {})
+        merged_factors = {**base_factors, **user_factors}
+
+        # entity_priority boost：仅当合并后仍是默认 0.5 时抬到 0.7
+        if boost_for_entity and merged_factors.get("entity_priority") == 0.5:
+            merged_factors["entity_priority"] = 0.7
+
+        # content_confidence boost：仅当 LLM 未传或传了默认值 3 时抬到 4
+        user_confidence = params.get("content_confidence")
+        if boost_for_entity and (user_confidence is None or user_confidence == 3):
+            user_confidence = 4
+
         defaults = {
             "source_trust": 3,
             "content_confidence": 3,
             "event_time": utc_now_iso_z(),
             "source_ref": {"type": "reflection"},
-            "importance_factors": {
-                "proximity": 0.5, "surprisal": 0.5,
-                "entity_priority": 0.5, "unambiguity": 0.5,
-            },
+            "importance_factors": merged_factors,
         }
-        capture_params: dict = {**defaults, **params}
+
+        capture_params: dict = {**defaults, **params, "importance_factors": merged_factors}
+        if user_confidence is not None:
+            capture_params["content_confidence"] = user_confidence
         capture_params["status"] = "inbox"
         capture_params["maturity"] = params.get("maturity")  # default_maturity_fresh 兜底
         return await self.write_long_term(capture_params)
