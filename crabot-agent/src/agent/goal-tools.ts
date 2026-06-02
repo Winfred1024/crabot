@@ -82,7 +82,8 @@ export function createSetTaskGoalTool(deps: SetTaskGoalDeps): ToolDefinition {
         },
         token_budget: {
           type: 'number',
-          description: '可选预算；超过则目标进入 budget_limited 终态（系统强制收尾）',
+          minimum: 1,
+          description: '可选预算（必须 >0）；不填则无限制（默认）。超过则目标进入 budget_limited 终态（系统强制收尾）。',
         },
       },
       required: ['objective', 'acceptance_criteria'],
@@ -100,12 +101,16 @@ export function createSetTaskGoalTool(deps: SetTaskGoalDeps): ToolDefinition {
           isError: true,
         }
       }
+      // LLM 偶尔会传 0 / 负数 / NaN，admin 会硬拒抛 "token_budget 必须是正数"
+      // 浪费一整轮 turn。这里 sanitize：无效值视同未传（协议允许缺省）。
+      const tb = input.token_budget
+      const validTokenBudget = (typeof tb === 'number' && Number.isFinite(tb) && tb > 0) ? tb : undefined
       try {
         await deps.callAdminRpc('set_task_goal', {
           task_id: deps.taskId,
           objective: input.objective,
           acceptance_criteria: input.acceptance_criteria,
-          ...(input.token_budget !== undefined ? { token_budget: input.token_budget } : {}),
+          ...(validTokenBudget !== undefined ? { token_budget: validTokenBudget } : {}),
         })
         // 重设成功才消费券（admin RPC 抛错则券留待重试）。
         if (isReset) deps.consumeRevisionToken?.()
