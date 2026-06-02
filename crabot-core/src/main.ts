@@ -93,9 +93,14 @@ const CORE_MODULES: Array<ModuleDefinition & Record<string, unknown>> = [
     module_type: 'agent',
     version: '0.2.0',
     protocol_version: '0.2.0',
+    // --max-old-space-size=2048：堆上限砍到 2GB。原 ~4GB 默认在分配尖峰场景下
+    //   会一次性突破上限直接 fatal，V8 没机会序列化 heapsnapshot；2GB 让 OOM 早到、
+    //   `near-heap-limit` 检测在 ~1.8GB 触发时还有 200MB+ headroom 落盘。
     // --heapsnapshot-near-heap-limit=3：V8 在接近 heap 上限时自动 dump 最多 3 个
     //   .heapsnapshot 到 cwd（AGENT_DIR），用于定位 OOM 时的 retainer。
-    entry: 'node --heapsnapshot-near-heap-limit=3 dist/main.js',
+    // --heapsnapshot-signal=SIGUSR2：活体取证开关。`kill -SIGUSR2 <agent_pid>`
+    //   即可在任意时刻 dump 当前堆，用于排查"还没崩但内存看着不对"。
+    entry: 'node --max-old-space-size=2048 --heapsnapshot-near-heap-limit=3 --heapsnapshot-signal=SIGUSR2 dist/main.js',
     cwd: AGENT_DIR,
     auto_start: fs.existsSync(path.join(AGENT_DIR, 'dist', 'main.js')),
     auto_restart: true,
