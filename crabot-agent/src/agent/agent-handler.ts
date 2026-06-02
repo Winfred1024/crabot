@@ -82,7 +82,8 @@ import { reviewCliContent } from './cli-content-reviewer.js'
 import { PromptManager, formatChannelMessageLine, formatShortTermMemoryLine, type QuotedMessageEntry } from '../prompt-manager.js'
 import { resolveSenderIdentity } from '../utils/sender-identity.js'
 import { prefetchQuotedMessages } from './quoted-message-prefetcher.js'
-import { formatNow, formatChannelMessageTime, formatTaskCreatedAt, resolveTimezone, formatRuntimeMs } from '../utils/time.js'
+import { formatNow, formatChannelMessageTime, resolveTimezone, formatRuntimeMs } from '../utils/time.js'
+import { renderActiveTasksSection } from './active-tasks-section.js'
 import { getInstanceSkillsDir, getAgentDataDir, getWorkspaceDir } from '../core/data-paths.js'
 import { llmUsageToTrace } from '../core/trace-usage.js'
 import { TodoStore } from './worker-todo-store.js'
@@ -127,17 +128,6 @@ export function extractChildTraceIdFromOutput(output: string | undefined): strin
     // 非 JSON output（如普通文本工具返回），忽略
   }
   return undefined
-}
-
-/** 已过时长的中文格式化（用于 trigger prompt 活跃任务渲染） */
-function formatElapsedMs(ms: number): string {
-  if (!Number.isFinite(ms) || ms < 0) return '?'
-  const sec = Math.floor(ms / 1000)
-  if (sec < 60) return `${sec}秒`
-  const min = Math.floor(sec / 60)
-  if (min < 60) return `${min}分${sec % 60}秒`
-  const hr = Math.floor(min / 60)
-  return `${hr}小时${min % 60}分`
 }
 
 type ProgressReportMode = 'silent' | 'text_forward' | 'digest'
@@ -1642,7 +1632,7 @@ export class AgentHandler {
     const { triggerArrivedAtMs, timeoutMs = 30_000, overdueReminderEnabled = true } = params
     const { taskId, registered, task, context } = pre
 
-    const triggerText = await this.buildTriggerUserPrompt(params)
+    const triggerText = await this.buildTriggerUserPrompt(params, taskId)
 
     // If VLM is supported, attach image blocks from the current trigger messages.
     // buildTriggerUserPrompt returns a plain string, so images must be injected here.
@@ -1747,7 +1737,7 @@ export class AgentHandler {
    * - 新增尾部提醒：用 send_message 工具回复（含 channel_id / session_id）
    * - 场景画像从 frontContext 读取（已在 system prompt 里，此处不再重复渲染）
    */
-  private async buildTriggerUserPrompt(params: ExecuteTriggerMessageParams): Promise<string> {
+  private async buildTriggerUserPrompt(params: ExecuteTriggerMessageParams, currentTaskId: TaskId): Promise<string> {
     const { messages, activeTasks, isGroup, senderFriend, channelId, sessionId, frontContext } = params
     const parts: string[] = []
     const timezone = this.getTimezone()
@@ -1804,81 +1794,18 @@ export class AgentHandler {
       parts.push(`- 你在该渠道的昵称: ${frontContext.crab_display_name}`)
     }
 
-    // ── 活跃任务（三分类）──
-    if (activeTasks.length > 0) {
-      const currentChannel = messages[0]?.session?.channel_id ?? channelId
-      const currentSession = messages[0]?.session?.session_id ?? sessionId
-      const isMaster = senderFriend.permission === 'master'
-
-      const currentTasks: typeof activeTasks[number][] = []
-      const otherTasks: typeof activeTasks[number][] = []
-      const scheduledTasks: typeof activeTasks[number][] = []
-
-      for (const t of activeTasks) {
-        if (t.trigger_type === 'scheduled') scheduledTasks.push(t)
-        else if (t.source_session_id === currentSession && t.source_channel_id === currentChannel) currentTasks.push(t)
-        else otherTasks.push(t)
-      }
-
-      const renderTask = (t: typeof activeTasks[number], includeSource: boolean = false): string[] => {
-        const lines: string[] = []
-        const tag = t.trigger_type === 'scheduled' ? ' [定时/巡检任务，禁止 supplement]' : ''
-        const src = includeSource && t.source_channel_id ? ` [来源: ${t.source_channel_id}:${t.source_session_id}]` : ''
-        lines.push(`- [${t.task_id}] "${t.title}" (status: ${t.status})${tag}${src}`)
-        if (t.latest_progress) lines.push(`  最近进度（事后摘要）: ${t.latest_progress}`)
-        const live = t.live
-        if (t.status === 'waiting_human' && t.pending_question) {
-          lines.push(`  正在等待人类回答的问题:`)
-          const qLines = t.pending_question.split('\n')
-          for (const ql of qLines) {
-            lines.push(`  > ${ql}`)
-          }
-        }
-        if (live) {
-          lines.push(`  创建于 ${formatTaskCreatedAt(live.started_at, timezone, now)} / 第 ${live.current_turn} 轮`)
-          if (live.last_assistant_text) {
-            const tt = live.last_assistant_text.trim()
-            if (tt.length > 0) lines.push(`  上轮模型说: ${tt.slice(0, 200)}${tt.length > 200 ? '…' : ''}`)
-          }
-          if (live.active_tools.length > 0) {
-            for (const at of live.active_tools) {
-              const elapsed = formatElapsedMs(Date.now() - at.started_at)
-              lines.push(`  正在跑工具: ${at.name}（已 ${elapsed}）— ${at.input_summary}`)
-            }
-          }
-          if (live.recent_completed.length > 0) {
-            const tail = live.recent_completed.slice(-3).map(c => `${c.name}${c.is_error ? '(失败)' : ''}`).join(' / ')
-            lines.push(`  最近完成: ${tail}`)
-          }
-          if (live.llm_retry) {
-            const r = live.llm_retry
-            const elapsed = formatElapsedMs(Date.now() - r.since)
-            lines.push(`  LLM 调用 retry 中: ${r.attempt}/${r.max_attempts} (${r.source})，已 ${elapsed}，原因: ${r.last_error}`)
-          }
-        }
-        return lines
-      }
-
-      parts.push('\n## 活跃任务')
-
-      if (currentTasks.length > 0) {
-        parts.push(`\n### 当前对话对象的任务（${currentTasks.length} 条）`)
-        for (const t of currentTasks) parts.push(...renderTask(t))
-      }
-
-      if (isMaster && otherTasks.length > 0) {
-        parts.push(`\n### 其他对话场景的任务（${otherTasks.length} 条）`)
-        for (const t of otherTasks) parts.push(...renderTask(t, true))
-      }
-
-      if (isMaster && scheduledTasks.length > 0) {
-        parts.push(`\n### schedule 触发任务（${scheduledTasks.length} 条）`)
-        for (const t of scheduledTasks) parts.push(...renderTask(t))
-      }
-
-      parts.push('\n当消息可能是对某个任务的纠偏/补充时，使用 supplement_task 工具。')
-      parts.push('**带 [定时/巡检任务，禁止 supplement] 标签的任务一律不可作为 supplement 目标**。')
-    }
+    // ── 活跃任务（三分类）+ SELF marker + 历史查询提示
+    // 渲染逻辑全部抽到 renderActiveTasksSection，便于单测；保持 active_tasks 为空时
+    // 也会输出历史查询提示——agent 必须撞到"已结束 task 在另一入口"的事实
+    parts.push(...renderActiveTasksSection({
+      activeTasks,
+      currentTaskId,
+      currentChannel: messages[0]?.session?.channel_id ?? channelId,
+      currentSession: messages[0]?.session?.session_id ?? sessionId,
+      isMaster: senderFriend.permission === 'master',
+      timezone,
+      now,
+    }))
 
     // ── 聊天历史（当前 session）──
     const recentHours = frontContext.time_windows.recent_messages_window_hours

@@ -172,6 +172,20 @@ export function stampToolResult(content: string, timezone: string, now: Date = n
 }
 
 /**
+ * 已过时长的中文紧凑格式化 "1小时23分" / "5分12秒" / "32秒"。
+ * 用于 worker trigger prompt 的活跃任务 live 段渲染（"已 23分5秒"）。
+ */
+export function formatElapsedMs(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '?'
+  const sec = Math.floor(ms / 1000)
+  if (sec < 60) return `${sec}秒`
+  const min = Math.floor(sec / 60)
+  if (min < 60) return `${min}分${sec % 60}秒`
+  const hr = Math.floor(min / 60)
+  return `${hr}小时${min % 60}分`
+}
+
+/**
  * 把毫秒数渲染成紧凑的 "1h23m45s" / "5m12s" / "32s" 字符串。
  * agent-handler bg-notification、list-entities-tool 表格共用。
  */
