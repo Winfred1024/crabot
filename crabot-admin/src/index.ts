@@ -4133,11 +4133,18 @@ export class AdminModule extends ModuleBase {
     if (params) {
       const { task } = await this.handleCreateTask(params)
       console.log(`[Admin] Self-healing: created recovery task ${task.id} for ${interrupted.length} interrupted task(s)`)
+
+      // 3. RPC 推 agent 立即开跑（照 schedule 路径：admin 主动 push，不依赖事件订阅）。
+      // 历史 bug：agent 没订 admin.task_created，单靠 handleCreateTask 的 publishAdminEvent
+      // 不会让 task 跑起来——recovery 永远停在 pending，自愈机制半失败。
+      this.callAgentRpc('start_recovery_task', { task_id: task.id })
+        .then(() => console.log(`[Admin] Self-healing: recovery task ${task.id} dispatched to agent`))
+        .catch((err: Error) => console.warn(`[Admin] Self-healing: start_recovery_task RPC failed for ${task.id}: ${err.message}`))
     } else {
       console.log(`[Admin] Self-healing: no recovery task needed (no non-recovery interrupted tasks)`)
     }
 
-    // 3. 持久化任务变更
+    // 4. 持久化任务变更
     await this.saveData()
   }
 

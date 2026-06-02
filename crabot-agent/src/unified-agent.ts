@@ -420,6 +420,7 @@ export class UnifiedAgent extends ModuleBase {
     // 编排接口
     this.registerMethod('process_message', this.handleProcessMessage.bind(this))
     this.registerMethod('create_task_from_schedule', this.handleCreateTaskFromSchedule.bind(this))
+    this.registerMethod('start_recovery_task', this.handleStartRecoveryTask.bind(this))
 
     // Agent 接口
     this.registerMethod('get_role', this.handleGetRole.bind(this))
@@ -1837,6 +1838,68 @@ export class UnifiedAgent extends ModuleBase {
         message
       )
       throw new Error(`Failed to create task from schedule: ${message}`)
+    }
+  }
+
+  /**
+   * 启动 recovery 任务（admin self-healing 在 agent 重启后 RPC 推过来）。
+   *
+   * task 已由 admin 端的 runSelfHealingForAgentRestart → handleCreateTask 建好
+   * （status=pending, tags=['recovery']），这里只负责把它接进 worker loop——
+   * 复用 scheduledTaskRunner 因为 recovery 跟 scheduled 性质相同：系统派的、
+   * 无 channel/session 上下文、不接受 supplement。
+   *
+   * 历史 bug：admin 建完 recovery task 后只 publish 了 `admin.task_created` 事件，
+   * 但 agent 没订阅这个事件，task 永远停留在 pending → 自愈机制半失败。本 RPC 是
+   * schedule 路径的同款 hand-off：admin 直接 RPC push agent，跟事件总线无关。
+   */
+  private async handleStartRecoveryTask(params: {
+    task_id: string
+  }): Promise<{ task_id: string; assigned_worker: ModuleId }> {
+    const { task_id } = params
+
+    try {
+      const workerId = await this.workerSelector.selectWorker({})
+      const adminPort = await this.getAdminPort()
+
+      const { task } = await this.rpcClient.call<
+        { task_id: string },
+        {
+          task: {
+            id: string
+            title: string
+            description?: string
+            priority: string
+            plan?: string
+          }
+        }
+      >(adminPort, 'get_task', { task_id }, this.config.moduleId)
+
+      console.log(
+        `[${this.config.moduleId}] Starting recovery task ${task.id}, assigned to ${workerId}`
+      )
+
+      const workerContext = await this.contextAssembler.assembleScheduledTaskContext()
+
+      this.scheduledTaskRunner.executeScheduledTaskInBackground(
+        {
+          id: task.id,
+          title: task.title,
+          description: task.description ?? '',
+          priority: task.priority,
+          plan: task.plan,
+        },
+        workerContext,
+      )
+
+      return { task_id: task.id, assigned_worker: workerId }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.error(
+        `[${this.config.moduleId}] Failed to start recovery task ${task_id}:`,
+        message
+      )
+      throw new Error(`Failed to start recovery task: ${message}`)
     }
   }
 
