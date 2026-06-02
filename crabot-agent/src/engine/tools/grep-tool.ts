@@ -1,16 +1,15 @@
-import * as fs from 'fs'
-import * as path from 'path'
 import { defineTool } from '../tool-framework'
 import type { ToolDefinition } from '../types'
 import { byteLength } from '../byte-cap'
-
-const SKIP_DIRS = new Set(['node_modules', '.git', '.hg', '.svn', 'dist', '.next', '.cache'])
-
-const BINARY_CHECK_BYTES = 512
+import { runRipgrep, DEFAULT_EXCLUDE_GLOBS } from './ripgrep-helper'
 
 // Grep 输出按 UTF-8 字节累加上限。命中行内容很长（K 线 / CSV / JSON 单行数 KB～MB）时，
 // 仅靠 head_limit（行数）无法兜住——必须按字节裁剪，否则会塞 N MB 进 toolResult。
 const MAX_OUTPUT_BYTES = 200_000
+
+// 单行最大列数。base64 / minified 单行能到几 MB，rg 默认无上限会把这种行
+// 完整吐出来撑爆 stdout 缓冲；500 列已经足够人读、超出截断显示 "[...]"。
+const MAX_COLUMNS = 500
 
 function truncationHint(): string {
   return (
@@ -44,180 +43,24 @@ function joinWithCap(lines: Iterable<string>, headLimit: number): string {
   return truncated ? joined + truncationHint() : joined
 }
 
-function isBinaryBuffer(buffer: Buffer): boolean {
-  const checkLength = Math.min(buffer.length, BINARY_CHECK_BYTES)
-  for (let i = 0; i < checkLength; i++) {
-    if (buffer[i] === 0) {
-      return true
+/** rg stdout 按 \n 切，去掉空尾行。 */
+function* splitLines(stdout: string): Generator<string> {
+  if (!stdout) return
+  let start = 0
+  for (let i = 0; i < stdout.length; i++) {
+    if (stdout.charCodeAt(i) === 0x0a) {
+      if (i > start) yield stdout.slice(start, i)
+      start = i + 1
     }
   }
-  return false
-}
-
-function matchesGlob(filePath: string, glob: string): boolean {
-  // Simple glob: *.ext or **/*.ext
-  const pattern = glob.replace(/\./g, '\\.').replace(/\*\*/g, '{{GLOBSTAR}}').replace(/\*/g, '[^/]*').replace(/\{\{GLOBSTAR\}\}/g, '.*')
-  const regex = new RegExp(`(^|/)${pattern}$`)
-  return regex.test(filePath)
-}
-
-function walkDirectory(dir: string, basePath: string, glob: string | undefined): ReadonlyArray<string> {
-  const results: string[] = []
-
-  let entries: fs.Dirent[]
-  try {
-    entries = fs.readdirSync(dir, { withFileTypes: true })
-  } catch {
-    return results
-  }
-
-  for (const entry of entries) {
-    if (entry.isDirectory()) {
-      if (SKIP_DIRS.has(entry.name)) {
-        continue
-      }
-      const subResults = walkDirectory(path.join(dir, entry.name), basePath, glob)
-      results.push(...subResults)
-    } else if (entry.isFile()) {
-      const fullPath = path.join(dir, entry.name)
-      if (glob !== undefined) {
-        const relativePath = path.relative(basePath, fullPath)
-        if (!matchesGlob(relativePath, glob)) {
-          continue
-        }
-      }
-      results.push(fullPath)
-    }
-  }
-
-  return results
-}
-
-function readFileIfText(filePath: string): string | null {
-  try {
-    const fd = fs.openSync(filePath, 'r')
-    const headerBuf = Buffer.alloc(BINARY_CHECK_BYTES)
-    const bytesRead = fs.readSync(fd, headerBuf, 0, BINARY_CHECK_BYTES, 0)
-    fs.closeSync(fd)
-
-    if (isBinaryBuffer(headerBuf.subarray(0, bytesRead))) {
-      return null
-    }
-
-    return fs.readFileSync(filePath, 'utf-8')
-  } catch {
-    return null
-  }
-}
-
-interface MatchResult {
-  readonly filePath: string
-  readonly lineNumber: number
-  readonly lineContent: string
-}
-
-function searchFile(filePath: string, regex: RegExp): ReadonlyArray<MatchResult> {
-  const content = readFileIfText(filePath)
-  if (content === null) {
-    return []
-  }
-
-  const lines = content.split('\n')
-  const matches: MatchResult[] = []
-
-  for (let i = 0; i < lines.length; i++) {
-    if (regex.test(lines[i])) {
-      matches.push({
-        filePath,
-        lineNumber: i + 1,
-        lineContent: lines[i],
-      })
-    }
-  }
-
-  return matches
-}
-
-function* uniqueFilePaths(
-  allMatches: ReadonlyArray<ReadonlyArray<MatchResult>>,
-): Generator<string> {
-  const seen = new Set<string>()
-  for (const fileMatches of allMatches) {
-    if (fileMatches.length === 0) continue
-    const fp = fileMatches[0].filePath
-    if (seen.has(fp)) continue
-    seen.add(fp)
-    yield fp
-  }
-}
-
-function formatFilesWithMatches(
-  allMatches: ReadonlyArray<ReadonlyArray<MatchResult>>,
-  headLimit: number,
-): string {
-  return joinWithCap(uniqueFilePaths(allMatches), headLimit)
-}
-
-function* contentLines(
-  allMatches: ReadonlyArray<ReadonlyArray<MatchResult>>,
-  contextLines: number,
-): Generator<string> {
-  for (const fileMatches of allMatches) {
-    if (fileMatches.length === 0) continue
-
-    const filePath = fileMatches[0].filePath
-    const content = readFileIfText(filePath)
-    if (content === null) continue
-
-    const lines = content.split('\n')
-    const matchLineNumbers = new Set(fileMatches.map((m) => m.lineNumber))
-
-    const displayLines = new Set<number>()
-    for (const lineNum of matchLineNumbers) {
-      const start = Math.max(1, lineNum - contextLines)
-      const end = Math.min(lines.length, lineNum + contextLines)
-      for (let i = start; i <= end; i++) {
-        displayLines.add(i)
-      }
-    }
-
-    const sortedLineNumbers = [...displayLines].sort((a, b) => a - b)
-    for (const lineNum of sortedLineNumbers) {
-      const separator = matchLineNumbers.has(lineNum) ? ':' : '-'
-      yield `${filePath}${separator}${lineNum}${separator}${lines[lineNum - 1]}`
-    }
-  }
-}
-
-function formatContent(
-  allMatches: ReadonlyArray<ReadonlyArray<MatchResult>>,
-  contextLines: number,
-  headLimit: number,
-): string {
-  return joinWithCap(contentLines(allMatches, contextLines), headLimit)
-}
-
-function* countLines(
-  allMatches: ReadonlyArray<ReadonlyArray<MatchResult>>,
-): Generator<string> {
-  for (const fileMatches of allMatches) {
-    if (fileMatches.length === 0) continue
-    yield `${fileMatches[0].filePath}:${fileMatches.length}`
-  }
-}
-
-function formatCount(
-  allMatches: ReadonlyArray<ReadonlyArray<MatchResult>>,
-  headLimit: number,
-): string {
-  return joinWithCap(countLines(allMatches), headLimit)
+  if (start < stdout.length) yield stdout.slice(start)
 }
 
 export function createGrepTool(cwd: string): ToolDefinition {
   return defineTool({
     name: 'Grep',
     category: 'file_io',
-    description: 'Search for regex patterns in files recursively. Supports glob filtering, context lines, and multiple output modes.',
+    description: 'Search for regex patterns in files recursively (powered by ripgrep). Supports glob filtering, context lines, and multiple output modes.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -259,9 +102,10 @@ export function createGrepTool(cwd: string): ToolDefinition {
       const contextLines = (input.context as number | undefined) ?? 0
       const headLimit = (input.head_limit as number | undefined) ?? 250
 
-      let regex: RegExp
+      // 前置 regex 校验：避免起进程再炸（rg 错误信息没 JS 友好，且工具
+      // 之前的契约就是返回 "Invalid regex pattern: ..."，不破坏调用方）。
       try {
-        regex = new RegExp(pattern)
+        new RegExp(pattern)
       } catch (err) {
         return {
           output: `Invalid regex pattern: ${err instanceof Error ? err.message : String(err)}`,
@@ -269,23 +113,64 @@ export function createGrepTool(cwd: string): ToolDefinition {
         }
       }
 
-      const files = walkDirectory(searchPath, searchPath, glob)
-      const allMatches = files.map((file) => searchFile(file, regex))
+      const args: string[] = [
+        '--no-config',
+        '--no-ignore',          // 测试 / 用户场景不一定有 .gitignore，保留显式排除（DEFAULT_EXCLUDE_GLOBS）
+        '--hidden',             // 默认搜 hidden 文件，VCS 目录靠下面 glob 排除
+        `--max-columns=${MAX_COLUMNS}`,
+        '--no-messages',        // 抑制 "No such file" 之类的 stderr 噪音
+      ]
 
-      let output: string
-      switch (outputMode) {
-        case 'content':
-          output = formatContent(allMatches, contextLines, headLimit)
-          break
-        case 'count':
-          output = formatCount(allMatches, headLimit)
-          break
-        default:
-          output = formatFilesWithMatches(allMatches, headLimit)
-          break
+      // ripgrep glob 顺序敏感：**最后匹配胜出**。用户 include glob（如 `*.ts`）
+      // 必须先 push，排除 glob（`!node_modules` 等）放在后面，否则用户的 include
+      // 会反向把 node_modules 等目录拉回来。
+      if (glob) {
+        args.push('--glob', glob)
       }
 
-      return { output, isError: false }
+      for (const g of DEFAULT_EXCLUDE_GLOBS) {
+        args.push('--glob', g)
+      }
+
+      // 模式输出参数
+      if (outputMode === 'files_with_matches') {
+        args.push('--files-with-matches')
+      } else if (outputMode === 'count') {
+        args.push('--count')      // path:N（每文件总匹配数）
+      } else {
+        // content mode: rg 默认输出 path:line:content，加 -n 显式带行号
+        args.push('--line-number', '--with-filename')
+        if (contextLines > 0) args.push('--context', String(contextLines))
+      }
+
+      // pattern 必须放 args 最后第二（path 在最后），且用 -e 防止以 `-` 起头被当成 flag
+      args.push('-e', pattern, searchPath)
+
+      let rg
+      try {
+        rg = await runRipgrep(args)
+      } catch (err) {
+        return {
+          output: `Grep error: ${err instanceof Error ? err.message : String(err)}`,
+          isError: true,
+        }
+      }
+
+      // exitCode 1 = 无匹配（合法，对外 "No matches found"）
+      // exitCode 2 = 错误（路径不存在 / 真正异常）
+      if (rg.exitCode === 2) {
+        const msg = (rg.stderr || '').trim() || 'ripgrep exited with code 2'
+        return { output: `Grep error: ${msg}`, isError: true }
+      }
+
+      const output = joinWithCap(splitLines(rg.stdout), headLimit)
+
+      // rg stdout 自己被 ripgrep-helper 截断时，附带提示——优先于无字节超限的情况。
+      const finalOutput = rg.truncated && !output.endsWith(truncationHint())
+        ? output + truncationHint()
+        : output
+
+      return { output: finalOutput, isError: false }
     },
   })
 }
