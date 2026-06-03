@@ -472,13 +472,12 @@ export function createCrabMemoryServer(
     sourceMemoryIds: string[] | undefined,
     explicitLabel: string | undefined,
   ) {
+    const memoryPort = await getMemoryPort()
     let label = explicitLabel
     if (!label) {
-      const memoryPort = await getMemoryPort()
       label = await resolveSceneAnchorLabel({ rpcClient, memoryPort, moduleId, scene })
     }
     const now = new Date().toISOString()
-    const memoryPort = await getMemoryPort()
     const result = await rpcClient.call<
       Record<string, unknown>,
       { profile: unknown }
