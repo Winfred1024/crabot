@@ -122,6 +122,7 @@ export const channelService = {
     return api.post<{
       instance: ChannelInstance
       master_friend_id?: string
+      master_display_name?: string
       scope_grant_url?: string
       push_sent?: boolean
     }>('/channels/onboard/finish', {
@@ -138,5 +139,13 @@ export const channelService = {
       method_id: methodId,
       session_id: sessionId,
     })
+  },
+
+  /**
+   * onboarding 完成后用户填写主人昵称时调用，通过 friend PATCH API 更新 display_name。
+   * friendId 来自 onboardFinish 响应的 master_friend_id。
+   */
+  async updateMasterDisplayName(friendId: string, displayName: string) {
+    return api.patch(`/friends/${encodeURIComponent(friendId)}`, { display_name: displayName })
   },
 }

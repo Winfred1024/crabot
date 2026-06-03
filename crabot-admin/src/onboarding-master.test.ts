@@ -62,6 +62,17 @@ describe('mergeMasterChannelIdentity', () => {
     const r = mergeMasterChannelIdentity(existing, 'feishu-a', 'ou_y')
     expect(r.identities).not.toBe(existing)
   })
+
+  it('preferredDisplayName 传入时优先用它而非默认空字符串（跨渠道复用 master 昵称）', () => {
+    const r = mergeMasterChannelIdentity([], 'feishu-a', 'ou_owner', '张三')
+    expect(r.identities[0].platform_display_name).toBe('张三')
+  })
+
+  it('preferredDisplayName 为 undefined 时回退到默认（空字符串）', () => {
+    const r = mergeMasterChannelIdentity([], 'feishu-a', 'ou_owner')
+    expect(r.identities[0].platform_display_name).toBe(ONBOARDING_MASTER_DEFAULT_DISPLAY_NAME)
+    expect(ONBOARDING_MASTER_DEFAULT_DISPLAY_NAME).toBe('')
+  })
 })
 
 describe('buildOnboardingPushMessage', () => {

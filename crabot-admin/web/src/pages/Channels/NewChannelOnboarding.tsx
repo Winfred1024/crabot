@@ -18,7 +18,7 @@ import { channelService } from '../../services/channel'
 import { useToast } from '../../contexts/ToastContext'
 import type { ChannelImplementation, ChannelOnboardingMethod, OnboardBeginResult, OnboardPollEvent } from '../../types'
 
-type Step = 'idle' | 'starting' | 'pending' | 'authorized' | 'creating' | 'scope_grant' | 'done' | 'error' | 'expired'
+type Step = 'idle' | 'starting' | 'pending' | 'authorized' | 'creating' | 'claim_master_name' | 'done' | 'error' | 'expired'
 
 interface Status {
   step: Step
@@ -26,8 +26,12 @@ interface Status {
   begin?: OnboardBeginResult
   qrSvg?: string
   scopeGrantUrl?: string
+  pushSent?: boolean
   pendingInstanceId?: string
   pendingInstanceName?: string
+  masterFriendId?: string
+  /** master 当前 display_name（pre-fill 输入框）。已有 master 时跨渠道复用；新建 master 时为空 */
+  masterDisplayName?: string
 }
 
 const NAME_PATTERN = /^[a-z0-9-]{3,32}$/
@@ -147,30 +151,53 @@ export const NewChannelOnboarding: React.FC = () => {
       const r = await channelService.onboardFinish(implId, methodId, sessionId, instanceName)
       sessionIdRef.current = null
       const instanceId = r.instance?.id
-      const target = instanceId ? `/channels/config?selected=${encodeURIComponent(instanceId)}` : '/channels/config'
-      if (r.push_sent) {
-        // 自动认主 + 私聊推送都成功：去飞书查链接就好，Admin Web 不再停留
-        toast.success(`Channel "${instanceName}" 创建成功，授权链接已通过飞书私聊发送，请去飞书查看`)
+      toast.success(`Channel "${instanceName}" 创建成功`)
+      // 统一收口：onboarding 完成后弹"确认主人昵称"卡片。同时承载 push_sent /
+      // scope_grant_url 的状态展示 + 完成按钮的 navigate。
+      // master_friend_id 缺失（非飞书等无认主的 channel）就直接 navigate。
+      if (!r.master_friend_id) {
+        const target = instanceId ? `/channels/config?selected=${encodeURIComponent(instanceId)}` : '/channels/config'
         setStatus({ step: 'done', message: '实例已创建' })
         navigate(target)
         return
       }
-      if (r.scope_grant_url) {
-        // 私聊推送失败：保留橙色卡片兜底，让用户在 Admin Web 上手动去申请
-        toast.success(`Channel "${instanceName}" 创建成功`)
-        setStatus({
-          step: 'scope_grant',
-          scopeGrantUrl: r.scope_grant_url,
-          pendingInstanceId: instanceId,
-          pendingInstanceName: instanceName,
-        })
-        return
-      }
-      toast.success(`Channel "${instanceName}" 创建成功，已自动启动`)
-      setStatus({ step: 'done', message: '实例已创建' })
-      navigate(target)
+      setStatus({
+        step: 'claim_master_name',
+        masterFriendId: r.master_friend_id,
+        masterDisplayName: r.master_display_name ?? '',
+        ...(r.scope_grant_url ? { scopeGrantUrl: r.scope_grant_url } : {}),
+        pushSent: !!r.push_sent,
+        pendingInstanceId: instanceId,
+        pendingInstanceName: instanceName,
+      })
     } catch (err) {
       setStatus({ step: 'error', message: err instanceof Error ? err.message : '创建失败' })
+    }
+  }
+
+  const navigateAfterClaim = () => {
+    const id = status.pendingInstanceId
+    navigate(id ? `/channels/config?selected=${encodeURIComponent(id)}` : '/channels/config')
+  }
+
+  const handleClaimMasterName = async (displayName: string) => {
+    const friendId = status.masterFriendId
+    if (!friendId) {
+      navigateAfterClaim()
+      return
+    }
+    const trimmed = displayName.trim()
+    if (!trimmed) {
+      // 跳过：留空，去 navigate
+      navigateAfterClaim()
+      return
+    }
+    try {
+      await channelService.updateMasterDisplayName(friendId, trimmed)
+      toast.success(`主人昵称已设为 "${trimmed}"`)
+      navigateAfterClaim()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '保存昵称失败')
     }
   }
 
@@ -313,40 +340,16 @@ export const NewChannelOnboarding: React.FC = () => {
           </div>
         )}
 
-        {/* scope_grant：OAuth 扫码已完成，但还要去平台后台批准 scopes */}
-        {status.step === 'scope_grant' && status.scopeGrantUrl && (
-          <div style={{ background: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.45)', borderRadius: 8, padding: '1.25rem' }}>
-            <h3 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-primary)' }}>
-              扫码成功，还差最后一步：去飞书后台批准权限
-            </h3>
-            <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', marginTop: '0.5rem', lineHeight: 1.6 }}>
-              实例 <strong>{status.pendingInstanceName}</strong> 已创建并启动。但飞书应用刚扫码完是没有任何 API 作用域的，
-              必须由你去开发者后台勾选权限并提交审批，否则群消息接收、@提及、群信息读取等功能会全部报权限错误。
-            </p>
-            <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', marginTop: '0.5rem', lineHeight: 1.6 }}>
-              点下方按钮跳到飞书开发者后台 → 勾选 / 申请全部所需权限 → 提交审批（自建应用通常即时通过） → 回到此页面点"我已完成"。
-            </p>
-            <div style={{ marginTop: '1.25rem', display: 'flex', gap: '0.625rem', flexWrap: 'wrap' }}>
-              <Button
-                variant="primary"
-                onClick={() => window.open(status.scopeGrantUrl, '_blank', 'noopener,noreferrer')}
-              >
-                打开飞书后台批准权限 →
-              </Button>
-              <Button
-                variant="secondary"
-                onClick={() => {
-                  const id = status.pendingInstanceId
-                  navigate(id ? `/channels/config?selected=${encodeURIComponent(id)}` : '/channels/config')
-                }}
-              >
-                我已完成，去管理 Channel
-              </Button>
-            </div>
-            <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.875rem', wordBreak: 'break-all' }}>
-              授权链接：{status.scopeGrantUrl}
-            </p>
-          </div>
+        {/* claim_master_name：onboarding 完成，确认主人昵称 + 状态展示 + 收尾入口 */}
+        {status.step === 'claim_master_name' && (
+          <ClaimMasterNameCard
+            initialDisplayName={status.masterDisplayName ?? ''}
+            instanceName={status.pendingInstanceName ?? ''}
+            scopeGrantUrl={status.scopeGrantUrl}
+            pushSent={!!status.pushSent}
+            onConfirm={handleClaimMasterName}
+            onSkip={navigateAfterClaim}
+          />
         )}
 
         {/* error */}
@@ -404,3 +407,98 @@ const OnboardingStatusPanel: React.FC<StatusPanelProps> = ({ display, message, s
     </div>
   </div>
 )
+
+// ============================================================================
+// ClaimMasterNameCard — onboarding 完成后的统一收尾卡片
+//
+// 三件事在一张卡片上呈现：
+//   1. 主人昵称输入（pre-fill 来自已有 master 的 display_name，新建 master 时为空）
+//   2. 权限批准状态（push_sent=true 已私聊推送 / 否则展示 scope_grant_url 引导）
+//   3. 完成 / 跳过按钮 → 进入 /channels/config
+// ============================================================================
+
+interface ClaimMasterNameCardProps {
+  initialDisplayName: string
+  instanceName: string
+  scopeGrantUrl?: string
+  pushSent: boolean
+  onConfirm: (displayName: string) => void | Promise<void>
+  onSkip: () => void
+}
+
+const ClaimMasterNameCard: React.FC<ClaimMasterNameCardProps> = ({
+  initialDisplayName,
+  instanceName,
+  scopeGrantUrl,
+  pushSent,
+  onConfirm,
+  onSkip,
+}) => {
+  const [name, setName] = useState(initialDisplayName)
+  const [submitting, setSubmitting] = useState(false)
+
+  const handleConfirm = async () => {
+    try {
+      setSubmitting(true)
+      await onConfirm(name)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, padding: '1.25rem' }}>
+      <h3 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+        实例 <strong>{instanceName}</strong> 创建成功，确认主人昵称
+      </h3>
+
+      <div className="form-group" style={{ marginTop: '1rem', marginBottom: 0 }}>
+        <label className="form-label">主人昵称</label>
+        <input
+          className="input"
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder={initialDisplayName ? initialDisplayName : '你希望 Crabot 怎么称呼你（如：张三）'}
+          style={{ width: '100%' }}
+          autoFocus
+        />
+        <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.375rem' }}>
+          这是 Crabot 跟你说话时用的称呼。{initialDisplayName ? '已自动用其他渠道现有昵称预填，可改。' : '留空也可以，之后在「好友」页面也能改。'}
+        </p>
+      </div>
+
+      {/* 权限引导：scope_grant_url 存在时一并显示 */}
+      {scopeGrantUrl && (
+        <div style={{ marginTop: '1.25rem', padding: '0.875rem 1rem', background: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.4)', borderRadius: 6 }}>
+          <p style={{ fontSize: '0.8125rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+            还差一步：去飞书后台批准权限
+          </p>
+          <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.375rem', lineHeight: 1.55 }}>
+            {pushSent
+              ? '授权链接已通过飞书私聊推送给你。也可以直接点下方按钮在浏览器打开。'
+              : '飞书应用刚扫码完默认没有 API 作用域。点下方按钮去开发者后台勾选并提交（自建应用通常即时通过），否则群消息接收、@提及、群信息读取等功能会报权限错误。'}
+          </p>
+          <div style={{ marginTop: '0.625rem' }}>
+            <Button
+              variant="secondary"
+              onClick={() => window.open(scopeGrantUrl, '_blank', 'noopener,noreferrer')}
+            >
+              打开飞书后台批准权限 →
+            </Button>
+          </div>
+          <p style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '0.5rem', wordBreak: 'break-all' }}>
+            {scopeGrantUrl}
+          </p>
+        </div>
+      )}
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.625rem', marginTop: '1.25rem' }}>
+        <Button variant="secondary" onClick={onSkip} disabled={submitting}>跳过</Button>
+        <Button variant="primary" onClick={handleConfirm} disabled={submitting}>
+          {submitting ? '保存中…' : '完成'}
+        </Button>
+      </div>
+    </div>
+  )
+}

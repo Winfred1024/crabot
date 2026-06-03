@@ -1047,6 +1047,13 @@ export class AdminModule extends ModuleBase {
         return
       }
 
+      // POST /api/model-providers/validate（草稿验证，不入库）
+      // 必须放在 :id/test 路由之前，否则 'validate' 会被当成 provider id
+      if (pathname === '/api/model-providers/validate' && req.method === 'POST') {
+        await this.handleValidateDraftProviderApi(req, res)
+        return
+      }
+
       // POST /api/model-providers/:id/test
       if (pathname.match(/^\/api\/model-providers\/[^/]+\/test$/) && req.method === 'POST') {
         const id = pathname.split('/')[3]
@@ -1787,10 +1794,12 @@ export class AdminModule extends ModuleBase {
           })
           const ownerOpenId = finishResult.env.FEISHU_OWNER_OPEN_ID
           let masterFriendId: FriendId | undefined
+          let masterDisplayName: string | undefined
           let pushSent = false
           if (ownerOpenId && instance?.id) {
             const ensured = await this.ensureMasterForOnboarding(instance.id as ModuleId, ownerOpenId)
             masterFriendId = ensured?.friend_id
+            masterDisplayName = ensured?.display_name
             if (finishResult.scope_grant_url) {
               pushSent = await this.pushOnboardingGuide(
                 instance.id as ModuleId,
@@ -1802,6 +1811,7 @@ export class AdminModule extends ModuleBase {
           return {
             instance,
             ...(masterFriendId ? { master_friend_id: masterFriendId } : {}),
+            ...(masterDisplayName !== undefined ? { master_display_name: masterDisplayName } : {}),
             ...(finishResult.scope_grant_url ? { scope_grant_url: finishResult.scope_grant_url } : {}),
             push_sent: pushSent,
           }
@@ -5148,11 +5158,12 @@ export class AdminModule extends ModuleBase {
   private async ensureMasterForOnboarding(
     channelId: ModuleId,
     ownerOpenId: string,
-  ): Promise<{ friend_id: FriendId; created: boolean } | undefined> {
+  ): Promise<{ friend_id: FriendId; display_name: string; created: boolean } | undefined> {
     try {
       const existing = this.findMasterFriend()
       const now = generateTimestamp()
       if (!existing) {
+        // 无 master：创建一个，display_name 留空。Admin Web onboarding 卡片引导用户填。
         const initialIdentity: ChannelIdentity = {
           channel_id: channelId,
           platform_user_id: ownerOpenId,
@@ -5170,11 +5181,18 @@ export class AdminModule extends ModuleBase {
         this.friends.set(friend.id, friend)
         await this.saveData()
         console.log(`[Admin] onboarding: master friend ${friend.id} 已创建 (channel=${channelId})`)
-        return { friend_id: friend.id, created: true }
+        return { friend_id: friend.id, display_name: friend.display_name, created: true }
       }
-      const merge = mergeMasterChannelIdentity(existing.channel_identities, channelId, ownerOpenId)
+      // 有 master：channel_identity 的 platform_display_name 优先复用 master 现有 display_name
+      // 保持跨渠道一致。无 display_name 时回退到空字符串占位。
+      const merge = mergeMasterChannelIdentity(
+        existing.channel_identities,
+        channelId,
+        ownerOpenId,
+        existing.display_name || undefined,
+      )
       if (!merge.changed) {
-        return { friend_id: existing.id, created: false }
+        return { friend_id: existing.id, display_name: existing.display_name, created: false }
       }
       if (merge.removedIdentity) {
         this.channelIdentityIndex.delete(this.getChannelIdentityKey(merge.removedIdentity))
@@ -5190,7 +5208,7 @@ export class AdminModule extends ModuleBase {
       this.friends.set(updated.id, updated)
       await this.saveData()
       console.log(`[Admin] onboarding: master friend ${updated.id} 已合并新 channel identity (channel=${channelId})`)
-      return { friend_id: updated.id, created: false }
+      return { friend_id: updated.id, display_name: updated.display_name, created: false }
     } catch (err) {
       console.warn(`[Admin] onboarding ensureMaster failed (channel=${channelId}):`, err)
       return undefined
@@ -5450,6 +5468,13 @@ export class AdminModule extends ModuleBase {
   private async handleTestProviderApi(req: IncomingMessage, res: ServerResponse, id: string): Promise<void> {
     const body = await this.readJsonBody<{ model_id?: string }>(req).catch(() => ({} as { model_id?: string }))
     const result = await this.modelProviderManager.testProviderModel(id, body.model_id)
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(result))
+  }
+
+  private async handleValidateDraftProviderApi(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const body = await this.readJsonBody<CreateModelProviderParams>(req)
+    const result = await this.modelProviderManager.validateDraftProvider(body)
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify(result))
   }

@@ -56,18 +56,38 @@ describe('Onboarding auto-master + push integration', () => {
   })
 
   describe('ensureMasterForOnboarding', () => {
-    it('没有 master 时新建 Friend(permission=master) 并写 channel_identity', async () => {
+    it('没有 master 时新建 Friend(permission=master)，display_name 留空待 Admin Web 引导用户填', async () => {
       const a = admin as any
       const r = await a.ensureMasterForOnboarding('feishu-a', 'ou_owner')
       expect(r).toBeTruthy()
       expect(r.created).toBe(true)
+      expect(r.display_name).toBe('')
       const f = a.friends.get(r.friend_id) as Friend
       expect(f.permission).toBe('master')
-      expect(f.display_name).toBe('主人')
+      // display_name 不再默认填"主人"，由 Admin Web onboarding 卡片引导用户填
+      expect(f.display_name).toBe('')
       expect(f.channel_identities).toEqual([
-        { channel_id: 'feishu-a', platform_user_id: 'ou_owner', platform_display_name: '主人' },
+        { channel_id: 'feishu-a', platform_user_id: 'ou_owner', platform_display_name: '' },
       ])
       expect(a.channelIdentityIndex.size).toBe(1)
+    })
+
+    it('已有 master + 同一 channel 跨渠道复用现有 master.display_name 作 platform_display_name', async () => {
+      const a = admin as any
+      a.handleCreateFriend({
+        display_name: '张三',
+        permission: 'master',
+        channel_identities: [
+          { channel_id: 'telegram-a', platform_user_id: 'tg_x', platform_display_name: '张三' },
+        ],
+      })
+      const r = await a.ensureMasterForOnboarding('feishu-a', 'ou_owner')
+      expect(r.created).toBe(false)
+      expect(r.display_name).toBe('张三')
+      const f = a.friends.get(r.friend_id) as Friend
+      // 新 channel_identity 复用现有 master.display_name 而非默认空
+      const feishuIdentity = f.channel_identities.find((ci) => ci.channel_id === 'feishu-a')
+      expect(feishuIdentity?.platform_display_name).toBe('张三')
     })
 
     it('已有 master + 不同 channel 时追加 channel_identity', async () => {
