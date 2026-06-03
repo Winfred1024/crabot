@@ -87,6 +87,56 @@ describe('formatChannelMessageLine', () => {
     expect(out).toContain('filename="report.pdf"')
   })
 
+  it('system_event 类型用 event 属性而非 media 属性，且把 affected_users 的 open_id 暴露给 LLM', () => {
+    const msg = makeMsg({
+      content: {
+        type: 'system_event',
+        text: '已加入：张三、李四',
+        event_type: 'members_added',
+        affected_users: [
+          { platform_user_id: 'ou_a', platform_display_name: '张三' },
+          { platform_user_id: 'ou_b', platform_display_name: '李四' },
+        ],
+      } as never,
+    })
+    const out = formatChannelMessageLine(msg, { timezone: 'UTC', identity: 'master' })
+    expect(out).toContain('event="members_added"')
+    expect(out).not.toContain('media="system_event"')
+    expect(out).toContain('已加入：张三、李四')
+    // 必须把 open_id 渲染出来，否则 agent 拿不到 ID 没法 @
+    expect(out).toContain('[event_affected_users]')
+    expect(out).toContain('张三 (open_id=ou_a)')
+    expect(out).toContain('李四 (open_id=ou_b)')
+  })
+
+  it('system_event 仅一个 affected_user 时也带 open_id 单条渲染', () => {
+    const msg = makeMsg({
+      content: {
+        type: 'system_event',
+        text: '已加入：王五',
+        event_type: 'members_added',
+        affected_users: [{ platform_user_id: 'ou_only', platform_display_name: '王五' }],
+      } as never,
+    })
+    const out = formatChannelMessageLine(msg, { timezone: 'UTC', identity: 'master' })
+    expect(out).toContain('event="members_added"')
+    expect(out).toContain('[event_affected_users] 王五 (open_id=ou_only)')
+  })
+
+  it('system_event 没 affected_users 时回退到 text 不报错', () => {
+    const msg = makeMsg({
+      content: {
+        type: 'system_event',
+        text: '群里发生了变化',
+        event_type: 'members_added',
+      } as never,
+    })
+    const out = formatChannelMessageLine(msg, { timezone: 'UTC', identity: 'master' })
+    expect(out).toContain('event="members_added"')
+    expect(out).toContain('群里发生了变化')
+    expect(out).not.toContain('[event_affected_users]')
+  })
+
   it('is_mention_crab=true 输出 mention="@you"', () => {
     const msg = makeMsg({
       features: { is_mention_crab: true },

@@ -15,9 +15,12 @@ export type { ModuleId, SessionId, MarkdownFormat }
 // Crabot Channel 协议类型
 // ============================================================================
 
-export type MessageType = 'text' | 'image' | 'file'
+export type MessageType = 'text' | 'image' | 'file' | 'system_event'
 export type SessionType = 'private' | 'group'
 export type ChannelFeature = 'mention' | 'quote' | 'reaction' | 'thread'
+
+/** system_event 子类型，见 base-protocol.md §5.4 system_event */
+export type SystemEventType = 'members_added'
 
 export interface MessageContent {
   type: MessageType
@@ -27,6 +30,8 @@ export interface MessageContent {
   filename?: string
   mime_type?: string
   size?: number
+  event_type?: SystemEventType
+  affected_users?: Array<{ platform_user_id: string; platform_display_name: string }>
 }
 
 export interface SessionPermissions {

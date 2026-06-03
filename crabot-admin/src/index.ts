@@ -3393,6 +3393,24 @@ export class AdminModule extends ModuleBase {
       }
     }
 
+    // system_event（如群成员加入）由 channel 模块包装成 ChannelMessage 推过来：
+    // 走 master friend 视角的 publishMessageAuthorized，让 agent dispatcher 按场景画像决定要不要回应。
+    // 见 base-protocol.md §5.4 system_event 和
+    // crabot-docs/superpowers/specs/2026-06-02-channel-system-event-design.md
+    if (message.content.type === 'system_event') {
+      const master = this.findMasterFriend()
+      if (!master) {
+        console.log(`[Admin] ⚠️ system_event dropped (no master claimed): channel=${channelId}, session=${message.session.session_id}`)
+        return
+      }
+      const authorizedMessage: ChannelMessageRef = {
+        ...message,
+        sender: { ...message.sender, friend_id: master.id },
+      }
+      await this.publishMessageAuthorizedEvent(channelId, authorizedMessage, master, crabDisplayName)
+      return
+    }
+
     // 认主类指令在 admin 层完整处理：不放行到 agent，避免 agent 看到指令字面后鹦鹉学舌。
     // 已知 friend 发命令属于无意义/误触，回固定话术；未知发信人按现有 pending 队列流程。
     // 用 normalizeSlash 而非裸 trim：IM/复制粘贴常在 slash 词尾带零宽字符，

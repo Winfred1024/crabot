@@ -486,12 +486,67 @@ export class FeishuChannel extends ModuleBase {
 
   private async handleUsersAdded(data: { chat_id?: string; users?: Array<{ user_id?: { open_id?: string }; name?: string }> }): Promise<void> {
     if (!data.chat_id) return
-    const added = (data.users ?? [])
-      .map((u) => u.user_id?.open_id)
-      .filter((id): id is string => !!id)
-      .map((id) => ({ platform_user_id: id, role: 'member' as const }))
+    const newcomers = (data.users ?? [])
+      .map((u) => ({
+        open_id: u.user_id?.open_id ?? '',
+        name: u.name?.trim() ?? '',
+      }))
+      .filter((u) => u.open_id !== '')
+    const added = newcomers.map((u) => ({ platform_user_id: u.open_id, role: 'member' as const }))
     const updated = this.sessionManager.applyParticipantsAdded(data.chat_id, added)
-    if (updated) await this.publishSessionChanged('participants_changed', updated)
+    if (updated) {
+      await this.publishSessionChanged('participants_changed', updated)
+      // 仅群聊 + 有真正新加入者时，额外推送 system_event message 让 agent 走 dispatcher
+      if (updated.type === 'group' && newcomers.length > 0) {
+        await this.publishMembersAddedSystemEvent(updated, newcomers)
+      }
+    }
+  }
+
+  /**
+   * 把"有新成员进群"包装成 ChannelMessage(type=system_event) 推给 admin。
+   * 见 base-protocol.md §5.4 system_event 和
+   * crabot-docs/superpowers/specs/2026-06-02-channel-system-event-design.md
+   */
+  private async publishMembersAddedSystemEvent(
+    session: Session,
+    newcomers: ReadonlyArray<{ open_id: string; name: string }>,
+  ): Promise<void> {
+    const affected_users = newcomers.map((u) => ({
+      platform_user_id: u.open_id,
+      platform_display_name: u.name || u.open_id,
+    }))
+    const namesText = affected_users.map((u) => u.platform_display_name).join('、')
+    const text = `已加入：${namesText}`
+    const now = generateTimestamp()
+    const channelMessage: ChannelMessage = {
+      platform_message_id: `system:members_added:${session.platform_session_id}:${now}`,
+      session: {
+        session_id: session.id,
+        channel_id: this.config.moduleId,
+        type: 'group',
+      },
+      sender: {
+        platform_user_id: this.botOpenId ?? '',
+        platform_display_name: this.botName ?? '',
+      },
+      content: {
+        type: 'system_event',
+        event_type: 'members_added',
+        affected_users,
+        text,
+      },
+      features: { is_mention_crab: false },
+      platform_timestamp: now,
+    }
+    const event: Event = {
+      id: generateId(),
+      type: 'channel.message_received',
+      source: this.config.moduleId,
+      payload: { channel_id: this.config.moduleId, message: channelMessage },
+      timestamp: now,
+    }
+    await this.rpcClient.publishEvent(event, this.config.moduleId)
   }
 
   private async handleUsersDeleted(data: { chat_id?: string; users?: Array<{ user_id?: { open_id?: string } }> }): Promise<void> {

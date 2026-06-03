@@ -67,10 +67,30 @@ function formatMediaRef(msg: ChannelMessage): string {
 }
 
 /**
+ * system_event 类型的消息渲染：把 affected_users 的 display_name + open_id
+ * 都暴露给 LLM，否则 agent 想 @ 这些人时拿不到 ID。
+ * 形如："已加入：张三 (open_id=ou_a), 李四 (open_id=ou_b)"
+ */
+function formatSystemEvent(msg: ChannelMessage): string {
+  const text = msg.content.text ?? ''
+  const affected = msg.content.affected_users ?? []
+  if (affected.length === 0) return text
+  const listing = affected
+    .map((u) => `${u.platform_display_name} (open_id=${u.platform_user_id})`)
+    .join(', ')
+  // text 是 channel 给的人类可读句子（如 "已加入：张三、李四"），
+  // 在它后面拼一行带 ID 的结构化清单给 LLM 用。
+  return text ? `${text}\n[event_affected_users] ${listing}` : `[event_affected_users] ${listing}`
+}
+
+/**
  * 将消息内容格式化为可读文本。
  * 同时保留文本内容和媒体引用（图片、文件等），两者都有时用换行拼接。
  */
 export function formatMessageContent(msg: ChannelMessage): string {
+  if (msg.content.type === 'system_event') {
+    return formatSystemEvent(msg)
+  }
   const text = msg.content.text ?? ''
   const mediaRef = formatMediaRef(msg)
 

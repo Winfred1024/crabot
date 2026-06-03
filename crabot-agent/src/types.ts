@@ -299,7 +299,10 @@ export interface WorkerRoutingInfo {
 // 消息类型（对齐 base-protocol.md）
 // ============================================================================
 
-export type MessageType = 'text' | 'image' | 'file'
+export type MessageType = 'text' | 'image' | 'file' | 'system_event'
+
+/** 仅 type='system_event' 时使用，见 base-protocol.md §5.4 system_event */
+export type SystemEventType = 'members_added'
 
 export interface MessageContent {
   type: MessageType
@@ -309,6 +312,10 @@ export interface MessageContent {
   filename?: string
   mime_type?: string
   size?: number
+  /** system_event 子类型（type=system_event 时必填） */
+  event_type?: SystemEventType
+  /** 系统事件涉及的用户（如 members_added 的新加入者） */
+  affected_users?: Array<{ platform_user_id: string; platform_display_name: string }>
 }
 
 export interface ChannelMessage {

@@ -639,3 +639,42 @@ master 可以在 IM 输入以 / 开头的指令（slash command），由 admin e
 - /目标列表: master 列出当前渠道所有 active task 的 goal 摘要
 
 清单未来会扩，所有 slash 一律由 engine 处理，你不需要识别或执行。`
+
+/**
+ * dispatcher prompt 注入。hasActiveTasks 控制是否暴露 supplement 路径——
+ * 跟 buildDispatchRules 设计原则一致：activeTasks 为空时 prompt 物理上
+ * 不提 supplement，防止 LLM 凭空编 target_task_id（trace db206eaf 回归约束）。
+ */
+export function buildSystemEventGuidance(hasActiveTasks: boolean): string {
+  const pathOptions = hasActiveTasks
+    ? `  - **完全没规则 → stay_silent。** 不要自作主张推断。
+  - **规则把事件绑到了某个进行中的 task**（如 master 写过"新人入职走 X-入职追踪 task"）→ 走 supplement，target_task_id 必须是上方活跃任务清单里的 task_id
+  - **规则要求开新动作**（如"主动问职责"）→ 走 new_task
+  - 选 supplement / new_task 完全跟着场景画像走，规则没明说就 stay_silent`
+    : `  - **完全没规则 → stay_silent。** 不要自作主张推断。
+  - **规则要求开新动作**（如"主动问职责"）→ 走 new_task`
+
+  return `## 群系统事件（仅群聊）
+
+群里发生的平台事件（如有人加入群）会以一条带 \`event="..."\` 属性的 \`<message>\` 出现，body 里有一行 \`[event_affected_users]\` 把涉及到的人 + open_id 列出来，例如：
+
+  <message ts="..." from="Crabot" identity="me" event="members_added">
+  已加入：张三
+  [event_affected_users] 张三 (open_id=ou_a1b2)
+  </message>
+
+一次事件可能只有 1 人，也可能有多人。两种都按同一套规则处理。
+
+这不是真人发的话——是 Crabot 看到的系统事件。判断步骤：
+
+- **看场景画像（上方"场景画像"段）**：master 是否预先写过"系统事件来了怎么做"之类的规则？
+${pathOptions}
+
+- **动作的 text 里必须带上 [event_affected_users] 行的内容**（含 open_id），让下游 worker 直接拿到平台 ID 去做后续操作。光写名字、不带 ID，worker 拿不到没法精确指向。
+
+- **不要 echo 内部黑话**：
+  - ❌ "members_added 事件触发" / "system_event: ..." / "事件类型 members_added"
+  - ✅ "群里新加入了张三 (open_id=ou_a1b2)，按主人规则处理"
+
+事件类型目前只有 members_added，未来会扩。一切来自 \`event=\` 属性的消息都按本段处理。`
+}

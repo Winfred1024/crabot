@@ -100,9 +100,15 @@ function renderMessageTag(
   attrs.push(`from="${escapeAttr(sender)}"`)
   if (msg.sender.platform_user_id) attrs.push(`from_id="${escapeAttr(msg.sender.platform_user_id)}"`)
   attrs.push(`identity="${identity}"`)
-  if (msg.content.type !== 'text') attrs.push(`media="${msg.content.type}"`)
+  if (msg.content.type !== 'text' && msg.content.type !== 'system_event') {
+    attrs.push(`media="${msg.content.type}"`)
+  }
   if (msg.content.media_url) attrs.push(`media_url="${escapeAttr(msg.content.media_url)}"`)
   if (msg.content.filename) attrs.push(`filename="${escapeAttr(msg.content.filename)}"`)
+  // system_event 单独用 event 属性标记，给 LLM 一眼可识别"这是事件，不是人发的消息"
+  if (msg.content.type === 'system_event' && msg.content.event_type) {
+    attrs.push(`event="${escapeAttr(msg.content.event_type)}"`)
+  }
   if (msg.features.is_mention_crab) attrs.push(`mention="@you"`)
   const mentions = msg.features.mentions
   if (mentions && mentions.length > 0) {

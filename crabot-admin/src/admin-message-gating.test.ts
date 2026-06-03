@@ -257,3 +257,87 @@ describe('Admin group message gating', () => {
     expect(publishSpy).not.toHaveBeenCalled()
   })
 })
+
+function makeSystemEventMessage(): ChannelMessageRef {
+  return {
+    platform_message_id: 'system:members_added:wechat-group-1:t1',
+    session: {
+      session_id: 'group-session-1',
+      channel_id: 'wechat-main',
+      type: 'group',
+    },
+    sender: {
+      platform_user_id: 'ou_bot',
+      platform_display_name: 'Crabot',
+    },
+    content: {
+      type: 'system_event',
+      text: '已加入：张三、李四',
+      // event_type / affected_users 不在 ChannelMessageRef.content 字面声明，
+      // 但 admin handler 看 content.type 判分支，下游 agent 才用结构化字段
+    },
+    features: {
+      is_mention_crab: false,
+    },
+    platform_timestamp: '2026-04-19T00:00:00.000Z',
+  }
+}
+
+describe('Admin system_event routing', () => {
+  it('routes system_event to agent with master friend_id when master is in the group', async () => {
+    const admin = makeAdmin()
+    const master = makeFriend({
+      id: 'friend-master',
+      permission: 'master',
+      channel_identities: [makeIdentity('master-user', 'Master User')],
+    })
+    seedFriend(admin, master)
+    mockGroupSessionLookup(admin, [
+      { platform_user_id: 'master-user', role: 'owner' },
+      { platform_user_id: 'ou_new_a', role: 'member' },
+    ])
+    const publishSpy = vi.spyOn(admin['rpcClient'], 'publishEvent').mockResolvedValue(1)
+
+    await admin['handleChannelMessage']('wechat-main', makeSystemEventMessage())
+
+    expect(publishSpy).toHaveBeenCalledTimes(1)
+    const [event] = publishSpy.mock.calls[0]
+    expect((event as any).type).toBe('channel.message_authorized')
+    expect((event as any).payload.friend.id).toBe(master.id)
+    expect((event as any).payload.friend.permission).toBe('master')
+    expect((event as any).payload.message.sender.friend_id).toBe(master.id)
+    expect((event as any).payload.message.content.type).toBe('system_event')
+  })
+
+  it('drops system_event when master is not in the group', async () => {
+    const admin = makeAdmin()
+    const master = makeFriend({
+      id: 'friend-master',
+      permission: 'master',
+      channel_identities: [makeIdentity('master-user', 'Master User')],
+    })
+    seedFriend(admin, master)
+    mockGroupSessionLookup(admin, [
+      // master 不在 participants 里
+      { platform_user_id: 'ou_new_a', role: 'member' },
+    ])
+    const publishSpy = vi.spyOn(admin['rpcClient'], 'publishEvent').mockResolvedValue(1)
+
+    await admin['handleChannelMessage']('wechat-main', makeSystemEventMessage())
+
+    expect(publishSpy).not.toHaveBeenCalled()
+  })
+
+  it('drops system_event when no master friend exists', async () => {
+    const admin = makeAdmin()
+    // 没 seed master
+    mockGroupSessionLookup(admin, [
+      { platform_user_id: 'ou_new_a', role: 'member' },
+    ])
+    const publishSpy = vi.spyOn(admin['rpcClient'], 'publishEvent').mockResolvedValue(1)
+
+    await admin['handleChannelMessage']('wechat-main', makeSystemEventMessage())
+
+    expect(publishSpy).not.toHaveBeenCalled()
+  })
+})

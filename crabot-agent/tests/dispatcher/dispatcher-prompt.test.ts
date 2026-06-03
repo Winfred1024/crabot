@@ -71,6 +71,8 @@ describe('assembleDispatcherPrompt', () => {
     expect(p).toMatch(/new_task/)
     expect(p).toMatch(/stay_silent/)
     expect(p).toMatch(/没有任何活跃任务/)
+    // SYSTEM_EVENT_GUIDANCE 段也必须按 hasActiveTasks=false 走精简路径，不出 supplement
+    expect(p).toContain('## 群系统事件')
   })
 
   it('非空 activeTasks → prompt 含白名单硬约束提醒（防 LLM 编造 task_id）', () => {
@@ -103,5 +105,36 @@ describe('assembleDispatcherPrompt', () => {
     expect(pGroup).toMatch(/`new_task`/)
     expect(pGroup).toMatch(/`stay_silent`/)
     expect(pGroup).not.toMatch(/`supplement`/)
+  })
+
+  it('群聊场景注入 SYSTEM_EVENT_GUIDANCE，私聊不注入', () => {
+    const pGroup = assembleDispatcherPrompt(ctx({ sessionType: 'group' }))
+    expect(pGroup).toContain('## 群系统事件')
+    expect(pGroup).toContain('event="members_added"')
+    expect(pGroup).toContain('不要 echo 内部黑话')
+    // 指引必须明确 LLM 怎么透传 open_id 给下游 worker
+    expect(pGroup).toContain('[event_affected_users]')
+    expect(pGroup).toContain('open_id')
+
+    const pPrivate = assembleDispatcherPrompt(ctx({ sessionType: 'private' }))
+    expect(pPrivate).not.toContain('## 群系统事件')
+  })
+
+  it('SYSTEM_EVENT_GUIDANCE 把 supplement / new_task / stay_silent 三条路径都呈现给 LLM', () => {
+    // 关键：dispatcher prompt 不能让 LLM 觉得 system_event 只有 new_task 一条路。
+    // 场景画像里 master 可能把事件绑定到进行中的 task（supplement）、要求开新动作（new_task），
+    // 或没写任何规则（stay_silent）。
+    const p = assembleDispatcherPrompt(ctx({ sessionType: 'group', activeTasks: [task('task-A')] }))
+    const sysEventSection = p.slice(p.indexOf('## 群系统事件'))
+    expect(sysEventSection).toMatch(/supplement/)
+    expect(sysEventSection).toMatch(/new_task/)
+    expect(sysEventSection).toMatch(/stay_silent/)
+  })
+
+  it('SYSTEM_EVENT_GUIDANCE 不教 dispatcher 调 send_message 的 mentions 参数（那是 worker 的事）', () => {
+    const p = assembleDispatcherPrompt(ctx({ sessionType: 'group' }))
+    const sysEventSection = p.slice(p.indexOf('## 群系统事件'))
+    expect(sysEventSection).not.toMatch(/mentions/)
+    expect(sysEventSection).not.toMatch(/send_message.*参数/)
   })
 })
