@@ -137,7 +137,7 @@ describe('send_master_private', () => {
         call: vi.fn().mockImplementation(async (port, method, params) => {
           calls.push({ port, method, params })
           if (method === 'find_master_friend') return { friend: master }
-          if (method === 'find_or_create_private_session') return { session_id: 'sess-abc', created: true }
+          if (method === 'find_or_create_private_session') return { session: { id: 'sess-abc' }, created: true }
           if (method === 'send_message') return { platform_message_id: 'mid-1', sent_at: '2026-05-31T03:00:00Z' }
           throw new Error(`unexpected RPC: ${method}`)
         }),
@@ -204,5 +204,53 @@ describe('send_master_private', () => {
 
     expect(payload.error).toMatch(/no identity on channel telegram-001/)
     expect(payload.available_channels).toEqual(['feishu-001'])
+  })
+
+  // 回归：channel.find_or_create_private_session 协议返回 { session: Session, created },
+  // 不是 { session_id, created }。早期实现按 session_id 读，恒为 undefined，
+  // 导致 send_message 拿到 session_id=undefined → channel 抛 "Session not found: undefined"。
+  it('uses session.id from channel response, not non-existent session_id field', async () => {
+    const master = makeMaster([
+      { channel_id: 'feishu-001', platform_user_id: 'ou_x' },
+    ])
+    const calls: Array<{ method: string; params: Record<string, unknown> }> = []
+
+    const tools = buildMessagingTools({
+      rpcClient: {
+        call: vi.fn().mockImplementation(async (_port, method, params) => {
+          calls.push({ method, params: params as Record<string, unknown> })
+          if (method === 'find_master_friend') return { friend: master }
+          if (method === 'find_or_create_private_session') {
+            // 与 channel-host/types.ts:FindOrCreatePrivateSessionResult 一致
+            return { session: { id: 'real-session-uuid' }, created: false }
+          }
+          if (method === 'send_message') return { platform_message_id: 'mid-2', sent_at: '2026-06-03T00:00:00Z' }
+          throw new Error(`unexpected RPC: ${method}`)
+        }),
+      } as never,
+      moduleId: 'worker',
+      getAdminPort: async () => 19001,
+      resolveChannelPort: async () => 19010,
+      getTaskContext: () => ({
+        taskId: 't1',
+        humanQueue: new HumanMessageQueue(),
+        triggerType: 'scheduled',
+        taskType: 'daily_reflection',
+        hasGoal: () => false,
+      }),
+    })
+
+    const tool = findTool(tools, 'send_master_private')!
+    const result = await tool.handler({ content: '一行人话' })
+    const payload = parsePayload(result)
+
+    const sendCall = calls.find(c => c.method === 'send_message')
+    expect(sendCall?.params.session_id).toBe('real-session-uuid')
+    expect(payload).toMatchObject({
+      platform_message_id: 'mid-2',
+      channel_id: 'feishu-001',
+      session_id: 'real-session-uuid',
+    })
+    expect(payload.error).toBeUndefined()
   })
 })

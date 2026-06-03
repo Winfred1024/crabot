@@ -434,10 +434,16 @@ export function buildMessagingTools(
               // 3. 查找或创建私聊 session
               const sessionResult = await rpcClient.call<
                 { platform_user_id: string },
-                { session_id: string; created: boolean }
+                { session: { id: string }; created: boolean }
               >(channelPort, 'find_or_create_private_session', {
                 platform_user_id: identity.platform_user_id,
               }, moduleId)
+
+              const sessionId = sessionResult?.session?.id
+              if (!sessionId) {
+                lastError = `Channel ${identity.channel_id} 返回的 session 缺少 id`
+                continue
+              }
 
               // 4. 发送消息
               const sendResult = await withRetry(async () => {
@@ -445,7 +451,7 @@ export function buildMessagingTools(
                   { session_id: string; content: { type: string; text: string } },
                   { platform_message_id: string; sent_at: string }
                 >(channelPort, 'send_message', {
-                  session_id: sessionResult.session_id,
+                  session_id: sessionId,
                   content: { type: 'text', text: content },
                 }, moduleId)
               })
@@ -453,7 +459,7 @@ export function buildMessagingTools(
               return wrapText({
                 ...sendResult,
                 channel_id: identity.channel_id,
-                session_id: sessionResult.session_id,
+                session_id: sessionId,
               })
             } catch (err) {
               lastError = err instanceof Error ? err.message : String(err)
@@ -534,17 +540,23 @@ export function buildMessagingTools(
           try {
             const sessionResult = await rpcClient.call<
               { platform_user_id: string },
-              { session_id: string; created: boolean }
+              { session: { id: string }; created: boolean }
             >(channelPort, 'find_or_create_private_session', {
               platform_user_id: identity.platform_user_id,
             }, moduleId)
+
+            const sessionId = sessionResult?.session?.id
+            if (!sessionId) {
+              lastError = `Channel ${identity.channel_id} 返回的 session 缺少 id`
+              continue
+            }
 
             const sendResult = await withRetry(async () => {
               return rpcClient.call<
                 { session_id: string; content: { type: string; text: string } },
                 { platform_message_id: string; sent_at: string }
               >(channelPort, 'send_message', {
-                session_id: sessionResult.session_id,
+                session_id: sessionId,
                 content: { type: 'text', text: content },
               }, moduleId)
             })
@@ -552,7 +564,7 @@ export function buildMessagingTools(
             return wrapText({
               ...sendResult,
               channel_id: identity.channel_id,
-              session_id: sessionResult.session_id,
+              session_id: sessionId,
               friend_id: master.id,
             })
           } catch (err) {
