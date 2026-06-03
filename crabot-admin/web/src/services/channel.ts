@@ -124,6 +124,11 @@ export const channelService = {
       master_friend_id?: string
       master_display_name?: string
       scope_grant_url?: string
+      event_subscription?: {
+        url: string
+        events: ReadonlyArray<{ name: string; identifier: string }>
+        extra_instructions?: ReadonlyArray<string>
+      }
       push_sent?: boolean
     }>('/channels/onboard/finish', {
       implementation_id: implementationId,

@@ -17,6 +17,7 @@ import { Loading } from '../../components/Common/Loading'
 import { channelService } from '../../services/channel'
 import { useToast } from '../../contexts/ToastContext'
 import type { ChannelImplementation, ChannelOnboardingMethod, OnboardBeginResult, OnboardPollEvent } from '../../types'
+import { EventSubscriptionCard } from './EventSubscriptionCard'
 
 type Step = 'idle' | 'starting' | 'pending' | 'authorized' | 'creating' | 'claim_master_name' | 'done' | 'error' | 'expired'
 
@@ -26,6 +27,11 @@ interface Status {
   begin?: OnboardBeginResult
   qrSvg?: string
   scopeGrantUrl?: string
+  eventSubscription?: {
+    url: string
+    events: ReadonlyArray<{ name: string; identifier: string }>
+    extra_instructions?: ReadonlyArray<string>
+  }
   pushSent?: boolean
   pendingInstanceId?: string
   pendingInstanceName?: string
@@ -166,6 +172,7 @@ export const NewChannelOnboarding: React.FC = () => {
         masterFriendId: r.master_friend_id,
         masterDisplayName: r.master_display_name ?? '',
         ...(r.scope_grant_url ? { scopeGrantUrl: r.scope_grant_url } : {}),
+        ...(r.event_subscription ? { eventSubscription: r.event_subscription } : {}),
         pushSent: !!r.push_sent,
         pendingInstanceId: instanceId,
         pendingInstanceName: instanceName,
@@ -346,6 +353,7 @@ export const NewChannelOnboarding: React.FC = () => {
             initialDisplayName={status.masterDisplayName ?? ''}
             instanceName={status.pendingInstanceName ?? ''}
             scopeGrantUrl={status.scopeGrantUrl}
+            eventSubscription={status.eventSubscription}
             pushSent={!!status.pushSent}
             onConfirm={handleClaimMasterName}
             onSkip={navigateAfterClaim}
@@ -421,6 +429,11 @@ interface ClaimMasterNameCardProps {
   initialDisplayName: string
   instanceName: string
   scopeGrantUrl?: string
+  eventSubscription?: {
+    url: string
+    events: ReadonlyArray<{ name: string; identifier: string }>
+    extra_instructions?: ReadonlyArray<string>
+  }
   pushSent: boolean
   onConfirm: (displayName: string) => void | Promise<void>
   onSkip: () => void
@@ -430,6 +443,7 @@ const ClaimMasterNameCard: React.FC<ClaimMasterNameCardProps> = ({
   initialDisplayName,
   instanceName,
   scopeGrantUrl,
+  eventSubscription,
   pushSent,
   onConfirm,
   onSkip,
@@ -491,6 +505,14 @@ const ClaimMasterNameCard: React.FC<ClaimMasterNameCardProps> = ({
             {scopeGrantUrl}
           </p>
         </div>
+      )}
+
+      {eventSubscription && (
+        <EventSubscriptionCard
+          url={eventSubscription.url}
+          events={eventSubscription.events}
+          extraInstructions={eventSubscription.extra_instructions}
+        />
       )}
 
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.625rem', marginTop: '1.25rem' }}>
