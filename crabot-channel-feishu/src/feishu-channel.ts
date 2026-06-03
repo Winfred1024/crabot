@@ -70,6 +70,26 @@ import type {
   MentionTarget,
 } from './types.js'
 
+/**
+ * 飞书 Channel 模块需要订阅的事件清单 — single source of truth。
+ *
+ * EventDispatcher 注册和 onboarder finish() 引导都源于此常量。
+ *
+ * 命名约定：identifier 的 `_v1` 后缀是事件标识符本身的一部分，飞书后台 UI 显示的
+ * "v2.0" 标签是 schema 版本，两者独立。这些 identifier 就是当前飞书 v2.0 schema
+ * 下使用的字符串，不需要也不应该改为 `_v2`。
+ */
+export const SUBSCRIBED_EVENTS = [
+  { name: '接收消息',     identifier: 'im.message.receive_v1' },
+  { name: '机器人进群',   identifier: 'im.chat.member.bot.added_v1' },
+  { name: '机器人出群',   identifier: 'im.chat.member.bot.deleted_v1' },
+  { name: '用户进群',     identifier: 'im.chat.member.user.added_v1' },
+  { name: '用户出群',     identifier: 'im.chat.member.user.deleted_v1' },
+  { name: '群信息修改',   identifier: 'im.chat.updated_v1' },
+] as const
+
+export type SubscribedEventIdentifier = typeof SUBSCRIBED_EVENTS[number]['identifier']
+
 const MAX_FILE_SIZE = 30 * 1024 * 1024 // 30MB（飞书附件上限）
 
 export interface FeishuChannelInitConfig {

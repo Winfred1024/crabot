@@ -20,6 +20,7 @@ import type {
   OnboarderFactory,
   OnboarderFinishResult,
 } from 'crabot-shared'
+import { SUBSCRIBED_EVENTS } from './feishu-channel.js'
 
 type Brand = 'feishu' | 'lark'
 
@@ -67,9 +68,9 @@ export const ONBOARD_SCOPES: readonly string[] = [
   //   - minutes 當前 feishu-doc-reader 沒實現妙記讀取，要的話以後單獨申請
 ]
 
-export function buildScopeGrantUrl(appId: string): string {
+export function buildScopeGrantUrl(appId: string, domain: Brand): string {
   const q = ONBOARD_SCOPES.join(',')
-  return `https://open.feishu.cn/app/${appId}/auth?q=${encodeURIComponent(q)}&op_from=openapi&token_type=tenant`
+  return `${OPEN_BY_DOMAIN[domain]}/app/${appId}/auth?q=${encodeURIComponent(q)}&op_from=openapi&token_type=tenant`
 }
 
 const SESSION_TTL_MS = 10 * 60 * 1000
@@ -79,6 +80,27 @@ const GC_INTERVAL_MS = 60 * 1000
 const BASE_BY_DOMAIN: Record<Brand, string> = {
   feishu: 'https://accounts.feishu.cn',
   lark: 'https://accounts.larksuite.com',
+}
+
+const OPEN_BY_DOMAIN: Record<Brand, string> = {
+  feishu: 'https://open.feishu.cn',
+  lark: 'https://open.larksuite.com',
+}
+
+export function buildEventSubscriptionUrl(appId: string, domain: Brand): string {
+  return `${OPEN_BY_DOMAIN[domain]}/app/${appId}/event`
+}
+
+export function buildEventSubscriptionGuide(appId: string, domain: Brand) {
+  return {
+    url: buildEventSubscriptionUrl(appId, domain),
+    events: SUBSCRIBED_EVENTS,
+    extra_instructions: [
+      '飞书扫码后默认只订了「接收消息」事件。我们 Crabot 用到的另外 5 个（机器人进出群 / 用户进出群 / 群信息修改）必须在这里手动添加。',
+      '飞书的 scope 和事件订阅是两件事：scope 决定 API 能调用，事件订阅决定事件会不会推过来，缺一不可。',
+      '添加事件后必须发版才生效：进入「应用发布 → 版本管理与发布」点击右上角「创建版本」并提交。即便测试企业免审场景也要走这一步。',
+    ],
+  }
 }
 
 export class FeishuOnboarder implements Onboarder {
@@ -230,7 +252,8 @@ export class FeishuOnboarder implements Onboarder {
     return {
       env,
       suggested_name: undefined,
-      scope_grant_url: buildScopeGrantUrl(app_id),
+      scope_grant_url: buildScopeGrantUrl(app_id, domain),
+      event_subscription: buildEventSubscriptionGuide(app_id, domain),
     }
   }
 

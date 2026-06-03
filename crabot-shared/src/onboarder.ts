@@ -34,6 +34,19 @@ export interface OnboarderFinishResult {
    * Admin UI 应在创建实例后明显引导用户点击，否则首次 API 调用会因权限缺失报错。
    */
   scope_grant_url?: string
+  /**
+   * OAuth 类 onboarder 完成后，若仍需用户去平台后台手动订阅事件，提供深链 + 事件清单 + 平台特定步骤。
+   * 与 scope_grant_url 关注点不同：scope 决定 API 调用权限，event_subscription 决定哪些事件会被推过来。
+   * Admin UI 应在创建实例后明显引导用户配置，否则相关 channel 事件不会触发。
+   */
+  event_subscription?: {
+    /** 平台事件订阅页直链 */
+    url: string
+    /** 事件清单：中文名 + identifier */
+    events: ReadonlyArray<{ name: string; identifier: string }>
+    /** 平台特定按顺序展示的提示（如飞书的"必须发版"） */
+    extra_instructions?: ReadonlyArray<string>
+  }
 }
 
 export interface Onboarder {

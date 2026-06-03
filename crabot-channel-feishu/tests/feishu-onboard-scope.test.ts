@@ -16,14 +16,20 @@ describe('ONBOARD_SCOPES', () => {
 
 describe('buildScopeGrantUrl', () => {
   it('builds feishu tenant scope grant deep link', () => {
-    const url = buildScopeGrantUrl('cli_abc123')
+    const url = buildScopeGrantUrl('cli_abc123', 'feishu')
     expect(url).toContain('open.feishu.cn/app/cli_abc123/auth')
     expect(url).toContain('token_type=tenant')
     expect(url).toContain('im%3Amessage')
   })
 
+  it('builds lark tenant scope grant deep link (international)', () => {
+    const url = buildScopeGrantUrl('cli_abc123', 'lark')
+    expect(url).toContain('open.larksuite.com/app/cli_abc123/auth')
+    expect(url).toContain('token_type=tenant')
+  })
+
   it('includes all ONBOARD_SCOPES in the url', () => {
-    const url = buildScopeGrantUrl('cli_test')
+    const url = buildScopeGrantUrl('cli_test', 'feishu')
     for (const scope of ONBOARD_SCOPES) {
       expect(url).toContain(encodeURIComponent(scope))
     }
