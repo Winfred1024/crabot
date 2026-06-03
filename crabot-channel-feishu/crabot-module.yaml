@@ -27,39 +27,56 @@ config_schema:
   required:
     - FEISHU_APP_ID
     - FEISHU_APP_SECRET
+  # 扩展约定（Admin Web 用，不影响 channel 模块本身）：
+  #   x-runtime-path: 运行时 get_config / update_config RPC 里嵌套对象的路径
+  #     （env 变量 ↔ 运行时嵌套对象的双向映射）
+  #   readOnly: true → Admin Web 把字段渲染为只读
+  #   schema 里没列出的运行时字段（如 platform / crab_platform_user_id）默认不在
+  #   Admin Web 配置面板渲染——用户压根不应看到 / 编辑。
   properties:
     FEISHU_APP_ID:
       type: string
-      title: App ID
-      description: 飞书应用的 App ID（cli_ 前缀）
+      title: 飞书 App ID
+      description: 扫码时自动填入，无需手动修改
+      readOnly: true
+      x-runtime-path: credentials.app_id
     FEISHU_APP_SECRET:
       type: string
-      title: App Secret
-      description: 飞书应用的 App Secret
+      title: 飞书 App Secret
+      description: 扫码时自动填入；如需重置请重新扫码授权
       format: password
+      readOnly: true
+      x-runtime-path: credentials.app_secret
     FEISHU_DOMAIN:
       type: string
       title: 接入域
       description: feishu = 国内飞书；lark = 国际版 Lark
       enum: ["feishu", "lark"]
+      enum_titles: ["国内飞书 (feishu.cn)", "国际版 Lark (larksuite.com)"]
       default: "feishu"
+      x-runtime-path: credentials.domain
     FEISHU_OWNER_OPEN_ID:
       type: string
-      title: 拥有者 open_id
-      description: 扫码时绑定的飞书账号 open_id，用于默认 allowFrom
+      title: 主人 open_id
+      description: 扫码时绑定的飞书账号 open_id，跨渠道复用主人身份
+      readOnly: true
+      x-runtime-path: credentials.owner_open_id
     FEISHU_ONLY_RESPOND_TO_MENTIONS:
       type: string
       title: 群聊仅响应 @ Crabot
-      description: true 时群聊中只有 @ Crabot 的消息会触发事件
+      description: 启用时群聊里只有 @ Crabot 的消息才会触发事件
       enum: ["true", "false"]
+      enum_titles: ["是", "否"]
       default: "true"
+      x-runtime-path: group.only_respond_to_mentions
     FEISHU_MARKDOWN_FORMAT:
       type: string
-      title: 按 Markdown 格式发送
-      description: bot 给飞书发文本时是否按 Markdown 渲染（启用时改用 interactive 卡片 + markdown 元素）。auto 仅在检测到 markdown 标记时启用
+      title: Markdown 渲染
+      description: bot 给飞书发文本时是否按 Markdown 渲染（启用时改用 interactive 卡片 + markdown 元素）；auto 仅在检测到 markdown 标记时启用
       enum: ["auto", "on", "off"]
-      enum_titles: ["自动", "开启", "关闭"]
+      enum_titles: ["自动", "启用", "关闭"]
       default: "auto"
+      x-runtime-path: markdown_format
 
 author: Crabot Team
 license: MIT

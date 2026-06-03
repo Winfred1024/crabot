@@ -312,6 +312,17 @@ export interface JsonSchemaProperty {
   enum?: (string | number)[]
   /** 与 enum 一一对应的展示文案。比 enum 多 / 少时按位置取值，缺失则显示原始 enum 值 */
   enum_titles?: string[]
+  /** JSON Schema 标准：true 时 Admin Web 把字段渲染为只读 */
+  readOnly?: boolean
+  /**
+   * 扩展字段：运行时 get_config / update_config RPC 里嵌套对象的路径（点分），
+   * env 风格 schema property key ↔ 运行时嵌套对象路径的映射。Admin Web 用它
+   * 在「模块运行中」编辑面板上按 schema 读 / 写嵌套 config。
+   * 不影响 channel 模块自身（onboarding 仍按 env 注入），仅前端用。
+   */
+  'x-runtime-path'?: string
+  /** 扩展字段：true 时 Admin Web 不渲染（保留 schema 内字段的隐藏能力） */
+  'x-ui-hidden'?: boolean
 }
 
 export interface ChannelInstance {

@@ -54,12 +54,14 @@ function SchemaField({ propKey, prop, value, required, onChange }: {
   onChange: (key: string, value: string) => void
 }) {
   const inputType = prop.format === 'password' ? 'password' : 'text'
+  const isReadOnly = prop.readOnly === true
 
   return (
     <div className="form-group" style={{ marginBottom: 0 }}>
       <label style={{ fontSize: '0.8125rem', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '0.375rem', display: 'block' }}>
         {prop.title ?? propKey}
         {required && <span style={{ color: 'var(--error, #ef4444)', marginLeft: '0.25rem' }}>*</span>}
+        {isReadOnly && <span style={{ color: 'var(--text-muted)', marginLeft: '0.375rem', fontSize: '0.7rem', fontWeight: 400 }}>（只读）</span>}
       </label>
       {prop.description && (
         <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '0.375rem', lineHeight: 1.4 }}>
@@ -71,6 +73,7 @@ function SchemaField({ propKey, prop, value, required, onChange }: {
           className="select"
           value={value}
           onChange={(e) => onChange(propKey, e.target.value)}
+          disabled={isReadOnly}
         >
           {!required && <option value="">（未设置）</option>}
           {prop.enum.map((v, i) => {
@@ -87,6 +90,7 @@ function SchemaField({ propKey, prop, value, required, onChange }: {
               type="checkbox"
               checked={value === 'true'}
               onChange={(e) => onChange(propKey, String(e.target.checked))}
+              disabled={isReadOnly}
             />
             <span className="toggle-track" />
           </label>
@@ -101,13 +105,14 @@ function SchemaField({ propKey, prop, value, required, onChange }: {
           value={value}
           onChange={(e) => onChange(propKey, e.target.value)}
           placeholder={prop.default !== undefined ? String(prop.default) : ''}
+          disabled={isReadOnly}
         />
       )}
     </div>
   )
 }
 
-/** 根据 config_schema 渲染一组表单字段 */
+/** 根据 config_schema 渲染一组表单字段。x-ui-hidden=true 的字段不渲染 */
 function SchemaForm({ schema, values, onChange }: {
   schema: JsonSchema
   values: Record<string, string>
@@ -115,7 +120,7 @@ function SchemaForm({ schema, values, onChange }: {
 }) {
   const properties = schema.properties ?? {}
   const requiredSet = new Set(schema.required ?? [])
-  const entries = Object.entries(properties)
+  const entries = Object.entries(properties).filter(([, prop]) => prop['x-ui-hidden'] !== true)
 
   if (entries.length === 0) {
     return <p style={{ fontSize: '0.8125rem', color: 'var(--text-muted)' }}>该模块无配置项</p>
@@ -168,6 +173,52 @@ function setNestedValue(obj: any, path: string, value: any): any {
   }
   current[keys[keys.length - 1]] = value
   return result
+}
+
+function getNestedValue(obj: any, path: string): unknown {
+  return path.split('.').reduce<any>((cur, k) => (cur == null ? cur : cur[k]), obj)
+}
+
+/**
+ * 按 schema 的 x-runtime-path 从嵌套 config 提取 SchemaForm 需要的扁平 values。
+ * 用于「模块运行中」编辑面板：raw RPC 返回的是嵌套对象（credentials.app_id），
+ * SchemaForm 期望的是 schema property key 索引的扁平 map（FEISHU_APP_ID）。
+ */
+function flattenByRuntimePath(
+  config: Record<string, unknown>,
+  schema: JsonSchema,
+): Record<string, string> {
+  const result: Record<string, string> = {}
+  for (const [key, prop] of Object.entries(schema.properties ?? {})) {
+    const path = prop['x-runtime-path']
+    if (!path) continue
+    const v = getNestedValue(config, path)
+    result[key] = v == null ? '' : String(v)
+  }
+  return result
+}
+
+/** 按 x-runtime-path 把扁平 key 的新值写回嵌套 config，返回新对象 */
+function applyRuntimePath(
+  config: Record<string, unknown>,
+  schema: JsonSchema,
+  flatKey: string,
+  newValue: string,
+): Record<string, unknown> {
+  const prop = schema.properties?.[flatKey]
+  const path = prop?.['x-runtime-path']
+  if (!path) return config
+  return setNestedValue(config, path, newValue)
+}
+
+/**
+ * 判断 schema 是否启用了 x-runtime-path 双向映射。只要任一 property 标了，
+ * 就走 schema-driven 渲染；否则 fallback 到旧的 raw object 遍历（兼容存量
+ * 还没加 x-runtime-path 的 channel 模块）。
+ */
+function hasRuntimePathMapping(schema?: JsonSchema): boolean {
+  if (!schema?.properties) return false
+  return Object.values(schema.properties).some((p) => !!p['x-runtime-path'])
 }
 
 // ============================================================================
@@ -688,56 +739,69 @@ export const ChannelConfig: React.FC = () => {
                         <Loading />
                       ) : isRunning && editingConfig ? (
                         <>
-                          {/* 运行时配置：通过 RPC 读取的实时配置 */}
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem 1.5rem' }}>
-                            {Object.entries(editingConfig).map(([key, value]) => {
-                              if (typeof value === 'object' && value !== null) {
-                                // 嵌套对象展开
-                                return Object.entries(value as Record<string, unknown>).map(([subKey, subVal]) => (
-                                  <div key={`${key}.${subKey}`} className="form-group" style={{ marginBottom: 0 }}>
-                                    <label style={{ fontSize: '0.8125rem', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '0.375rem', display: 'block' }}>
-                                      {key}.{subKey}
-                                    </label>
-                                    <input
-                                      className="input"
-                                      type={subKey.includes('secret') || subKey.includes('token') || subKey.includes('password') ? 'password' : 'text'}
-                                      value={String(subVal ?? '')}
-                                      onChange={(e) => {
-                                        if (!editingConfig) return
-                                        setEditingConfig(setNestedValue(editingConfig, `${key}.${subKey}`, e.target.value))
-                                      }}
-                                    />
-                                  </div>
-                                ))
-                              }
-                              return (
-                                <div key={key} className="form-group" style={{ marginBottom: 0 }}>
-                                  <label style={{ fontSize: '0.8125rem', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '0.375rem', display: 'block' }}>
-                                    {key}
-                                  </label>
-                                  {typeof value === 'boolean' ? (
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.625rem' }}>
-                                      <label className="toggle-switch">
-                                        <input
-                                          type="checkbox"
-                                          checked={value}
-                                          onChange={(e) => setEditingConfig(setNestedValue(editingConfig!, key, e.target.checked))}
-                                        />
-                                        <span className="toggle-track" />
+                          {/* 运行时配置：通过 RPC 读取的实时配置。
+                              schema 含 x-runtime-path 映射时走 schema-driven 渲染（中文标题 / 下拉 / 只读 / 隐藏字段）。
+                              否则 fallback 到 raw object 遍历（兼容存量没加 x-runtime-path 的 channel 模块）。 */}
+                          {hasRuntimePathMapping(schema) ? (
+                            <SchemaForm
+                              schema={schema!}
+                              values={flattenByRuntimePath(editingConfig as Record<string, unknown>, schema!)}
+                              onChange={(flatKey, value) => {
+                                if (!editingConfig) return
+                                setEditingConfig(applyRuntimePath(editingConfig as Record<string, unknown>, schema!, flatKey, value) as ChannelConfigType)
+                              }}
+                            />
+                          ) : (
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem 1.5rem' }}>
+                              {Object.entries(editingConfig).map(([key, value]) => {
+                                if (typeof value === 'object' && value !== null) {
+                                  // 嵌套对象展开
+                                  return Object.entries(value as Record<string, unknown>).map(([subKey, subVal]) => (
+                                    <div key={`${key}.${subKey}`} className="form-group" style={{ marginBottom: 0 }}>
+                                      <label style={{ fontSize: '0.8125rem', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '0.375rem', display: 'block' }}>
+                                        {key}.{subKey}
                                       </label>
+                                      <input
+                                        className="input"
+                                        type={subKey.includes('secret') || subKey.includes('token') || subKey.includes('password') ? 'password' : 'text'}
+                                        value={String(subVal ?? '')}
+                                        onChange={(e) => {
+                                          if (!editingConfig) return
+                                          setEditingConfig(setNestedValue(editingConfig, `${key}.${subKey}`, e.target.value))
+                                        }}
+                                      />
                                     </div>
-                                  ) : (
-                                    <input
-                                      className="input"
-                                      type={key.includes('secret') || key.includes('token') || key.includes('password') ? 'password' : 'text'}
-                                      value={String(value ?? '')}
-                                      onChange={(e) => setEditingConfig(setNestedValue(editingConfig!, key, e.target.value))}
-                                    />
-                                  )}
-                                </div>
-                              )
-                            })}
-                          </div>
+                                  ))
+                                }
+                                return (
+                                  <div key={key} className="form-group" style={{ marginBottom: 0 }}>
+                                    <label style={{ fontSize: '0.8125rem', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '0.375rem', display: 'block' }}>
+                                      {key}
+                                    </label>
+                                    {typeof value === 'boolean' ? (
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.625rem' }}>
+                                        <label className="toggle-switch">
+                                          <input
+                                            type="checkbox"
+                                            checked={value}
+                                            onChange={(e) => setEditingConfig(setNestedValue(editingConfig!, key, e.target.checked))}
+                                          />
+                                          <span className="toggle-track" />
+                                        </label>
+                                      </div>
+                                    ) : (
+                                      <input
+                                        className="input"
+                                        type={key.includes('secret') || key.includes('token') || key.includes('password') ? 'password' : 'text'}
+                                        value={String(value ?? '')}
+                                        onChange={(e) => setEditingConfig(setNestedValue(editingConfig!, key, e.target.value))}
+                                      />
+                                    )}
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          )}
                           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.625rem', marginTop: '1.25rem', paddingTop: '1rem', borderTop: '1px solid var(--border)' }}>
                             <Button variant="secondary" onClick={() => setEditingConfig(config)}>重置</Button>
                             <Button variant="primary" onClick={handleSaveRuntimeConfig} disabled={saving}>
