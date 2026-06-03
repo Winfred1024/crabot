@@ -175,6 +175,25 @@ function buildChatProbeRequest(
 }
 
 /**
+ * vendor.vision_id_prefixes 后处理：响应不暴露 vision 字段，但 vendor 声明了
+ * 某些命名族（如 claude- / gpt-）必然支持视觉时，把 supports_vision 强制置 true。
+ * 已经被解析为 true 的模型保留 true，不下调（避免抹掉真实信号）。
+ *
+ * 注意保持 immutability（项目编码约定），返回新对象数组。
+ */
+function applyVendorVisionHints(
+  models: ModelInfo[],
+  visionPrefixes: readonly string[] | undefined
+): ModelInfo[] {
+  if (!visionPrefixes || visionPrefixes.length === 0) return models
+  return models.map(m => {
+    if (m.supports_vision) return m
+    const hit = visionPrefixes.some(prefix => m.model_id.startsWith(prefix))
+    return hit ? { ...m, supports_vision: true } : m
+  })
+}
+
+/**
  * Codex `/models` 响应里只有 `visibility === 'list'` 的 SKU 会出现在 UI；
  * `hide` 用于内部模型（如 codex-auto-review），不应暴露给用户。
  */
@@ -784,16 +803,16 @@ export class ModelProviderManager {
 
       // Codex 订阅后端：{models: [{slug, visibility, input_modalities, ...}]}
       // OpenAI 标准：{data: [{id, ...}]}
-      const models = vendor.format === 'openai-responses' && Array.isArray(data.models)
+      const parsed = vendor.format === 'openai-responses' && Array.isArray(data.models)
         ? parseCodexModels(data.models as unknown[])
         : parseOpenAIModels(Array.isArray(data.data) ? (data.data as unknown[]) : [])
 
       // 拉不到任何模型时，退回默认列表，避免清空导致用户无法选择
-      if (models.length === 0 && vendor.default_models) {
+      if (parsed.length === 0 && vendor.default_models) {
         return [...vendor.default_models]
       }
 
-      return models
+      return applyVendorVisionHints(parsed, vendor.vision_id_prefixes)
     } catch (error) {
       console.error(`Failed to fetch models from ${vendor.name}:`, error)
       return vendor.default_models ? [...vendor.default_models] : []

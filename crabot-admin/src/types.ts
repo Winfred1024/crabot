@@ -1080,6 +1080,12 @@ export interface PresetVendor {
   default_models?: ModelInfo[]
   /** 认证方式：apikey（默认）或 oauth */
   auth_type?: 'apikey' | 'oauth'
+  /**
+   * 模型 id 前缀命中这里任意一项时，导入后自动标记 supports_vision=true。
+   * 用于厂商 /models 响应不暴露 vision 字段、但又能确定某些命名族（如 claude- / gpt-）
+   * 必然支持视觉的场景，避免用户进 detail 抽屉手动开 VLM。
+   */
+  vision_id_prefixes?: string[]
 }
 
 /**
