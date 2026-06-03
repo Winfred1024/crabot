@@ -1,8 +1,29 @@
 # Crabot 项目进度
 
-> 最后更新：2026-05-20 — Phase 5 阶段 3b：Trace 页面优化（StatusBar + CleanupDialogs + 协议同步）
+> 最后更新：2026-06-03 — SceneProfile v0.3.0：删 global + scene 参数权限分级
 
-## 最新里程碑（2026-05-20 — Phase 5 阶段 3b：Trace 页面优化）
+## 最新里程碑（2026-06-03 — SceneProfile v0.3.0：删 global + scene 参数权限分级）
+
+修一个被 trace c829e70b 暴露的产品语义错误 + agent 工具签名 bug：
+
+- 起因：feishu-2 群一条 trace 死循环 22 轮调 `get_scene_profile({type:'global'})`——拿到的「global 画像」实际是另一个群的群规则，agent 反复重试 → 第 23 轮把本群规则又错写进 global slot
+- 根因 1：`SceneIdentity` 的 `global` 分支在产品语义上不成立——跨场景共享应当走 agent 模块的「AI 性格提示词」，不该混进场景画像
+- 根因 2：`scene` 参数在普通对话场景下不应暴露给 LLM——当前场景由 ctx 唯一确定，让 LLM 自己挑 = 给「猜错 scene」开门
+
+改动：
+- **protocol-memory.md**：v0.2.0 → v0.3.0；§"v0.3.0 协议变更" 子节 + §3.27.6 新 SceneProfile 章节（修原断链「详见 protocol-admin §SceneProfile」）
+- **crabot-memory**：`SceneIdentity` 收 2 路；`scene_profile_store.py` 启动时 `DELETE WHERE scene_type='global'; DROP INDEX IF EXISTS ux_global;`；`_parse_scene` 接到 global 抛 ValueError；测试改写 8/8 PASS
+- **crabot-agent**：`MemoryTaskContext` 加 `isMasterPrivate`；`crab-memory.ts` 三个 scene_profile 工具按 ctx 分叉——master 私聊 scene 必填可操作任意场景；其他 ctx scene 字段不暴露，强制 ctx 推断；删 `only_public` 字段；tsc 0 errors
+- **crabot-admin**：URL key 解析去 global 分支；前端 `services/memory.ts` SceneIdentity 收 2 路、`SceneProfileList.tsx` 过滤器去掉「全局」选项；admin 34/34 + web 208/208 PASS
+- **db 迁移**：`data/memory/metadata.db` 备份后 `DELETE FROM scene_profiles WHERE scene_type='global'`（1 行）+ `DROP INDEX ux_global`
+
+spec：[`crabot-docs/superpowers/specs/2026-06-03-scene-profile-global-removal-and-permission.md`](crabot-docs/superpowers/specs/2026-06-03-scene-profile-global-removal-and-permission.md)
+
+**Follow-up（未做）**：agent loop 检测「连续 N 轮同 tool + 同 input」guard，强制注入提示或 end_turn，避免类似死循环再次出现（独立小 spec，不在本里程碑范围）。
+
+---
+
+## 上一里程碑（2026-05-20 — Phase 5 阶段 3b：Trace 页面优化）
 
 Trace 页面四块优化 + 文件拆分：
 - dispatch_call / dispatch_action span 类型补全（agent union + admin web 渲染）

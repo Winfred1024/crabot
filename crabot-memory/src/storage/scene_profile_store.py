@@ -9,7 +9,6 @@ from ..types import (
     SceneIdentity,
     SceneIdentityFriend,
     SceneIdentityGroup,
-    SceneIdentityGlobal,
 )
 
 class SceneProfileStore:
@@ -38,11 +37,19 @@ class SceneProfileStore:
           WHERE scene_type = 'friend';
         CREATE UNIQUE INDEX IF NOT EXISTS ux_group ON scene_profiles(channel_id, session_id)
           WHERE scene_type = 'group_session';
-        CREATE UNIQUE INDEX IF NOT EXISTS ux_global ON scene_profiles(scene_type)
-          WHERE scene_type = 'global';
         """)
         self._migrate_schema()
+        self._migrate_drop_global()
         self.conn.commit()
+
+    def _migrate_drop_global(self) -> None:
+        """v0.3.0 迁移：删除所有 global 行 + drop ux_global 索引（idempotent）。
+
+        global SceneIdentity 在 v0.3.0 移除，跨场景规则由 agent 模块 AI 性格提示词承接。
+        详见 crabot-docs/superpowers/specs/2026-06-03-scene-profile-global-removal-and-permission.md
+        """
+        self.conn.execute("DELETE FROM scene_profiles WHERE scene_type = 'global'")
+        self.conn.execute("DROP INDEX IF EXISTS ux_global")
 
     def _migrate_schema(self) -> None:
         """老库迁移：补 content 列；若发现遗留 NOT NULL 列（sections_json 等），重建表。
@@ -95,8 +102,6 @@ class SceneProfileStore:
           WHERE scene_type = 'friend';
         CREATE UNIQUE INDEX IF NOT EXISTS ux_group ON scene_profiles(channel_id, session_id)
           WHERE scene_type = 'group_session';
-        CREATE UNIQUE INDEX IF NOT EXISTS ux_global ON scene_profiles(scene_type)
-          WHERE scene_type = 'global';
         """)
         self.conn.commit()
 
@@ -118,7 +123,7 @@ class SceneProfileStore:
 
     def list(
         self,
-        scene_type: Optional[Literal["friend", "group_session", "global"]] = None,
+        scene_type: Optional[Literal["friend", "group_session"]] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> List[SceneProfile]:
@@ -229,7 +234,7 @@ class SceneProfileStore:
                 "scene_type = 'group_session' AND channel_id = ? AND session_id = ?",
                 (scene.channel_id, scene.session_id),
             )
-        return "scene_type = 'global'", ()
+        raise ValueError(f"Unknown scene type: {scene.type}")
 
     def _row_to_profile(self, row) -> SceneProfile:
         scene_type = row["scene_type"]
@@ -238,7 +243,7 @@ class SceneProfileStore:
         elif scene_type == "group_session":
             scene = SceneIdentityGroup(channel_id=row["channel_id"], session_id=row["session_id"])
         else:
-            scene = SceneIdentityGlobal()
+            raise ValueError(f"Unknown scene_type in db: {scene_type!r}")
 
         src_json = row["source_memory_ids_json"]
         source_ids = json.loads(src_json) if src_json else None

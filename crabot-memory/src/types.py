@@ -141,7 +141,7 @@ class HealthResult(BaseModel):
 
 
 # ============================================================================
-# 场景画像（SceneProfile）— protocol-memory.md v0.2.0
+# 场景画像（SceneProfile）— protocol-memory.md v0.3.0
 # ============================================================================
 
 
@@ -158,12 +158,7 @@ class SceneIdentityGroup(BaseModel):
     session_id: str
 
 
-class SceneIdentityGlobal(BaseModel):
-    """场景身份：全局（Agent 基础 persona）"""
-    type: Literal["global"] = "global"
-
-
-SceneIdentity = Union[SceneIdentityFriend, SceneIdentityGroup, SceneIdentityGlobal]
+SceneIdentity = Union[SceneIdentityFriend, SceneIdentityGroup]
 
 
 class SceneProfile(BaseModel):

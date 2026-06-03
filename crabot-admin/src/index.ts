@@ -248,7 +248,7 @@ function verifyJwt(token: string, secret: string): JwtPayload | null {
 // ============================================================================
 
 interface SceneIdentity {
-  type: 'friend' | 'group_session' | 'global'
+  type: 'friend' | 'group_session'
   friend_id?: string
   channel_id?: string
   session_id?: string
@@ -256,7 +256,6 @@ interface SceneIdentity {
 
 function parseSceneKey(key: string): SceneIdentity {
   const decoded = decodeURIComponent(key)
-  if (decoded === 'global') return { type: 'global' }
   if (decoded.startsWith('friend:')) {
     const friendId = decoded.slice('friend:'.length)
     if (!friendId) throw new Error(`Invalid friend scene key: ${decoded}`)
@@ -278,7 +277,6 @@ function parseSceneKey(key: string): SceneIdentity {
 }
 
 function defaultSceneProfileLabel(scene: SceneIdentity): string {
-  if (scene.type === 'global') return 'global'
   if (scene.type === 'friend') return `friend:${scene.friend_id}`
   return `group:${scene.channel_id}:${scene.session_id}`
 }

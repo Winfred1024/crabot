@@ -1052,13 +1052,13 @@ export interface TraceCallback {
 }
 
 // ============================================================================
-// 场景画像（SceneProfile）— 对齐 protocol-memory.md v0.2.0
+// 场景画像（SceneProfile）— 对齐 protocol-memory.md v0.3.0
+// 注：v0.3.0 移除 global 分支；跨场景规则走 agent 模块的 AI 性格提示词
 // ============================================================================
 
 export type SceneIdentity =
   | { type: 'friend'; friend_id: string }
   | { type: 'group_session'; channel_id: string; session_id: string }
-  | { type: 'global' }
 
 export interface SceneProfile {
   scene: SceneIdentity

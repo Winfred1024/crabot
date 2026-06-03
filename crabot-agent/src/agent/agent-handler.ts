@@ -873,6 +873,10 @@ export class AgentHandler {
           sourceType: context.task_origin ? 'conversation' : 'system',
           sessionType: context.task_origin?.session_type,
           senderFriendId: context.sender_friend?.id,
+          // v0.3.0：scene_profile 工具仅在 master 私聊暴露 scene 参数（其他场景强制 ctx 推断）
+          isMasterPrivate:
+            context.sender_friend?.permission === 'master'
+            && context.task_origin?.session_type === 'private',
         }
         if (this.deps?.getMemoryPort) {
           const crabMemoryServer = createCrabMemoryServer({

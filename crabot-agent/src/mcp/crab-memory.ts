@@ -39,6 +39,8 @@ export interface MemoryTaskContext {
   /** 场景推断所需：群聊 sessionType='group'；私聊 'private' 需 friendId */
   sessionType?: 'private' | 'group'
   senderFriendId?: string
+  /** master 私聊场景；决定 scene_profile 工具是否暴露 scene 参数（v0.3.0 起） */
+  isMasterPrivate: boolean
 }
 
 function defaultSceneProfileLabel(
@@ -286,6 +288,7 @@ export function createCrabMemoryServer(
     unambiguity: z.number().min(0).max(1),
   })
 
+  // protocol-memory v0.3.0：SceneIdentity 收 2 路（global 已废除）
   const sceneSchema = z.discriminatedUnion('type', [
     z.object({
       type: z.literal('group_session'),
@@ -296,8 +299,31 @@ export function createCrabMemoryServer(
       type: z.literal('friend'),
       friend_id: z.string(),
     }),
-    z.object({ type: z.literal('global') }),
   ])
+
+  type SceneArg =
+    | { type: 'friend'; friend_id: string }
+    | { type: 'group_session'; channel_id: string; session_id: string }
+
+  /** 从当前 ctx 推断场景（普通群聊 / 非 master 私聊使用） */
+  function inferSceneFromCtx(): SceneArg | null {
+    if (ctx.sessionType === 'group' && ctx.channelId && ctx.sessionId) {
+      return { type: 'group_session', channel_id: ctx.channelId, session_id: ctx.sessionId }
+    }
+    if (ctx.sessionType === 'private' && ctx.senderFriendId) {
+      return { type: 'friend', friend_id: ctx.senderFriendId }
+    }
+    return null
+  }
+
+  function cannotInferSceneResp() {
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify({
+        success: false,
+        error: '无法推断当前场景（缺少 channel_id/session_id 或 friend_id）',
+      }) }],
+    }
+  }
 
   server.registerTool(
     'quick_capture',
@@ -433,109 +459,153 @@ export function createCrabMemoryServer(
     async (args) => callRpc('set_evolution_mode', args as Record<string, unknown>),
   )
 
-  server.registerTool(
-    'get_scene_profile',
-    {
-      description: '取场景画像（friend / group_session / global）的当前描述文本。',
-      inputSchema: {
-        scene: sceneSchema,
-        only_public: z.boolean().optional(),
+  // ========================================================================
+  // 场景画像 RPC（v0.3.0 起按 ctx.isMasterPrivate 分叉）
+  //
+  // - master 私聊 ctx：scene 必填，可读/写/删任意场景画像（运维通道）
+  // - 其他 ctx：scene 参数不暴露，强制从 ctx 推断（保证 LLM 不会选错场景）
+  // ========================================================================
+
+  async function setSceneProfileImpl(
+    scene: SceneArg,
+    content: string,
+    sourceMemoryIds: string[] | undefined,
+    explicitLabel: string | undefined,
+  ) {
+    let label = explicitLabel
+    if (!label) {
+      const memoryPort = await getMemoryPort()
+      label = await resolveSceneAnchorLabel({ rpcClient, memoryPort, moduleId, scene })
+    }
+    const now = new Date().toISOString()
+    const memoryPort = await getMemoryPort()
+    const result = await rpcClient.call<
+      Record<string, unknown>,
+      { profile: unknown }
+    >(
+      memoryPort,
+      'upsert_scene_profile',
+      {
+        scene, label, content,
+        ...(sourceMemoryIds ? { source_memory_ids: sourceMemoryIds } : {}),
+        created_at: now, updated_at: now, last_declared_at: now,
       },
-    },
-    async (args) => callRpc('get_scene_profile', args as Record<string, unknown>),
-  )
+      moduleId,
+    )
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify({ success: true, profile: result.profile }) }],
+    }
+  }
 
-  server.registerTool(
-    'set_scene_profile',
-    {
-      description:
-        '写入或覆盖当前场景画像（friend 私聊或 group session）。' +
-        '【关键】这是覆盖式写入，不是 patch——当前场景画像已在你 prompt 顶部，覆盖前请基于现状合并。' +
-        '【场景判定】scene/label 不传时自动从当前 ctx 推断；明确写其他场景或 global 画像才传 scene。' +
-        '【边界】跨多个场景都适用的用户偏好不要写到本工具——走 store_memory。' +
-        '操作类指令（"修改 X 配置 / 调整 Y schedule"）不要写到本工具——走对应 admin/CLI 操作。',
-      inputSchema: {
-        scene: sceneSchema.optional(),
-        label: z.string().optional(),
-        content: z.string().describe('场景画像正文（覆盖式写入）'),
-        source_memory_ids: z.array(z.string()).optional()
-          .describe('来源记忆 ID 列表（追溯用）'),
+  function setSceneProfileErrorResp(error: unknown) {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error(`[${moduleId}] set_scene_profile failed:`, message)
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify({ success: false, error: message }) }],
+    }
+  }
+
+  if (ctx.isMasterPrivate) {
+    // ───── master 私聊：scene 必填，可操作任意场景 ─────
+    server.registerTool(
+      'get_scene_profile',
+      {
+        description: '【master 通道】取任意场景的画像。scene 必填——按 friend_id 或 (channel_id, session_id) 定位。',
+        inputSchema: {
+          scene: sceneSchema,
+        },
       },
-    },
-    async (args) => {
-      try {
-        let scene:
-          | { type: 'friend'; friend_id: string }
-          | { type: 'group_session'; channel_id: string; session_id: string }
-          | { type: 'global' }
-          | undefined = args.scene
+      async (args) => callRpc('get_scene_profile', args as Record<string, unknown>),
+    )
 
-        if (!scene) {
-          // 从 ctx 推断场景
-          if (ctx.sessionType === 'group' && ctx.channelId && ctx.sessionId) {
-            scene = { type: 'group_session', channel_id: ctx.channelId, session_id: ctx.sessionId }
-          } else if (ctx.sessionType === 'private' && ctx.senderFriendId) {
-            scene = { type: 'friend', friend_id: ctx.senderFriendId }
-          }
-          if (!scene) {
-            return {
-              content: [{ type: 'text' as const, text: JSON.stringify({
-                success: false,
-                error: '无法推断场景（缺少 friend_id 或 session_id），需显式传 scene',
-              }) }],
-            }
-          }
-        }
-
-        let label = args.label
-        if (!label) {
-          if (scene.type === 'global') {
-            label = 'global'
-          } else {
-            const memoryPort = await getMemoryPort()
-            label = await resolveSceneAnchorLabel({ rpcClient, memoryPort, moduleId, scene })
-          }
-        }
-
-        const now = new Date().toISOString()
-        const memoryPort = await getMemoryPort()
-        const result = await rpcClient.call<
-          Record<string, unknown>,
-          { profile: unknown }
-        >(
-          memoryPort,
-          'upsert_scene_profile',
-          {
-            scene, label, content: args.content,
-            ...(args.source_memory_ids ? { source_memory_ids: args.source_memory_ids } : {}),
-            created_at: now, updated_at: now, last_declared_at: now,
-          },
-          moduleId,
-        )
-
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ success: true, profile: result.profile }) }],
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        console.error(`[${moduleId}] set_scene_profile failed:`, message)
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ success: false, error: message }) }],
-        }
-      }
-    },
-  )
-
-  server.registerTool(
-    'delete_scene_profile',
-    {
-      description: '删除整条场景画像。仅在画像已被新证据完全推翻、且无替代时使用。',
-      inputSchema: {
-        scene: sceneSchema,
+    server.registerTool(
+      'set_scene_profile',
+      {
+        description:
+          '【master 通道】写入或覆盖任意场景的画像（覆盖式写入，非 patch）。' +
+          'scene 必填——明确指定要写哪个场景（friend / group_session）。' +
+          '【关键】这是覆盖式写入；当前场景的画像已在你 prompt 顶部，覆盖前请基于现状合并。' +
+          '【边界】跨场景通用偏好不要写到本工具——走 store_memory。',
+        inputSchema: {
+          scene: sceneSchema,
+          label: z.string().optional(),
+          content: z.string().describe('场景画像正文（覆盖式写入）'),
+          source_memory_ids: z.array(z.string()).optional()
+            .describe('来源记忆 ID 列表（追溯用）'),
+        },
       },
-    },
-    async (args) => callRpc('delete_scene_profile', args as Record<string, unknown>),
-  )
+      async (args) => {
+        try {
+          return await setSceneProfileImpl(args.scene, args.content, args.source_memory_ids, args.label)
+        } catch (error) {
+          return setSceneProfileErrorResp(error)
+        }
+      },
+    )
+
+    server.registerTool(
+      'delete_scene_profile',
+      {
+        description: '【master 通道】删除任意场景的画像。仅在画像已被新证据完全推翻、且无替代时使用。',
+        inputSchema: {
+          scene: sceneSchema,
+        },
+      },
+      async (args) => callRpc('delete_scene_profile', args as Record<string, unknown>),
+    )
+  } else {
+    // ───── 普通群聊 / 非 master 私聊：scene 不暴露，强制 ctx 推断 ─────
+    server.registerTool(
+      'get_scene_profile',
+      {
+        description: '取当前对话场景的画像（群聊 / 好友各一份）。无需也无法指定场景——当前对话即目标。返回 null 表示当前场景尚无画像。',
+        inputSchema: {},
+      },
+      async () => {
+        const scene = inferSceneFromCtx()
+        if (!scene) return cannotInferSceneResp()
+        return callRpc('get_scene_profile', { scene })
+      },
+    )
+
+    server.registerTool(
+      'set_scene_profile',
+      {
+        description:
+          '写入或覆盖当前对话场景的画像。' +
+          '【关键】这是覆盖式写入，不是 patch——当前场景画像已在你 prompt 顶部，覆盖前请基于现状合并。' +
+          '【边界】跨多个场景都适用的用户偏好不要写到本工具——走 store_memory。' +
+          '操作类指令（"修改 X 配置 / 调整 Y schedule"）不要写到本工具——走对应 admin/CLI 操作。',
+        inputSchema: {
+          content: z.string().describe('场景画像正文（覆盖式写入）'),
+          source_memory_ids: z.array(z.string()).optional()
+            .describe('来源记忆 ID 列表（追溯用）'),
+        },
+      },
+      async (args) => {
+        try {
+          const scene = inferSceneFromCtx()
+          if (!scene) return cannotInferSceneResp()
+          return await setSceneProfileImpl(scene, args.content, args.source_memory_ids, undefined)
+        } catch (error) {
+          return setSceneProfileErrorResp(error)
+        }
+      },
+    )
+
+    server.registerTool(
+      'delete_scene_profile',
+      {
+        description: '清空当前对话场景的画像。仅在画像已被新证据完全推翻、且无替代时使用。',
+        inputSchema: {},
+      },
+      async () => {
+        const scene = inferSceneFromCtx()
+        if (!scene) return cannotInferSceneResp()
+        return callRpc('delete_scene_profile', { scene })
+      },
+    )
+  }
 
   server.registerTool(
     'promote_to_rule',

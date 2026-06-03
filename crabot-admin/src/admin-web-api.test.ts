@@ -439,7 +439,7 @@ describe('Admin Web API', () => {
 
       const callSpy = vi.spyOn(admin['rpcClient'], 'call').mockImplementation(async (_port, method, params) => {
         if (method === 'get_scene_profile') {
-          expect(params).toEqual({ scene: { type: 'global' } })
+          expect(params).toEqual({ scene: { type: 'friend', friend_id: 'friend-empty' } })
           return { profile: null } as any
         }
         throw new Error(`Unexpected RPC method: ${String(method)}`)
@@ -447,10 +447,10 @@ describe('Admin Web API', () => {
 
       const response = await makeWebRequest<{ error: string }>(
         TEST_WEB_PORT,
-        '/api/scene-profiles/global',
+        '/api/scene-profiles/friend%3Afriend-empty',
         'PATCH',
         {
-          label: 'global',
+          label: 'Friend Empty',
           content: '   ',
         },
         token

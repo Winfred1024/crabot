@@ -7,19 +7,17 @@ import { Loading } from '../../components/Common/Loading'
 import { useToast } from '../../contexts/ToastContext'
 import { sceneProfileService, sceneToKey, type SceneProfile } from '../../services/memory'
 
-type FilterType = '' | 'friend' | 'group_session' | 'global'
+type FilterType = '' | 'friend' | 'group_session'
 type GovernanceFilter = 'all' | 'missing-content' | 'missing-source' | 'recent-updated' | 'recent-declared'
 
 const SCENE_TYPE_LABELS: Record<string, string> = {
   friend: '好友',
   group_session: '群聊',
-  global: '全局',
 }
 
 const SCENE_TYPE_COLORS: Record<string, { bg: string; color: string }> = {
   friend: { bg: 'rgba(59, 130, 246, 0.12)', color: '#3b82f6' },
   group_session: { bg: 'rgba(34, 197, 94, 0.12)', color: '#22c55e' },
-  global: { bg: 'rgba(168, 85, 247, 0.12)', color: '#a855f7' },
 }
 
 function isRecent(value?: string | null): boolean {
@@ -121,7 +119,6 @@ export const SceneProfileList: React.FC = () => {
               <option value="">全部</option>
               <option value="friend">好友</option>
               <option value="group_session">群聊</option>
-              <option value="global">全局</option>
             </select>
             <label style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               治理筛选

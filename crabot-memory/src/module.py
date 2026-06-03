@@ -445,14 +445,17 @@ class MemoryModule:
         return {"deleted": deleted}
 
     def _parse_scene(self, raw: Dict[str, Any]) -> SceneIdentity:
-        """将 dict 转为 SceneIdentity 联合类型"""
+        """将 dict 转为 SceneIdentity 联合类型（v0.3.0：global 已废除）"""
         t = raw.get("type")
         if t == "friend":
             return SceneIdentityFriend(friend_id=raw["friend_id"])
         if t == "group_session":
             return SceneIdentityGroup(channel_id=raw["channel_id"], session_id=raw["session_id"])
         if t == "global":
-            return SceneIdentityGlobal()
+            raise ValueError(
+                "Scene type 'global' is no longer supported (removed in protocol-memory v0.3.0); "
+                "use agent_persona config for cross-scene rules"
+            )
         raise ValueError(f"Unknown scene type: {t}")
 
     async def start(self):

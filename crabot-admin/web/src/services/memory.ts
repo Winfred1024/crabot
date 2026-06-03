@@ -4,10 +4,10 @@
 
 import { api } from './api'
 
+// protocol-memory v0.3.0：SceneIdentity 收 2 路（global 已废除）
 export type SceneIdentity =
   | { type: 'friend'; friend_id: string }
   | { type: 'group_session'; channel_id: string; session_id: string }
-  | { type: 'global' }
 
 export interface SceneProfile {
   scene: SceneIdentity
@@ -133,16 +133,12 @@ export const memoryService = {
 }
 
 export function sceneToKey(scene: SceneIdentity): string {
-  if (scene.type === 'global') return 'global'
   if (scene.type === 'friend') return `friend:${scene.friend_id}`
   return `group:${scene.channel_id}:${scene.session_id}`
 }
 
 export function parseSceneKey(key: string): SceneIdentity {
   const decoded = decodeURIComponent(key)
-  if (decoded === 'global') {
-    return { type: 'global' }
-  }
   if (decoded.startsWith('friend:')) {
     const friendId = decoded.slice('friend:'.length)
     if (!friendId) {
@@ -166,14 +162,13 @@ export function parseSceneKey(key: string): SceneIdentity {
 }
 
 export function defaultSceneProfileLabel(scene: SceneIdentity): string {
-  if (scene.type === 'global') return 'global'
   if (scene.type === 'friend') return `friend:${scene.friend_id}`
   return `group:${scene.channel_id}:${scene.session_id}`
 }
 
 export const sceneProfileService = {
   async list(params: {
-    sceneType?: 'friend' | 'group_session' | 'global'
+    sceneType?: 'friend' | 'group_session'
     limit?: number
     offset?: number
     moduleId?: string

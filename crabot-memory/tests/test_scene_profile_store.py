@@ -9,7 +9,6 @@ from src.types import (
     SceneProfile,
     SceneIdentityFriend,
     SceneIdentityGroup,
-    SceneIdentityGlobal,
 )
 
 
@@ -72,24 +71,46 @@ def test_delete(store):
     assert store.get(_sample_group().scene) is None
 
 
-def test_unique_constraint_global(store):
-    g1 = SceneProfile(
-        scene=SceneIdentityGlobal(),
-        label="A",
-        content="A",
-        created_at="2026-04-17T00:00:00Z",
-        updated_at="2026-04-17T00:00:00Z",
+def test_legacy_global_rows_are_dropped_on_startup(tmp_path):
+    """v0.3.0 迁移：老库里 scene_type='global' 行启动时自动清除，ux_global 索引也 drop 掉。"""
+    db_path = tmp_path / "with_global.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE scene_profiles (
+          scene_type             TEXT NOT NULL,
+          friend_id              TEXT,
+          channel_id             TEXT,
+          session_id             TEXT,
+          label                  TEXT NOT NULL,
+          content                TEXT,
+          source_memory_ids_json TEXT,
+          created_at             TEXT NOT NULL,
+          updated_at             TEXT NOT NULL,
+          last_declared_at       TEXT
+        );
+        CREATE UNIQUE INDEX ux_global ON scene_profiles(scene_type)
+          WHERE scene_type = 'global';
+        INSERT INTO scene_profiles
+          (scene_type, label, content, created_at, updated_at)
+          VALUES ('global', 'legacy', '...', '2026-04-17T00:00:00Z', '2026-04-17T00:00:00Z');
+        """
     )
-    g2 = SceneProfile(
-        scene=SceneIdentityGlobal(),
-        label="B",
-        content="B",
-        created_at="2026-04-17T00:00:00Z",
-        updated_at="2026-04-17T00:00:00Z",
-    )
-    store.upsert(g1)
-    store.upsert(g2)
-    assert len(store.list()) == 1 and store.list()[0].label == "B"
+    conn.commit()
+    conn.close()
+
+    store = SceneProfileStore(str(db_path))
+    try:
+        rows = store.conn.execute(
+            "SELECT COUNT(*) FROM scene_profiles WHERE scene_type='global'"
+        ).fetchone()
+        assert rows[0] == 0, "global 行应当被启动迁移删除"
+        idx = store.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='ux_global'"
+        ).fetchone()
+        assert idx is None, "ux_global 索引应当被 drop"
+    finally:
+        store.close()
 
 
 def test_old_schema_db_without_content_column_is_migrated(tmp_path):
