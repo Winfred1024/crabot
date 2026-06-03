@@ -68,7 +68,7 @@ export const ProviderDrawerCreate: React.FC<ProviderDrawerCreateProps> = ({
 
   // 任何配置字段变了，之前的"通过/失败"结果都过期，必须重新跑一次
   const invalidateValidation = () => {
-    setValidation(prev => (prev.status === 'idle' ? prev : { status: 'idle' }))
+    setValidation({ status: 'idle' })
   }
 
   useEffect(() => {
