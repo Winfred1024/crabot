@@ -168,6 +168,26 @@ export const PRESET_VENDORS: readonly PresetVendor[] = [
     docs_url: 'https://openrouter.ai/docs',
     api_key_help_url: 'https://openrouter.ai/keys',
   },
+  // 新数：同一服务同时暴露 OpenAI 和 Anthropic 两种协议，但同一把 key 在后台
+  // 只绑一种协议；用户根据自己 key 的协议类型选其一即可。两个 vendor 共用 /v1/models
+  // 拉取（统一 OpenAI 风格响应），所以填一个 key 就能自动导入模型列表。
+  {
+    id: 'xinshu-openai',
+    name: '新数 (OpenAI 格式)',
+    format: 'openai',
+    endpoint: 'https://mirror.xinshu.ai/v1',
+    models_api: '/models',
+  },
+  {
+    id: 'xinshu-anthropic',
+    name: '新数 (Anthropic 格式)',
+    format: 'anthropic',
+    // endpoint 是裸 host：Anthropic SDK 会自动拼 /v1/messages
+    endpoint: 'https://mirror.xinshu.ai',
+    // 模型列表是 OpenAI 风格的 /v1/models（即使是 Anthropic 协议的 key），
+    // 所以 models_api 自带 /v1 前缀，拼出来仍是 https://mirror.xinshu.ai/v1/models
+    models_api: '/v1/models',
+  },
 ]
 
 export function findPresetVendor(vendorId: string): PresetVendor | undefined {

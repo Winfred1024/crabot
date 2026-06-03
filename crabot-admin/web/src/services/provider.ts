@@ -70,6 +70,21 @@ export const providerService = {
     return api.post(`/model-providers/${id}/test`, modelId ? { model_id: modelId } : {})
   },
 
+  /**
+   * 草稿 provider 实战验证：保存前先校验，失败可以直接看到中转返回的完整错误体，
+   * 不会留下半残的 provider 配置。
+   */
+  async validateDraftProvider(
+    draft: Partial<ModelProvider>
+  ): Promise<{
+    success: boolean
+    latency_ms: number
+    error?: string
+    failed_stage?: 'endpoint' | 'model'
+  }> {
+    return api.post('/model-providers/validate', draft)
+  },
+
   async refreshModels(
     id: string
   ): Promise<{ models: ModelInfo[]; added: string[]; removed: string[] }> {

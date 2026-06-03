@@ -27,6 +27,154 @@ import type {
 import { findPresetVendor } from './preset-vendors.js'
 
 /**
+ * 错误体截断长度。中转/Provider 的 4xx body 经常 >200 字符，截太短看不到根因。
+ * 1000 够覆盖典型 JSON 错误（message + type + param），同时避免日志爆量。
+ */
+const ERROR_BODY_TRUNCATE = 1000
+
+function truncate(text: string): string {
+  if (text.length <= ERROR_BODY_TRUNCATE) return text
+  return `${text.slice(0, ERROR_BODY_TRUNCATE)}…(truncated, ${text.length} chars total)`
+}
+
+/**
+ * 测速时 max_tokens 的兜底值，必须和 agent adapter 的 defaultAnthropicMaxTokens 同步
+ * （anthropic-adapter.ts）。Anthropic SDK 强制要求 max_tokens；中转对该值的支持上限
+ * 是常见失败点（mirror 默认 4096/8192），所以测速要按生产默认值打，不能用 1 蒙混。
+ */
+function defaultAnthropicMaxTokens(model: string): number {
+  const m = model.toLowerCase()
+  if (m.includes('claude-3')) return 8192
+  return 32768
+}
+
+type ProbeRequest =
+  | { ok: true; url: string; headers: Record<string, string>; body: string }
+  | { ok: false; error: string }
+
+/**
+ * 构造测速请求：payload 形态对齐生产 adapter，但用 stream:true 拉首字节。
+ *
+ * 为什么用 stream:true 而不是和生产 complete() 一样的 stream:false：
+ *   生产 anthropic/openai adapter 走非流式 complete()，但"测速"关心的是 TTFT
+ *   ——等完整生成（大 max_tokens 可能几十秒）UX 太差，也让 latency_ms 名实不符。
+ *   stream:true 下 mirror 对 tools / system / 大 max_tokens / payload 体积的
+ *   兼容性问题仍然会暴露（中转对这些字段的校验/拒绝发生在 SSE 解析前），所以测速
+ *   能覆盖 99% 的中转坑；剩 1% 是"non-stream 路径独有的中转 bug"——这种 agent
+ *   一旦发起 complete() 就会立刻炸出来，能感知到，无需测速兜底。
+ *
+ * 各 format payload 形态对齐：
+ *   - anthropic: crabot-agent/src/engine/anthropic-adapter.ts streamOnce()
+ *   - openai:    crabot-agent/src/engine/openai-adapter.ts streamOnce()
+ *   - openai-responses: crabot-agent/src/engine/openai-responses-adapter.ts streamOnce()
+ *
+ * 关键差异点（相对旧测速）：
+ *   1) 带 system / instructions 字段
+ *   2) 带 tools 字段（noop 工具，暴露中转对 tools 的兼容性）
+ *   3) max_tokens 用模型实际配置或 adapter 默认值（不是 1）
+ */
+function buildChatProbeRequest(
+  provider: ModelProvider,
+  model: ModelInfo,
+  authToken: string
+): ProbeRequest {
+  const modelId = model.model_id
+
+  if (provider.format === 'anthropic') {
+    return {
+      ok: true,
+      url: `${provider.endpoint}/v1/messages`,
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': authToken,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: modelId,
+        max_tokens: model.max_tokens ?? defaultAnthropicMaxTokens(modelId),
+        system: 'You are a connectivity probe. Reply with the single word ok.',
+        messages: [{ role: 'user', content: 'ping' }],
+        tools: [
+          {
+            name: 'noop',
+            description: 'Connectivity probe tool — do not call.',
+            input_schema: { type: 'object', properties: {} },
+          },
+        ],
+        stream: true,
+      }),
+    }
+  }
+
+  if (provider.format === 'openai' || provider.format === 'gemini') {
+    // gemini 实际走 OpenAI 兼容端点（见 llm-adapter.ts 的 createAdapter）
+    return {
+      ok: true,
+      url: `${provider.endpoint}/chat/completions`,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${authToken}`,
+      },
+      body: JSON.stringify({
+        model: modelId,
+        ...(model.max_tokens !== undefined ? { max_tokens: model.max_tokens } : {}),
+        messages: [
+          { role: 'system', content: 'You are a connectivity probe. Reply with the single word ok.' },
+          { role: 'user', content: 'ping' },
+        ],
+        stream: true,
+        stream_options: { include_usage: true },
+        tools: [
+          {
+            type: 'function',
+            function: {
+              name: 'noop',
+              description: 'Connectivity probe tool — do not call.',
+              parameters: { type: 'object', properties: {} },
+            },
+          },
+        ],
+      }),
+    }
+  }
+
+  if (provider.format === 'openai-responses') {
+    const isCodexBackend = provider.endpoint.includes('chatgpt.com/backend-api')
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${authToken}`,
+    }
+    if (isCodexBackend && provider.oauth_credential?.account_id) {
+      headers['ChatGPT-Account-Id'] = provider.oauth_credential.account_id
+    }
+    const body: Record<string, unknown> = {
+      model: modelId,
+      instructions: 'You are a connectivity probe. Reply with the single word ok.',
+      input: [{ type: 'message', role: 'user', content: 'ping' }],
+      tools: [],
+      tool_choice: 'auto',
+      parallel_tool_calls: false,
+      store: false,
+      stream: true,
+    }
+    if (isCodexBackend) {
+      body.reasoning = { effort: 'medium', summary: 'auto' }
+      body.include = ['reasoning.encrypted_content']
+    } else if (model.max_tokens !== undefined) {
+      body.max_output_tokens = model.max_tokens
+    }
+    return {
+      ok: true,
+      url: `${provider.endpoint}/responses`,
+      headers,
+      body: JSON.stringify(body),
+    }
+  }
+
+  return { ok: false, error: `Unsupported format: ${(provider as { format: string }).format}` }
+}
+
+/**
  * Codex `/models` 响应里只有 `visibility === 'list'` 的 SKU 会出现在 UI；
  * `hide` 用于内部模型（如 codex-auto-review），不应暴露给用户。
  */
@@ -68,8 +216,19 @@ function parseOpenAIModels(raw: unknown[]): ModelInfo[] {
     if (!modelId) continue
 
     // v3 起 admin 只识别 LLM 模型；embedding 类型已被移除（memory 模块不再需要）。
-    // 列出来的 embedding 模型直接跳过，不再注入到 provider.models。
-    if (modelId.includes('embedding') || modelId.includes('embed')) continue
+    // 列出来的 embedding / image / audio / tts / whisper / moderation 等非 chat 模型直接跳过。
+    // 走 chat completions 调它们会 4xx，不应该混进 provider.models 里。
+    if (
+      modelId.includes('embedding') ||
+      modelId.includes('embed') ||
+      modelId.includes('image') ||
+      modelId.includes('dall-e') ||
+      modelId.includes('whisper') ||
+      modelId.includes('tts') ||
+      modelId.includes('moderation')
+    ) {
+      continue
+    }
 
     const type: ModelType = 'llm'
 
@@ -248,17 +407,82 @@ export class ModelProviderManager {
       if (!model) {
         throw new Error(`Model "${modelId}" not found in provider "${provider.name}"`)
       }
-      return this.measureFirstByteLatency(provider, model.model_id)
+      return this.probeChatRoundtrip(provider, model)
     }
 
     return this.measureEndpointLatency(provider)
   }
 
   /**
+   * 草稿 provider 实战验证：构造一个临时 provider 对象（不入库 Map / 不写盘），
+   * 跑 base_url 探测 + 至少一个 LLM 模型的实战往返。
+   * 用于 Admin Create 表单"保存前先验证"。
+   */
+  async validateDraftProvider(
+    draft: CreateModelProviderParams
+  ): Promise<{ success: boolean; latency_ms: number; error?: string; failed_stage?: 'endpoint' | 'model' }> {
+    const now = generateTimestamp()
+    const tempProvider: ModelProvider = {
+      id: '__draft__',
+      name: draft.name,
+      type: draft.type,
+      format: draft.format,
+      endpoint: draft.endpoint,
+      api_key: draft.api_key,
+      preset_vendor: draft.preset_vendor,
+      ...(draft.auth_type && { auth_type: draft.auth_type }),
+      models: draft.models,
+      status: 'inactive',
+      created_at: now,
+      updated_at: now,
+    }
+
+    // 1) base_url 探测：endpoint 写错 / 鉴权挂掉早死，省得跑第二步浪费时间。
+    // 用本地版避免污染：draft 没入 Map，不应写 provider.status / saveProviders。
+    const endpointResult = await this.probeEndpointConnectivity(tempProvider)
+    if (!endpointResult.success) {
+      return { ...endpointResult, failed_stage: 'endpoint' }
+    }
+
+    // 2) 实战往返：至少一个 LLM 模型必须通。embedding 类型已不在 v3，过滤兜底。
+    const llmModel = draft.models.find(m => m.type === 'llm')
+    if (!llmModel) {
+      // 没填模型不强制（用户可能想先建框架后续 refreshModels），endpoint 通了就放行
+      return { success: true, latency_ms: endpointResult.latency_ms }
+    }
+    const modelResult = await this.probeChatRoundtrip(tempProvider, llmModel)
+    if (!modelResult.success) {
+      return { ...modelResult, failed_stage: 'model' }
+    }
+    return modelResult
+  }
+
+  /**
    * base_url 测速。成功/失败都落到 provider.status —— 列表端点不通 = 整个 provider 不可用，
    * 这个判断对所有模型一致，可作为列表卡片的状态信号。
+   *
+   * 草稿 provider（未入库）请用 probeEndpointConnectivity，不写盘。
    */
   private async measureEndpointLatency(provider: ModelProvider): Promise<{ success: boolean; latency_ms: number; error?: string }> {
+    const result = await this.probeEndpointConnectivity(provider)
+    if (result.success) {
+      provider.status = 'active'
+      provider.last_validated_at = generateTimestamp()
+      provider.validation_error = undefined
+    } else {
+      provider.status = 'error'
+      provider.validation_error = result.error
+    }
+    await this.saveProviders()
+    return result
+  }
+
+  /**
+   * 纯 base_url 探测（不写 provider.status）。给草稿验证和持久化测速共用。
+   */
+  private async probeEndpointConnectivity(
+    provider: ModelProvider
+  ): Promise<{ success: boolean; latency_ms: number; error?: string }> {
     const authToken = await this.resolveAuthToken(provider)
     if (typeof authToken !== 'string') {
       return authToken
@@ -278,133 +502,82 @@ export class ModelProviderManager {
     try {
       const response = await fetch(url, { method: 'GET', headers })
       const latency_ms = Date.now() - startTime
-
       if (!response.ok) {
         const errBody = await response.text().catch(() => '')
-        const errMsg = `HTTP ${response.status}${errBody ? `: ${errBody.slice(0, 200)}` : ''}`
-        provider.status = 'error'
-        provider.validation_error = errMsg
-        await this.saveProviders()
-        return { success: false, latency_ms, error: errMsg }
+        return {
+          success: false,
+          latency_ms,
+          error: `HTTP ${response.status}${errBody ? `: ${truncate(errBody)}` : ''}`,
+        }
       }
-
-      provider.status = 'active'
-      provider.last_validated_at = generateTimestamp()
-      provider.validation_error = undefined
-      await this.saveProviders()
       return { success: true, latency_ms }
     } catch (error) {
-      const latency_ms = Date.now() - startTime
-      const errMsg = error instanceof Error ? error.message : String(error)
-      provider.status = 'error'
-      provider.validation_error = errMsg
-      await this.saveProviders()
-      return { success: false, latency_ms, error: errMsg }
+      return {
+        success: false,
+        latency_ms: Date.now() - startTime,
+        error: error instanceof Error ? error.message : String(error),
+      }
     }
   }
 
   /**
-   * 首字测速（TTFT）。不写 provider.status —— 单个模型 4xx 不应该把整个 provider
-   * 标红（可能只是模型 ID 错或被下线）。是否影响 provider 可用性由 base_url 测速决定。
+   * 实战测速（chat-roundtrip）：TTFT 指标，但 payload 形态对齐生产 adapter。
+   *   - stream:true（拉首字节即返回；详细缘由见 buildChatProbeRequest 文档）
+   *   - 带 system / instructions
+   *   - 带 tools 字段（一个 noop 工具，也能暴露"中转不支持 tools"的失败）
+   *   - max_tokens 用模型实际配置或 adapter 默认（不是 1）
+   *
+   * 不写 provider.status —— 单个模型 4xx 不应把整个 provider 标红。
    */
-  private async measureFirstByteLatency(
+  private async probeChatRoundtrip(
     provider: ModelProvider,
-    modelId: string
+    model: ModelInfo
   ): Promise<{ success: boolean; latency_ms: number; error?: string }> {
     const authToken = await this.resolveAuthToken(provider)
     if (typeof authToken !== 'string') {
       return authToken
     }
 
-    let url: string
-    let headers: Record<string, string>
-    let body: string
-    if (provider.format === 'openai') {
-      url = `${provider.endpoint}/chat/completions`
-      headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` }
-      body = JSON.stringify({
-        model: modelId,
-        messages: [{ role: 'user', content: 'hi' }],
-        max_tokens: 1,
-        stream: true,
-      })
-    } else if (provider.format === 'anthropic') {
-      url = `${provider.endpoint}/v1/messages`
-      headers = {
-        'Content-Type': 'application/json',
-        'x-api-key': authToken,
-        'anthropic-version': '2023-06-01',
-      }
-      body = JSON.stringify({
-        model: modelId,
-        messages: [{ role: 'user', content: 'hi' }],
-        max_tokens: 1,
-        stream: true,
-      })
-    } else if (provider.format === 'gemini') {
-      url = `${provider.endpoint}/models/${modelId}:streamGenerateContent?alt=sse&key=${authToken}`
-      headers = { 'Content-Type': 'application/json' }
-      body = JSON.stringify({
-        contents: [{ parts: [{ text: 'hi' }] }],
-      })
-    } else if (provider.format === 'openai-responses') {
-      // Codex 后端（chatgpt.com/backend-api）协议契约：必填 reasoning + include + ChatGPT-Account-Id
-      const isCodexBackend = provider.endpoint.includes('chatgpt.com/backend-api')
-      url = `${provider.endpoint}/responses`
-      headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` }
-      if (isCodexBackend && provider.oauth_credential?.account_id) {
-        headers['ChatGPT-Account-Id'] = provider.oauth_credential.account_id
-      }
-      const requestBody: Record<string, unknown> = {
-        model: modelId,
-        instructions: '',
-        input: [{ type: 'message', role: 'user', content: 'hi' }],
-        tools: [],
-        tool_choice: 'auto',
-        parallel_tool_calls: false,
-        store: false,
-        stream: true,
-      }
-      if (isCodexBackend) {
-        requestBody.reasoning = { effort: 'medium', summary: 'auto' }
-        requestBody.include = ['reasoning.encrypted_content']
-      }
-      body = JSON.stringify(requestBody)
-    } else {
-      return { success: false, latency_ms: 0, error: `Unsupported format: ${provider.format}` }
+    const probe = buildChatProbeRequest(provider, model, authToken)
+    if (!probe.ok) {
+      return { success: false, latency_ms: 0, error: probe.error }
     }
 
-    const ac = new AbortController()
     const startTime = Date.now()
     try {
-      const response = await fetch(url, { method: 'POST', headers, body, signal: ac.signal })
+      const response = await fetch(probe.url, {
+        method: 'POST',
+        headers: probe.headers,
+        body: probe.body,
+      })
+
       if (!response.ok) {
         const errBody = await response.text().catch(() => '')
         return {
           success: false,
           latency_ms: Date.now() - startTime,
-          error: `HTTP ${response.status}${errBody ? `: ${errBody.slice(0, 200)}` : ''}`,
+          error: `HTTP ${response.status}${errBody ? `: ${truncate(errBody)}` : ''}`,
         }
       }
+
       if (!response.body) {
         return { success: false, latency_ms: Date.now() - startTime, error: 'No response body' }
       }
 
+      // 读到首个非空字节即视为首字到达（TTFT），立刻 cancel 关连接、不再等完整生成。
       const reader = response.body.getReader()
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) {
-          return {
-            success: false,
-            latency_ms: Date.now() - startTime,
-            error: 'Stream ended without any data',
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) {
+            return { success: false, latency_ms: Date.now() - startTime, error: 'Stream ended without any data' }
+          }
+          if (value && value.length > 0) {
+            return { success: true, latency_ms: Date.now() - startTime }
           }
         }
-        if (value && value.length > 0) {
-          const ttft = Date.now() - startTime
-          ac.abort()
-          return { success: true, latency_ms: ttft }
-        }
+      } finally {
+        await reader.cancel().catch(() => {})
       }
     } catch (error) {
       return {

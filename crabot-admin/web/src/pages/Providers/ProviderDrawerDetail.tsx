@@ -165,7 +165,7 @@ export const ProviderDrawerDetail: React.FC<ProviderDrawerDetailProps> = ({
             <span className="model-table-col-type">类型</span>
             <span
               className="model-table-col-test"
-              title="首字测速：流式调用模型，记录从发请求到第一个 chunk 到达的时间（TTFT）"
+              title="实战测速：和 Agent/Memory 实际调用一致的 payload 形态（带 system + tools + 真实 max_tokens）+ stream 拉首字节，能复现「中转不吃 tools / 大 max_tokens」等典型坑"
             >
               首字
             </span>
@@ -195,13 +195,14 @@ export const ProviderDrawerDetail: React.FC<ProviderDrawerDetailProps> = ({
                 <span className="model-table-col-test">
                   <ProviderTestBadge
                     result={testResult}
-                    successTooltip="TTFT：从发请求到第一个 chunk 到达的耗时（含 reasoning 模型的思考时长）"
+                    successTooltip="首字到达耗时（TTFT）。payload 形态对齐生产 adapter（system + tools + 真实 max_tokens），中转兼容性问题在这里就会暴露"
+                    showErrorText
                     idleButton={
                       <button
                         className="btn btn-secondary"
                         style={{ padding: '0.15rem 0.5rem', fontSize: '0.75rem' }}
                         onClick={() => handleTestModel(model.model_id)}
-                        title="流式调用模型，测首字到达时间"
+                        title="按生产 adapter 的 payload 形态打一次 stream，记录首字到达时间"
                       >
                         首字测速
                       </button>

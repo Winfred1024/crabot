@@ -55,6 +55,21 @@ export const ProviderDrawerCreate: React.FC<ProviderDrawerCreateProps> = ({
   const [endpoint, setEndpoint] = useState('')
   const [manualApiKey, setManualApiKey] = useState('')
   const [llmText, setLlmText] = useState('')
+  /**
+   * 实战验证结果。pending=正在打实战请求；error=验证失败（show 完整错误体，禁止创建）；
+   * success=验证通过，可以保存。
+   */
+  const [validation, setValidation] = useState<
+    | { status: 'idle' }
+    | { status: 'pending' }
+    | { status: 'error'; error: string; failedStage?: 'endpoint' | 'model'; latency_ms: number }
+    | { status: 'success'; latency_ms: number }
+  >({ status: 'idle' })
+
+  // 任何配置字段变了，之前的"通过/失败"结果都过期，必须重新跑一次
+  const invalidateValidation = () => {
+    setValidation(prev => (prev.status === 'idle' ? prev : { status: 'idle' }))
+  }
 
   useEffect(() => {
     providerService.listPresetVendors().then(r => setVendors(r.items)).catch(() => {})
@@ -223,20 +238,42 @@ export const ProviderDrawerCreate: React.FC<ProviderDrawerCreateProps> = ({
       type: 'llm' as const,
     }))
 
+    const draft = {
+      name,
+      type: 'manual' as const,
+      format,
+      endpoint,
+      api_key: manualApiKey,
+      models,
+    }
+
+    // 实战验证：保存前用和生产 adapter 一样的请求形态打一次，确保 endpoint+key+model
+    // 真的通。失败时把中转返回的完整错误暴露出来，让用户当场看到根因，避免出现
+    // "测速通了但实际调用 4xx" 的鬼故事。
+    setValidation({ status: 'pending' })
+    setSaving(true)
     try {
-      setSaving(true)
-      const result = await providerService.createProvider({
-        name,
-        type: 'manual',
-        format,
-        endpoint,
-        api_key: manualApiKey,
-        models,
-      })
+      const validateResult = await providerService.validateDraftProvider(draft)
+      if (!validateResult.success) {
+        setValidation({
+          status: 'error',
+          error: validateResult.error ?? '验证失败（未返回错误信息）',
+          ...(validateResult.failed_stage ? { failedStage: validateResult.failed_stage } : {}),
+          latency_ms: validateResult.latency_ms,
+        })
+        return
+      }
+      setValidation({ status: 'success', latency_ms: validateResult.latency_ms })
+
+      const result = await providerService.createProvider(draft)
       toast.success('创建成功')
       onCreated(result.id)
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : '创建失败')
+      setValidation({
+        status: 'error',
+        error: err instanceof Error ? err.message : '验证或创建失败',
+        latency_ms: 0,
+      })
     } finally {
       setSaving(false)
     }
@@ -503,7 +540,7 @@ export const ProviderDrawerCreate: React.FC<ProviderDrawerCreateProps> = ({
         </form>
       ) : (
         <form onSubmit={handleManualSubmit}>
-          <Input label="名称" placeholder="例如: My OpenAI" value={name} onChange={e => setName(e.target.value)} required />
+          <Input label="名称" placeholder="例如: My OpenAI" value={name} onChange={e => { setName(e.target.value); invalidateValidation() }} required />
 
           <Select
             label="API 格式"
@@ -513,12 +550,12 @@ export const ProviderDrawerCreate: React.FC<ProviderDrawerCreateProps> = ({
               { value: 'gemini', label: 'Gemini' },
             ]}
             value={format}
-            onChange={e => setFormat(e.target.value as ApiFormat)}
+            onChange={e => { setFormat(e.target.value as ApiFormat); invalidateValidation() }}
           />
 
-          <Input label="端点" placeholder="例如: https://api.openai.com/v1" value={endpoint} onChange={e => setEndpoint(e.target.value)} required />
+          <Input label="端点" placeholder="例如: https://api.openai.com/v1" value={endpoint} onChange={e => { setEndpoint(e.target.value); invalidateValidation() }} required />
 
-          <Input type="password" label="API Key" placeholder="输入 API Key" value={manualApiKey} onChange={e => setManualApiKey(e.target.value)} required />
+          <Input type="password" label="API Key" placeholder="输入 API Key" value={manualApiKey} onChange={e => { setManualApiKey(e.target.value); invalidateValidation() }} required />
 
           <div className="form-group">
             <label className="form-label">LLM 模型（每行一个）</label>
@@ -526,14 +563,68 @@ export const ProviderDrawerCreate: React.FC<ProviderDrawerCreateProps> = ({
               className="textarea"
               placeholder={"gpt-4o\ngpt-4o-mini"}
               value={llmText}
-              onChange={e => setLlmText(e.target.value)}
+              onChange={e => { setLlmText(e.target.value); invalidateValidation() }}
               rows={4}
             />
           </div>
 
-          <Button type="submit" variant="primary" disabled={saving || !name || !endpoint || !manualApiKey}
-            style={{ width: '100%', marginTop: '0.5rem' }}>
-            {saving ? '创建中...' : '创建'}
+          {validation.status === 'error' && (
+            <div
+              style={{
+                background: 'var(--surface-2, #1a1a1d)',
+                border: '1px solid var(--danger, #c0392b)',
+                borderRadius: '4px',
+                padding: '0.75rem',
+                fontSize: '0.8rem',
+                color: 'var(--danger, #c0392b)',
+                marginTop: '0.5rem',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                fontFamily: 'monospace',
+                lineHeight: 1.5,
+              }}
+            >
+              <div style={{ fontWeight: 600, marginBottom: '0.35rem' }}>
+                实战测速失败
+                {validation.failedStage === 'endpoint'
+                  ? '（base_url 不通）'
+                  : validation.failedStage === 'model'
+                    ? '（模型调用 4xx/5xx）'
+                    : ''}
+                {validation.latency_ms > 0 ? ` · ${validation.latency_ms}ms` : ''}
+              </div>
+              <div>{validation.error}</div>
+            </div>
+          )}
+          {validation.status === 'success' && (
+            <div
+              style={{
+                background: 'var(--surface-2, #1a1a1d)',
+                border: '1px solid var(--success, #27ae60)',
+                borderRadius: '4px',
+                padding: '0.5rem 0.75rem',
+                fontSize: '0.8rem',
+                color: 'var(--success, #27ae60)',
+                marginTop: '0.5rem',
+              }}
+            >
+              ✓ 实战测速通过 · {validation.latency_ms}ms
+            </div>
+          )}
+
+          <Button
+            type="submit"
+            variant="primary"
+            disabled={saving || !name || !endpoint || !manualApiKey}
+            style={{ width: '100%', marginTop: '0.5rem' }}
+          >
+            {validation.status === 'pending'
+              ? '实战测速中...'
+              : saving
+                ? '创建中...'
+                : validation.status === 'error'
+                  ? '修正后重试'
+                  : '验证并创建'}
           </Button>
         </form>
       )}
