@@ -138,10 +138,6 @@ export interface AgentLayerConfig {
   timezone?: string
   /** Subagent 列表（Phase 5），由 admin 推过来 */
   subagents?: SubAgentConfig[]
-  /** Front 升格 Worker 的超时秒数；缺省 30 */
-  timeout_seconds?: number
-  /** 超时辅助提醒开关；缺省 true */
-  overdue_reminder_enabled?: boolean
 }
 
 export interface UnifiedAgentConfig {
@@ -532,8 +528,6 @@ export interface WorkerAgentContext {
   resolved_permissions?: ResolvedPermissions
   /** 当前场景画像，由 Memory 模块直接返回并映射为运行时格式 */
   scene_profile?: RuntimeSceneProfile
-  /** Front Agent 已发送给用户的即时回复（避免 Worker 重复确认） */
-  front_immediate_reply?: string
 }
 
 export interface TaskOrigin {
@@ -778,7 +772,6 @@ export interface SupplementTaskDecision {
   type: 'supplement_task'
   task_id: TaskId
   supplement_content: string
-  immediate_reply?: MessageContent
   /** 用户对当前 supplement 的 task 的否定程度（仅 fail/strong_fail；补充而非纠偏时不填） */
   user_attitude?: UserAttitudeNegOnly
 }
@@ -802,10 +795,6 @@ export interface UpdateConfigParams {
   extra?: Record<string, unknown>
   /** Phase 5: 更新的 Subagent 列表 */
   subagents?: SubAgentConfig[]
-  /** Phase 5: 更新的超时秒数 */
-  timeout_seconds?: number
-  /** Phase 5: 更新的超时辅助提醒开关 */
-  overdue_reminder_enabled?: boolean
 }
 
 export interface UpdateConfigResult {

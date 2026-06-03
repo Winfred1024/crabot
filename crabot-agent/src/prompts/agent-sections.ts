@@ -52,10 +52,7 @@ message 都来自系统（不是直接来自人类），系统会修改、调整
 - 人类的原话（最新触发消息，系统转述）
 - 上下文注入（聊天历史、活跃任务列表、场景画像等）
 - 系统自身的引导信号：
-  - 超期辅助提醒——默认 30s 后注入一次，让你先 send_message 告知
-    "正在处理" + 简要说明打算怎么干。这不是完成信号，send_message
-    后必须继续执行主工作流，不要 end_turn
-  - 任务结束反思要求——复杂任务（超期任务）end_turn 后注入一次，
+  - 任务结束反思要求——复杂任务（步数较多且未主动写记忆）end_turn 后注入一次，
     要求你输出结构化反思（outcome_brief + process_highlights）
   - bg entity 退出通知——下次任意 task 启动时，prompt 头部出现
     \`<bg-notification>\` 块告知
@@ -132,18 +129,10 @@ export const WORKFLOW_PRIVATE = `## 工作流
 
   最终 send_message(intent="info", 报告结果) → end_turn ✔
 
-[超期辅助（可关闭）]
-  从 trigger 落地起算超过 timeout（默认 30s，可配置）、
-  且本 loop 内未调用过 send_message、且超期辅助未关闭
-  → 系统注入一次 user message 提醒，让你先 send_message 告知
-     "正在处理" + 简要说明打算怎么干，发完继续执行
-  → 仅注入一次
-
 [end_turn 后反思（仅复杂任务）]
-  若本任务超期（身份已转 worker） → 系统加轮要求结构化反思
-  （outcome_brief + process_highlights，进长期记忆）。
-  期限内完成的简单任务直接结束，不反思。
-  supplement_task 早期退出不反思。`
+  若本任务工具调用步数较多（≥阈值）且未主动 store_memory / set_scene_profile
+  → 系统加轮要求结构化反思（outcome_brief + process_highlights，进长期记忆）。
+  步数少 / 已主动写记忆 / supplement_task 早期退出 → 直接结束，不反思。`
 
 export const SEND_MESSAGE_SPEC = `## send_message 工具使用规范
 
@@ -572,7 +561,7 @@ export const WORKFLOW_GROUP = `## 工作流
 
   3. 与我相关且不是 supplement → 进入主工作流
 
-[主工作流 / 超期辅助 / 反思] —— 与私聊一致`
+[主工作流 / 反思] —— 与私聊一致`
 
 export const GOAL_MODE_GUIDANCE = `## 任务复杂度判断
 
@@ -675,6 +664,8 @@ ${pathOptions}
 - **不要 echo 内部黑话**：
   - ❌ "members_added 事件触发" / "system_event: ..." / "事件类型 members_added"
   - ✅ "群里新加入了张三 (open_id=ou_a1b2)，按主人规则处理"
+
+- **immediate_reply 默认不带**：system_event 触发的 new_task 多数情况下不该带 immediate_reply——直接走 worker 主流程处理（如问职责、回欢迎语）更自然，预回复会显得"先 ack 一句再做"啰嗦。除非场景画像明确要求。
 
 事件类型目前只有 members_added，未来会扩。一切来自 \`event=\` 属性的消息都按本段处理。`
 }

@@ -27,7 +27,22 @@ export interface DispatchTraceCallback {
 /** Dispatcher 输出的单个动作。LLM 通过 structured output 约束格式。 */
 export type DispatchAction =
   | { readonly kind: 'supplement'; readonly target_task_id: string; readonly text: string }
-  | { readonly kind: 'new_task'; readonly text: string }
+  | {
+      readonly kind: 'new_task'
+      readonly text: string
+      /**
+       * 可选预回复：dispatcher 判断任务复杂时给出。executor 在 spawnAgentInstance
+       * 之前 await 一次 channel.send_message 发出去；失败则降级为直接 spawn worker。
+       * worker 启动后通过 channel get_history 看到聊天历史里"crab"身份刚发过的这条 ack，
+       * 自然不会重复 ack。
+       *
+       * 不带 immediate_reply 的 new_task 表示 dispatcher 判断这是 1-2 步能答完的简单任务，
+       * worker 一轮回完就行，不需要预回复。
+       *
+       * Spec: crabot-docs/superpowers/specs/2026-06-03-dispatcher-immediate-reply-and-overdue-removal-design.md
+       */
+      readonly immediate_reply?: string
+    }
   | { readonly kind: 'stay_silent'; readonly reason?: string }
 
 /** Dispatcher 调用上下文。 */
@@ -70,6 +85,14 @@ export interface ExecuteContext {
   readonly spawnAgentInstance: (text: string) => Promise<{ readonly spawnedTraceId: string }>
   /** channel send 回调：dispatcher 失败兜底走这条向人类报错。 */
   readonly sendErrorToUser: (errorText: string) => Promise<void>
+  /**
+   * 预回复回调（仅 new_task 携带 immediate_reply 时由 executor 调用一次）。
+   * 闭包封装 channel.send_message RPC，把 dispatcher 给的简短 ack 发给当前会话。
+   * 不注入或抛错都不阻塞后续 spawnAgentInstance。
+   *
+   * Spec: 2026-06-03-dispatcher-immediate-reply-and-overdue-removal-design.md
+   */
+  readonly sendImmediateReply?: (text: string) => Promise<void>
   /** trace 写入回调（可选）。注入后 executeDispatchActions 为每个 action 写 dispatch_action span。 */
   readonly trace?: DispatchTraceCallback
 }

@@ -489,8 +489,6 @@ export class AgentManager {
       ...(params.tools_readonly !== undefined && { tools_readonly: params.tools_readonly }),
       ...(params.timezone !== undefined && { timezone: params.timezone }),
       ...(params.extra !== undefined && { extra: params.extra }),
-      ...(params.timeout_seconds !== undefined && { timeout_seconds: params.timeout_seconds }),
-      ...(params.overdue_reminder_enabled !== undefined && { overdue_reminder_enabled: params.overdue_reminder_enabled }),
     }
 
     this.configs.set(params.instance_id, updated)

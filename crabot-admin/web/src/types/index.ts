@@ -226,10 +226,6 @@ export interface AgentInstanceConfig {
   tools_readonly?: boolean
   timezone?: string
   extra?: Record<string, unknown>
-  /** Front 升格超时（秒）；默认 30；超过此时长后 agent 自动注入超时辅助提醒 */
-  timeout_seconds?: number
-  /** 是否启用超时辅助提醒；默认 true */
-  overdue_reminder_enabled?: boolean
 }
 
 // ============================================================================

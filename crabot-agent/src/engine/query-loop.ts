@@ -86,18 +86,15 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
   // 由上一轮追问设置、下一轮 onTurn 消费一次后清零。
   let pendingForcedSummaryAttempt: number | undefined = undefined
 
-  // 超期机制：在 turn 结束时检测 elapsed，至多注入一次。
-  const overdueConfig = options.overdueConfig
-  const engineStartedAtMs = overdueConfig?.startedAtMs ?? Date.now()
-  let overdueInjected = false
+  // skipReflection 判定信号（spec 2026-06-03 §7.2.1）：
+  // - tool_call_count: 每 turn 处理后累加 toolUseBlocks.length
+  // - wrote_memory_or_scene: worker 调用过 store_memory 或 set_scene_profile 任一即置 true
+  let toolCallCount = 0
+  let wroteMemoryOrScene = false
+  const REFLECTION_TRIGGER_TOOLS = new Set(['store_memory', 'set_scene_profile'])
 
   // 早退工具：调用后 engine 立刻退出 loop
   let exitToolCall: { name: string; input: Record<string, unknown> } | undefined = undefined
-
-  function shouldInjectOverdue(): boolean {
-    if (!overdueConfig || overdueInjected) return false
-    return Date.now() - engineStartedAtMs > overdueConfig.timeoutMs
-  }
 
   const workingDirectory = getWorkspaceDir()
   const hooks: HookConfig | undefined = options.hookRegistry ? {
@@ -116,7 +113,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
   for (let turn = 0; turn < maxTurns; turn++) {
     // Check abort before starting a turn
     if (abortSignal?.aborted) {
-      return buildResult('aborted', finalText, totalTurns, contextManager, messages, overdueInjected, exitToolCall)
+      return buildResult('aborted', finalText, totalTurns, contextManager, messages, exitToolCall, toolCallCount, wroteMemoryOrScene)
     }
 
     // Check if context compaction is needed
@@ -170,10 +167,10 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
       llmCallMs = Date.now() - llmStartedAtMs
     } catch (error) {
       if (abortSignal?.aborted) {
-        return buildResult('aborted', finalText, totalTurns, contextManager, messages, overdueInjected, exitToolCall)
+        return buildResult('aborted', finalText, totalTurns, contextManager, messages, exitToolCall, toolCallCount, wroteMemoryOrScene)
       }
       console.error('[query-loop] LLM call threw:', error)
-      return buildResult('failed', finalText, totalTurns, contextManager, messages, overdueInjected, exitToolCall, formatError(error))
+      return buildResult('failed', finalText, totalTurns, contextManager, messages, exitToolCall, toolCallCount, wroteMemoryOrScene, formatError(error))
     }
 
     const processed = partitionResponseContent(response.content)
@@ -201,6 +198,17 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
     const assistantMessage = createAssistantMessage(contentBlocks, stopReason, response.usage)
     messages.push(assistantMessage)
 
+    // skipReflection 信号累加（spec 2026-06-03 §7.2.1）
+    toolCallCount += processed.toolUseBlocks.length
+    if (!wroteMemoryOrScene) {
+      for (const block of processed.toolUseBlocks) {
+        if (REFLECTION_TRIGGER_TOOLS.has(block.name)) {
+          wroteMemoryOrScene = true
+          break
+        }
+      }
+    }
+
     const forcedSummaryAttempt = pendingForcedSummaryAttempt
     pendingForcedSummaryAttempt = undefined
 
@@ -222,25 +230,6 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
           })
         }
         continue
-      }
-
-      // 超期注入（end_turn 路径）：若已超过 timeout 且尚未注入过，调 onOverdue 询问。
-      // 顺序：supplement 优先于 overdue（真实人类纠偏比系统提醒重要）。
-      if (shouldInjectOverdue()) {
-        // overdueConfig 非空（shouldInjectOverdue 已校验）
-        const text = overdueConfig!.onOverdue()
-        overdueInjected = true
-        if (text !== null) {
-          messages.push(createUserMessage(text))
-          options.onSystemInjection?.({
-            type: 'overdue_reminder',
-            text,
-            turnNumber: totalTurns,
-            injectedAtMs: Date.now(),
-          })
-          continue
-        }
-        // text === null：caller 主动跳过（如已 send_message）；不注入，进入正常收口路径
       }
 
       // --- Stop hook ---
@@ -280,7 +269,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
         }
         // 配额耗尽（或 subagent 禁用了 compact）：input 已被压过两次仍 max_tokens，
         // 再走 forced-summary 会让 input 更大；此时只能诚实返回空 finalText。
-        return buildResult('completed', finalText, totalTurns, contextManager, messages, overdueInjected, exitToolCall)
+        return buildResult('completed', finalText, totalTurns, contextManager, messages, exitToolCall, toolCallCount, wroteMemoryOrScene)
       }
 
       // 真静默 end_turn：早 return 路径不 fire onTurn，这里先补 fire 让 trace 看到这一轮。
@@ -303,7 +292,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
             continue
           }
         }
-        return buildResult('completed', finalText, totalTurns, contextManager, messages, overdueInjected, exitToolCall)
+        return buildResult('completed', finalText, totalTurns, contextManager, messages, exitToolCall, toolCallCount, wroteMemoryOrScene)
       }
       if (isSilentText && silentEndTurnCount < MAX_SILENT_END_TURN_RETRIES) {
         silentEndTurnCount++
@@ -339,7 +328,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
           continue
         }
       }
-      return buildResult('completed', finalText, totalTurns, contextManager, messages, overdueInjected, exitToolCall)
+      return buildResult('completed', finalText, totalTurns, contextManager, messages, exitToolCall, toolCallCount, wroteMemoryOrScene)
     }
 
     // ── Barrier check: wait for potential supplement before executing tools ──
@@ -348,7 +337,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
 
       // Check abort after waiting
       if (abortSignal?.aborted) {
-        return buildResult('aborted', finalText, totalTurns, contextManager, messages, overdueInjected, exitToolCall)
+        return buildResult('aborted', finalText, totalTurns, contextManager, messages, exitToolCall, toolCallCount, wroteMemoryOrScene)
       }
 
       // If supplement arrived during wait, cancel tools and inject
@@ -461,7 +450,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
         ...(forcedSummaryAttempt !== undefined ? { forcedSummaryAttempt } : {}),
         ...(response.usage ? { usage: response.usage } : {}),
       })
-      return buildResult('completed', finalText, totalTurns, contextManager, messages, overdueInjected, exitToolCall)
+      return buildResult('completed', finalText, totalTurns, contextManager, messages, exitToolCall, toolCallCount, wroteMemoryOrScene)
     }
 
     // Execute tools
@@ -575,21 +564,6 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
       }
     }
 
-    // 超期注入（tool_use 路径）：每轮工具执行收尾后检测 elapsed
-    if (shouldInjectOverdue()) {
-      const text = overdueConfig!.onOverdue()
-      overdueInjected = true
-      if (text !== null) {
-        messages.push(createUserMessage(text))
-        options.onSystemInjection?.({
-          type: 'overdue_reminder',
-          text,
-          turnNumber: totalTurns,
-          injectedAtMs: Date.now(),
-        })
-      }
-    }
-
     // Prune old images — keep only the most recent N screenshots
     if (options.supportsVision) {
       pruneOldImages(messages)
@@ -597,7 +571,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
   }
 
   // Loop exhausted
-  return buildResult('max_turns', finalText, totalTurns, contextManager, messages, overdueInjected, exitToolCall)
+  return buildResult('max_turns', finalText, totalTurns, contextManager, messages, exitToolCall, toolCallCount, wroteMemoryOrScene)
 }
 
 // --- Helpers ---
@@ -656,8 +630,9 @@ function buildResult(
   totalTurns: number,
   contextManager: ContextManager,
   messages: readonly EngineMessage[],
-  overdueInjected: boolean,
   exitToolCall: { name: string; input: Record<string, unknown> } | undefined,
+  toolCallCount: number,
+  wroteMemoryOrScene: boolean,
   error?: string
 ): EngineResult {
   const usage = contextManager.getCumulativeUsage()
@@ -669,7 +644,8 @@ function buildResult(
     // 浅拷贝防共享：runEngine 退出后 messages 不再被改，但 buildResult 直接持有引用会让
     // 未来的重构面临"我以为 EngineResult 是不可变的，结果上游 push 了一条消息"的隐患。
     finalMessages: [...messages],
-    overdueInjected,
+    tool_call_count: toolCallCount,
+    wrote_memory_or_scene: wroteMemoryOrScene,
     ...(exitToolCall !== undefined ? { exitToolCall } : {}),
     ...(error !== undefined ? { error } : {}),
   }

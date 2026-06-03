@@ -20,33 +20,22 @@ vi.mock('../../src/engine/index.js', async (importOriginal) => {
 import { runEngine } from '../../src/engine/index.js'
 const mockRunEngine = vi.mocked(runEngine)
 
-// Helper: base engine result (end_turn, no overdue)
+// Helper: base engine result (end_turn)
 function makeEngineResult(overrides?: Partial<{
-  overdueInjected: boolean
   outcome: 'completed' | 'failed' | 'max_turns' | 'aborted'
   exitToolCall?: { name: string; input: Record<string, unknown> }
+  tool_call_count: number
+  wrote_memory_or_scene: boolean
 }>) {
   return {
     outcome: (overrides?.outcome ?? 'completed') as 'completed' | 'failed' | 'max_turns' | 'aborted',
     finalText: 'done',
     totalTurns: 1,
-    overdueInjected: overrides?.overdueInjected ?? false,
+    tool_call_count: overrides?.tool_call_count ?? 0,
+    wrote_memory_or_scene: overrides?.wrote_memory_or_scene ?? false,
     usage: { inputTokens: 10, outputTokens: 5 },
     finalMessages: [] as readonly never[],
     ...(overrides?.exitToolCall ? { exitToolCall: overrides.exitToolCall } : {}),
-  }
-}
-
-// Helper: engine result that simulates overdue being triggered
-// The mock calls overdueConfig.onOverdue() before resolving, mimicking what the real engine does
-function makeOverdueEngineResult() {
-  return {
-    outcome: 'completed' as const,
-    finalText: 'done (overdue)',
-    totalTurns: 3,
-    overdueInjected: true,
-    usage: { inputTokens: 100, outputTokens: 50 },
-    finalMessages: [] as readonly never[],
   }
 }
 
@@ -138,10 +127,9 @@ describe('executeTriggerMessage 超期注册到 admin', () => {
   })
 
   it('启动入口立即调 admin create_task（不论是否超期）', async () => {
-    // Engine resolves immediately without triggering overdueConfig.onOverdue()
+    // Engine resolves immediately
     mockRunEngine.mockImplementation(async (_opts) => {
-      // Do NOT call overdueConfig.onOverdue() — normal fast completion path
-      return makeEngineResult({ overdueInjected: false })
+      return makeEngineResult()
     })
 
     const params = makeTriggerParams()
@@ -161,106 +149,12 @@ describe('executeTriggerMessage 超期注册到 admin', () => {
     expect((ctParams.id as string).startsWith('trigger-')).toBe(true)
   })
 
-  it('超期时 fire-and-forget 调 admin create_task，id=syntheticTaskId，source.trigger_type=message', async () => {
-    // Engine triggers overdueConfig.onOverdue() before resolving, simulating overdue
-    let capturedSyntheticTaskId: string | undefined
-
-    mockRunEngine.mockImplementation(async (opts) => {
-      // Trigger the overdue callback (as the real engine would when elapsed > timeoutMs)
-      if (opts.options?.overdueConfig?.onOverdue) {
-        opts.options.overdueConfig.onOverdue()
-      }
-      // Give the fire-and-forget a tick to register before we check
-      await new Promise(r => setImmediate(r))
-      return makeOverdueEngineResult()
-    })
-
-    // Capture the syntheticTaskId from the create_task call
-    mockRpcCall.mockImplementation(async (_port: number, method: string, params: Record<string, unknown>) => {
-      if (method === 'create_task') {
-        capturedSyntheticTaskId = params.id as string
-      }
-      return {}
-    })
-
-    const triggerParams = makeTriggerParams({
-      channelId: 'ch-verify-1',
-      sessionId: 'sess-verify-1',
-    })
-    const result = await handler.executeTriggerMessage(triggerParams)
-
-    expect(result.outcome).toBe('completed')
-    expect(result.overdueInjected).toBe(true)
-
-    // Wait for fire-and-forget to complete
-    await new Promise(r => setImmediate(r))
-    await new Promise(r => setTimeout(r, 10))
-
-    // Verify create_task was called
-    const createTaskCalls = mockRpcCall.mock.calls.filter(
-      (call: unknown[]) => call[1] === 'create_task',
-    )
-    expect(createTaskCalls.length).toBeGreaterThanOrEqual(1)
-
-    const [_port, _method, ctParams] = createTaskCalls[0] as [number, string, Record<string, unknown>]
-
-    // id must start with 'trigger-'
-    expect(typeof ctParams.id).toBe('string')
-    expect((ctParams.id as string).startsWith('trigger-')).toBe(true)
-
-    // Must match capturedSyntheticTaskId
-    expect(capturedSyntheticTaskId).toBeDefined()
-    expect(ctParams.id).toBe(capturedSyntheticTaskId)
-
-    // source fields
-    const source = ctParams.source as Record<string, unknown>
-    expect(source.trigger_type).toBe('message')
-    expect(source.channel_id).toBe('ch-verify-1')
-    expect(source.session_id).toBe('sess-verify-1')
-    expect(source.origin).toBe('human')
-  })
-
-  it('admin create_task 失败时 fire-and-forget 不阻塞主 loop，executeTriggerMessage 正常 resolve', async () => {
-    // Engine triggers overdueConfig.onOverdue()
-    mockRunEngine.mockImplementation(async (opts) => {
-      if (opts.options?.overdueConfig?.onOverdue) {
-        opts.options.overdueConfig.onOverdue()
-      }
-      await new Promise(r => setImmediate(r))
-      return makeOverdueEngineResult()
-    })
-
-    // create_task RPC fails
-    mockRpcCall.mockImplementation(async (_port: number, method: string) => {
-      if (method === 'create_task') {
-        throw new Error('admin RPC unavailable')
-      }
-      return {}
-    })
-
-    const params = makeTriggerParams()
-
-    // Should not throw even when admin create_task fails
-    let result: Awaited<ReturnType<typeof handler.executeTriggerMessage>> | undefined
-    await expect(async () => {
-      result = await handler.executeTriggerMessage(params)
-    }).not.toThrow()
-
-    // Wait for fire-and-forget to complete (and fail silently)
-    await new Promise(r => setTimeout(r, 20))
-
-    // Result should still be valid
-    expect(result).toBeDefined()
-    expect(result!.outcome).toBe('completed')
-    expect(result!.overdueInjected).toBe(true)
-  })
-
   it('startup register 后立刻把 admin task 推到 executing（pending→planning→executing），避免后续 ask_human 因状态机非法 transition 被拒', async () => {
     // Trace 4751612f 复现：trigger 路径从来不切 admin 状态机，
     // admin 上 task 长期停在 pending，导致：
     // ① 历史 trigger task 永远 pending → Front 看到的 active_tasks 累积 phantom
     // ② worker 调 ask_human → admin pending→waiting_human 状态机拒 → setBarrier 跳过 → loop 不阻塞
-    mockRunEngine.mockImplementation(async () => makeEngineResult({ overdueInjected: false }))
+    mockRunEngine.mockImplementation(async () => makeEngineResult())
 
     const params = makeTriggerParams()
     await handler.executeTriggerMessage(params)
@@ -320,33 +214,8 @@ describe('executeTriggerMessage 超期注册到 admin', () => {
     expect(result.outcome).toBe('completed')
   })
 
-  it('onOverdue 被多次调用しても create_task は startup の 1 回のみ（fireAndForgetRegister 削除済み）', async () => {
-    // Engine calls onOverdue twice (edge case: timer fires multiple times)
-    // Since fireAndForgetRegister is gone, onOverdue is a pure string callback — no side effects.
-    mockRunEngine.mockImplementation(async (opts) => {
-      if (opts.options?.overdueConfig?.onOverdue) {
-        opts.options.overdueConfig.onOverdue()
-        opts.options.overdueConfig.onOverdue() // second call — pure string, no register side-effect
-      }
-      await new Promise(r => setImmediate(r))
-      return makeOverdueEngineResult()
-    })
-
-    const params = makeTriggerParams()
-    await handler.executeTriggerMessage(params)
-
-    // Wait for any async ticks
-    await new Promise(r => setTimeout(r, 20))
-
-    const createTaskCalls = mockRpcCall.mock.calls.filter(
-      (call: unknown[]) => call[1] === 'create_task',
-    )
-    // Only startup register = 1 (onOverdue no longer triggers register)
-    expect(createTaskCalls).toHaveLength(1)
-  })
-
   it('dispatchActionText 优先用作 task title（不再用用户原始消息切片）', async () => {
-    mockRunEngine.mockImplementation(async (_opts) => makeEngineResult({ overdueInjected: false }))
+    mockRunEngine.mockImplementation(async (_opts) => makeEngineResult())
 
     const params = makeTriggerParams({
       dispatchActionText: 'Dispatch LLM 抽象后的任务摘要：用新数据源重做 L2 并做对比',
@@ -365,7 +234,7 @@ describe('executeTriggerMessage 超期注册到 admin', () => {
   })
 
   it('缺省 dispatchActionText 时回退到原始消息切片', async () => {
-    mockRunEngine.mockImplementation(async (_opts) => makeEngineResult({ overdueInjected: false }))
+    mockRunEngine.mockImplementation(async (_opts) => makeEngineResult())
 
     const params = makeTriggerParams()
     // dispatchActionText 不传

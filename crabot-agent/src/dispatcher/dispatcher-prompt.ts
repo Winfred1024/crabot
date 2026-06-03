@@ -60,6 +60,19 @@ function buildDispatchRules(
 const SUPPLEMENT_WHITELIST_REMINDER =
   '\n\n**target_task_id 硬约束**：必须与上方「活跃任务」清单里某个 task_id **字面完全一致**——禁止编造、截断、模糊匹配或拼造前缀。在清单里找不到合理匹配的 → 用 new_task，不要用 supplement。'
 
+/**
+ * new_task 可选 immediate_reply 字段的字段说明。插在每个 dispatch rule
+ * 的 new_task 描述里，避免单独开一段重复占 token。
+ *
+ * Spec: 2026-06-03-dispatcher-immediate-reply-and-overdue-removal-design.md
+ */
+const NEW_TASK_IMMEDIATE_REPLY_HINT =
+  `   - immediate_reply（可选）：复杂任务在 worker 起来前先发一句简短 ack 让用户知道收到了（worker 看历史不会重复 ack）
+     · 倾向带：动词类指令（写/查/调研/分析/做/帮我）/ 多步骤连接词（然后/还要/最后）/ 涉及代码生成 / 涉及查外部数据 / 场景画像明示
+     · 倾向不带：寒暄（在吗/谢谢/好的）/ 单一问句（今天几号）/ 简短 ack（嗯/行/👍）
+     · 拿不准：不带（错过最多多等几秒；错带显得啰嗦）
+     · 文案：一句话 ≤30 字，自然口语，不承诺时间（避免"马上"/"5 分钟内"），不泄露 dispatcher/worker/system_event 这类内部术语`
+
 const PRIVATE_RULES_WITH_ACTIVE = `## 分诊规则（私聊 / admin chat）
 
 每个动作只能是以下两种之一：
@@ -70,6 +83,7 @@ const PRIVATE_RULES_WITH_ACTIVE = `## 分诊规则（私聊 / admin chat）
 
 2. **new_task** — 这条消息发起一个新任务。
    - text 用户原话（去掉无关客套即可）。**不要替 agent 提炼意图、拆解步骤或加方向性引导——agent 会自己读聊天历史**
+${NEW_TASK_IMMEDIATE_REPLY_HINT}
 
 判断要点：
 - 用户明确指代某个进行中的任务（"那个手机调研"、"再加一条"、"算了改成 X"等）→ supplement
@@ -86,6 +100,7 @@ const PRIVATE_RULES_NO_ACTIVE = `## 分诊规则（私聊 / admin chat）
 
 1. **new_task** — 这条消息发起一个新任务。
    - text 用户原话（去掉无关客套即可）。**不要替 agent 提炼意图、拆解步骤或加方向性引导——agent 会自己读聊天历史**
+${NEW_TASK_IMMEDIATE_REPLY_HINT}
 
 判断要点：
 - 因为没有正在跑的任务，所有消息都必然是新任务——不存在"补充某个已有任务"的可能性
@@ -103,6 +118,7 @@ const GROUP_RULES_WITH_ACTIVE = `## 分诊规则（群聊）
 
 2. **new_task** — 某条消息发起一个跟我相关的新任务。
    - text 用户原话（去掉无关客套即可）。**不要替 agent 提炼意图或加方向性引导**
+${NEW_TASK_IMMEDIATE_REPLY_HINT}
 
 3. **stay_silent** — 这批（或这部分）消息跟我无关。
    - reason 可选，简短说明（如"群成员之间互相讨论"）
@@ -122,6 +138,7 @@ const GROUP_RULES_NO_ACTIVE = `## 分诊规则（群聊）
 
 1. **new_task** — 某条消息发起一个跟我相关的新任务。
    - text 用户原话（去掉无关客套即可）。**不要替 agent 提炼意图或加方向性引导**
+${NEW_TASK_IMMEDIATE_REPLY_HINT}
 
 2. **stay_silent** — 这批（或这部分）消息跟我无关。
    - reason 可选，简短说明（如"群成员之间互相讨论"）
@@ -144,7 +161,7 @@ function buildOutputSchema(
   if (hasActiveTasks) {
     lines.push(`    { "kind": "supplement", "target_task_id": "<task_id>", "text": "<补充内容>" },`)
   }
-  lines.push(`    { "kind": "new_task", "text": "<新任务内容>" }${sessionType === 'group' ? ',' : ''}`)
+  lines.push(`    { "kind": "new_task", "text": "<新任务内容>", "immediate_reply": "<可选，简短预回复>" }${sessionType === 'group' ? ',' : ''}`)
   if (sessionType === 'group') {
     lines.push(`    { "kind": "stay_silent", "reason": "<可选简短说明>" }`)
   }
@@ -174,3 +191,4 @@ function formatSceneProfile(sp: RuntimeSceneProfile): string {
   // dispatcher 决策不深入依赖 sceneProfile 细节，保守 JSON 化即可
   return JSON.stringify(sp).slice(0, 500)
 }
+

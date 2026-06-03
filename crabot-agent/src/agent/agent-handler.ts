@@ -155,6 +155,36 @@ function log(msg: string) {
   try { fs.appendFileSync(LOG_FILE, `[${ts}] ${msg}\n`) } catch { /* ignore */ }
 }
 
+/**
+ * skipReflection 判定阈值（spec 2026-06-03 §7.2.1）。
+ * worker 跑得不够这个步数就不反思（"没什么值得反思的"）。
+ * 实测后觉得偏严/宽改这一处常量即可，不暴露 admin 配置。
+ */
+export const TOOL_CALL_REFLECTION_THRESHOLD = 10
+
+/**
+ * task 结束时是否跳过反思 LLM 调用（spec 2026-06-03 §7.2.1）。
+ * 反思只在 worker 长跑（≥阈值）+ 没主动 store_memory/set_scene_profile 时跑，
+ * 兜的是"worker 该记没记"的漏记 case。
+ *
+ * - 早退（supplement/silent）→ skip
+ * - 失败 → skip（finalizeTask 内 line 1947 也独立 skip，这里 explicit）
+ * - 步数 < 阈值 → skip
+ * - worker 已主动写过记忆 / 场景画像 → skip
+ */
+export function shouldSkipTaskReflection(engineResult: {
+  exitToolCall?: unknown
+  outcome: string
+  tool_call_count: number
+  wrote_memory_or_scene: boolean
+}): boolean {
+  if (engineResult.exitToolCall !== undefined) return true
+  if (engineResult.outcome !== 'completed') return true
+  if (engineResult.tool_call_count < TOOL_CALL_REFLECTION_THRESHOLD) return true
+  if (engineResult.wrote_memory_or_scene) return true
+  return false
+}
+
 export interface AgentHandlerConfig {
   /**
    * Admin personality（system_prompt）。仅承载 personality，不再包含 skill listing。
@@ -218,22 +248,6 @@ export interface RunWorkerLoopOptions {
   readonly providedHumanQueue?: HumanMessageQueue
   /** Extra tools appended to the dynamic tool list (e.g., exit tools for trigger flow). */
   readonly extraTools?: ReadonlyArray<ToolDefinition>
-  /**
-   * Overdue config passed straight to runEngine — 让 engine 在主 loop 内同步注入
-   * user msg 提示 worker。这条路径会污染主 loop 上下文，**默认不用**；保留供
-   * 极少数需要"超期强制 worker 中断去汇报"的场景。
-   *
-   * 一般诉求（用户超期想看到进度）走 `digestOverdueMs` —— 旁路 fork 一次发用户，
-   * 不污染主 loop。
-   */
-  readonly overdueConfig?: import('../engine/types.js').OverdueConfig
-  /**
-   * 超期触发 ProgressDigest 单次 fork-and-send 的延迟（毫秒，相对于 worker
-   * 启动时刻）。是 `overdueConfig` 的旁路替代：不注入主 loop，仅通过 digest 通道
-   * fork 一次发用户。reportMode='digest' 时生效；其他 reportMode 下被静默忽略
-   * （silent/text_forward 本来就不该被超期打扰）。
-   */
-  readonly digestOverdueMs?: number
   /** Called once per turn AFTER traceCallback wiring, with the toolCalls of that turn.
    *  Used by trigger flow to detect send_message. */
   readonly onAfterTurn?: (event: EngineTurnEvent) => void
@@ -312,21 +326,6 @@ export interface ExecuteTriggerMessageParams {
   readonly sceneProfile?: RuntimeSceneProfile
   /** 触发消息发送者 friend 信息 */
   readonly senderFriend: Friend
-  /** 触发消息进入 agent 的时刻（用于 overdue 计算） */
-  readonly triggerArrivedAtMs: number
-  /** 超期阈值（毫秒）；默认 30_000 */
-  readonly timeoutMs?: number
-  /**
-   * 是否启用超期提醒；默认 true。
-   *
-   * 启用后超期时通过 ProgressDigest 旁路 fork 一次主 loop messages 生成汇报发
-   * 给用户，不污染主 loop。仅在 reportMode='digest' 下生效（silent / text_forward
-   * 模式用户已经主动选择了别的汇报形式）。
-   *
-   * 历史：早期实现是 engine 同步向主 loop 注入 user msg 提示 worker 主动 send_message，
-   * 代价是焦点漂移 + token 永久占据。现已统一走 digest 旁路通道。
-   */
-  readonly overdueReminderEnabled?: boolean
   /** 内存权限 */
   readonly memoryPermissions: MemoryPermissions
   /** 解析后的发送者权限 */
@@ -356,8 +355,6 @@ export interface ExecuteTriggerMessageResult {
   readonly finalText: string
   /** 早退工具调用（supplement_task / stay_silent）。若 loop 自然结束则 undefined */
   readonly exitToolCall?: { readonly name: string; readonly input: Record<string, unknown> }
-  /** 是否触发过超期注入 */
-  readonly overdueInjected: boolean
   /** loop 内是否调过 send_message（任一 messaging tool） */
   readonly sentMessage: boolean
   /** Engine 错误信息（outcome=failed 时填） */
@@ -1125,9 +1122,6 @@ export class AgentHandler {
 
           const digestConfig: ProgressDigestConfig = {
             intervalMs: intervalSec * 1000,
-            ...(opts?.digestOverdueMs !== undefined && opts.digestOverdueMs > 0
-              ? { overdueMs: opts.digestOverdueMs }
-              : {}),
             isMasterPrivate,
             // trace span：让 admin UI 上能看到 digest 在哪个时刻被触发以及由谁触发
             // （定时 / 超期 / ask_human）。span 命名沿用 `__system_*__` 内部 span 风格。
@@ -1224,7 +1218,6 @@ export class AgentHandler {
           senderIsMaster,
           ...(context.resolved_permissions ? { resolvedPermissions: context.resolved_permissions } : {}),
           contentReviewer: this.buildContentReviewer(),
-          ...(opts?.overdueConfig ? { overdueConfig: opts.overdueConfig } : {}),
           suppressForcedSummary: () => workerTriggerType === 'scheduled' || goalSetCache || sentInfoMessage,
           endTurnGate: goalModeEnabled
             ? async () => {
@@ -1629,7 +1622,6 @@ export class AgentHandler {
     traceCallback?: TraceCallback,
     traceContext?: WorkerTraceContext,
   ): Promise<ExecuteTriggerMessageResult> {
-    const { triggerArrivedAtMs, timeoutMs = 30_000, overdueReminderEnabled = true } = params
     const { taskId, registered, task, context } = pre
 
     const triggerText = await this.buildTriggerUserPrompt(params, taskId)
@@ -1647,20 +1639,11 @@ export class AgentHandler {
 
     let sentMessage = false
 
-    // 超期提醒走 ProgressDigest 旁路：到时 fork 主 loop 生成一份汇报发给用户，
-    // 不污染主 loop 上下文。digestOverdueMs 是相对于 worker 启动时刻的延迟，
-    // 减去 trigger 抵达到 worker 启动之间的时间，让总等待对齐 timeoutMs。
-    const elapsedSinceTrigger = Math.max(0, Date.now() - triggerArrivedAtMs)
-    const digestOverdueMs = overdueReminderEnabled
-      ? Math.max(1_000, timeoutMs - elapsedSinceTrigger)
-      : undefined
-
     let loopResult: RunWorkerLoopResult
     try {
       loopResult = await this.runWorkerLoop(task, context, traceCallback, traceContext, {
         initialPrompt,
         extraTools: [],
-        ...(digestOverdueMs !== undefined ? { digestOverdueMs } : {}),
         onAfterTurn: (event) => {
           for (const tc of event.toolCalls) {
             const bare = tc.name.replace(/^mcp__[^_]+__/, '')
@@ -1680,7 +1663,6 @@ export class AgentHandler {
         outcome: 'failed' as const,
         finalText: '',
         sentMessage,
-        overdueInjected: false,
         error: errMsg,
       }
     }
@@ -1688,7 +1670,7 @@ export class AgentHandler {
     const { engineResult } = loopResult
 
     if (registered) {
-      const skipReflection = !engineResult.overdueInjected || !!engineResult.exitToolCall
+      const skipReflection = shouldSkipTaskReflection(engineResult)
       await this.finalizeTask(taskId, engineResult, context, { skipReflection })
     }
 
@@ -1696,7 +1678,6 @@ export class AgentHandler {
       outcome: engineResult.outcome,
       finalText: engineResult.finalText ?? '',
       sentMessage,
-      overdueInjected: engineResult.overdueInjected,
       ...(engineResult.exitToolCall ? { exitToolCall: engineResult.exitToolCall } : {}),
       ...(engineResult.error ? { error: engineResult.error } : {}),
     }
@@ -2943,13 +2924,6 @@ export class AgentHandler {
       }
     } else {
       parts.push(`过去 ${recentHours} 小时本会话无消息。如需更早的本会话历史，调 \`get_history\` 工具。`)
-    }
-
-    // Front immediate reply — tell Worker what was already said to avoid repetition
-    if (context.front_immediate_reply) {
-      parts.push('\n## 已发送的即时回复')
-      parts.push(`你已经向用户发送了："${context.front_immediate_reply}"`)
-      parts.push('不要重复类似的确认或复述，直接开始执行任务。')
     }
 
     // front_context from forced Front termination

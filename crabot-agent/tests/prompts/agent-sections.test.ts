@@ -36,15 +36,11 @@ describe('#2 你和 Crabot 系统的对话边界', () => {
     expect(SYSTEM_DIALOGUE_BOUNDARY).toContain('传递者')
   })
 
-  it('列出三种系统注入信号', () => {
-    expect(SYSTEM_DIALOGUE_BOUNDARY).toContain('超期辅助提醒')
+  it('列出系统注入信号（反思要求 + bg 通知）', () => {
     expect(SYSTEM_DIALOGUE_BOUNDARY).toContain('任务结束反思要求')
     expect(SYSTEM_DIALOGUE_BOUNDARY).toContain('bg entity 退出通知')
-  })
-
-  it('明确超期提醒不是完成信号', () => {
-    expect(SYSTEM_DIALOGUE_BOUNDARY).toContain('不是完成信号')
-    expect(SYSTEM_DIALOGUE_BOUNDARY).toContain('必须继续执行主工作流')
+    // 超期辅助提醒已在 2026-06-03 spec 砍掉
+    expect(SYSTEM_DIALOGUE_BOUNDARY).not.toContain('超期辅助提醒')
   })
 
   it('明确 assistant 回复给系统看', () => {
@@ -66,20 +62,20 @@ describe('#3 工作流 · 私聊版', () => {
     expect(WORKFLOW_PRIVATE).toContain('send_message')
   })
 
-  it('含超期辅助机制说明', () => {
-    expect(WORKFLOW_PRIVATE).toContain('[超期辅助')
-    expect(WORKFLOW_PRIVATE).toContain('默认 30s')
-    expect(WORKFLOW_PRIVATE).toContain('仅注入一次')
+  it('不含超期辅助机制（spec 2026-06-03 已砍）', () => {
+    expect(WORKFLOW_PRIVATE).not.toContain('超期辅助')
+    expect(WORKFLOW_PRIVATE).not.toContain('30s')
   })
 
-  it('含复杂任务反思说明', () => {
-    expect(WORKFLOW_PRIVATE).toContain('身份已转 worker')
+  it('含复杂任务反思说明（新门槛：步数 + 主动写记忆）', () => {
     expect(WORKFLOW_PRIVATE).toContain('outcome_brief')
     expect(WORKFLOW_PRIVATE).toContain('process_highlights')
+    // 新判定逻辑：步数较多且未主动写记忆才反思
+    expect(WORKFLOW_PRIVATE).toContain('store_memory')
   })
 
   it('明确 supplement_task 早期退出不反思', () => {
-    expect(WORKFLOW_PRIVATE).toContain('supplement_task 早期退出不反思')
+    expect(WORKFLOW_PRIVATE).toContain('supplement_task 早期退出')
   })
 
   it('不含 stay_silent 描述（私聊不渲染）', () => {
@@ -106,7 +102,7 @@ describe('#3 工作流 · 群聊版', () => {
     expect(WORKFLOW_GROUP).toContain('禁止 stay_silent')
   })
 
-  it('主工作流/超期辅助/反思 段说明引用私聊版', () => {
+  it('主工作流/反思 段说明引用私聊版', () => {
     expect(WORKFLOW_GROUP).toContain('与私聊一致')
   })
 })

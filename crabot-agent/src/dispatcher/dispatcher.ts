@@ -245,7 +245,16 @@ function parseAndValidate(text: string, ctx: DispatchContext): ValidationResult 
       validated.push({ kind: 'supplement', target_task_id: a.target_task_id, text: a.text })
     } else if (a.kind === 'new_task') {
       if (typeof a.text !== 'string') return { ok: false, error: `action[${i}] new_task 缺 text` }
-      validated.push({ kind: 'new_task', text: a.text })
+      // immediate_reply 可选：非空 string 时才透传，其他形态（空串 / 非 string）一律忽略
+      // 视为"没带"，不报错——保持 LLM 输出宽容
+      const immediateReply = typeof a.immediate_reply === 'string' && a.immediate_reply.length > 0
+        ? a.immediate_reply
+        : undefined
+      validated.push({
+        kind: 'new_task',
+        text: a.text,
+        ...(immediateReply !== undefined ? { immediate_reply: immediateReply } : {}),
+      })
     } else if (a.kind === 'stay_silent') {
       if (ctx.sessionType !== 'group') {
         return { ok: false, error: `action[${i}] stay_silent 仅群聊允许` }

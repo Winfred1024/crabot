@@ -49,11 +49,29 @@ export async function executeDispatchActions(
           ctx.trace.endSpan(span.span_id, 'completed', { outcome: 'supplement_delivered' })
         }
       } else if (action.kind === 'new_task') {
+        // 预回复（如果 dispatcher 判定复杂任务带了 immediate_reply）：
+        // 在 spawnAgentInstance 之前 await 一次 channel.send_message，让用户立即收到 ack。
+        // worker 起来后会通过 fetchRecentMessages 看到这条 outbound，不会重复 ack。
+        // 失败兜底：warn 不阻塞 spawn——预回复不是必发，worker 起来照常跑。
+        // Spec: 2026-06-03-dispatcher-immediate-reply-and-overdue-removal-design.md
+        let immediateReplySent = false
+        if (action.immediate_reply && ctx.sendImmediateReply) {
+          try {
+            await ctx.sendImmediateReply(action.immediate_reply)
+            immediateReplySent = true
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err)
+            console.warn(
+              `[dispatcher-executor] sendImmediateReply failed (continuing to spawn worker without ack): ${msg}`,
+            )
+          }
+        }
         const { spawnedTraceId } = await ctx.spawnAgentInstance(action.text)
         if (span && ctx.trace) {
           ctx.trace.endSpan(span.span_id, 'completed', {
             outcome: 'new_task_spawned',
             spawned_trace_id: spawnedTraceId,
+            immediate_reply_sent: immediateReplySent,
           })
         }
       } else if (action.kind === 'stay_silent') {

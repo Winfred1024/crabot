@@ -1,9 +1,8 @@
 import React from 'react'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentConfig } from './AgentConfig'
-import { agentService } from '../../services/agent'
 
 vi.mock('../../components/Layout/MainLayout', () => ({
   MainLayout: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -135,9 +134,10 @@ describe('AgentConfig — read-only MCP/Skill display', () => {
   it('MCP/Skill 区域没有勾选框（read-only）', async () => {
     const { container } = renderAgentConfig()
     await screen.findByText('mcp-a')
-    // 只有触发处理 section 的 overdue_reminder_enabled checkbox，MCP/Skill 区域无 checkbox
+    // overdue 配置已在 2026-06-03 spec 砍掉，MCP/Skill 区域本身也是 read-only，
+    // 整个页面应无 checkbox
     const checkboxes = container.querySelectorAll('input[type="checkbox"]')
-    expect(checkboxes.length).toBe(1)
+    expect(checkboxes.length).toBe(0)
   })
 
   it('"前往 MCP 管理" 链接 href=/mcp-servers', async () => {
@@ -161,32 +161,5 @@ describe('AgentConfig — read-only MCP/Skill display', () => {
   })
 })
 
-describe('AgentConfig — 触发处理 section', () => {
-  it('renders timeout_seconds + overdue_reminder fields', async () => {
-    render(
-      <MemoryRouter>
-        <AgentConfig />
-      </MemoryRouter>,
-    )
-    expect(await screen.findByLabelText(/Front 升格超时/)).toBeInTheDocument()
-    expect(screen.getByLabelText(/启用超时辅助提醒/)).toBeInTheDocument()
-  })
-
-  it('saving with edited timeout_seconds calls updateConfig with new value', async () => {
-    render(
-      <MemoryRouter>
-        <AgentConfig />
-      </MemoryRouter>,
-    )
-    const timeoutInput = (await screen.findByLabelText(/Front 升格超时/)) as HTMLInputElement
-    fireEvent.change(timeoutInput, { target: { value: '60' } })
-    fireEvent.click(screen.getByRole('button', { name: /保存/ }))
-    await waitFor(() => {
-      expect(agentService.updateConfig).toHaveBeenCalledWith(
-        expect.objectContaining({
-          timeout_seconds: 60,
-        }),
-      )
-    })
-  })
-})
+// "触发处理 section" 在 2026-06-03 spec 砍掉（dispatcher 直接预回复 + overdue 整套删）
+// 整段 describe 不再适用，删除。如未来引入 dispatcher 预回复 UI 旋钮再补回。

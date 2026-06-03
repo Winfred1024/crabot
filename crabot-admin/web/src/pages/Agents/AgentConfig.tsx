@@ -87,8 +87,6 @@ interface AgentUnifiedConfig {
   timezone: string
   model_roles: Record<string, ModelSlotRef>
   extra: Record<string, unknown>
-  timeout_seconds: number
-  overdue_reminder_enabled: boolean
 }
 
 export const AgentConfig: React.FC = () => {
@@ -105,8 +103,6 @@ export const AgentConfig: React.FC = () => {
     timezone: '',
     model_roles: {},
     extra: {},
-    timeout_seconds: 30,
-    overdue_reminder_enabled: true,
   })
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -139,8 +135,6 @@ export const AgentConfig: React.FC = () => {
           timezone: existingConfig.timezone || '',
           model_roles: existingConfig.model_config || {},
           extra: existingConfig.extra || {},
-          timeout_seconds: existingConfig.timeout_seconds ?? 30,
-          overdue_reminder_enabled: existingConfig.overdue_reminder_enabled ?? true,
         })
       } catch {
         // Agent config not available yet, use defaults
@@ -160,8 +154,6 @@ export const AgentConfig: React.FC = () => {
         timezone: config.timezone || undefined,
         model_config: config.model_roles,
         extra: Object.keys(config.extra).length > 0 ? config.extra : undefined,
-        timeout_seconds: config.timeout_seconds,
-        overdue_reminder_enabled: config.overdue_reminder_enabled,
       })
       toast.success('Agent 配置保存成功')
     } catch (err) {
@@ -507,38 +499,6 @@ export const AgentConfig: React.FC = () => {
           </Card>
         </div>
       )}
-        <div style={{ marginTop: '1rem' }}>
-          <Card>
-            <h3 style={{ fontSize: '0.9375rem', fontWeight: 600, marginBottom: '0.625rem' }}>触发处理</h3>
-            <div style={{ display: 'grid', gap: '0.75rem' }}>
-              <label style={{ display: 'block' }}>
-                <span style={{ fontWeight: 500, fontSize: '0.8125rem' }}>升格超时（秒）</span>
-                <input
-                  aria-label="Front 升格超时（秒）"
-                  type="number"
-                  min={5}
-                  max={600}
-                  value={config.timeout_seconds}
-                  onChange={(e) => setConfig((prev) => ({ ...prev, timeout_seconds: Number(e.target.value) || 30 }))}
-                  style={{ marginLeft: '0.5rem', width: '6rem', padding: '0.25rem 0.5rem' }}
-                />
-                <div style={{ color: '#888', fontSize: '0.75rem', marginTop: '0.25rem' }}>
-                  超过此时长后 agent 自动注入一次系统提醒鼓励发送进度（默认 30）
-                </div>
-              </label>
-
-              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
-                <input
-                  type="checkbox"
-                  aria-label="启用超时辅助提醒"
-                  checked={config.overdue_reminder_enabled}
-                  onChange={(e) => setConfig((prev) => ({ ...prev, overdue_reminder_enabled: e.target.checked }))}
-                />
-                <span style={{ fontWeight: 500, fontSize: '0.8125rem' }}>启用超时辅助提醒</span>
-              </label>
-            </div>
-          </Card>
-        </div>
     </MainLayout>
   )
 }

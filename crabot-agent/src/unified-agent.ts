@@ -619,6 +619,15 @@ export class UnifiedAgent extends ModuleBase {
         }
       }
 
+      // 预回复回调：dispatcher 判 new_task 复杂时发一条 ack 给当前 session
+      const sendImmediateReply = async (text: string) => {
+        const channelPort = await this.getChannelPort(session.channel_id)
+        await this.rpcClient.call(channelPort, 'send_message', {
+          session_id: session.session_id,
+          content: { type: 'text', text },
+        }, this.config.moduleId)
+      }
+
       const traceCallbackPrivate = this.buildDispatchTraceCallback(trace.trace_id)
       const dumpPromptPrivate = this.buildDispatchPromptDumpCallback(trace.trace_id)
       const { actions } = await dispatch(dispatchCtx, {
@@ -649,6 +658,7 @@ export class UnifiedAgent extends ModuleBase {
             return 'fallback'
           }
         },
+        sendImmediateReply,
         spawnAgentInstance: async (actionText: string) => {
           const triggerIds = new Set(messages.map(m => m.platform_message_id))
           const history = (frontContext.recent_messages ?? []).filter(
@@ -661,8 +671,6 @@ export class UnifiedAgent extends ModuleBase {
             isGroup: false,
             ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
             senderFriend: friend,
-            triggerArrivedAtMs: Date.now(),
-            ...this.overdueOverrides(),
             memoryPermissions: memPerms,
             resolvedPermissions: resolvedPerms as ResolvedPermissions,
             channelId: session.channel_id,
@@ -820,6 +828,15 @@ export class UnifiedAgent extends ModuleBase {
         }
       }
 
+      // 预回复回调：dispatcher 判 new_task 复杂时发一条 ack 给当前群聊 session
+      const sendImmediateReply = async (text: string) => {
+        const channelPort = await this.getChannelPort(session.channel_id)
+        await this.rpcClient.call(channelPort, 'send_message', {
+          session_id: sessionId,
+          content: { type: 'text', text },
+        }, this.config.moduleId)
+      }
+
       const traceCallbackGroup = this.buildDispatchTraceCallback(trace.trace_id)
       const dumpPromptGroup = this.buildDispatchPromptDumpCallback(trace.trace_id)
       const { actions } = await dispatch(dispatchCtx, {
@@ -853,6 +870,7 @@ export class UnifiedAgent extends ModuleBase {
             return 'fallback'
           }
         },
+        sendImmediateReply,
         spawnAgentInstance: async (actionText: string) => {
           // 群聊：把 attention 批次 messages（已含群成员发的文件/图片）+ recent_messages 历史去重后整批传给 worker。
           // 不用 action.text 覆盖触发消息的 content.text，让 worker 拿到完整保真的消息上下文；
@@ -869,8 +887,6 @@ export class UnifiedAgent extends ModuleBase {
             isGroup: true,
             ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
             senderFriend: lastEntry.friend,
-            triggerArrivedAtMs: Date.now(),
-            ...this.overdueOverrides(),
             memoryPermissions: memPerms,
             resolvedPermissions: resolvedPerms as ResolvedPermissions,
             channelId: session.channel_id,
@@ -1097,9 +1113,8 @@ export class UnifiedAgent extends ModuleBase {
       }
     }
 
-    // Step 2: Task verified — send immediate reply
-    const replyText = decision.immediate_reply?.text
-      || `收到，正在调整：${decision.supplement_content.slice(0, 60)}`
+    // Step 2: Task verified — send acknowledgement
+    const replyText = `收到，正在调整：${decision.supplement_content.slice(0, 60)}`
     const replySpan = this.traceStore.startSpan(traceId, {
       type: 'tool_call' as const,
       parent_span_id: parentSpanId,
@@ -1386,7 +1401,6 @@ export class UnifiedAgent extends ModuleBase {
       )
 
       // 调用统一 loop
-      const triggerArrivedAtMs = Date.now()
       const result = await this.agentHandler.executeTriggerMessage({
         messages: [message],
         activeTasks: context.active_tasks ?? [],
@@ -1400,7 +1414,6 @@ export class UnifiedAgent extends ModuleBase {
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         },
-        triggerArrivedAtMs,
         memoryPermissions: channelMemPerms,
         resolvedPermissions: FAIL_CLOSED_TOOL_ACCESS as unknown as ResolvedPermissions,
         channelId: message.session.channel_id,
@@ -1430,7 +1443,6 @@ export class UnifiedAgent extends ModuleBase {
                 type: 'supplement_task',
                 task_id: targetTaskId,
                 supplement_content: supplementText,
-                immediate_reply: { type: 'text', text: '' },
               },
               message.session,
               '',
@@ -1597,6 +1609,20 @@ export class UnifiedAgent extends ModuleBase {
         }
       }
 
+      // 预回复回调（admin_chat 路径）：走 chat_callback direct_reply，与 sendErrorToUser 同通道
+      const sendImmediateReply = async (text: string) => {
+        await this.rpcClient.call(
+          await this.getAdminPort(),
+          'chat_callback',
+          {
+            request_id: callbackInfo.request_id,
+            reply_type: 'direct_reply',
+            content: text,
+          },
+          this.config.moduleId
+        )
+      }
+
       const traceCallbackAdmin = this.buildDispatchTraceCallback(trace.trace_id)
       const dumpPromptAdmin = this.buildDispatchPromptDumpCallback(trace.trace_id)
       const { actions } = await dispatch(dispatchCtx, {
@@ -1612,6 +1638,7 @@ export class UnifiedAgent extends ModuleBase {
       // 执行动作
       await executeDispatchActions(actions, {
         dispatchCtx,
+        sendImmediateReply,
         pushSupplement: async (taskId: string, text: string): Promise<'delivered' | 'fallback'> => {
           if (!this.agentHandler!.hasActiveTask(taskId)) return 'fallback'
 
@@ -1681,8 +1708,6 @@ export class UnifiedAgent extends ModuleBase {
             isGroup: false,
             ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
             senderFriend: masterFriend,
-            triggerArrivedAtMs: Date.now(),
-            ...this.overdueOverrides(),
             memoryPermissions: masterMemPerms,
             resolvedPermissions: (masterResolvedPerms ?? masterMemPerms) as unknown as ResolvedPermissions,
             channelId: 'admin-web',
@@ -2130,16 +2155,6 @@ export class UnifiedAgent extends ModuleBase {
       changedFields.push('subagents')
     }
 
-    // 软热更：timeout_seconds / overdue_reminder_enabled 下次 executeTriggerMessage 调用时生效，不触发 worker 重建
-    if (params.timeout_seconds !== undefined) {
-      this.agentConfig.timeout_seconds = params.timeout_seconds
-      changedFields.push('timeout_seconds')
-    }
-    if (params.overdue_reminder_enabled !== undefined) {
-      this.agentConfig.overdue_reminder_enabled = params.overdue_reminder_enabled
-      changedFields.push('overdue_reminder_enabled')
-    }
-
     // 根据变更字段，按需更新 LLM client。
     //
     // 历史：modelConfig / subagents 变化曾走 createWorkerHandler 重建路径，
@@ -2306,20 +2321,6 @@ export class UnifiedAgent extends ModuleBase {
    * @returns task trace_id，作为 spawnedTraceId 回给 dispatcher_executor 写到 dispatch_action span
    *          的 spawned_trace_id 字段，供 Admin UI 做 cross-trace link 跳转。
    */
-  /**
-   * 从 agentConfig 读取 timeout_seconds / overdue_reminder_enabled 并转成
-   * ExecuteTriggerMessageParams 的字段。三处 spawnAgentInstance 闭包都用它，
-   * 避免 admin UI 上的开关写到 agentConfig 但不下传到 trigger params 的 bug。
-   */
-  private overdueOverrides(): Partial<ExecuteTriggerMessageParams> {
-    const cfg = this.agentConfig
-    if (!cfg) return {}
-    return {
-      ...(cfg.timeout_seconds !== undefined ? { timeoutMs: cfg.timeout_seconds * 1000 } : {}),
-      ...(cfg.overdue_reminder_enabled !== undefined ? { overdueReminderEnabled: cfg.overdue_reminder_enabled } : {}),
-    }
-  }
-
   private async spawnTaskTrace(opts: {
     dispatchTraceId: string
     params: ExecuteTriggerMessageParams

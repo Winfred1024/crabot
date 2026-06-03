@@ -137,4 +137,56 @@ describe('assembleDispatcherPrompt', () => {
     expect(sysEventSection).not.toMatch(/mentions/)
     expect(sysEventSection).not.toMatch(/send_message.*参数/)
   })
+
+  // ============================================================================
+  // immediate_reply 字段指引（spec: 2026-06-03-dispatcher-immediate-reply-and-overdue-removal-design.md）
+  //
+  // immediate_reply 是 new_task 字段，guidance 直接塞在 new_task 描述里，
+  // 不另开 section——避免重复段占 token。
+  // ============================================================================
+
+  it('immediate_reply 指引嵌在 new_task 字段说明里（不开独立 section）', () => {
+    const p = assembleDispatcherPrompt(ctx({ sessionType: 'private' }))
+    expect(p).toContain('immediate_reply（可选）')
+    // 不应该有独立的 section 标题
+    expect(p).not.toContain('## new_task 的可选预回复')
+    expect(p).not.toContain('## immediate_reply')
+  })
+
+  it('immediate_reply 指引含核心信号 + 文案约束', () => {
+    const p = assembleDispatcherPrompt(ctx({ sessionType: 'private' }))
+    const sec = p.slice(p.indexOf('immediate_reply（可选）'))
+    // 倾向带的信号
+    expect(sec).toMatch(/动词|调研|多步骤/)
+    // 倾向不带的信号
+    expect(sec).toMatch(/寒暄|在吗|谢谢/)
+    // 拿不准 → 不带
+    expect(sec).toMatch(/拿不准/)
+    // 文案约束
+    expect(sec).toMatch(/30 字/)
+    expect(sec).toMatch(/不承诺时间|不承诺/)
+    expect(sec).toMatch(/内部术语/)
+  })
+
+  it('immediate_reply 指引在所有 dispatch rule 变体里都出现', () => {
+    // private with active / private no active / group with active / group no active
+    const pPrivWith = assembleDispatcherPrompt(ctx({ sessionType: 'private', activeTasks: [task('T')] }))
+    const pPrivNo = assembleDispatcherPrompt(ctx({ sessionType: 'private', activeTasks: [] }))
+    const pGroupWith = assembleDispatcherPrompt(ctx({ sessionType: 'group', activeTasks: [task('T')] }))
+    const pGroupNo = assembleDispatcherPrompt(ctx({ sessionType: 'group', activeTasks: [] }))
+    for (const p of [pPrivWith, pPrivNo, pGroupWith, pGroupNo]) {
+      expect(p).toContain('immediate_reply（可选）')
+    }
+  })
+
+  it('SYSTEM_EVENT_GUIDANCE 含 immediate_reply 默认不带的特例', () => {
+    const p = assembleDispatcherPrompt(ctx({ sessionType: 'group' }))
+    const sec = p.slice(p.indexOf('## 群系统事件'))
+    expect(sec).toMatch(/immediate_reply 默认不带|immediate_reply.*不该带/)
+  })
+
+  it('OUTPUT_SCHEMA 的 new_task 示例含 immediate_reply 字段', () => {
+    const p = assembleDispatcherPrompt(ctx({ sessionType: 'private' }))
+    expect(p).toMatch(/"immediate_reply":/)
+  })
 })

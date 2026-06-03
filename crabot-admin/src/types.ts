@@ -1422,13 +1422,6 @@ export interface AgentInstanceConfig {
   tools_readonly?: boolean
   /** IANA 时区名（如 "Asia/Shanghai"），用于 prompt 时间感知。缺省时 fallback 到 env CRABOT_DEFAULT_TIMEZONE / Asia/Shanghai */
   timezone?: string
-  /** Front 升格 Worker 的超时秒数；缺省 30s。
-   *  超时后 agent 把会话从 front 模式提升为 worker 模式继续执行。 */
-  timeout_seconds?: number
-  /** 超时辅助提醒开关；缺省 true。
-   *  超时且 agent 尚未 send_message 时，engine 在下一轮注入一次系统提醒，
-   *  鼓励 agent 先发个进度反馈再继续。 */
-  overdue_reminder_enabled?: boolean
   /** 扩展配置（非协议固定字段，由 Agent 实现自定义，见 protocol-agent-v2 §6） */
   extra?: Record<string, unknown>
 }
@@ -1528,8 +1521,6 @@ export interface UpdateAgentConfigParams {
   tools_readonly?: boolean
   timezone?: string
   extra?: Record<string, unknown>
-  timeout_seconds?: number
-  overdue_reminder_enabled?: boolean
 }
 
 export interface UpdateAgentConfigResult {

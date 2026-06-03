@@ -7248,8 +7248,6 @@ export class AdminModule extends ModuleBase {
         skills: config.skills,
         extra: config.extra,
         subagents,
-        timeout_seconds: instance?.timeout_seconds,
-        overdue_reminder_enabled: instance?.overdue_reminder_enabled,
       }
 
       const result = await this.rpcClient.call<typeof updateParams, { restart_required: boolean; changed_fields: string[] }>(

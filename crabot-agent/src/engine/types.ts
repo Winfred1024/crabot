@@ -283,9 +283,8 @@ export interface EngineOptions {
   /**
    * 引擎层主动向 loop 注入 user message 时触发（trace 可见性钩子）。
    *
-   * 当前 4 类注入：
+   * 当前 3 类注入：
    * - `supplement` —— humanMessageQueue 实时纠偏注入
-   * - `overdue_reminder` —— 超期辅助提醒注入（详见 overdueConfig）
    * - `forced_summary` —— silent end_turn 兜底要求模型重说
    * - `stop_hook` —— Stop hook block 后注入的引导文本
    *
@@ -350,18 +349,6 @@ export interface EngineOptions {
    * 由父 agent 根据 totalTurns + 空 output 判断是否拆任务 / 上调 budget。
    */
   readonly disableCompaction?: boolean
-  /**
-   * 超期检测配置。引擎在每个 turn 结束时测量从 `startedAtMs`（默认为 runEngine 入口时刻）
-   * 到当前的 elapsed；超过 timeoutMs 且本 loop 内未注入过时，调 `onOverdue()` 询问注入文本。
-   *
-   * `onOverdue` 返回 `string` 则把该字符串作为 user message 注入并继续 loop（不结束）；
-   * 返回 `null` 表示本次跳过（如 caller 判断已经 send_message 过，无需提醒）。
-   *
-   * 至多注入一次——即便条件继续满足也不会重复触发。
-   *
-   * 不传此字段则关闭超期机制。
-   */
-  readonly overdueConfig?: OverdueConfig
 }
 
 export interface HumanMessageQueueLike {
@@ -372,20 +359,11 @@ export interface HumanMessageQueueLike {
   readonly clearBarrier: () => void
 }
 
-export interface OverdueConfig {
-  /** Elapsed 阈值（毫秒）。命中后引擎询问 `onOverdue` 是否注入。 */
-  readonly timeoutMs: number
-  /** 自定义起始时刻；不传则用 runEngine 入口时刻（Date.now()）。 */
-  readonly startedAtMs?: number
-  /** 命中阈值后引擎调一次此回调。返回 string 注入；返回 null 跳过。引擎保证至多调用一次。 */
-  readonly onOverdue: () => string | null
-}
-
 /**
  * 引擎主动注入 user message 时的事件描述。详见 EngineOptions.onSystemInjection。
  */
 export interface SystemInjectionEvent {
-  readonly type: 'supplement' | 'overdue_reminder' | 'forced_summary' | 'stop_hook'
+  readonly type: 'supplement' | 'forced_summary' | 'stop_hook'
   /** 注入的文本内容（不含 ContentBlock[] 形态——supplement 的 ContentBlock 注入退化为 type 字符串描述） */
   readonly text: string
   /** 注入发生时的 turn 序号（与 EngineTurnEvent.turnNumber 同口径） */
@@ -401,13 +379,22 @@ export interface EngineResult {
   readonly usage: LLMTokenUsage
   readonly error?: string
   readonly finalMessages: ReadonlyArray<EngineMessage>
-  /** 本次 run 是否触发过超期注入。未配置 overdueConfig 或未超期时为 false。 */
-  readonly overdueInjected: boolean
   /**
    * 早退工具（`exitsLoop=true` 的工具）被调用时填入工具 name + 原始 input。
    * 未触发早退时为 undefined。
    */
   readonly exitToolCall?: { readonly name: string; readonly input: Record<string, unknown> }
+  /**
+   * 本次 run 累计的 tool_use 块数（每 turn 处理后递增）。
+   * 用于 skipReflection 判定"任务复杂度"——步数不够的简单任务跳过反思。
+   * Spec: 2026-06-03-dispatcher-immediate-reply-and-overdue-removal-design.md §7.2.1
+   */
+  readonly tool_call_count: number
+  /**
+   * 本次 run 期间 worker 是否主动调过 store_memory 或 set_scene_profile。
+   * 用于 skipReflection 判定——worker 已主动记了就不需要反思 LLM 兜底补记。
+   */
+  readonly wrote_memory_or_scene: boolean
 }
 
 // --- Factory Functions ---

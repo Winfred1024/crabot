@@ -142,4 +142,103 @@ describe('executeDispatchActions', () => {
       attempted_target_task_id: 'gone',
     })
   })
+
+  // ============================================================================
+  // immediate_reply（spec: 2026-06-03-dispatcher-immediate-reply-and-overdue-removal-design.md）
+  // ============================================================================
+
+  it('new_task 带 immediate_reply 时先 sendImmediateReply 后 spawn', async () => {
+    const calls: string[] = []
+    const sendImmediateReply = vi.fn().mockImplementation(async () => { calls.push('reply') })
+    const spawnAgentInstance = vi.fn().mockImplementation(async () => {
+      calls.push('spawn')
+      return { spawnedTraceId: 's' }
+    })
+    const ctx = makeExecCtx({ sendImmediateReply, spawnAgentInstance })
+    await executeDispatchActions(
+      [{ kind: 'new_task', text: '查 github trending', immediate_reply: '好的，我看下' }],
+      ctx,
+    )
+    expect(calls).toEqual(['reply', 'spawn'])
+    expect(sendImmediateReply).toHaveBeenCalledWith('好的，我看下')
+    expect(spawnAgentInstance).toHaveBeenCalledWith('查 github trending')
+  })
+
+  it('new_task 不带 immediate_reply 时跳过 sendImmediateReply 直接 spawn', async () => {
+    const sendImmediateReply = vi.fn()
+    const spawnAgentInstance = vi.fn().mockResolvedValue({ spawnedTraceId: 's' })
+    const ctx = makeExecCtx({ sendImmediateReply, spawnAgentInstance })
+    await executeDispatchActions([{ kind: 'new_task', text: 'hi' }], ctx)
+    expect(sendImmediateReply).not.toHaveBeenCalled()
+    expect(spawnAgentInstance).toHaveBeenCalledWith('hi')
+  })
+
+  it('sendImmediateReply 抛错时 warn 但不阻塞 spawn 继续', async () => {
+    const sendImmediateReply = vi.fn().mockRejectedValue(new Error('network'))
+    const spawnAgentInstance = vi.fn().mockResolvedValue({ spawnedTraceId: 's' })
+    const ctx = makeExecCtx({ sendImmediateReply, spawnAgentInstance })
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await executeDispatchActions(
+      [{ kind: 'new_task', text: '调研', immediate_reply: '好' }],
+      ctx,
+    )
+    warnSpy.mockRestore()
+    expect(spawnAgentInstance).toHaveBeenCalledWith('调研')
+  })
+
+  it('immediate_reply 出现在 dispatch_action span outcome 详情里', async () => {
+    const endSpan = vi.fn()
+    const trace = {
+      startSpan: vi.fn().mockReturnValue({ span_id: 'sp-1' }),
+      endSpan,
+    }
+    const ctx = makeExecCtx({
+      sendImmediateReply: vi.fn().mockResolvedValue(undefined),
+      trace,
+    })
+    await executeDispatchActions(
+      [{ kind: 'new_task', text: '调研', immediate_reply: '好的' }],
+      ctx,
+    )
+    const [, status, details] = endSpan.mock.calls[0]
+    expect(status).toBe('completed')
+    expect(details).toMatchObject({
+      outcome: 'new_task_spawned',
+      immediate_reply_sent: true,
+    })
+  })
+
+  it('immediate_reply 字段存在但 ExecuteContext 未注入 sendImmediateReply 回调时跳过发送，直接 spawn', async () => {
+    const spawnAgentInstance = vi.fn().mockResolvedValue({ spawnedTraceId: 's' })
+    const ctx = makeExecCtx({ spawnAgentInstance })  // 未传 sendImmediateReply
+    await executeDispatchActions(
+      [{ kind: 'new_task', text: '调研', immediate_reply: '好的' }],
+      ctx,
+    )
+    expect(spawnAgentInstance).toHaveBeenCalledWith('调研')
+  })
+
+  it('sendImmediateReply 抛错时 span outcome.immediate_reply_sent=false', async () => {
+    const endSpan = vi.fn()
+    const trace = {
+      startSpan: vi.fn().mockReturnValue({ span_id: 'sp-1' }),
+      endSpan,
+    }
+    const ctx = makeExecCtx({
+      sendImmediateReply: vi.fn().mockRejectedValue(new Error('boom')),
+      trace,
+    })
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await executeDispatchActions(
+      [{ kind: 'new_task', text: 'x', immediate_reply: '好' }],
+      ctx,
+    )
+    warnSpy.mockRestore()
+    const [, status, details] = endSpan.mock.calls[0]
+    expect(status).toBe('completed')
+    expect(details).toMatchObject({
+      outcome: 'new_task_spawned',
+      immediate_reply_sent: false,
+    })
+  })
 })
