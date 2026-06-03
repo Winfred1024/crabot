@@ -144,6 +144,7 @@ import {
 import { unionResolved } from './permission-resolution.js'
 import { ModelProviderManager } from './model-provider-manager.js'
 import { AgentManager } from './agent-manager.js'
+import { buildOnboardFinishResponse } from './onboard-finish-response.js'
 import { ChannelManager } from './channel-manager.js'
 import { ModuleInstaller } from './module-installer.js'
 import { ChatManager } from './chat-manager.js'
@@ -1806,13 +1807,13 @@ export class AdminModule extends ModuleBase {
               )
             }
           }
-          return {
-            instance,
-            ...(masterFriendId ? { master_friend_id: masterFriendId } : {}),
-            ...(masterDisplayName !== undefined ? { master_display_name: masterDisplayName } : {}),
-            ...(finishResult.scope_grant_url ? { scope_grant_url: finishResult.scope_grant_url } : {}),
-            push_sent: pushSent,
-          }
+          return buildOnboardFinishResponse({
+            finishResult,
+            instance: instance as unknown as { id: ModuleId } & Record<string, unknown>,
+            masterFriendId,
+            masterDisplayName,
+            pushSent,
+          })
         })
         return
       }
