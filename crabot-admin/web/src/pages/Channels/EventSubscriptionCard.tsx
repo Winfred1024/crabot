@@ -2,12 +2,22 @@ import React from 'react'
 import { Button } from '../../components/Common/Button'
 
 export interface EventSubscriptionCardProps {
+  /** 卡片标题文案（caller 决定平台特定措辞，如「去飞书后台订阅事件」） */
+  title: string
+  /** 标题下方说明文字 */
+  description: string
+  /** 跳转按钮文案 */
+  buttonLabel: string
+  /** 平台事件订阅页直链 */
   url: string
   events: ReadonlyArray<{ name: string; identifier: string }>
   extraInstructions?: ReadonlyArray<string>
 }
 
 export const EventSubscriptionCard: React.FC<EventSubscriptionCardProps> = ({
+  title,
+  description,
+  buttonLabel,
   url,
   events,
   extraInstructions,
@@ -23,10 +33,10 @@ export const EventSubscriptionCard: React.FC<EventSubscriptionCardProps> = ({
       }}
     >
       <p style={{ fontSize: '0.8125rem', fontWeight: 600, color: 'var(--text-primary)' }}>
-        还差一步：去飞书后台订阅事件
+        {title}
       </p>
       <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.375rem', lineHeight: 1.55 }}>
-        飞书的 scope 和事件订阅是两套独立配置。Crabot 用到的事件清单如下，请到飞书后台手动添加：
+        {description}
       </p>
 
       <table
@@ -63,7 +73,7 @@ export const EventSubscriptionCard: React.FC<EventSubscriptionCardProps> = ({
           variant="secondary"
           onClick={() => window.open(url, '_blank', 'noopener,noreferrer')}
         >
-          打开飞书事件订阅页 →
+          {buttonLabel}
         </Button>
       </div>
       <p style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '0.5rem', wordBreak: 'break-all' }}>

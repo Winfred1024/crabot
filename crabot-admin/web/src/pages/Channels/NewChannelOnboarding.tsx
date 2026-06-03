@@ -509,6 +509,9 @@ const ClaimMasterNameCard: React.FC<ClaimMasterNameCardProps> = ({
 
       {eventSubscription && (
         <EventSubscriptionCard
+          title="还差一步：去飞书后台订阅事件"
+          description="飞书的 scope 和事件订阅是两套独立配置。Crabot 用到的事件清单如下，请到飞书后台手动添加："
+          buttonLabel="打开飞书事件订阅页 →"
           url={eventSubscription.url}
           events={eventSubscription.events}
           extraInstructions={eventSubscription.extra_instructions}
