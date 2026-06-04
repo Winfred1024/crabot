@@ -241,4 +241,122 @@ describe('executeDispatchActions', () => {
       immediate_reply_sent: false,
     })
   })
+
+  describe('reactToTriggerMessage 触发逻辑（spec 2026-06-04）', () => {
+    function makeMsg(id: string) {
+      return {
+        platform_message_id: id,
+        session: { session_id: 'sess', channel_id: 'ch', type: 'private' as const },
+        sender: { platform_user_id: 'u1', platform_display_name: 'U' },
+        content: { type: 'text' as const, text: 'hi' },
+        features: { is_mention_crab: false },
+        platform_timestamp: '2026-06-04T00:00:00Z',
+      }
+    }
+
+    it('new_task 成功后调 reactToTriggerMessage，参数是批次最后一条消息 id', async () => {
+      const react = vi.fn().mockResolvedValue(undefined)
+      const ctx = makeExecCtx({
+        reactToTriggerMessage: react,
+        dispatchCtx: {
+          messages: [makeMsg('m1'), makeMsg('m2')],
+          recentMessages: [], activeTasks: [], sessionType: 'private',
+          channelId: 'ch', sessionId: 'sess',
+          senderFriend: {} as never, traceId: 'trace-1',
+        },
+      })
+      await executeDispatchActions([{ kind: 'new_task', text: 'go' }], ctx)
+      expect(react).toHaveBeenCalledTimes(1)
+      expect(react).toHaveBeenCalledWith('m2')
+    })
+
+    it('supplement delivered 后调 reactToTriggerMessage', async () => {
+      const react = vi.fn().mockResolvedValue(undefined)
+      const ctx = makeExecCtx({
+        reactToTriggerMessage: react,
+        dispatchCtx: {
+          messages: [makeMsg('m9')],
+          recentMessages: [], activeTasks: [], sessionType: 'private',
+          channelId: 'ch', sessionId: 'sess',
+          senderFriend: {} as never, traceId: 'trace-1',
+        },
+      })
+      await executeDispatchActions(
+        [{ kind: 'supplement', target_task_id: 't', text: 'add' }],
+        ctx,
+      )
+      expect(react).toHaveBeenCalledWith('m9')
+    })
+
+    it('supplement fallback 降级 new_task 后也调 reactToTriggerMessage', async () => {
+      const react = vi.fn().mockResolvedValue(undefined)
+      const ctx = makeExecCtx({
+        reactToTriggerMessage: react,
+        pushSupplement: vi.fn().mockResolvedValue('fallback'),
+        dispatchCtx: {
+          messages: [makeMsg('m_last')],
+          recentMessages: [], activeTasks: [], sessionType: 'private',
+          channelId: 'ch', sessionId: 'sess',
+          senderFriend: {} as never, traceId: 'trace-1',
+        },
+      })
+      await executeDispatchActions(
+        [{ kind: 'supplement', target_task_id: 'gone', text: 'x' }],
+        ctx,
+      )
+      expect(react).toHaveBeenCalledTimes(1)
+      expect(react).toHaveBeenCalledWith('m_last')
+    })
+
+    it('stay_silent 不调 reactToTriggerMessage', async () => {
+      const react = vi.fn().mockResolvedValue(undefined)
+      const ctx = makeExecCtx({
+        reactToTriggerMessage: react,
+        dispatchCtx: {
+          messages: [makeMsg('m1')],
+          recentMessages: [], activeTasks: [], sessionType: 'group',
+          channelId: 'ch', sessionId: 'sess',
+          senderFriend: {} as never, traceId: 'trace-1',
+        },
+      })
+      await executeDispatchActions([{ kind: 'stay_silent', reason: 'x' }], ctx)
+      expect(react).not.toHaveBeenCalled()
+    })
+
+    it('reactToTriggerMessage 抛错不阻塞 spawn / supplement', async () => {
+      const spawn = vi.fn().mockResolvedValue({ spawnedTraceId: 's' })
+      const ctx = makeExecCtx({
+        spawnAgentInstance: spawn,
+        reactToTriggerMessage: vi.fn().mockRejectedValue(new Error('rpc-down')),
+        dispatchCtx: {
+          messages: [makeMsg('m1')],
+          recentMessages: [], activeTasks: [], sessionType: 'private',
+          channelId: 'ch', sessionId: 'sess',
+          senderFriend: {} as never, traceId: 'trace-1',
+        },
+      })
+      await executeDispatchActions([{ kind: 'new_task', text: 'go' }], ctx)
+      expect(spawn).toHaveBeenCalledTimes(1)
+    })
+
+    it('不注入 reactToTriggerMessage 时正常工作（向后兼容）', async () => {
+      const ctx = makeExecCtx({
+        dispatchCtx: {
+          messages: [makeMsg('m1')],
+          recentMessages: [], activeTasks: [], sessionType: 'private',
+          channelId: 'ch', sessionId: 'sess',
+          senderFriend: {} as never, traceId: 'trace-1',
+        },
+      })
+      await executeDispatchActions([{ kind: 'new_task', text: 'go' }], ctx)
+      expect(ctx.spawnAgentInstance).toHaveBeenCalledTimes(1)
+    })
+
+    it('messages 为空时不报错也不调 react（防御）', async () => {
+      const react = vi.fn().mockResolvedValue(undefined)
+      const ctx = makeExecCtx({ reactToTriggerMessage: react })
+      await executeDispatchActions([{ kind: 'new_task', text: 'go' }], ctx)
+      expect(react).not.toHaveBeenCalled()
+    })
+  })
 })

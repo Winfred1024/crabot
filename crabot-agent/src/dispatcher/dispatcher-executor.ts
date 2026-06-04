@@ -17,6 +17,28 @@
 
 import type { DispatchAction, ExecuteContext } from './dispatcher-types.js'
 
+/**
+ * 取批次最后一条消息的 platform_message_id。空批次返回 null。
+ * 选最后一条原因：人类视角"我刚说的最后一句话被接住了"最自然。
+ */
+function lastTriggerMessageId(ctx: ExecuteContext): string | null {
+  const msgs = ctx.dispatchCtx.messages
+  if (msgs.length === 0) return null
+  return msgs[msgs.length - 1].platform_message_id
+}
+
+async function fireReaction(ctx: ExecuteContext): Promise<void> {
+  if (!ctx.reactToTriggerMessage) return
+  const id = lastTriggerMessageId(ctx)
+  if (!id) return
+  try {
+    await ctx.reactToTriggerMessage(id)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.warn(`[dispatcher-executor] reactToTriggerMessage failed (non-fatal): ${msg}`)
+  }
+}
+
 export async function executeDispatchActions(
   actions: ReadonlyArray<DispatchAction>,
   ctx: ExecuteContext,
@@ -48,6 +70,7 @@ export async function executeDispatchActions(
         } else if (span && ctx.trace) {
           ctx.trace.endSpan(span.span_id, 'completed', { outcome: 'supplement_delivered' })
         }
+        await fireReaction(ctx)
       } else if (action.kind === 'new_task') {
         // 预回复（如果 dispatcher 判定复杂任务带了 immediate_reply）：
         // 在 spawnAgentInstance 之前 await 一次 channel.send_message，让用户立即收到 ack。
@@ -74,6 +97,7 @@ export async function executeDispatchActions(
             immediate_reply_sent: immediateReplySent,
           })
         }
+        await fireReaction(ctx)
       } else if (action.kind === 'stay_silent') {
         // 无副作用——attention scheduler 通过"是否有非 stay_silent 动作"判断退避
         if (span && ctx.trace) {

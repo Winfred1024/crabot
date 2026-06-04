@@ -93,6 +93,14 @@ export interface ExecuteContext {
    * Spec: 2026-06-03-dispatcher-immediate-reply-and-overdue-removal-design.md
    */
   readonly sendImmediateReply?: (text: string) => Promise<void>
+  /**
+   * 接住消息后的 reaction 回调（可选）。
+   * Executor 在 new_task / supplement（含 fallback 降级）成功后调用一次，传该批
+   * 最后一条消息的 platform_message_id。stay_silent 不调。抛错不阻塞主流程。
+   *
+   * Spec: 2026-06-04-channel-task-pickup-reaction-design.md §4
+   */
+  readonly reactToTriggerMessage?: (platformMessageId: string) => Promise<void>
   /** trace 写入回调（可选）。注入后 executeDispatchActions 为每个 action 写 dispatch_action span。 */
   readonly trace?: DispatchTraceCallback
 }
