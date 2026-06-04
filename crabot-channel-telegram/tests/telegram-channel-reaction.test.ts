@@ -4,15 +4,12 @@
  * Spec: 2026-06-04-channel-task-pickup-reaction-design.md §3
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import fs from 'node:fs'
-import path from 'node:path'
-import os from 'node:os'
 
 import { TelegramClient } from '../src/telegram-client'
 // import { TelegramChannel } from '../src/telegram-channel'
 
 describe('TelegramClient.setMessageReaction', () => {
-  let fetchSpy: ReturnType<typeof vi.fn>
+  let fetchSpy: ReturnType<typeof vi.fn<any[], any>>
   beforeEach(() => {
     fetchSpy = vi.fn(async () => ({
       ok: true,
