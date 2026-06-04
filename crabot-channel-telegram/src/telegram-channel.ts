@@ -445,23 +445,11 @@ export class TelegramChannel extends ModuleBase {
     kind: string
   }): Promise<{ added: boolean }> {
     const session = this.sessionManager.findById(params.session_id)
-    if (!session) {
-      const err = new Error(`Session not found: ${params.session_id}`) as Error & { code: string }
-      err.code = 'NOT_FOUND'
-      throw err
-    }
+    if (!session) throwError('NOT_FOUND', `Session not found: ${params.session_id}`)
     const emoji = TelegramChannel.REACTION_EMOJI_BY_KIND[params.kind]
-    if (!emoji) {
-      const err = new Error(`Unknown reaction kind: ${params.kind}`) as Error & { code: string }
-      err.code = 'INVALID_ARGUMENT'
-      throw err
-    }
+    if (!emoji) throwError('INVALID_ARGUMENT', `Unknown reaction kind: ${params.kind}`)
     const msgId = parseInt(params.platform_message_id, 10)
-    if (!Number.isFinite(msgId) || Number.isNaN(msgId)) {
-      const err = new Error(`Invalid platform_message_id: ${params.platform_message_id}`) as Error & { code: string }
-      err.code = 'INVALID_ARGUMENT'
-      throw err
-    }
+    if (!Number.isFinite(msgId)) throwError('INVALID_ARGUMENT', `Invalid platform_message_id: ${params.platform_message_id}`)
     await this.client.setMessageReaction(session.platform_session_id, msgId, emoji)
     return { added: true }
   }
@@ -820,6 +808,13 @@ function buildReplyQuotePrefix(replyTo: TgMessage): string {
   const time = new Date(replyTo.date * 1000).toISOString().slice(11, 16) // HH:MM (UTC)
   const text = replyTo.text ?? replyTo.caption ?? '[非文本消息]'
   return `> [引用 ${sender} ${time} msg_id=${replyTo.message_id}] ${text}\n\n`
+}
+
+/** 抛带 code 的 Error，让 ModuleBase RPC 层映射成结构化错误码 */
+function throwError(code: string, message: string): never {
+  const err = new Error(message) as Error & { code: string }
+  err.code = code
+  throw err
 }
 
 function storedMessageToProtocol(m: StoredMessage) {
