@@ -12,7 +12,7 @@ import { TelegramClient } from '../src/telegram-client'
 import { TelegramChannel } from '../src/telegram-channel'
 
 describe('TelegramClient.setMessageReaction', () => {
-  let fetchSpy: ReturnType<typeof vi.fn>
+  let fetchSpy: ReturnType<typeof vi.fn<any[], any>>
   beforeEach(() => {
     fetchSpy = vi.fn(async () => ({
       ok: true,
