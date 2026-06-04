@@ -51,6 +51,8 @@ export {
 
 export { ProxyManager, proxyManager } from './proxy-manager.js'
 
+export { SYSTEM_SESSION, SYSTEM_SESSION_ID, SYSTEM_CHANNEL_ID } from './system-session.js'
+
 export { CLI_WRITE_SUBCOMMANDS, CLI_MUST_CONFIRM_SUBCOMMANDS } from './cli-write-commands.js'
 
 export {
