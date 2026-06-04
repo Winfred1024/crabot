@@ -27,7 +27,7 @@ describe('TelegramClient.setMessageReaction', () => {
 
   it('POST /setMessageReaction，body 含 reaction=[{type:"emoji", emoji}]', async () => {
     const client = new TelegramClient('TKN')
-    await client.setMessageReaction(12345, 678, '👀')
+    await client.setMessageReaction(12345, 678, '🫡')
 
     expect(fetchSpy).toHaveBeenCalledTimes(1)
     const [url, init] = fetchSpy.mock.calls[0]
@@ -37,7 +37,7 @@ describe('TelegramClient.setMessageReaction', () => {
     expect(body).toEqual({
       chat_id: 12345,
       message_id: 678,
-      reaction: [{ type: 'emoji', emoji: '👀' }],
+      reaction: [{ type: 'emoji', emoji: '🫡' }],
     })
   })
 })
@@ -122,7 +122,7 @@ describe('TelegramChannel.handleAddReaction', () => {
     ).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' })
   })
 
-  it('kind=acknowledged 调 client.setMessageReaction(chatId, msgId, "👀")', async () => {
+  it('kind=acknowledged 调 client.setMessageReaction(chatId, msgId, "🫡")', async () => {
     const sm = (channel as any).sessionManager
     const { session } = sm.upsert({
       platform_session_id: 'tg_chat_99',
@@ -140,7 +140,7 @@ describe('TelegramChannel.handleAddReaction', () => {
       kind: 'acknowledged',
     })
 
-    expect(spy).toHaveBeenCalledWith('tg_chat_99', 12345, '👀')
+    expect(spy).toHaveBeenCalledWith('tg_chat_99', 12345, '🫡')
     expect(result).toEqual({ added: true })
   })
 })
