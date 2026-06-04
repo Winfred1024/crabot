@@ -428,6 +428,42 @@ export class TelegramChannel extends ModuleBase {
     this.registerMethod('get_platform_user_info', this.handleGetPlatformUserInfo.bind(this))
     this.registerMethod('get_config', this.handleGetConfig.bind(this))
     this.registerMethod('update_config', this.handleUpdateConfig.bind(this))
+    this.registerMethod('add_reaction', this.handleAddReaction.bind(this))
+  }
+
+  /**
+   * kind → emoji 映射。'acknowledged' = 已接收开始处理。
+   * Spec: 2026-06-04-channel-task-pickup-reaction-design.md §3
+   */
+  private static readonly REACTION_EMOJI_BY_KIND: Record<string, string> = {
+    acknowledged: '👀',
+  }
+
+  private async handleAddReaction(params: {
+    session_id: string
+    platform_message_id: string
+    kind: string
+  }): Promise<{ added: boolean }> {
+    const session = this.sessionManager.findById(params.session_id)
+    if (!session) {
+      const err = new Error(`Session not found: ${params.session_id}`) as Error & { code: string }
+      err.code = 'NOT_FOUND'
+      throw err
+    }
+    const emoji = TelegramChannel.REACTION_EMOJI_BY_KIND[params.kind]
+    if (!emoji) {
+      const err = new Error(`Unknown reaction kind: ${params.kind}`) as Error & { code: string }
+      err.code = 'INVALID_ARGUMENT'
+      throw err
+    }
+    const msgId = parseInt(params.platform_message_id, 10)
+    if (!Number.isFinite(msgId) || Number.isNaN(msgId)) {
+      const err = new Error(`Invalid platform_message_id: ${params.platform_message_id}`) as Error & { code: string }
+      err.code = 'INVALID_ARGUMENT'
+      throw err
+    }
+    await this.client.setMessageReaction(session.platform_session_id, msgId, emoji)
+    return { added: true }
   }
 
   // ============================================================================
@@ -577,7 +613,7 @@ export class TelegramChannel extends ModuleBase {
   private handleGetCapabilities(): ChannelCapabilities {
     return {
       supported_message_types: ['text', 'image', 'file'],
-      supported_features: [],
+      supported_features: ['reaction'],
       supports_history_query: true,
       supports_platform_user_query: true,
       max_message_length: MAX_MESSAGE_LENGTH,
