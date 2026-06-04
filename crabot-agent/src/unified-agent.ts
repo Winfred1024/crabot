@@ -1638,6 +1638,7 @@ export class UnifiedAgent extends ModuleBase {
       })
 
       // 执行动作
+      // admin_chat 不注入 reactToTriggerMessage：无 channel-side platform message，无 add_reaction RPC 通道
       await executeDispatchActions(actions, {
         dispatchCtx,
         sendImmediateReply,
