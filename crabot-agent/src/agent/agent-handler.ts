@@ -1528,7 +1528,7 @@ export class AgentHandler {
     context: WorkerAgentContext
     /**
      * Task 的标题 / 触发摘要。优先用 dispatch LLM 生成的 actionText（清晰任务化），
-     * 缺省回退到 messages 最后一条切 100 字。同时作为 task_title / task_description /
+     * 缺省回退到 messages 最后一条切 100 字。同时作为 task_title /
      * activeTasks.title / task trace.trigger.summary 使用。
      */
     taskTitle: string
@@ -1567,7 +1567,6 @@ export class AgentHandler {
     const task: ExecuteTaskParams['task'] = {
       task_id: syntheticTaskId,
       task_title: taskTitle,
-      task_description: taskTitle,
       priority: 'normal',
     }
 
@@ -2875,12 +2874,6 @@ export class AgentHandler {
           quotedMessages,
         }))
       }
-      if (task.task_description) {
-        parts.push(`\n## 任务分类\n${task.task_description}`)
-      }
-    } else {
-      // 无 trigger_messages（如定时任务），回退到 task_description
-      parts.push(`\n## 任务描述\n${task.task_description}`)
     }
 
     if (context.sender_friend) {

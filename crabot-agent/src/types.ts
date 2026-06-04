@@ -718,7 +718,6 @@ export interface ExecuteTaskParams {
   task: {
     task_id: TaskId
     task_title: string
-    task_description: string
     priority: string
     plan?: string
     task_type?: string

@@ -111,7 +111,6 @@ export class ScheduledTaskRunner {
           task: {
             task_id: task.id,
             task_title: task.title,
-            task_description: task.description ?? '',
             priority: task.priority,
             plan: task.plan,
             task_type: task.task_type,
