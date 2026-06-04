@@ -673,6 +673,28 @@ export class FeishuChannel extends ModuleBase {
     this.registerMethod('get_config', this.handleGetConfig.bind(this))
     this.registerMethod('update_config', this.handleUpdateConfig.bind(this))
     this.registerMethod('read_document', this.handleReadDocument.bind(this))
+    this.registerMethod('add_reaction', this.handleAddReaction.bind(this))
+  }
+
+  /**
+   * kind → emoji 映射表。新增 kind 必须先改协议。
+   * Spec: 2026-06-04-channel-task-pickup-reaction-design.md §2
+   */
+  private static readonly REACTION_EMOJI_BY_KIND: Record<string, string> = {
+    acknowledged: 'OnIt',
+  }
+
+  private async handleAddReaction(params: {
+    session_id: string
+    platform_message_id: string
+    kind: string
+  }): Promise<{ added: boolean }> {
+    const session = this.sessionManager.findById(params.session_id)
+    if (!session) throwError('NOT_FOUND', `Session not found: ${params.session_id}`)
+    const emoji = FeishuChannel.REACTION_EMOJI_BY_KIND[params.kind]
+    if (!emoji) throwError('INVALID_ARGUMENT', `Unknown reaction kind: ${params.kind}`)
+    await this.client.addReaction(params.platform_message_id, emoji)
+    return { added: true }
   }
 
   private async handleSendMessage(params: SendMessageParams): Promise<SendMessageResult> {
@@ -852,7 +874,7 @@ export class FeishuChannel extends ModuleBase {
   private handleGetCapabilities(): ChannelCapabilities {
     return {
       supported_message_types: ['text', 'image', 'file'],
-      supported_features: ['mention', 'quote'],
+      supported_features: ['mention', 'quote', 'reaction'],
       supports_history_query: true,
       supports_platform_user_query: true,
       max_message_length: null,
