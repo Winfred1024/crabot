@@ -95,6 +95,27 @@ export class TelegramClient {
     })
   }
 
+  // ── Reaction ──────────────────────────────────────────────────────────────
+
+  /**
+   * 在指定消息上设置一个 reaction（emoji）。
+   * 非 premium bot 每条消息只能挂 1 个 reaction（够用）。
+   * Bot API 7.0+ 支持。
+   *
+   * https://core.telegram.org/bots/api#setmessagereaction
+   */
+  async setMessageReaction(
+    chatId: string | number,
+    messageId: number,
+    emoji: string,
+  ): Promise<void> {
+    await this.callApi<boolean>('setMessageReaction', {
+      chat_id: chatId,
+      message_id: messageId,
+      reaction: [{ type: 'emoji', emoji }],
+    })
+  }
+
   // ── Webhook ───────────────────────────────────────────────────────────────
 
   async setWebhook(url: string, secret?: string): Promise<boolean> {
