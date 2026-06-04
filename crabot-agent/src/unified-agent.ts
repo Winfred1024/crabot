@@ -659,6 +659,7 @@ export class UnifiedAgent extends ModuleBase {
           }
         },
         sendImmediateReply,
+        reactToTriggerMessage: this.buildReactToTriggerMessage(session.channel_id, session.session_id),
         spawnAgentInstance: async (actionText: string) => {
           const triggerIds = new Set(messages.map(m => m.platform_message_id))
           const history = (frontContext.recent_messages ?? []).filter(
@@ -871,6 +872,7 @@ export class UnifiedAgent extends ModuleBase {
           }
         },
         sendImmediateReply,
+        reactToTriggerMessage: this.buildReactToTriggerMessage(session.channel_id, sessionId),
         spawnAgentInstance: async (actionText: string) => {
           // 群聊：把 attention 批次 messages（已含群成员发的文件/图片）+ recent_messages 历史去重后整批传给 worker。
           // 不用 action.text 覆盖触发消息的 content.text，让 worker 拿到完整保真的消息上下文；
@@ -2301,6 +2303,28 @@ export class UnifiedAgent extends ModuleBase {
         source: 'dispatcher',
         ...record,
       })
+    }
+  }
+
+  /**
+   * 构造 dispatcher reactToTriggerMessage 闭包。
+   * dispatcher 接住消息后调 channel.add_reaction(kind='acknowledged')。
+   * channel 不支持 add_reaction（如 wechat 未注册此 RPC）时 RPC 自身会抛 method-not-found，
+   * caller（dispatcher-executor.fireReaction）内部 catch + warn，主流程不受影响。
+   *
+   * Spec: 2026-06-04-channel-task-pickup-reaction-design.md §4
+   */
+  private buildReactToTriggerMessage(
+    channelId: string,
+    sessionId: string,
+  ): (platformMessageId: string) => Promise<void> {
+    return async (platformMessageId: string) => {
+      const channelPort = await this.getChannelPort(channelId)
+      await this.rpcClient.call(channelPort, 'add_reaction', {
+        session_id: sessionId,
+        platform_message_id: platformMessageId,
+        kind: 'acknowledged',
+      }, this.config.moduleId)
     }
   }
 
