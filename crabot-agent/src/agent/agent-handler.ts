@@ -342,7 +342,7 @@ export interface ExecuteTriggerMessageParams {
   /**
    * Dispatch LLM 生成的任务摘要（dispatchAction.text）。
    * 用作 task title / description；缺省时回退到 triggerSummary（原始消息切片）。
-   * 仅影响 task 元数据展示（Admin UI / Front supplement_task 决策清单 / Worker prompt 任务信息段），
+   * 仅影响 task 元数据展示（Admin UI / Dispatcher supplement 决策清单 / Worker prompt 任务信息段），
    * worker 拿到的 trigger_messages 仍是原始保真消息。
    */
   readonly dispatchActionText?: string
@@ -359,7 +359,7 @@ export interface ExecuteTriggerMessageResult {
   readonly outcome: 'completed' | 'failed' | 'max_turns' | 'aborted'
   /** 最终 assistant 文本（未必是发给用户的——可能仍是内部 reasoning） */
   readonly finalText: string
-  /** 早退工具调用（supplement_task / stay_silent）。若 loop 自然结束则 undefined */
+  /** 早退工具调用（exitsLoop=true 的工具，如 submit_audit_result）。若 loop 自然结束则 undefined */
   readonly exitToolCall?: { readonly name: string; readonly input: Record<string, unknown> }
   /** loop 内是否调过 send_message（任一 messaging tool） */
   readonly sentMessage: boolean
@@ -1203,7 +1203,7 @@ export class AgentHandler {
 
       // 7. Run engine — systemPrompt 和 tools 传 lambda，每轮 LLM 调用前 query-loop 重新 resolve
       // maxTurns: 主任务允许长时间执行（探索类任务可能跑 1000+ turn）；context-manager 在
-      // 80% 窗口时自动 compaction 兜底。真正死循环可通过 supplement_task 或 abort 中断。
+      // 80% 窗口时自动 compaction 兜底。真正死循环可通过用户 supplement（dispatcher 注入）或 abort 中断。
       let compactionSpanId: string | undefined = undefined
       let compactionStartedAtMs: number | undefined = undefined
       const engineResult = await runEngine({
@@ -1553,7 +1553,7 @@ export class AgentHandler {
     const lastMsgText = lastMsg?.content.type === 'text' ? (lastMsg.content.text ?? '') : '[非文本]'
     const triggerSummary = lastMsgText.slice(0, 100)
     // 优先用 Dispatch LLM 生成的任务摘要（清晰、抽象到任务层面），缺省时才回退到原始消息切片。
-    // Spec: title 不只是 UI 展示——Front 在做 supplement_task 决策时活跃任务清单里展示的就是它。
+    // Spec: title 不只是 UI 展示——dispatcher 做 supplement 决策时活跃任务清单里展示的就是它。
     const taskTitle = (dispatchActionText && dispatchActionText.trim().length > 0)
       ? dispatchActionText.slice(0, 200)
       : triggerSummary
@@ -1700,12 +1700,11 @@ export class AgentHandler {
    *
    * 与 executeTask 的区别：
    * - executeTask 处理 admin 已注册的 task（带 task_id）
-   * - executeTriggerMessage 处理新触发消息，可能早退（supplement/silent），可能自然结束
+   * - executeTriggerMessage 处理新触发消息，loop 自然结束（worker 端已无 supplement/silent 早退工具）
    *
    * Caller（unified-agent）根据 result.exitToolCall 自行 dispatch：
-   * - exitToolCall.name === 'supplement_task' → 路由 supplement_text 到目标 task
-   * - exitToolCall.name === 'stay_silent' → 忽略
-   * - undefined → loop 自然结束（agent 已通过 send_message 工具回复人类，或没回复）
+   * - exitToolCall === undefined → loop 自然结束（agent 已通过 send_message 工具回复人类，或没回复）
+   * - 其他 exitsLoop 工具（如 submit_audit_result）由对应专用 caller 处理
    *
    * 新代码（SessionLane handler）应直接调 register + run 分步接口。
    * Spec: 2026-05-20-session-lane-dispatcher-design.md §3.3 §7
@@ -1725,10 +1724,10 @@ export class AgentHandler {
   /**
    * 构造 trigger 场景的 user prompt。
    *
-   * - 删除群聊决策提示（trigger loop 用 send_message + stay_silent + supplement_task）
    * - 删除末尾 "## 指令" 段（工具 schema 自解释）
-   * - 新增尾部提醒：用 send_message 工具回复（含 channel_id / session_id）
+   * - 尾部提醒：用 send_message 工具回复（含 channel_id / session_id）
    * - 场景画像从 frontContext 读取（已在 system prompt 里，此处不再重复渲染）
+   * - 不注入 supplement / silent 决策提示——dispatcher 在 spawn 前已做完
    */
   private async buildTriggerUserPrompt(params: ExecuteTriggerMessageParams, currentTaskId: TaskId): Promise<string> {
     const { messages, activeTasks, isGroup, senderFriend, channelId, sessionId, frontContext } = params
@@ -1838,10 +1837,6 @@ export class AgentHandler {
     // ── 行动提醒 ──
     parts.push(`\n## 行动提醒`)
     parts.push(`- 给人类回复用 \`send_message\` 工具（channel_id="${channelId}"，session_id="${sessionId}"）；最终交付也用 intent="info"，发完直接 end_turn。`)
-    if (isGroup) {
-      parts.push(`- 若本批消息与你无关（群成员之间的讨论），调 \`stay_silent\` 退出 loop。`)
-    }
-    parts.push(`- 若本消息是对某个活跃任务的纠偏/补充，turn 0 调 \`supplement_task\` 退出 loop。`)
 
     return parts.join('\n')
   }

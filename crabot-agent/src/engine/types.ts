@@ -146,7 +146,7 @@ export interface ToolDefinition {
    * 而是返回 error 类工具结果（"Tool 'X' is only callable on turn 0..."），
    * 让 LLM 看到拒绝信号并自行调整。
    *
-   * 用于 supplement_task / stay_silent 这类 turn 0 triage 决策工具。
+   * 用于 turn 0 triage 决策工具（如未来可能新增的 turn 0 早退判定）。
    */
   readonly turnZeroOnly?: boolean
   /**
@@ -154,7 +154,7 @@ export interface ToolDefinition {
    * 引擎不调用 `call` 函数（exit 工具本身无需执行），也不 push tool_result——
    * 直接 buildResult('completed', ...) 返回。
    *
-   * 用于 supplement_task / stay_silent 这类"调完就走"的早退工具。
+   * 用于"调完就走"的早退工具（如 submit_audit_result）。
    */
   readonly exitsLoop?: boolean
   readonly call: (input: Record<string, unknown>, context: ToolCallContext) => Promise<ToolCallResult>
