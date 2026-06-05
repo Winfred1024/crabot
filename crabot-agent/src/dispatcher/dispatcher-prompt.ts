@@ -67,10 +67,10 @@ const SUPPLEMENT_WHITELIST_REMINDER =
  * Spec: 2026-06-03-dispatcher-immediate-reply-and-overdue-removal-design.md
  */
 const NEW_TASK_IMMEDIATE_REPLY_HINT =
-  `   - immediate_reply（可选）：复杂任务在 worker 起来前先发一句简短 ack 让用户知道收到了（worker 看历史不会重复 ack）
-     · 倾向带：动词类指令（写/查/调研/分析/做/帮我）/ 多步骤连接词（然后/还要/最后）/ 涉及代码生成 / 涉及查外部数据 / 场景画像明示
-     · 倾向不带：寒暄（在吗/谢谢/好的）/ 单一问句（今天几号）/ 简短 ack（嗯/行/👍）
-     · 拿不准：不带（错过最多多等几秒；错带显得啰嗦）
+  `   - immediate_reply（可选）：worker 需要动手（查记忆/查配置/查日志/调命令/读代码/多步推理）才能答的任务，在 worker 起来前先发一句简短 ack 让用户知道收到了（worker 看历史不会重复 ack）
+     · 倾向带：**需要 agent 动手才能答的请求**——即使字面是单一问句也算（如「服务器 X 的 root 密码是多少」「为什么接口返回 500」「这个表怎么同步的」） / 动词类指令（写/查/调研/分析/做/帮我/给我一个示例） / 多步骤连接词（然后/还要/最后） / 涉及代码生成 / 用户发来代码片段/日志/截图描述让 crab 排查 / 场景画像明示
+     · 倾向不带：寒暄（在吗/谢谢/好的，agent 会立即回） / **agent 不用动手就能秒回的字面常识问句**（今天几号 / 你是谁 / 你用的什么模型） / 简短 ack（嗯/行/👍） / 用户单纯分享想法不带请求
+     · 拿不准：不带（错带显得啰嗦；而且拿不准时大概率也不知道该写什么 ack）
      · 文案：一句话 ≤30 字，自然口语，不承诺时间（避免"马上"/"5 分钟内"），不泄露 dispatcher/worker/system_event 这类内部术语`
 
 const PRIVATE_RULES_WITH_ACTIVE = `## 分诊规则（私聊 / admin chat）
