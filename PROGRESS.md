@@ -1,8 +1,43 @@
 # Crabot 项目进度
 
-> 最后更新：2026-06-03 — SceneProfile v0.3.0：删 global + scene 参数权限分级
+> 最后更新：2026-06-05 — trigger_messages 统一为 worker 任务输入唯一通道
 
-## 最新里程碑（2026-06-03 — SceneProfile v0.3.0：删 global + scene 参数权限分级）
+## 最新里程碑（2026-06-05 — trigger_messages 统一 + Schedule.target_session 一等字段）
+
+把 worker 接收任务输入的两条并行通道（`task.task_description` + `context.trigger_messages`）收敛为单通道，schedule 的目标会话从半结构化 input 字段升级为一等可选字段。
+
+- 起因：`task_description` 字段在 dispatcher 触发路径只作"一句话分类标注"无实际价值，但在 scheduled 路径作为唯一输入兜底；同时 schedule 目标会话半埋在 `task_template.input.target_*`（部分 schedule 干脆把目标群 ID 直接埋在 description 文本里），口径不一致
+- 设计：
+  - `trigger_messages` 成为 worker 接收任务输入的**唯一通道**
+  - `ExecuteTaskParams.task.task_description` 字段彻底删除（agent 协议 + 调用点）
+  - Scheduled task 通过 `system_event` 子类型 `scheduled` 表达（sender=crabot 自身）
+  - `Schedule.target_session?: { channel_id, session_id, type }` 升级一等可选字段，admin RPC + web UI 全套支持
+  - 无 target_session 时用 `SYSTEM_SESSION` 哨兵（`crabot-shared`），`crab-messaging.send_message` 硬拒绝该哨兵
+  - `buildTaskMessage` 重写为单段 `## 会话历史` 时间线，合并 trigger + recent 按 timestamp 排序
+
+改动覆盖（10 个 commits）：
+- **crabot-docs**：`protocol-agent-v2.md` §3.4 trigger_messages 注释补强；`base-protocol.md` `SystemEventType` 加 `'scheduled'` + system_event 双来源约束（Channel 平台事件 vs 系统内部触发）
+- **crabot-shared**：新增 `SYSTEM_SESSION` 哨兵常量
+- **crabot-agent**：`types.ts` SystemEventType 扩展；`ExecuteTaskParams.task.task_description` 删除；dispatcher schema/prompt 无需改动（已无该字段）；`buildTaskMessage` 重写单段时间线；`ScheduledTaskRunner` 构造 system_event trigger_message；`crab-messaging.send_message` 拒收 SYSTEM_SESSION；worker prompt 加 "系统触发任务说明" 段
+- **crabot-admin**：`Schedule.target_session` 一等字段 + create/update/get/list RPC 支持 + `validateTargetSession` 校验；启动时一次性迁移 `task_template.input.target_*` → `target_session`（幂等，channel offline 兜底）
+- **crabot-admin-web**：Schedule 编辑器加 channel + session 联动 dropdown，自动派生 session.type，支持"清除目标会话"
+
+spec：[`crabot-docs/superpowers/specs/2026-06-04-trigger-messages-unified-design.md`](crabot-docs/superpowers/specs/2026-06-04-trigger-messages-unified-design.md)
+plan：[`crabot-docs/superpowers/plans/2026-06-04-trigger-messages-unified.md`](crabot-docs/superpowers/plans/2026-06-04-trigger-messages-unified.md)
+
+测试：crabot-agent 1175/1181（4 pre-existing engine 失败无关）；crabot-admin 561/561；admin-web tsc + build 全绿。subagent 路径 `BgAgentRegistryRecord.task_description` 等 13 处 task_description 引用按 spec 明确保留不动。
+
+**待办（用户手动）**：
+- Task 13 端到端 4 场景验证（每日反思无 target / github-ai-news 迁移后有 target / 普通消息触发无回归 / agi-a-share 文本埋藏未迁移）
+- agi-a-share schedule 目标群 ID 当前仍埋在 description 文本里，可在 admin web 手动改成 target_session 配置
+
+**已知 follow-up**：
+- crabot-shared dist 传播到 channel-feishu pnpm cache 偶发延迟（dev.sh / Task 2 / Task 10 实施时遇到过），单独 follow-up
+- `runScheduleMigration` 在 schedules-load try 块内，若 persist 失败 outer catch 会误打 "No existing schedules data" 日志（cosmetic）
+
+---
+
+## 上一里程碑（2026-06-03 — SceneProfile v0.3.0：删 global + scene 参数权限分级）
 
 修一个被 trace c829e70b 暴露的产品语义错误 + agent 工具签名 bug：
 
