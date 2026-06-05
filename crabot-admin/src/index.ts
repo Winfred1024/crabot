@@ -72,6 +72,7 @@ import {
   type TaskPriority,
   type ScheduleTrigger,
   type ScheduleTriggerType,
+  type ScheduleTargetSession,
   type AdminEventPayloads,
   type ModelProvider,
   type CreateModelProviderParams,
@@ -4626,6 +4627,28 @@ export class AdminModule extends ModuleBase {
   // Schedule 协议方法
   // ============================================================================
 
+  /**
+   * 校验 target_session 字段。
+   *
+   * 当前只做轻量校验：
+   * - channel_id / session_id 非空
+   * - type 必须是 'private' | 'group'
+   *
+   * channel 注册存在性 / channel 侧 session 存在性 / type 一致性 校验延后（follow-up）。
+   * 因为 schedule 可能在 channel 还未启动时创建（先配后用），过严校验会阻塞合法场景。
+   */
+  private validateTargetSession(target: ScheduleTargetSession): void {
+    if (!target.channel_id || typeof target.channel_id !== 'string') {
+      throw new Error('target_session.channel_id is required and must be a non-empty string')
+    }
+    if (!target.session_id || typeof target.session_id !== 'string') {
+      throw new Error('target_session.session_id is required and must be a non-empty string')
+    }
+    if (target.type !== 'private' && target.type !== 'group') {
+      throw new Error(`target_session.type must be 'private' or 'group', got: ${String(target.type)}`)
+    }
+  }
+
   private async handleCreateSchedule(params: CreateScheduleParams): Promise<{ schedule: Schedule }> {
     // 验证 cron 表达式
     if (params.trigger.type === 'cron') {
@@ -4647,6 +4670,11 @@ export class AdminModule extends ModuleBase {
       throw new Error(`creator_friend_id ${params.creator_friend_id} not found`)
     }
 
+    // 校验 target_session
+    if (params.target_session !== undefined) {
+      this.validateTargetSession(params.target_session)
+    }
+
     const now = generateTimestamp()
     const schedule: Schedule = {
       id: generateId(),
@@ -4662,6 +4690,7 @@ export class AdminModule extends ModuleBase {
       creator_friend_id: params.creator_friend_id,
       created_at: now,
       updated_at: now,
+      target_session: params.target_session,
     }
 
     this.schedules.set(schedule.id, schedule)
@@ -4737,6 +4766,15 @@ export class AdminModule extends ModuleBase {
       }
     }
 
+    // target_session 三态：undefined 不变 / null 清除 / 对象更新
+    let targetSessionPatch: { target_session?: ScheduleTargetSession | undefined } = {}
+    if (params.target_session === null) {
+      targetSessionPatch = { target_session: undefined }
+    } else if (params.target_session !== undefined) {
+      this.validateTargetSession(params.target_session)
+      targetSessionPatch = { target_session: params.target_session }
+    }
+
     const merged: Schedule = {
       ...existing,
       ...(params.name !== undefined ? { name: params.name } : {}),
@@ -4744,6 +4782,7 @@ export class AdminModule extends ModuleBase {
       ...(params.enabled !== undefined ? { enabled: params.enabled } : {}),
       ...(params.trigger !== undefined ? { trigger: params.trigger } : {}),
       ...(params.task_template !== undefined ? { task_template: params.task_template } : {}),
+      ...targetSessionPatch,
       updated_at: generateTimestamp(),
     }
     const schedule: Schedule = {

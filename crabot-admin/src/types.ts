@@ -752,6 +752,19 @@ export interface ScheduleTaskTemplate {
   tags: string[]
 }
 
+/**
+ * Schedule 触发的 task 的目标会话。
+ *
+ * - 已配置：worker 系统提示词指引"按此目标 session 发送结果"；trigger_message.session 填此目标
+ * - 未配置：trigger_message.session 填 SYSTEM_SESSION 哨兵；worker 按 description 文本
+ *   指引自行决定是否汇报、汇报到哪
+ */
+export interface ScheduleTargetSession {
+  channel_id: ModuleId
+  session_id: SessionId
+  type: 'private' | 'group'
+}
+
 /** 调度项 */
 export interface Schedule {
   /** 调度项 ID */
@@ -788,6 +801,12 @@ export interface Schedule {
   updated_at: string
   /** 反思水位 — 上次成功覆盖到的时间点（ISO 8601），完成时推进 */
   watermark?: string
+  /**
+   * 该 schedule 触发的 task 的目标会话（可选）。
+   * 见 ScheduleTargetSession 文档。
+   * 历史 schedule 通过启动迁移从 task_template.input.target_channel_id/_session_id 自动迁移。
+   */
+  target_session?: ScheduleTargetSession
 }
 
 // ============================================================================
@@ -944,6 +963,8 @@ export interface CreateScheduleParams {
    * - 系统内置 seed 流程不经过此入口；外部调用方留空时按系统级处理（最高权限）。
    */
   creator_friend_id?: FriendId
+  /** 目标会话（可选）。详见 ScheduleTargetSession。 */
+  target_session?: ScheduleTargetSession
 }
 
 export interface CreateScheduleResult {
@@ -981,6 +1002,13 @@ export interface UpdateScheduleParams {
   enabled?: boolean
   trigger?: ScheduleTrigger
   task_template?: ScheduleTaskTemplate
+  /**
+   * 目标会话。
+   * - 不传字段：不变
+   * - 传 null：清除已配置的 target_session
+   * - 传对象：更新为新值
+   */
+  target_session?: ScheduleTargetSession | null
 }
 
 export interface UpdateScheduleResult {
