@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { scheduleService, type CreateScheduleData } from '../../services/schedule'
+import { channelService } from '../../services/channel'
+import { sessionService, type ChannelSession } from '../../services/session'
 import { MainLayout } from '../../components/Layout/MainLayout'
 import { Button } from '../../components/Common/Button'
 import { Loading } from '../../components/Common/Loading'
@@ -9,6 +11,7 @@ import type {
   ScheduleTrigger,
   ScheduleTriggerType,
   ScheduleTaskTemplate,
+  ChannelInstance,
 } from '../../types'
 import { useToast } from '../../contexts/ToastContext'
 
@@ -84,6 +87,12 @@ interface ScheduleFormState {
   taskDescription: string
   taskPriority: string
   taskTags: string
+  /** 目标 channel id；空串表示未配置 */
+  targetChannelId: string
+  /** 目标 session id；空串表示未配置 */
+  targetSessionId: string
+  /** 从选中 session 自动派生，UI 不暴露给用户编辑 */
+  targetSessionType: '' | 'private' | 'group'
 }
 
 const EMPTY_FORM: ScheduleFormState = {
@@ -99,6 +108,9 @@ const EMPTY_FORM: ScheduleFormState = {
   taskDescription: '',
   taskPriority: 'normal',
   taskTags: '',
+  targetChannelId: '',
+  targetSessionId: '',
+  targetSessionType: '',
 }
 
 function formToPayload(form: ScheduleFormState): CreateScheduleData {
@@ -126,12 +138,23 @@ function formToPayload(form: ScheduleFormState): CreateScheduleData {
     tags: form.taskTags.split(',').map(s => s.trim()).filter(Boolean),
   }
 
+  const targetSet = !!(form.targetChannelId && form.targetSessionId && form.targetSessionType)
+
   return {
     name: form.name.trim(),
     description: form.description.trim() || undefined,
     enabled: form.enabled,
     trigger,
     task_template,
+    ...(targetSet
+      ? {
+          target_session: {
+            channel_id: form.targetChannelId,
+            session_id: form.targetSessionId,
+            type: form.targetSessionType as 'private' | 'group',
+          },
+        }
+      : {}),
   }
 }
 
@@ -146,6 +169,9 @@ function scheduleToForm(s: Schedule): ScheduleFormState {
     taskDescription: s.task_template.description ?? '',
     taskPriority: s.task_template.priority,
     taskTags: s.task_template.tags.join(', '),
+    targetChannelId: s.target_session?.channel_id ?? '',
+    targetSessionId: s.target_session?.session_id ?? '',
+    targetSessionType: s.target_session?.type ?? '',
   }
   switch (s.trigger.type) {
     case 'cron':
@@ -202,8 +228,15 @@ export const ScheduleList: React.FC = () => {
   // Form state
   const [showForm, setShowForm] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
+  /** 编辑模式下保留原 schedule，用于判断 target_session 是否需要显式清除（null） */
+  const [editingSchedule, setEditingSchedule] = useState<Schedule | null>(null)
   const [form, setForm] = useState<ScheduleFormState>(EMPTY_FORM)
   const [saving, setSaving] = useState(false)
+
+  // Target session 选择器：channel + session 联动
+  const [channels, setChannels] = useState<ChannelInstance[]>([])
+  const [sessions, setSessions] = useState<ChannelSession[]>([])
+  const [sessionsLoading, setSessionsLoading] = useState(false)
 
   // Delete
   const [deleteTarget, setDeleteTarget] = useState<Schedule | null>(null)
@@ -244,14 +277,44 @@ export const ScheduleList: React.FC = () => {
     return () => clearInterval(timer)
   }, [search, triggerFilter, enabledFilter])
 
+  // 拉取 channel 列表（mount 一次）
+  useEffect(() => {
+    channelService.listInstances()
+      .then(res => setChannels(res.items))
+      .catch(() => { /* 静默：channel 模块未就绪时 dropdown 自然为空 */ })
+  }, [])
+
+  // 选中 channel 后拉取 session 列表（带 race 防护）
+  useEffect(() => {
+    if (!form.targetChannelId) {
+      setSessions([])
+      return
+    }
+    let cancelled = false
+    setSessionsLoading(true)
+    sessionService.listSessions(form.targetChannelId)
+      .then(res => {
+        if (!cancelled) setSessions(res.items)
+      })
+      .catch(() => {
+        if (!cancelled) setSessions([])
+      })
+      .finally(() => {
+        if (!cancelled) setSessionsLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [form.targetChannelId])
+
   const openCreate = () => {
     setEditingId(null)
+    setEditingSchedule(null)
     setForm(EMPTY_FORM)
     setShowForm(true)
   }
 
   const openEdit = (s: Schedule) => {
     setEditingId(s.id)
+    setEditingSchedule(s)
     setForm(scheduleToForm(s))
     setShowForm(true)
   }
@@ -269,7 +332,13 @@ export const ScheduleList: React.FC = () => {
     try {
       const payload = formToPayload(form)
       if (editingId) {
-        await scheduleService.update(editingId, payload)
+        // 更新路径：若用户清空了原本配置过的 target_session，传 null 显式清除
+        const wasTargetSet = !!editingSchedule?.target_session
+        const nowTargetSet = !!payload.target_session
+        const updateData = wasTargetSet && !nowTargetSet
+          ? { ...payload, target_session: null }
+          : payload
+        await scheduleService.update(editingId, updateData)
         toast.success('更新成功')
       } else {
         await scheduleService.create(payload)
@@ -277,6 +346,7 @@ export const ScheduleList: React.FC = () => {
       }
       setShowForm(false)
       setEditingId(null)
+      setEditingSchedule(null)
       await loadSchedules()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '保存失败')
@@ -404,7 +474,7 @@ export const ScheduleList: React.FC = () => {
             </h3>
             <button
               className="sched-form-close"
-              onClick={() => { setShowForm(false); setEditingId(null) }}
+              onClick={() => { setShowForm(false); setEditingId(null); setEditingSchedule(null) }}
             >
               &times;
             </button>
@@ -555,6 +625,85 @@ export const ScheduleList: React.FC = () => {
               />
             </div>
 
+            {/* Target session */}
+            <div style={{ ...sectionTitle, marginTop: '1.25rem' }}>目标会话（可选）</div>
+            <div style={{
+              fontSize: '0.75rem',
+              color: 'var(--text-muted)',
+              marginBottom: '0.75rem',
+              lineHeight: 1.5,
+            }}>
+              配置后 schedule 触发时 worker 直接知道往哪发；不配置则任务自行决定汇报对象。
+            </div>
+            <div className="sched-form-grid-2">
+              <div>
+                <label style={labelStyle}>Channel</label>
+                <select
+                  className="select"
+                  value={form.targetChannelId}
+                  onChange={e => updateForm({
+                    targetChannelId: e.target.value,
+                    targetSessionId: '',
+                    targetSessionType: '',
+                  })}
+                >
+                  <option value="">（无目标）</option>
+                  {channels.map(c => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} ({c.platform})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {form.targetChannelId && (
+                <div>
+                  <label style={labelStyle}>Session</label>
+                  <select
+                    className="select"
+                    value={form.targetSessionId}
+                    onChange={e => {
+                      const sid = e.target.value
+                      const sess = sessions.find(s => s.id === sid)
+                      updateForm({
+                        targetSessionId: sid,
+                        targetSessionType: sess?.type ?? '',
+                      })
+                    }}
+                    disabled={sessionsLoading}
+                  >
+                    <option value="">
+                      {sessionsLoading ? '加载中...' : '（请选择）'}
+                    </option>
+                    {sessions.map(s => (
+                      <option key={s.id} value={s.id}>
+                        {s.title} [{s.type}]
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+            {form.targetChannelId && form.targetSessionId && (
+              <div style={{ marginTop: '0.5rem' }}>
+                <button
+                  type="button"
+                  className="sched-action-btn"
+                  onClick={() => updateForm({
+                    targetChannelId: '',
+                    targetSessionId: '',
+                    targetSessionType: '',
+                  })}
+                  style={{
+                    fontSize: '0.75rem',
+                    padding: '0.25rem 0.75rem',
+                    color: 'var(--text-secondary)',
+                  }}
+                >
+                  清除目标会话
+                </button>
+              </div>
+            )}
+
             {/* Enabled toggle */}
             <div style={{ marginTop: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
               <label className="sched-toggle">
@@ -572,7 +721,7 @@ export const ScheduleList: React.FC = () => {
           </div>
 
           <div className="sched-form-footer">
-            <Button variant="secondary" onClick={() => { setShowForm(false); setEditingId(null) }}>
+            <Button variant="secondary" onClick={() => { setShowForm(false); setEditingId(null); setEditingSchedule(null) }}>
               取消
             </Button>
             <Button variant="primary" onClick={handleSave} disabled={saving}>

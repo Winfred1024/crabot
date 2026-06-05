@@ -650,6 +650,16 @@ export interface Schedule {
   is_builtin?: boolean
   trigger: ScheduleTrigger
   task_template: ScheduleTaskTemplate
+  /**
+   * 触发的 task 的目标会话（可选）。
+   * 详见 protocol-admin §3.19 / spec 2026-06-04-trigger-messages-unified-design §7。
+   * 配置后 schedule 触发时 worker 直接知道往哪发；未配置则任务自行决定汇报对象。
+   */
+  target_session?: {
+    channel_id: string
+    session_id: string
+    type: 'private' | 'group'
+  }
   last_triggered_at?: string
   next_trigger_at?: string
   execution_count: number
