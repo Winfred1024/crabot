@@ -60,6 +60,7 @@ import type {
   AgentTrace,
 } from '../types.js'
 import type { RpcClient } from 'crabot-shared'
+import { SYSTEM_CHANNEL_ID } from 'crabot-shared'
 import { createCrabMemoryServer } from '../mcp/crab-memory.js'
 import type { MemoryTaskContext } from '../mcp/crab-memory.js'
 import { mcpServerToToolDefinitions } from './mcp-tool-bridge.js'
@@ -2862,27 +2863,15 @@ export class AgentHandler {
     parts.push(`- 优先级: ${task.priority}`)
     if (task.plan) { parts.push(`- 计划: ${task.plan}`) }
 
-    // trigger_messages: 用户的原始请求（核心内容）
-    // 统一走 formatChannelMessageLine，所有结构化字段（reply_to / quote / mentions / id 等）
-    // 由 helper 渲染；引用原文在 quotedMessages 命中时嵌套 <quoted_message>。
-    if (context.trigger_messages && context.trigger_messages.length > 0) {
-      parts.push(`\n## 用户请求（共 ${context.trigger_messages.length} 条消息）`)
-      for (const msg of context.trigger_messages) {
-        parts.push(formatChannelMessageLine(msg, {
-          timezone, now, maxLen: 2000,
-          identity: identityResolver(msg),
-          quotedMessages,
-        }))
-      }
-    }
-
     if (context.sender_friend) {
       parts.push(`\n## 发送者信息`)
       parts.push(`- 名称: ${context.sender_friend.display_name}`)
       parts.push(`- 权限: ${context.sender_friend.permission}`)
     }
 
-    if (context.task_origin) {
+    // 系统 session（SYSTEM_CHANNEL_ID）时不渲染 task_origin —— 它对 LLM 无意义且会
+    // 误导 crab-messaging 工具尝试往系统 channel 发消息。
+    if (context.task_origin && context.task_origin.channel_id !== SYSTEM_CHANNEL_ID) {
       parts.push('\n## 任务来源（crab-messaging 工具请使用这些 ID）')
       parts.push(`- Channel ID: ${context.task_origin.channel_id}`)
       parts.push(`- Session ID: ${context.task_origin.session_id}`)
@@ -2909,17 +2898,30 @@ export class AgentHandler {
     parts.push('都必须先调 `crab-memory.search_long_term`（传 query 按主题精准检索），必要时再用 `crab-memory.get_memory_detail` 取详情。')
     parts.push('禁止凭印象或常识回答此类问题——上下文里没有相关记忆 ≠ 用户没有相关偏好。')
 
-    // 最近消息（仅当前 session）：本 session 本地历史，回答跨 session 指代请看上方"短期记忆"
-    parts.push(`\n## 最近相关消息（当前 session，最近 ${recentHours} 小时，${context.recent_messages?.length ?? 0} 条）`)
-    if (context.recent_messages && context.recent_messages.length > 0) {
-      for (const m of context.recent_messages) {
-        parts.push(formatChannelMessageLine(m, {
-          timezone, now, maxLen: 500,
-          identity: identityResolver(m),
+    // === 会话历史（合并 recent + trigger 单段时间线） ===
+    // 协议语义：recent_messages 是触发消息之前的本 session 历史；trigger_messages 是
+    // 决策时的输入消息。dedupe by platform_message_id 防御性 —— 理论上不重叠，
+    // 实际防御后续路径偶发重复。稳定排序保证同 timestamp 时 recent 在前、trigger 在后。
+    const seen = new Set<string>()
+    const allMessages: ChannelMessage[] = []
+    for (const m of [...recentMsgsForPrefetch, ...triggerMsgs]) {
+      if (seen.has(m.platform_message_id)) continue
+      seen.add(m.platform_message_id)
+      allMessages.push(m)
+    }
+    allMessages.sort((a, b) => (a.platform_timestamp ?? '').localeCompare(b.platform_timestamp ?? ''))
+
+    if (allMessages.length > 0) {
+      parts.push(`\n## 会话历史（共 ${allMessages.length} 条，含触发消息；当前 session 最近 ${recentHours} 小时）`)
+      for (const msg of allMessages) {
+        parts.push(formatChannelMessageLine(msg, {
+          timezone, now, maxLen: 2000,
+          identity: identityResolver(msg),
           quotedMessages,
         }))
       }
     } else {
+      parts.push(`\n## 会话历史`)
       parts.push(`过去 ${recentHours} 小时本会话无消息。如需更早的本会话历史，调 \`get_history\` 工具。`)
     }
 
