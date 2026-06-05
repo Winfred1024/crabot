@@ -1,8 +1,43 @@
 # Crabot 项目进度
 
-> 最后更新：2026-06-05 — trigger_messages 统一为 worker 任务输入唯一通道
+> 最后更新：2026-06-05 — Goal 模式软约束化 + worker workflow 重构
 
-## 最新里程碑（2026-06-05 — trigger_messages 统一 + Schedule.target_session 一等字段）
+## 最新里程碑（2026-06-05 — Goal 模式软约束化 + worker workflow 重组）
+
+把 goal 模式从代码层硬门控改成 prompt 软约束；worker workflow 重组成 5 段方括号名字风格（[阅读理解]/[信息收集]/[意图澄清]/[目标承诺]/[规划与执行]）；删除 worker turn-0 supplement_task / stay_silent 早退工具（dispatcher 已吃掉决策）；GOAL_MODE_GUIDANCE 拆为流程图融入 WORKFLOW + 深度说明独立段 GOAL_MODE_DETAILS；supplement 注入文案常量化 + goal mode on/off 双 variant；删除 WORKFLOW_GROUP（群聊主流程跟私聊一致）。
+
+- 起因：goal 模式当前两个落地决策过紧——(a) todo 工具被 hasGoal 硬门控，讨论场景也想用 todo 列分支被卡；(b) goal 判断段（GOAL_MODE_GUIDANCE）跟主工作流（WORKFLOW_PRIVATE）分裂，LLM 视角下流程跟决策点不在一起。同时 research_collector 在流程图里没显式位置（跟 code_planner 硬绑定不一致），实测 LLM 经常不派、context 撑大
+- 设计：
+  - **代码层**：取消 todo 工具的 hasGoal 硬门控（一行：`hasGoal: () => true`）；删除 worker 端 supplement_task / stay_silent 工具及相关代码（实际是 dead code，dispatcher 在 worker spawn 前已经做了相应决策）
+  - **prompt 层**：WORKFLOW_PRIVATE 拆为 5 段方括号名字常量 + `buildWorkflow({ goalModeEnabled })` 函数化（goal mode 关时省略 [目标承诺] 段位）；GOAL_MODE_GUIDANCE → GOAL_MODE_DETAILS 用 agent 视角重写（没有 engine / hook / harness 等工程术语）；删 WORKFLOW_GROUP（dispatcher 已吃掉群独有 turn 0 triage）
+  - **supplement 文案双 variant**：goal mode on/off 分别注入不同模板（GOAL 含 set_task_goal 三分支提示，BASIC 只含 "调整方向" 一句），由 deliverHumanResponse 按 taskState.triggerType 推算
+  - **research_collector 流程位置**：when_to_use 首句加 "信息收集类工作的默认派遣对象——main 工作流 [信息收集] 段位优先派此 subagent"，跟 code_planner 在流程图硬绑定一致
+- 重要决策：保留 dispatcher 端 supplement / stay_silent 决策（dispatcher 该有的能力不动）；保留 engine `turnZeroOnly` 框架作扩展点；保留 audit gate + endTurnGate 机制；scheduled 任务硬关 goal mode 保留（独立 follow-up 重新设计 audit 路径）
+
+改动覆盖（7 个 commits）：
+- `refactor(dispatcher): refine immediate_reply guidance`（pre-existing dirty diff cleanup）
+- `feat(agent): remove todo hasGoal hard gating, todo always allowed`
+- `refactor(agent): goal mode soft-control prompt redesign (WORKFLOW + GOAL_MODE_DETAILS + supplement template)`（Task 2-5 合并）
+- `refactor(agent): remove worker-side supplement_task and stay_silent tools (dispatcher already covers these decisions)`
+- `feat(admin): research_collector when_to_use first line emphasizes default for [信息收集] step`
+- `docs(progress): mark goal soft-control workflow redesign as complete`
+
+spec：[`crabot-docs/superpowers/specs/2026-06-05-goal-soft-control-workflow-redesign-design.md`](crabot-docs/superpowers/specs/2026-06-05-goal-soft-control-workflow-redesign-design.md)
+plan：[`crabot-docs/superpowers/plans/2026-06-05-goal-soft-control-workflow-redesign.md`](crabot-docs/superpowers/plans/2026-06-05-goal-soft-control-workflow-redesign.md)
+
+测试：crabot-agent 1174/1180（4 pre-existing engine 失败无关：trace-store SIGKILL / e2e permission / query-loop onTurn × 2）；crabot-admin tsc + build 全绿。
+
+**待办（用户手动）**：
+- Task 8 端到端 6 场景验证：讨论场景（无 goal + todo）/ 任务场景（有 goal + audit gate）/ supplement 注入文案 / scheduled task（goal mode 硬关）/ dispatcher 路径未损坏 / WORKFLOW_GROUP 删除后群聊行为一致
+
+**Follow-up（独立 spec / session）**：
+- scheduled 任务 audit 死锁问题——audit fail 时无法 ask_human 会永远循环。候选解法：A. audit fail N 次后 admin 代 agent 调 send_master_private 主动通知；B. scheduled audit 改"事后报告"不阻塞 worker；C. fail 一次即 task 标 failed。倾向 B+C 组合
+- `createTodoTool` 接口的 `hasGoal` 参数本期保留向后兼容，可在确认无引用后彻底移除
+- `agent-handle-trigger.test.ts` 等测试文件里残留的 `triggerArrivedAtMs` / `overdueInjected` 字段引用（pre-existing tech debt，2026-06-03 dispatcher-immediate-reply spec 删 overdue 时遗留）
+
+---
+
+## 上一里程碑（2026-06-05 — trigger_messages 统一 + Schedule.target_session 一等字段）
 
 把 worker 接收任务输入的两条并行通道（`task.task_description` + `context.trigger_messages`）收敛为单通道，schedule 的目标会话从半结构化 input 字段升级为一等可选字段。
 
