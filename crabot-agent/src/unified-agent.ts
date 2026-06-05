@@ -32,6 +32,7 @@ import type {
   TraceCallback,
   BuiltinToolConfig,
   SkillConfig,
+  TaskOrigin,
   WorkerAgentContext,
 } from './types.js'
 import { SessionManager } from './orchestration/session-manager.js'
@@ -1764,6 +1765,17 @@ export class UnifiedAgent extends ModuleBase {
     description: string
     input?: Record<string, unknown>
     preferred_worker_specialization?: string
+    /**
+     * Schedule 的目标会话（一等字段，来自 Schedule.target_session）。
+     * Task 11 之后 legacy input.target_channel_id/_session_id 已迁移到此字段。
+     * - 有值：task_origin + trigger_message.session 都用此目标
+     * - 无值：ScheduledTaskRunner 用 SYSTEM_SESSION 哨兵填 trigger_message.session
+     */
+    target_session?: {
+      channel_id: string
+      session_id: string
+      type: 'private' | 'group'
+    }
     /** Admin 解析后下发的执行权限（按 schedule.creator 或系统内置 master_private 计算） */
     resolved_permissions?: ResolvedPermissions
   }): Promise<{ task_id: string; assigned_worker: ModuleId }> {
@@ -1774,6 +1786,7 @@ export class UnifiedAgent extends ModuleBase {
       description,
       input,
       preferred_worker_specialization,
+      target_session,
       resolved_permissions,
     } = params
 
@@ -1822,23 +1835,15 @@ export class UnifiedAgent extends ModuleBase {
 
       const workerContext = await this.contextAssembler.assembleScheduledTaskContext()
 
-      const targetChannelId = typeof input?.target_channel_id === 'string'
-        ? input.target_channel_id
-        : undefined
-      const targetSessionId = typeof input?.target_session_id === 'string'
-        ? input.target_session_id
-        : undefined
-      const targetSessionType = input?.target_session_type === 'private' || input?.target_session_type === 'group'
-        ? input.target_session_type
-        : undefined
-
-      const workerContextWithTarget: WorkerAgentContext = targetChannelId && targetSessionId
+      // target_session 由 Admin 从 Schedule.target_session 一等字段透传。
+      // Task 11 之前 legacy input.target_channel_id/_session_id 路径已迁移并删除。
+      const workerContextWithTarget: WorkerAgentContext = target_session
         ? {
             ...workerContext,
             task_origin: {
-              channel_id: targetChannelId,
-              session_id: targetSessionId,
-              ...(targetSessionType ? { session_type: targetSessionType } : {}),
+              channel_id: target_session.channel_id as TaskOrigin['channel_id'],
+              session_id: target_session.session_id as TaskOrigin['session_id'],
+              session_type: target_session.type,
             },
           }
         : workerContext
@@ -1854,6 +1859,7 @@ export class UnifiedAgent extends ModuleBase {
           description,
           priority: 'normal',
           task_type,
+          ...(target_session ? { target_session } : {}),
         },
         workerContextWithPerms,
       )

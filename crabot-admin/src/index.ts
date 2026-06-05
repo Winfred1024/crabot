@@ -4959,6 +4959,10 @@ export class AdminModule extends ModuleBase {
           title: string
           description: string
           input?: Record<string, unknown>
+          /** Schedule 的目标会话（一等字段，Task 10 引入）。
+           *  Agent 用它填 task_origin + ScheduledTaskRunner 构造 trigger_message.session。
+           *  无值时 ScheduledTaskRunner 走 SYSTEM_SESSION 哨兵分支。 */
+          target_session?: ScheduleTargetSession
           resolved_permissions?: ResolvedPermissions
         },
         { task_id: string; assigned_worker: string }
@@ -4971,6 +4975,7 @@ export class AdminModule extends ModuleBase {
           title,
           description,
           ...(input ? { input } : {}),
+          ...(schedule.target_session ? { target_session: schedule.target_session } : {}),
           ...(resolvedPermissions ? { resolved_permissions: resolvedPermissions } : {}),
         },
         this.config.moduleId
