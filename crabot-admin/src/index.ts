@@ -147,6 +147,10 @@ import { ModelProviderManager } from './model-provider-manager.js'
 import { AgentManager } from './agent-manager.js'
 import { buildOnboardFinishResponse } from './onboard-finish-response.js'
 import { ChannelManager } from './channel-manager.js'
+import {
+  migrateScheduleTargetSession,
+  type SessionTypeLookup,
+} from './schedule-migration.js'
 import { ModuleInstaller } from './module-installer.js'
 import { ChatManager } from './chat-manager.js'
 import { PtyManager } from './pty-manager.js'
@@ -3729,6 +3733,9 @@ export class AdminModule extends ModuleBase {
         this.schedules.set(schedule.id, schedule)
       }
       console.log(`[Admin] Loaded ${this.schedules.size} schedules`)
+
+      // 一次性迁移 legacy task_template.input.target_* → target_session（幂等，跑失败 no-op）
+      await this.runScheduleMigration()
     } catch {
       console.log('[Admin] No existing schedules data')
     }
@@ -3750,6 +3757,46 @@ export class AdminModule extends ModuleBase {
       )
     } catch {
       console.log('[Admin] No existing tasks data')
+    }
+  }
+
+  /**
+   * 一次性迁移历史 schedule：把 task_template.input.target_channel_id / target_session_id
+   * 提升为顶层 target_session 字段（Task 10 引入）。
+   *
+   * 幂等：已迁移过的 schedule 直接跳过；session.type 查不到时保留 input.target_* 兜底，
+   * 下次启动重试。
+   *
+   * 注意：本方法在 loadData 内调用，此时 RPC client 已就绪但 channel 模块可能还未启动。
+   * 失败 schedule 会保留 input.target_* 字段，等下次启动（channel 起来后）补迁移。
+   */
+  private async runScheduleMigration(): Promise<void> {
+    const sessionTypeLookup: SessionTypeLookup = async (channelId, sessionId) => {
+      try {
+        const session = await this.resolveChannelSession(channelId as ModuleId, sessionId)
+        return session.type
+      } catch {
+        return undefined
+      }
+    }
+
+    let migratedCount = 0
+    for (const schedule of Array.from(this.schedules.values())) {
+      const migrated = await migrateScheduleTargetSession(schedule, sessionTypeLookup)
+      if (migrated !== schedule) {
+        this.schedules.set(migrated.id, migrated)
+        migratedCount++
+      }
+    }
+    if (migratedCount > 0) {
+      const schedulesArray = Array.from(this.schedules.values())
+      await this.atomicWriteFile(
+        this.schedulesFilePath,
+        JSON.stringify(schedulesArray, null, 2),
+      )
+      console.log(
+        `[Admin] Migrated ${migratedCount} schedule(s) to target_session field`,
+      )
     }
   }
 
