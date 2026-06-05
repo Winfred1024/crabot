@@ -1005,9 +1005,9 @@ export class AgentHandler {
         }
 
         // 3j. todo tool — per-task mutable plan
-        // hasGoal 门控：复杂任务必须先 set_task_goal 才能 todo 写模式（goal mode 关闭时透明放行）
-        // spec: 2026-05-23-goal-mode-design.md §5
-        tools.push(createTodoTool(taskState.todoStore, { hasGoal: goalModeEnabled ? () => goalSetCache : () => true }))
+        // todo 工具永远放行 —— goal 与 todo 解耦，由 prompt 软引导决定是否需要 goal
+        // spec: 2026-06-05-goal-soft-control-workflow-redesign-design.md §1
+        tools.push(createTodoTool(taskState.todoStore, { hasGoal: () => true }))
 
         // 3j2. set_task_goal tool — worker 写下完成承诺，触发 audit gate + todo 门控解锁
         // goal mode 关闭时不注入，agent 无法设定目标，audit gate 透明放行
