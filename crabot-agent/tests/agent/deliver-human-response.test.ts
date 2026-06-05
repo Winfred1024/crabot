@@ -183,3 +183,112 @@ describe('deliverHumanResponse 渲染媒体', () => {
     expect(taskState.pendingHumanMessages).toHaveLength(1)
   })
 })
+
+/**
+ * deliverHumanResponse 模板 variant 测试（Task 5）
+ *
+ * 验证根据 goalModeEnabled（this.extra.goal_mode_enabled !== false &&
+ * taskState.triggerType !== 'scheduled'）选取对应模板：
+ *  - on  → SUPPLEMENT_INJECTION_TEMPLATE_GOAL（含 set_task_goal 提示）
+ *  - off → SUPPLEMENT_INJECTION_TEMPLATE_BASIC（仅"调整你的执行方向"）
+ *
+ * Spec: 2026-06-05-goal-soft-control-workflow-redesign-design.md §6
+ */
+describe('deliverHumanResponse template variant', () => {
+  function setup(opts: {
+    triggerType?: 'message' | 'scheduled'
+    goalModeEnabled?: boolean
+  }) {
+    const pushed: string[] = []
+    const mockRpcCall = vi.fn().mockResolvedValue({})
+    const config: any = { systemPrompt: 'test agent' }
+    if (opts.goalModeEnabled !== undefined) {
+      config.extra = { goal_mode_enabled: opts.goalModeEnabled }
+    }
+    const handler = new AgentHandler(
+      makeSdkEnv(),
+      config,
+      {
+        deps: {
+          rpcClient: { call: mockRpcCall } as never,
+          moduleId: 'test-agent',
+          resolveChannelPort: async () => 3003,
+          getMemoryPort: async () => 3002,
+          getAdminPort: async () => 0,
+        },
+      },
+    )
+    const taskId = 'task-variant' as TaskId
+    ;(handler as any).activeTasks.set(taskId, {
+      taskId,
+      status: 'executing',
+      startedAt: '2026-06-05T00:00:00Z',
+      title: 't',
+      triggerType: opts.triggerType ?? 'message',
+      abortController: new AbortController(),
+      pendingHumanMessages: [],
+      taskOrigin: {
+        channel_id: 'c',
+        session_id: 's',
+        friend_id: 'f',
+        session_type: 'private',
+      },
+      todoStore: { get current() { return [] } },
+    })
+    ;(handler as any).humanQueues.set(taskId, {
+      push: (content: string) => pushed.push(content),
+    })
+    return { handler, pushed, taskId }
+  }
+
+  function textMsg(text: string): ChannelMessage {
+    return {
+      platform_message_id: 'm',
+      session: { session_id: 's', channel_id: 'c', type: 'private' },
+      sender: { friend_id: 'f', platform_user_id: 'u', platform_display_name: '灰灰' },
+      content: { type: 'text', text },
+      features: { is_mention_crab: false },
+      platform_timestamp: '2026-06-05T00:00:00Z',
+    } as ChannelMessage
+  }
+
+  it('goal mode enabled（默认 + trigger=message）→ 使用 GOAL 模板（含 set_task_goal 提示）', () => {
+    const { handler, pushed, taskId } = setup({ triggerType: 'message' })
+    handler.deliverHumanResponse(taskId, [textMsg('换个方向，改成统计昨天的')])
+    expect(pushed).toHaveLength(1)
+    const injected = pushed[0]
+    expect(injected).toContain('[实时纠偏 - 来自用户]')
+    expect(injected).toContain('换个方向，改成统计昨天的')
+    expect(injected).toContain('set_task_goal')
+    expect(injected).toContain('讨论到这里需求才明确清楚')
+    expect(injected).toContain('系统已为你解锁一次重写机会')
+    handler.dispose()
+  })
+
+  it('goal mode disabled（scheduled task）→ 使用 BASIC 模板（不含 set_task_goal 提示）', () => {
+    const { handler, pushed, taskId } = setup({ triggerType: 'scheduled' })
+    handler.deliverHumanResponse(taskId, [textMsg('再加个条件')])
+    expect(pushed).toHaveLength(1)
+    const injected = pushed[0]
+    expect(injected).toContain('[实时纠偏 - 来自用户]')
+    expect(injected).toContain('再加个条件')
+    expect(injected).toContain('调整你的执行方向')
+    expect(injected).not.toContain('set_task_goal')
+    expect(injected).not.toContain('解锁')
+    handler.dispose()
+  })
+
+  it('goal mode disabled（extra.goal_mode_enabled=false）→ 使用 BASIC 模板', () => {
+    const { handler, pushed, taskId } = setup({
+      triggerType: 'message',
+      goalModeEnabled: false,
+    })
+    handler.deliverHumanResponse(taskId, [textMsg('补充：只看 prod 环境')])
+    expect(pushed).toHaveLength(1)
+    const injected = pushed[0]
+    expect(injected).toContain('补充：只看 prod 环境')
+    expect(injected).toContain('调整你的执行方向')
+    expect(injected).not.toContain('set_task_goal')
+    handler.dispose()
+  })
+})

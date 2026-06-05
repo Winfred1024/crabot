@@ -190,6 +190,7 @@ const TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
 
 const SYSTEM_PROMPT = assembleAgentPrompt({
   isGroup: false,
+  goalModeEnabled: true,
   adminPersonality: undefined,
 })
 

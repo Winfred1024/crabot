@@ -74,7 +74,11 @@ import { createSubagentCoordinatorTools } from './subagent-coordinator-tools.js'
 import { buildSubAgentFailureOutput } from './subagent-error-classifier.js'
 import { filterToolsForSubAgent } from './subagent-tool-filter.js'
 import { assembleSubAgentPrompt } from './subagent-prompt-assembler.js'
-import { SYSTEM_TRIGGER_NO_TARGET_GUIDANCE } from '../prompts/agent-sections.js'
+import {
+  SYSTEM_TRIGGER_NO_TARGET_GUIDANCE,
+  SUPPLEMENT_INJECTION_TEMPLATE_GOAL,
+  SUPPLEMENT_INJECTION_TEMPLATE_BASIC,
+} from '../prompts/agent-sections.js'
 import type { SubAgentConfig } from '../types.js'
 import { HumanMessageQueue } from '../engine/human-message-queue.js'
 import { createCodingExpertHookRegistry, createCliPermissionHook } from '../hooks/defaults.js'
@@ -1057,7 +1061,10 @@ export class AgentHandler {
       }
 
       // System prompt 也改为 callback：admin push config 触发 updateSystemPrompt 后下一轮生效。
-      const buildSystemPromptDynamic = (): string => this.buildSystemPrompt(context, subAgentsSnapshot)
+      // goalModeEnabled 沿用 runWorkerLoop 启动时计算的快照（line 810），跟 audit gate 口径一致：
+      // extra.goal_mode_enabled !== false && trigger_type !== 'scheduled'。
+      const buildSystemPromptDynamic = (): string =>
+        this.buildSystemPrompt(context, subAgentsSnapshot, goalModeEnabled)
 
       // 5. Build task message（一次性，task 启动后用户请求/记忆等不变）
       // 若 opts 提供了 initialPrompt，跳过 buildTaskMessage（trigger 流自己构造 prompt）。
@@ -2128,14 +2135,15 @@ export class AgentHandler {
     if (supplement) {
       const humanQueue = this.humanQueues.get(taskId)
       if (humanQueue) {
-        humanQueue.push(
-          `[实时纠偏 - 来自用户]\n` +
-          `用户在任务执行期间发来了补充指示：\n\n` +
-          `"${supplement}"\n\n` +
-          `请结合当前任务进展，调整你的执行方向。\n` +
-          `如果这条指示改变了原定要求，而你已用 set_task_goal 写过承诺，` +
-          `你现在可以重新调一次 set_task_goal 把目标改成新方向。`,
-        )
+        // goalModeEnabled 推断与 executeTask 一致：extra.goal_mode_enabled 非 false
+        // 且 task.source.trigger_type !== 'scheduled'。deliverHumanResponse 拿不到 task
+        // 对象，从 taskState.triggerType 推算 trigger_type（init 时已记下）。
+        const goalModeEnabled = this.extra?.goal_mode_enabled !== false
+          && taskState.triggerType !== 'scheduled'
+        const template = goalModeEnabled
+          ? SUPPLEMENT_INJECTION_TEMPLATE_GOAL
+          : SUPPLEMENT_INJECTION_TEMPLATE_BASIC
+        humanQueue.push(template.replace('{supplement_content}', supplement))
         log(`[supplement] pushed to humanMessageQueue for task ${taskId}`)
       }
       // 发放"改目标券"：真实人类 supplement 到达 = 授权 worker 重设一次 goal（上限 1，不叠加）。
@@ -2778,7 +2786,8 @@ export class AgentHandler {
 
   private buildSystemPrompt(
     context: WorkerAgentContext,
-    subAgentsOverride?: ReadonlyArray<SubAgentConfig>,
+    subAgentsOverride: ReadonlyArray<SubAgentConfig> | undefined,
+    goalModeEnabled: boolean,
   ): string {
     // unified loop spec §3.1：使用 assembleAgentPrompt（12 段统一模板）。
     // isGroup 从 task_origin.session_type 推断；scheduled task 无 session 时默认 false。
@@ -2796,6 +2805,7 @@ export class AgentHandler {
     const baseAssembled = this.promptManager
       ? this.promptManager.assembleAgentPrompt({
         isGroup,
+        goalModeEnabled,
         adminPersonality: this.systemPrompt || undefined,
         skillListing: this.buildSkillListingSnapshot(),
         availableSubAgents: availableSubAgents.length > 0 ? availableSubAgents : undefined,

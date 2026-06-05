@@ -3,25 +3,25 @@
  *
  * 装配顺序：
  *   [adminPersonality?] → 大脑身份 → [sceneProfile?] → 对话边界 →
- *   工作流（私聊/群聊）→ send_message 规范 → end_turn self-check →
- *   时间感知 → 信息查询指引 → 工具使用规范 → 任务推进硬约束 →
- *   记忆存储指引 → 收尾责任 → [skillListing?] → [subAgents?]
+ *   工作流（buildWorkflow，含 [目标承诺] 段位仅 goalModeEnabled 时注入）→
+ *   send_message 规范 → end_turn self-check → 时间感知 → 信息查询指引 →
+ *   工具使用规范 → 任务推进硬约束 → [GOAL_MODE_DETAILS 仅 goalModeEnabled 时注入] →
+ *   slash 指令认知 → 记忆存储指引 → 收尾责任 → [skillListing?] → [subAgents?]
  *
- * Spec: crabot-docs/superpowers/specs/2026-05-15-agent-unified-loop-redesign-design.md §3.1
+ * Spec: crabot-docs/superpowers/specs/2026-06-05-goal-soft-control-workflow-redesign-design.md §3 §5
  */
 
 import {
   CRABOT_BRAIN_IDENTITY,
   SYSTEM_DIALOGUE_BOUNDARY,
-  WORKFLOW_PRIVATE,
-  WORKFLOW_GROUP,
+  buildWorkflow,
   SEND_MESSAGE_SPEC,
   END_TURN_SELF_CHECK,
   TIME_AWARENESS,
   INFO_QUERY_GUIDE,
   TOOL_USAGE,
   TASK_HARD_CONSTRAINTS,
-  GOAL_MODE_GUIDANCE,
+  GOAL_MODE_DETAILS,
   SLASH_AWARENESS_GUIDANCE,
   MEMORY_STORE_GUIDE,
   CLOSURE_DUTIES,
@@ -29,6 +29,7 @@ import {
 
 export interface AssembleAgentPromptOptions {
   readonly isGroup: boolean
+  readonly goalModeEnabled: boolean
   readonly adminPersonality?: string
   readonly sceneProfile?: { readonly label: string; readonly content: string }
   readonly skillListing?: string
@@ -59,14 +60,16 @@ export function assembleAgentPrompt(opts: AssembleAgentPromptOptions): string {
   }
 
   parts.push(SYSTEM_DIALOGUE_BOUNDARY)
-  parts.push(opts.isGroup ? WORKFLOW_GROUP : WORKFLOW_PRIVATE)
+  parts.push(buildWorkflow({ goalModeEnabled: opts.goalModeEnabled }))
   parts.push(SEND_MESSAGE_SPEC)
   parts.push(END_TURN_SELF_CHECK)
   parts.push(TIME_AWARENESS)
   parts.push(INFO_QUERY_GUIDE)
   parts.push(TOOL_USAGE)
   parts.push(TASK_HARD_CONSTRAINTS)
-  parts.push(GOAL_MODE_GUIDANCE)
+  if (opts.goalModeEnabled) {
+    parts.push(GOAL_MODE_DETAILS)
+  }
   parts.push(SLASH_AWARENESS_GUIDANCE)
   parts.push(MEMORY_STORE_GUIDE)
   parts.push(CLOSURE_DUTIES)

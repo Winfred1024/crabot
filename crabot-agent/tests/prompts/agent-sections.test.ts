@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { CRABOT_BRAIN_IDENTITY, SYSTEM_DIALOGUE_BOUNDARY, WORKFLOW_PRIVATE, WORKFLOW_GROUP, SEND_MESSAGE_SPEC, END_TURN_SELF_CHECK, TIME_AWARENESS, INFO_QUERY_GUIDE, TOOL_USAGE, TASK_HARD_CONSTRAINTS, MEMORY_STORE_GUIDE, CLOSURE_DUTIES, SLASH_AWARENESS_GUIDANCE, GOAL_MODE_GUIDANCE } from '../../src/prompts/agent-sections.js'
+import { CRABOT_BRAIN_IDENTITY, SYSTEM_DIALOGUE_BOUNDARY, buildWorkflow, SEND_MESSAGE_SPEC, END_TURN_SELF_CHECK, TIME_AWARENESS, INFO_QUERY_GUIDE, TOOL_USAGE, TASK_HARD_CONSTRAINTS, MEMORY_STORE_GUIDE, CLOSURE_DUTIES, SLASH_AWARENESS_GUIDANCE, GOAL_MODE_DETAILS } from '../../src/prompts/agent-sections.js'
 
 describe('#1 你是 Crabot 的大脑', () => {
   it('开头自我定位为"认知中枢"', () => {
@@ -49,61 +49,55 @@ describe('#2 你和 Crabot 系统的对话边界', () => {
   })
 })
 
-describe('#3 工作流 · 私聊版', () => {
-  it('含 turn 0 triage + supplement_task 路径', () => {
-    expect(WORKFLOW_PRIVATE).toContain('[turn 0 · triage]')
-    expect(WORKFLOW_PRIVATE).toContain('supplement_task(target_task_id, supplement_text)')
-    expect(WORKFLOW_PRIVATE).toContain('triage 仅本轮（turn 0）有效')
+describe('buildWorkflow', () => {
+  it('contains all 4 base sections regardless of goal mode', () => {
+    const off = buildWorkflow({ goalModeEnabled: false })
+    const on = buildWorkflow({ goalModeEnabled: true })
+    for (const seg of [off, on]) {
+      expect(seg).toContain('[阅读理解]')
+      expect(seg).toContain('[信息收集]')
+      expect(seg).toContain('[意图澄清]')
+      expect(seg).toContain('[规划与执行]')
+      expect(seg).toContain('## 工作流')
+    }
   })
 
-  it('含主工作流分支', () => {
-    expect(WORKFLOW_PRIVATE).toContain('能立即回答吗？')
-    expect(WORKFLOW_PRIVATE).toContain('规划 → 执行 → 核验')
-    expect(WORKFLOW_PRIVATE).toContain('send_message')
+  it('includes [目标承诺] when goalModeEnabled=true', () => {
+    const result = buildWorkflow({ goalModeEnabled: true })
+    expect(result).toContain('[目标承诺]')
+    expect(result).toContain('set_task_goal(objective, acceptance_criteria)')
   })
 
-  it('不含超期辅助机制（spec 2026-06-03 已砍）', () => {
-    expect(WORKFLOW_PRIVATE).not.toContain('超期辅助')
-    expect(WORKFLOW_PRIVATE).not.toContain('30s')
+  it('omits [目标承诺] when goalModeEnabled=false', () => {
+    const result = buildWorkflow({ goalModeEnabled: false })
+    expect(result).not.toContain('[目标承诺]')
   })
 
-  it('含复杂任务反思说明（新门槛：步数 + 主动写记忆）', () => {
-    expect(WORKFLOW_PRIVATE).toContain('outcome_brief')
-    expect(WORKFLOW_PRIVATE).toContain('process_highlights')
-    // 新判定逻辑：步数较多且未主动写记忆才反思
-    expect(WORKFLOW_PRIVATE).toContain('store_memory')
+  it('[信息收集] points to research_collector as default', () => {
+    const result = buildWorkflow({ goalModeEnabled: true })
+    expect(result).toContain('research_collector')
+    expect(result).toContain('信息收集类工作的默认派遣对象')
   })
 
-  it('明确 supplement_task 早期退出不反思', () => {
-    expect(WORKFLOW_PRIVATE).toContain('supplement_task 早期退出')
+  it('[规划与执行] retains code_planner + code_writer hard constraint', () => {
+    const result = buildWorkflow({ goalModeEnabled: true })
+    expect(result).toContain('code_planner')
+    expect(result).toContain('code_writer')
+    expect(result).toContain('禁止用 Write / Edit / Bash 直接修改用户项目代码')
   })
 
-  it('不含 stay_silent 描述（私聊不渲染）', () => {
-    expect(WORKFLOW_PRIVATE).not.toContain('stay_silent')
-  })
-})
-
-describe('#3 工作流 · 群聊版', () => {
-  it('含三选一 triage（stay_silent / supplement_task / 主流程）', () => {
-    expect(WORKFLOW_GROUP).toContain('stay_silent(reason)')
-    expect(WORKFLOW_GROUP).toContain('supplement_task')
-    expect(WORKFLOW_GROUP).toContain('与我相关且不是 supplement')
-  })
-
-  it('列出必须 stay_silent 的情形', () => {
-    expect(WORKFLOW_GROUP).toContain('群成员之间互相讨论')
-    expect(WORKFLOW_GROUP).toContain('群成员之间一问一答')
-    expect(WORKFLOW_GROUP).toContain('系统通知')
-    expect(WORKFLOW_GROUP).toContain('不确定是否在叫你')
-  })
-
-  it('明确被 @你 时禁止 stay_silent', () => {
-    expect(WORKFLOW_GROUP).toContain('被 [@你] 标注')
-    expect(WORKFLOW_GROUP).toContain('禁止 stay_silent')
-  })
-
-  it('主工作流/反思 段说明引用私聊版', () => {
-    expect(WORKFLOW_GROUP).toContain('与私聊一致')
+  it('sections appear in order: 阅读理解 → 信息收集 → 意图澄清 → [目标承诺] → 规划与执行', () => {
+    const result = buildWorkflow({ goalModeEnabled: true })
+    const idxReading = result.indexOf('[阅读理解]')
+    const idxCollection = result.indexOf('[信息收集]')
+    const idxClarification = result.indexOf('[意图澄清]')
+    const idxGoal = result.indexOf('[目标承诺]')
+    const idxExecution = result.indexOf('[规划与执行]')
+    expect(idxReading).toBeGreaterThan(-1)
+    expect(idxCollection).toBeGreaterThan(idxReading)
+    expect(idxClarification).toBeGreaterThan(idxCollection)
+    expect(idxGoal).toBeGreaterThan(idxClarification)
+    expect(idxExecution).toBeGreaterThan(idxGoal)
   })
 })
 
@@ -387,9 +381,9 @@ describe('#12 系统 slash 指令认知', () => {
 
 describe('#13 目标模式指引', () => {
   it('四种 terminal status 都有对应的 agent 行为指引', () => {
-    expect(GOAL_MODE_GUIDANCE).toContain('目标是 blocked')
-    expect(GOAL_MODE_GUIDANCE).toContain('连续 N 次同样 audit 失败')
-    expect(GOAL_MODE_GUIDANCE).toContain('目标是 cleared')
-    expect(GOAL_MODE_GUIDANCE).toContain('目标是 complete / budget_limited')
+    expect(GOAL_MODE_DETAILS).toContain('blocked')
+    expect(GOAL_MODE_DETAILS).toContain('连续多次同样审计失败')
+    expect(GOAL_MODE_DETAILS).toContain('cleared')
+    expect(GOAL_MODE_DETAILS).toContain('complete / budget_limited')
   })
 })
