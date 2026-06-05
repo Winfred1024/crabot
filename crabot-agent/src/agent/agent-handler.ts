@@ -74,6 +74,7 @@ import { createSubagentCoordinatorTools } from './subagent-coordinator-tools.js'
 import { buildSubAgentFailureOutput } from './subagent-error-classifier.js'
 import { filterToolsForSubAgent } from './subagent-tool-filter.js'
 import { assembleSubAgentPrompt } from './subagent-prompt-assembler.js'
+import { SYSTEM_TRIGGER_NO_TARGET_GUIDANCE } from '../prompts/agent-sections.js'
 import type { SubAgentConfig } from '../types.js'
 import { HumanMessageQueue } from '../engine/human-message-queue.js'
 import { createCodingExpertHookRegistry, createCliPermissionHook } from '../hooks/defaults.js'
@@ -2811,6 +2812,14 @@ export class AgentHandler {
       for (const m of context.sandbox_path_mappings) {
         parts.push(`- ${m.sandbox_path} -> ${m.host_path} (${m.read_only ? '只读' : '读写'})`)
       }
+    }
+    // 系统触发任务 + 无 target_session 时给 worker 明确指引（避免它对着 SYSTEM_SESSION 占位 session 调 send_message）
+    const firstTrigger = context.trigger_messages?.[0]
+    if (
+      firstTrigger?.content?.type === 'system_event'
+      && firstTrigger.session?.channel_id === SYSTEM_CHANNEL_ID
+    ) {
+      parts.push('\n' + SYSTEM_TRIGGER_NO_TARGET_GUIDANCE)
     }
     return parts.join('\n')
   }

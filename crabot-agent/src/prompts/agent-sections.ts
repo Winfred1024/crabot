@@ -667,5 +667,20 @@ ${pathOptions}
 
 - **immediate_reply 默认不带**：system_event 触发的 new_task 多数情况下不该带 immediate_reply——直接走 worker 主流程处理（如问职责、回欢迎语）更自然，预回复会显得"先 ack 一句再做"啰嗦。除非场景画像明确要求。
 
-事件类型目前只有 members_added，未来会扩。一切来自 \`event=\` 属性的消息都按本段处理。`
+事件类型目前包括 members_added（群进群）、scheduled（系统定时触发，sender=crabot 自身），未来会扩。一切来自 \`event=\` 属性的消息都按本段处理。`
 }
+
+/**
+ * Worker 看到 schedule 触发但 schedule 未配置目标会话（target_session=SYSTEM_SESSION 占位）时注入。
+ * 在 trigger_messages 第一条是 system_event 且 session.channel_id='system' 时由 buildSystemPrompt 装。
+ */
+export const SYSTEM_TRIGGER_NO_TARGET_GUIDANCE = `## 系统触发任务说明
+
+本任务由 Crabot 系统调度触发，且 schedule 未配置目标会话。
+
+- 当前没有"任务来源"段：意味着没有预设的回复目标 session
+- 如需对外汇报：按上方 system_event 消息文本里的指引（可能是"调 send_master_private"、"发送到 X 群"、"写入文件"等）
+- 若文本也没指明汇报对象：默认静默完成任务，仅落 task outcome / 必要时写记忆
+- 不可直接调 crab-messaging.send_message 到 channel_id='system' / session_id='system' 的占位 session（工具会硬拒）
+`
+

@@ -373,6 +373,80 @@ describe('AgentHandler', () => {
     })
   })
 
+  describe('systemPrompt SYSTEM_TRIGGER_NO_TARGET guidance', () => {
+    function makeSystemEventTrigger(channelId: string): ChannelMessage {
+      return {
+        platform_message_id: `sys:${channelId}`,
+        session: { session_id: channelId, channel_id: channelId, type: 'private' },
+        sender: { platform_user_id: 'crabot', platform_display_name: 'Crabot' },
+        content: { type: 'system_event', event_type: 'scheduled', text: '执行 X' },
+        features: { is_mention_crab: false },
+        platform_timestamp: '2024-01-01T08:00:00Z',
+      } as ChannelMessage
+    }
+
+    it('injects 系统触发任务说明 段 when scheduled trigger has SYSTEM_CHANNEL_ID', async () => {
+      mockRunEngine.mockResolvedValue(makeEngineResult())
+
+      const handler = makeHandler()
+      await handler.executeTask({
+        task: makeTask({ source: { trigger_type: 'scheduled' } }),
+        context: {
+          ...makeContext(),
+          trigger_messages: [makeSystemEventTrigger('system')],
+        },
+      })
+
+      const callArgs = mockRunEngine.mock.calls[0][0]
+      const resolved = (callArgs.options.systemPrompt as () => string)()
+      expect(resolved).toContain('## 系统触发任务说明')
+      expect(resolved).toContain('不可直接调 crab-messaging.send_message')
+    })
+
+    it('does NOT inject 系统触发任务说明 段 when scheduled trigger has real channel', async () => {
+      mockRunEngine.mockResolvedValue(makeEngineResult())
+
+      const handler = makeHandler()
+      await handler.executeTask({
+        task: makeTask({ source: { trigger_type: 'scheduled' } }),
+        context: {
+          ...makeContext(),
+          trigger_messages: [makeSystemEventTrigger('wechat-real')],
+        },
+      })
+
+      const callArgs = mockRunEngine.mock.calls[0][0]
+      const resolved = (callArgs.options.systemPrompt as () => string)()
+      expect(resolved).not.toContain('## 系统触发任务说明')
+    })
+
+    it('does NOT inject 系统触发任务说明 段 for normal dispatcher-triggered task', async () => {
+      mockRunEngine.mockResolvedValue(makeEngineResult())
+
+      const userMsg: ChannelMessage = {
+        platform_message_id: 'u1',
+        session: { session_id: 'sess-1', channel_id: 'wechat-1', type: 'private' },
+        sender: { platform_user_id: 'user-1', platform_display_name: 'Alice' },
+        content: { type: 'text', text: 'hi' },
+        features: { is_mention_crab: false },
+        platform_timestamp: '2024-01-01T08:00:00Z',
+      } as ChannelMessage
+
+      const handler = makeHandler()
+      await handler.executeTask({
+        task: makeTask(),
+        context: {
+          ...makeContext(),
+          trigger_messages: [userMsg],
+        },
+      })
+
+      const callArgs = mockRunEngine.mock.calls[0][0]
+      const resolved = (callArgs.options.systemPrompt as () => string)()
+      expect(resolved).not.toContain('## 系统触发任务说明')
+    })
+  })
+
   describe('deliverHumanResponse', () => {
     it('should throw error if task does not exist', () => {
       const handler = makeHandler()
