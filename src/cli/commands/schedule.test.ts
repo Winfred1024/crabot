@@ -196,6 +196,57 @@ describe('buildCreateScheduleBody', () => {
     })
   })
 
+  describe('interval 触发器', () => {
+    it('--interval-seconds 进 trigger', () => {
+      const body = buildCreateScheduleBody({
+        title: 'patrol',
+        priority: 'normal',
+        intervalSeconds: '3600',
+      })
+      expect(body['trigger']).toEqual({ type: 'interval', seconds: 3600 })
+    })
+
+    it('interval 与 cron 互斥', () => {
+      expect(() =>
+        buildCreateScheduleBody({
+          title: 't',
+          priority: 'normal',
+          intervalSeconds: '60',
+          cron: '0 0 * * *',
+        })
+      ).toThrow(/--cron \/ --interval-seconds \/ --trigger-at 三者互斥/)
+    })
+
+    it('interval 与 trigger-at 互斥', () => {
+      expect(() =>
+        buildCreateScheduleBody({
+          title: 't',
+          priority: 'normal',
+          intervalSeconds: '60',
+          triggerAt: '2026-05-01T09:00:00+08:00',
+        })
+      ).toThrow(/--cron \/ --interval-seconds \/ --trigger-at 三者互斥/)
+    })
+
+    it('interval-seconds 非正整数报错', () => {
+      expect(() =>
+        buildCreateScheduleBody({
+          title: 't',
+          priority: 'normal',
+          intervalSeconds: '0',
+        })
+      ).toThrow(/--interval-seconds 必须是正整数/)
+
+      expect(() =>
+        buildCreateScheduleBody({
+          title: 't',
+          priority: 'normal',
+          intervalSeconds: 'abc',
+        })
+      ).toThrow(/--interval-seconds 必须是正整数/)
+    })
+  })
+
   describe('参数校验', () => {
     it('--title 为空报错', () => {
       expect(() =>
@@ -217,13 +268,13 @@ describe('buildCreateScheduleBody', () => {
       ).toThrow(/priority 必须是/)
     })
 
-    it('--cron 和 --trigger-at 都缺失报错', () => {
+    it('三种 trigger flag 都缺失报错', () => {
       expect(() =>
         buildCreateScheduleBody({
           title: 't',
           priority: 'normal',
         })
-      ).toThrow(/必须提供 --cron.*或 --trigger-at/)
+      ).toThrow(/必须提供 --cron \/ --interval-seconds \/ --trigger-at/)
     })
 
     it('--cron 和 --trigger-at 同时提供报错', () => {
@@ -234,7 +285,7 @@ describe('buildCreateScheduleBody', () => {
           cron: '0 0 * * *',
           triggerAt: '2026-05-01T09:00:00+08:00',
         })
-      ).toThrow(/互斥/)
+      ).toThrow(/--cron \/ --interval-seconds \/ --trigger-at 三者互斥/)
     })
 
     it('cron 字段不足 5 个报错', () => {

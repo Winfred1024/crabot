@@ -26,6 +26,7 @@ export interface ScheduleAddOpts {
   readonly tag?: ReadonlyArray<string>
   readonly cron?: string
   readonly triggerAt?: string
+  readonly intervalSeconds?: string
   readonly timezone?: string
   readonly targetChannel?: string
   readonly targetSession?: string
@@ -41,28 +42,50 @@ export interface ScheduleAddOpts {
 export function buildCreateScheduleBody(opts: ScheduleAddOpts): Record<string, unknown> {
   const title = assertNonEmpty('--title', opts.title)
   const priority = assertEnum('--priority', opts.priority, ALLOWED_PRIORITIES)
-  if (!opts.cron && !opts.triggerAt) {
-    throw new CliError('INVALID_ARGUMENT', '必须提供 --cron（周期性）或 --trigger-at（一次性），不能都为空')
+  const triggerFlagCount = [opts.cron, opts.intervalSeconds, opts.triggerAt].filter(Boolean).length
+  if (triggerFlagCount === 0) {
+    throw new CliError(
+      'INVALID_ARGUMENT',
+      '必须提供 --cron / --interval-seconds / --trigger-at 其中一个',
+    )
   }
-  if (opts.cron && opts.triggerAt) {
-    throw new CliError('INVALID_ARGUMENT', '--cron 和 --trigger-at 互斥，不能同时提供')
+  if (triggerFlagCount > 1) {
+    throw new CliError(
+      'INVALID_ARGUMENT',
+      '--cron / --interval-seconds / --trigger-at 三者互斥，只能提供一个',
+    )
   }
 
   let trigger: Record<string, unknown>
   if (opts.cron) {
     const expression = opts.cron.trim()
     if (expression.split(/\s+/).length < 5) {
-      throw new CliError('INVALID_ARGUMENT', `--cron 表达式无效: "${expression}"，至少需要 5 个字段（分 时 日 月 周）`)
+      throw new CliError(
+        'INVALID_ARGUMENT',
+        `--cron 表达式无效: "${expression}"，至少需要 5 个字段（分 时 日 月 周）`,
+      )
     }
     trigger = {
       type: 'cron',
       expression,
       timezone: opts.timezone?.trim() || 'Asia/Shanghai',
     }
+  } else if (opts.intervalSeconds) {
+    const seconds = Number(opts.intervalSeconds)
+    if (!Number.isInteger(seconds) || seconds < 1) {
+      throw new CliError(
+        'INVALID_ARGUMENT',
+        `--interval-seconds 必须是正整数，得到 "${opts.intervalSeconds}"`,
+      )
+    }
+    trigger = { type: 'interval', seconds }
   } else {
     const raw = opts.triggerAt as string
     if (Number.isNaN(new Date(raw).getTime())) {
-      throw new CliError('INVALID_ARGUMENT', `--trigger-at 格式无效: "${raw}"，请使用 ISO 8601 格式，如 2026-04-15T16:45:00+08:00`)
+      throw new CliError(
+        'INVALID_ARGUMENT',
+        `--trigger-at 格式无效: "${raw}"，请使用 ISO 8601 格式，如 2026-04-15T16:45:00+08:00`,
+      )
     }
     trigger = { type: 'once', execute_at: new Date(raw).toISOString() }
   }
