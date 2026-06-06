@@ -6,7 +6,7 @@ describe('VALID_TRANSITIONS', () => {
     expect(VALID_TRANSITIONS.pending).toContain('failed')
   })
 
-  it('allows pending → planning / cancelled (existing semantics)', () => {
+  it('allows pending → planning / cancelled / failed', () => {
     expect(VALID_TRANSITIONS.pending).toEqual(
       expect.arrayContaining(['planning', 'cancelled', 'failed'])
     )

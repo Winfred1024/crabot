@@ -1,11 +1,11 @@
 /**
- * Task 状态机 + 派生字段维护 + 不变量校验。
+ * Task 状态机：合法状态转换表。
  *
- * 状态变更必须走 AdminModule.applyStatusTransition（它内部调用本文件的纯函数）。
- * 任何直接 mutate task.status 的新代码 = bug。loadData 也用这里的 repair 治历史脏数据。
+ * 后续 task（同一 plan 内）会在本文件追加 applyDerivedFields / assertTaskInvariants
+ * / repairTaskInvariants，并由 AdminModule.applyStatusTransition 统一调度。
  */
 
-import type { Task, TaskStatus } from './types.js'
+import type { TaskStatus } from './types.js'
 
 export const VALID_TRANSITIONS: Readonly<Record<TaskStatus, ReadonlyArray<TaskStatus>>> = {
   pending: ['planning', 'failed', 'cancelled'],
