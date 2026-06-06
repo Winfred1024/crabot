@@ -4613,40 +4613,23 @@ export class AdminModule extends ModuleBase {
       throw new Error(AdminErrorCode.TASK_NOT_FOUND)
     }
 
-    // pending 状态可以直接取消
-    if (task.status === 'pending') {
-      task.status = 'cancelled'
-      task.completed_at = generateTimestamp()
-      task.updated_at = generateTimestamp()
-      if (params.reason) {
-        task.error = params.reason
+    // VALID_TRANSITIONS 已覆盖 pending/planning/executing/waiting_human → cancelled。
+    // applyStatusTransition 会抛 INVALID_STATUS_TRANSITION（含 waiting / 终态等不可取消的情况）。
+    // TODO: pending 之外的 in-flight 取消应通知 worker，现在仍是直切。
+    try {
+      this.applyStatusTransition(task, 'cancelled', { error: params.reason })
+    } catch (err) {
+      // 把状态机的 INVALID_STATUS_TRANSITION 翻译成 admin 域的 TASK_NOT_CANCELLABLE
+      if (err instanceof Error && err.message === AdminErrorCode.INVALID_STATUS_TRANSITION) {
+        throw new Error(AdminErrorCode.TASK_NOT_CANCELLABLE)
       }
-      await this.upsertTask(task)
-
-      this.publishAdminEvent('admin.task_cancelled', {
-        task_id: task.id,
-        reason: params.reason,
-      })
-
-      return { task, cancelled: true }
+      throw err
     }
 
-    // 其他状态需要检查是否可取消
-    const cancellableStatuses: TaskStatus[] = ['planning', 'executing', 'waiting_human']
-    if (!cancellableStatuses.includes(task.status)) {
-      throw new Error(AdminErrorCode.TASK_NOT_CANCELLABLE)
-    }
-
-    // TODO: 调用 Worker Agent 的 cancel_task 方法
-    // 暂时直接取消
-    task.status = 'cancelled'
-    task.completed_at = generateTimestamp()
-    task.updated_at = generateTimestamp()
-    if (params.reason) {
-      task.error = params.reason
-    }
     await this.upsertTask(task)
 
+    // 兼容事件：保留 admin.task_cancelled（含 reason），与 applyStatusTransition 已发的
+    // admin.task_status_changed 并行存在
     this.publishAdminEvent('admin.task_cancelled', {
       task_id: task.id,
       reason: params.reason,
