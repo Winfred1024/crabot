@@ -7,6 +7,9 @@
 
 import type { Task, TaskStatus } from './types.js'
 
+// 与 index.ts:4355 旧 validTransitions 的差异：新增 pending → failed。
+// 承认 admin 启动期 cleanupStaleInflightTasks 把磁盘上 pending 当僵尸标 failed 是合法语义
+// （旧代码绕过校验直接 mutate，所以这条转换未在 validTransitions 里）。
 export const VALID_TRANSITIONS: Readonly<Record<TaskStatus, ReadonlyArray<TaskStatus>>> = {
   pending: ['planning', 'failed', 'cancelled'],
   planning: ['executing', 'failed', 'cancelled'],
@@ -63,6 +66,10 @@ export function applyDerivedFields(
 
   // pending_question：仅在 waiting_human 时持有，离开必清。
   // 进入 waiting_human 时调用方可覆盖（null = 显式清空）。
+  //
+  // 与 index.ts 旧 handleUpdateTaskStatus 的差异：旧逻辑在 waiting_human → failed/cancelled
+  // 时只在调用方显式传 pending_question:null 才清空，否则字段残留——这是 INV-4 的来源 bug，
+  // 此处永远清空是有意识的纠正（参见 assertTaskInvariants INV-4）。
   if (newStatus === 'waiting_human') {
     if (opts.pendingQuestion !== undefined) {
       next.pending_question = opts.pendingQuestion ?? undefined

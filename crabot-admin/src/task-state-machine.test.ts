@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { VALID_TRANSITIONS, applyDerivedFields, assertTaskInvariants, repairTaskInvariants } from './task-state-machine.js'
-import type { Task } from './types.js'
+import type { Task, TaskStatus } from './types.js'
 
 describe('VALID_TRANSITIONS', () => {
   it('allows pending → failed (admin restart cleanup path)', () => {
@@ -164,6 +164,26 @@ describe('applyDerivedFields', () => {
     applyDerivedFields(input, 'failed', NOW)
     expect(input.status).toBe('waiting_human')
     expect(input.waiting_human_at).toBe('2026-06-04T00:00:00.000Z')
+  })
+
+  it('output of applyDerivedFields always passes assertTaskInvariants (property check)', () => {
+    // 关键不变量：派生字段维护与不变量定义必须保持同步——任何 transition 出来的 task 都该过 assert。
+    // 此测试覆盖 VALID_TRANSITIONS 中所有合法转换，预先打造 from 状态需要的字段（避免输入态违规）。
+    const seed = (from: TaskStatus): Task => {
+      const base = fakeTask({ status: from })
+      if (from === 'waiting_human') return { ...base, waiting_human_at: '2026-06-04T00:00:00.000Z' }
+      if (from === 'waiting') return { ...base, waiting_at: '2026-06-04T00:00:00.000Z' }
+      if (from === 'completed' || from === 'failed' || from === 'cancelled') {
+        return { ...base, completed_at: '2026-06-04T00:00:00.000Z' }
+      }
+      return base
+    }
+    for (const [from, allowed] of Object.entries(VALID_TRANSITIONS) as Array<[TaskStatus, ReadonlyArray<TaskStatus>]>) {
+      for (const to of allowed) {
+        const next = applyDerivedFields(seed(from), to, NOW)
+        expect(() => assertTaskInvariants(next), `transition ${from} → ${to}`).not.toThrow()
+      }
+    }
   })
 })
 
