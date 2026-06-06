@@ -302,7 +302,28 @@ export function buildUpdateScheduleBody(
     body['task_template'] = tt
   }
 
-  // TODO（task 4d）：target_session
+  // target_session 三态：undefined 不变 / null 清除 / 对象更新
+  const hasAnyTarget = !!(opts.targetChannel || opts.targetSession || opts.targetType)
+  const hasAllTarget = !!(opts.targetChannel && opts.targetSession && opts.targetType)
+  if (opts.clearTarget && hasAnyTarget) {
+    throw new CliError('INVALID_ARGUMENT', '--clear-target 与 --target-* 互斥')
+  }
+  if (hasAnyTarget && !hasAllTarget) {
+    throw new CliError(
+      'INVALID_ARGUMENT',
+      '--target-channel / --target-session / --target-type 必须同时提供（要么三个都给，要么都不给）',
+    )
+  }
+  if (opts.clearTarget) {
+    body['target_session'] = null
+  } else if (hasAllTarget) {
+    const type = assertEnum('--target-type', opts.targetType, ALLOWED_TARGET_TYPES)
+    body['target_session'] = {
+      channel_id: opts.targetChannel,
+      session_id: opts.targetSession,
+      type,
+    }
+  }
 
   if (Object.keys(body).length === 0) {
     throw new CliError(

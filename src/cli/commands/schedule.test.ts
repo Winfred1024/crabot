@@ -615,3 +615,74 @@ describe('buildUpdateScheduleBody — task_template 字段级 merge', () => {
     expect(tt['priority']).toBe('high')
   })
 })
+
+describe('buildUpdateScheduleBody — target_session 三态', () => {
+  it('三个 target-* 都给 → 顶层 target_session', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), {
+      targetChannel: 'telegram-001',
+      targetSession: 'sess-abc',
+      targetType: 'private',
+    })
+    expect(body['target_session']).toEqual({
+      channel_id: 'telegram-001',
+      session_id: 'sess-abc',
+      type: 'private',
+    })
+  })
+
+  it('--clear-target → target_session: null', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), { clearTarget: true })
+    expect(body['target_session']).toBeNull()
+  })
+
+  it('三个 target-* 缺一报错（缺 channel）', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeCronSchedule(), {
+        targetSession: 'sess-abc',
+        targetType: 'private',
+      })
+    ).toThrow(/--target-channel.*--target-session.*--target-type 必须同时提供/)
+  })
+
+  it('三个 target-* 缺一报错（缺 session）', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeCronSchedule(), {
+        targetChannel: 'telegram-001',
+        targetType: 'private',
+      })
+    ).toThrow(/--target-channel.*--target-session.*--target-type 必须同时提供/)
+  })
+
+  it('三个 target-* 缺一报错（缺 type）', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeCronSchedule(), {
+        targetChannel: 'telegram-001',
+        targetSession: 'sess-abc',
+      })
+    ).toThrow(/--target-channel.*--target-session.*--target-type 必须同时提供/)
+  })
+
+  it('--clear-target 与 --target-channel 互斥', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeCronSchedule(), {
+        clearTarget: true,
+        targetChannel: 'telegram-001',
+      })
+    ).toThrow(/--clear-target 与 --target-\* 互斥/)
+  })
+
+  it('--target-type 不在白名单报错', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeCronSchedule(), {
+        targetChannel: 'telegram-001',
+        targetSession: 'sess-abc',
+        targetType: 'channel',
+      })
+    ).toThrow(/--target-type 必须是 private \| group/)
+  })
+
+  it('不给任何 target flag → body 里不出现 target_session key', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), { name: '只改名字' })
+    expect('target_session' in body).toBe(false)
+  })
+})
