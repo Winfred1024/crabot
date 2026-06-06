@@ -5,11 +5,12 @@ import { CliError } from '../errors.js'
 import { UndoLog, type UndoEntry } from '../undo-log.js'
 import { resolveRef, ENDPOINT, type Domain } from '../resolve.js'
 
-const SNAPSHOT_RESTORE_PATH: Record<'agent' | 'channel' | 'friend' | 'permission', (id: string) => string> = {
+const SNAPSHOT_RESTORE_PATH: Record<'agent' | 'channel' | 'friend' | 'permission' | 'schedule', (id: string) => string> = {
   agent: (id) => `/api/agent-instances/${id}/config`,
   channel: (id) => `/api/channel-instances/${id}/config`,
   friend: (id) => `/api/friends/${id}`,
   permission: (id) => `/api/permission-templates/${id}`,
+  schedule: (id) => `/api/schedules/${id}`,
 }
 
 const LIST_COLUMNS: Column[] = [
@@ -19,7 +20,7 @@ const LIST_COLUMNS: Column[] = [
   { key: 'description', header: 'DESCRIPTION' },
 ]
 
-async function executeReverse(ctx: CliContext, entry: UndoEntry): Promise<unknown> {
+export async function executeReverse(ctx: CliContext, entry: UndoEntry): Promise<unknown> {
   const cmd = entry.reverse.command.trim()
 
   // Snapshot restore variants
@@ -31,7 +32,7 @@ async function executeReverse(ctx: CliContext, entry: UndoEntry): Promise<unknow
   }
 
   const restoreMatch = cmd.match(
-    /^(agent|channel|friend|permission)\s+(?:config|update)\s+(\S+)\s+--restore-snapshot$/,
+    /^(agent|channel|friend|permission|schedule)\s+(?:config|update)\s+(\S+)\s+--restore-snapshot$/,
   )
   if (restoreMatch) {
     const domain = restoreMatch[1] as keyof typeof SNAPSHOT_RESTORE_PATH

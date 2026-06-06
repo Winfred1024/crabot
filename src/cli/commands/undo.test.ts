@@ -2,7 +2,9 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { UndoLog } from '../undo-log.js'
+import { UndoLog, type UndoEntry } from '../undo-log.js'
+import { executeReverse } from './undo.js'
+import type { CliContext } from '../main.js'
 
 let tmpDir: string
 beforeEach(() => {
@@ -89,5 +91,43 @@ describe('UndoLog 与 undo 命令交互', () => {
     })
     expect(entry.reverse.preview_description).toBe('pause schedule my-sched')
     expect(entry.reverse.command).toBe('schedule pause my-sched')
+  })
+})
+
+describe('executeReverse — schedule restore-snapshot', () => {
+  it('schedule update <ref> --restore-snapshot 调 PATCH /api/schedules/:id with snapshot', async () => {
+    let patchedPath: string | undefined
+    let patchedBody: unknown
+    const client = {
+      patch: async <T>(path: string, body: unknown): Promise<T> => {
+        patchedPath = path
+        patchedBody = body
+        return { schedule: { id: 'sched-1', name: 'restored' } } as T
+      },
+      get: async <T>(_path: string): Promise<T> => {
+        return { items: [{ id: 'sched-1', name: 'orig' }], pagination: {} } as T
+      },
+      // resolveRef 走 client.getList — 必须 mock，否则 schedule restore 解析 ref 拿不到 id
+      getList: async <T>(_path: string): Promise<T[]> => {
+        return [{ id: 'sched-1', name: 'orig' }] as T[]
+      },
+    }
+    const entry: UndoEntry = {
+      id: 'undo-1',
+      executed_at: '2026-06-06T00:00:00Z',
+      expires_at: '2026-06-06T00:30:00Z',
+      actor: 'human',
+      original_command: 'schedule update sched-1 --name new',
+      reverse: {
+        command: 'schedule update sched-1 --restore-snapshot',
+        preview_description: 'restore schedule sched-1',
+      },
+      snapshot: { name: 'orig', description: 'orig desc', enabled: true },
+    }
+    const ctx = { client } as unknown as CliContext
+    const result = await executeReverse(ctx, entry)
+    expect(patchedPath).toBe('/api/schedules/sched-1')
+    expect(patchedBody).toEqual(entry.snapshot)
+    expect(result).toEqual({ schedule: { id: 'sched-1', name: 'restored' } })
   })
 })

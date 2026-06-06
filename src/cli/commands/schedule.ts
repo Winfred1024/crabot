@@ -415,6 +415,82 @@ export function registerScheduleCommands(parent: Command): void {
     })
 
   schedule
+    .command('update <ref>')
+    .description('Update a schedule')
+    .option('--name <name>', 'Schedule 名称')
+    .option('--description <desc>', 'Schedule 描述（人读层面）')
+    .option('--enabled <true|false>', '启用状态')
+    .option('--cron <expr>', 'Cron 表达式（仅 cron 类型 schedule）')
+    .option('--timezone <tz>', 'Cron 时区（仅 cron 类型 schedule）')
+    .option('--interval-seconds <n>', '定时间隔秒数（仅 interval 类型 schedule）')
+    .option('--trigger-at <time>', 'ISO 8601 触发时间（仅 once 类型 schedule）')
+    .option('--title <title>', 'Task template title')
+    .option('--task-description <desc>', 'Task 描述')
+    .option('--task-priority <p>', `Task 优先级 (${ALLOWED_PRIORITIES.join('|')})`)
+    .option('--task-type <type>', 'Task 类型')
+    .option('--tag <tag>', 'Task 标签（覆盖原 tags；可重复 --tag a --tag b）', collectTag)
+    .option('--clear-tags', '清空 task tags')
+    .option('--target-channel <id>', '目标 channel instance id（三个 target-* 必须同时提供）')
+    .option('--target-session <id>', '目标 session id')
+    .option('--target-type <type>', '目标 session 类型 (private|group)')
+    .option('--clear-target', '清除已配置的 target_session（与三个 target-* 互斥）')
+    .option('--confirm <token>', 'Confirmation token from preview response')
+    .action(async (ref: string, opts: ScheduleUpdateOpts & { confirm?: string }) => {
+      const ctx = createContext(parent)
+      const { id } = await resolveRef(ctx.client, 'schedule', ref)
+
+      // GET snapshot — admin GET 响应 { schedule: Schedule }，unwrap 后既是 PATCH body 的合法形态。
+      // 用 ScheduleSnapshot 局部类型断言（CLI 不 import admin 协议类型）。
+      const before = await ctx.client.getUnwrap<ScheduleSnapshot & Record<string, unknown>>(
+        `/api/schedules/${id}`,
+        'schedule',
+      )
+
+      const body = buildUpdateScheduleBody(before, opts)
+
+      const args: Record<string, unknown> = { _positional: ref }
+      if (opts.confirm) args['--confirm'] = opts.confirm
+
+      const setParts: string[] = []
+      if (opts.name) setParts.push(`--name ${JSON.stringify(opts.name)}`)
+      if (opts.description !== undefined) setParts.push(`--description ${JSON.stringify(opts.description)}`)
+      if (opts.enabled) setParts.push(`--enabled ${opts.enabled}`)
+      if (opts.cron) setParts.push(`--cron ${JSON.stringify(opts.cron)}`)
+      if (opts.timezone) setParts.push(`--timezone ${opts.timezone}`)
+      if (opts.intervalSeconds) setParts.push(`--interval-seconds ${opts.intervalSeconds}`)
+      if (opts.triggerAt) setParts.push(`--trigger-at ${JSON.stringify(opts.triggerAt)}`)
+      if (opts.title) setParts.push(`--title ${JSON.stringify(opts.title)}`)
+      if (opts.taskDescription !== undefined) setParts.push(`--task-description ${JSON.stringify(opts.taskDescription)}`)
+      if (opts.taskPriority) setParts.push(`--task-priority ${opts.taskPriority}`)
+      if (opts.taskType !== undefined) setParts.push(`--task-type ${JSON.stringify(opts.taskType)}`)
+      if (opts.tag) for (const t of opts.tag) setParts.push(`--tag ${JSON.stringify(t)}`)
+      if (opts.clearTags) setParts.push('--clear-tags')
+      if (opts.targetChannel) setParts.push(`--target-channel ${opts.targetChannel}`)
+      if (opts.targetSession) setParts.push(`--target-session ${opts.targetSession}`)
+      if (opts.targetType) setParts.push(`--target-type ${opts.targetType}`)
+      if (opts.clearTarget) setParts.push('--clear-target')
+      const cmdText = opts.confirm
+        ? `schedule update ${ref} ${setParts.join(' ')} --confirm ${opts.confirm}`
+        : `schedule update ${ref} ${setParts.join(' ')}`
+
+      const result = await runWrite({
+        subcommand: 'schedule update',
+        args,
+        command_text: cmdText,
+        execute: () => ctx.client.patch(`/api/schedules/${id}`, body),
+        reverse: {
+          command: `schedule update ${ref} --restore-snapshot`,
+          preview_description: `restore schedule ${ref} to snapshot taken before this change`,
+        },
+        snapshot: before,
+        dataDir: ctx.dataDir,
+        actor: ctx.actor,
+        mode: ctx.mode,
+      })
+      renderResult(maskSensitive(result), { mode: ctx.mode })
+    })
+
+  schedule
     .command('trigger <ref>')
     .description('Manually trigger a schedule')
     .option('--confirm <token>', 'Confirmation token from preview response')
