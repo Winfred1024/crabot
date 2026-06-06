@@ -275,7 +275,34 @@ export function buildUpdateScheduleBody(
     }
   }
 
-  // TODO（task 4c/4d）：task_template / target_session
+  // task_template 字段级 merge（CLI 内部 GET + merge，绕开 admin 整体替换）
+  const templateOptKeys = {
+    title: !!opts.title?.trim(),
+    description: opts.taskDescription !== undefined,
+    priority: !!opts.taskPriority,
+    type: opts.taskType !== undefined,
+    tag: !!opts.tag,
+    clearTags: !!opts.clearTags,
+  }
+  const hasTemplateOpt = Object.values(templateOptKeys).some(Boolean)
+  if (hasTemplateOpt) {
+    if (templateOptKeys.tag && templateOptKeys.clearTags) {
+      throw new CliError('INVALID_ARGUMENT', '--tag 与 --clear-tags 互斥')
+    }
+
+    const tt = { ...current.task_template, tags: [...current.task_template.tags] }
+    if (opts.title?.trim()) tt.title = opts.title.trim()
+    if (opts.taskDescription !== undefined) tt.description = opts.taskDescription.trim()
+    if (opts.taskPriority) {
+      tt.priority = assertEnum('--task-priority', opts.taskPriority, ALLOWED_PRIORITIES)
+    }
+    if (opts.taskType !== undefined) tt.type = opts.taskType.trim()
+    if (opts.tag) tt.tags = [...opts.tag]
+    if (opts.clearTags) tt.tags = []
+    body['task_template'] = tt
+  }
+
+  // TODO（task 4d）：target_session
 
   if (Object.keys(body).length === 0) {
     throw new CliError(

@@ -552,3 +552,66 @@ describe('buildUpdateScheduleBody — trigger 字段级 merge', () => {
     ).toThrow(/--trigger-at 格式无效/)
   })
 })
+
+describe('buildUpdateScheduleBody — task_template 字段级 merge', () => {
+  it('--title 只改 title 保留 priority/tags/description/type', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), { title: '新标题' })
+    expect(body['task_template']).toEqual({
+      title: '新标题',
+      priority: 'normal',
+      description: 'orig task desc',
+      type: 'orig_type',
+      tags: ['a', 'b'],
+    })
+  })
+
+  it('--task-priority 只改 priority', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), { taskPriority: 'urgent' })
+    const tt = body['task_template'] as Record<string, unknown>
+    expect(tt['priority']).toBe('urgent')
+    expect(tt['title']).toBe('orig title')
+    expect(tt['tags']).toEqual(['a', 'b'])
+  })
+
+  it('--task-priority 不在白名单报错', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeCronSchedule(), { taskPriority: 'medium' })
+    ).toThrow(/--task-priority 必须是 low \| normal \| high \| urgent/)
+  })
+
+  it('--task-description 改', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), { taskDescription: '新任务描述' })
+    expect((body['task_template'] as Record<string, unknown>)['description']).toBe('新任务描述')
+  })
+
+  it('--task-type 改', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), { taskType: 'new_type' })
+    expect((body['task_template'] as Record<string, unknown>)['type']).toBe('new_type')
+  })
+
+  it('--tag 覆盖原 tags（不追加）', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), { tag: ['c', 'd'] })
+    expect((body['task_template'] as Record<string, unknown>)['tags']).toEqual(['c', 'd'])
+  })
+
+  it('--clear-tags 清空 tags', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), { clearTags: true })
+    expect((body['task_template'] as Record<string, unknown>)['tags']).toEqual([])
+  })
+
+  it('--tag 与 --clear-tags 互斥', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeCronSchedule(), { tag: ['x'], clearTags: true })
+    ).toThrow(/--tag 与 --clear-tags 互斥/)
+  })
+
+  it('--title + --task-priority 同时改', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), {
+      title: '新',
+      taskPriority: 'high',
+    })
+    const tt = body['task_template'] as Record<string, unknown>
+    expect(tt['title']).toBe('新')
+    expect(tt['priority']).toBe('high')
+  })
+})
