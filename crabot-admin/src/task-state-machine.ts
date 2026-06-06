@@ -117,3 +117,48 @@ export function assertTaskInvariants(task: Task): void {
     )
   }
 }
+
+/**
+ * 修正历史脏数据的派生字段不一致。loadData 启动期调用，目的：
+ * 1. 治掉旧版本代码（绕过 applyStatusTransition 的 self-healing / cancel 路径）
+ *    留下的 waiting_human_at / waiting_at / pending_question 残留
+ * 2. 给 terminal 但缺 completed_at 的 task 回填一个时间戳（用 updated_at）
+ *
+ * 不会"反向修复"——比如 status=waiting_human 但缺 waiting_human_at，
+ * 我们无法凭空造时间戳，留给 assertTaskInvariants 抛错。这种情况只会
+ * 来自磁盘损坏或外部手工修改，应当被发现而不是默默掩盖。
+ *
+ * @returns task 同引用（无修改时）或新对象（有修改），fixes 列表说明修了哪些字段
+ */
+export function repairTaskInvariants(input: Task): { task: Task; fixes: string[] } {
+  const fixes: string[] = []
+  let task = input
+
+  const fix = (field: string, mut: (t: Task) => void) => {
+    if (task === input) task = { ...input }
+    mut(task)
+    fixes.push(field)
+  }
+
+  // INV-1 反向：清掉与 status 不符的 waiting_human_at
+  if (task.status !== 'waiting_human' && task.waiting_human_at !== undefined) {
+    fix('waiting_human_at', (t) => { t.waiting_human_at = undefined })
+  }
+
+  // INV-2 反向：清掉与 status 不符的 waiting_at
+  if (task.status !== 'waiting' && task.waiting_at !== undefined) {
+    fix('waiting_at', (t) => { t.waiting_at = undefined })
+  }
+
+  // INV-3 回填：terminal 但缺 completed_at → 用 updated_at 兜底
+  if (TERMINAL_STATUSES.has(task.status) && task.completed_at === undefined) {
+    fix('completed_at', (t) => { t.completed_at = t.updated_at })
+  }
+
+  // INV-4 反向：清掉与 status 不符的 pending_question
+  if (task.status !== 'waiting_human' && task.pending_question !== undefined) {
+    fix('pending_question', (t) => { t.pending_question = undefined })
+  }
+
+  return { task, fixes }
+}

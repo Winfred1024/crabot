@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { VALID_TRANSITIONS, applyDerivedFields, assertTaskInvariants } from './task-state-machine.js'
+import { VALID_TRANSITIONS, applyDerivedFields, assertTaskInvariants, repairTaskInvariants } from './task-state-machine.js'
 import type { Task } from './types.js'
 
 describe('VALID_TRANSITIONS', () => {
@@ -208,5 +208,67 @@ describe('assertTaskInvariants', () => {
   it('passes for clean terminal task without pending_question', () => {
     const t = fakeTask({ status: 'failed', completed_at: NOW, error: 'oom' })
     expect(() => assertTaskInvariants(t)).not.toThrow()
+  })
+})
+
+describe('repairTaskInvariants', () => {
+  it('returns original task and empty fixes when already clean', () => {
+    const t = fakeTask({ status: 'waiting_human', waiting_human_at: NOW })
+    const { task, fixes } = repairTaskInvariants(t)
+    expect(fixes).toEqual([])
+    expect(task).toBe(t)  // 同引用，不复制
+  })
+
+  it('clears stale waiting_human_at on non-waiting_human task', () => {
+    const t = fakeTask({
+      status: 'failed',
+      completed_at: NOW,
+      waiting_human_at: '2026-06-04T07:42:39.399Z',
+      error: 'agent_restarted_during_execution',
+    })
+    const { task, fixes } = repairTaskInvariants(t)
+    expect(task.waiting_human_at).toBeUndefined()
+    expect(fixes).toContain('waiting_human_at')
+  })
+
+  it('clears stale waiting_at on non-waiting task', () => {
+    const t = fakeTask({ status: 'completed', completed_at: NOW, waiting_at: '2026-06-03T00:00:00.000Z' })
+    const { task, fixes } = repairTaskInvariants(t)
+    expect(task.waiting_at).toBeUndefined()
+    expect(fixes).toContain('waiting_at')
+  })
+
+  it('clears stale pending_question on non-waiting_human task', () => {
+    const t = fakeTask({ status: 'cancelled', completed_at: NOW, pending_question: 'q?' })
+    const { task, fixes } = repairTaskInvariants(t)
+    expect(task.pending_question).toBeUndefined()
+    expect(fixes).toContain('pending_question')
+  })
+
+  it('back-fills completed_at on terminal task missing it', () => {
+    const t = fakeTask({ status: 'failed', updated_at: '2026-06-04T07:42:39.399Z' })
+    const { task, fixes } = repairTaskInvariants(t)
+    expect(task.completed_at).toBe('2026-06-04T07:42:39.399Z')
+    expect(fixes).toContain('completed_at')
+  })
+
+  it('repaired task passes assertTaskInvariants', () => {
+    const dirty = fakeTask({
+      status: 'failed',
+      completed_at: NOW,
+      waiting_human_at: '2026-06-04T07:42:39.399Z',
+      pending_question: 'q?',
+    })
+    const { task } = repairTaskInvariants(dirty)
+    expect(() => assertTaskInvariants(task)).not.toThrow()
+  })
+
+  it('does not "repair" waiting_human task with missing waiting_human_at (can\'t invent timestamp)', () => {
+    // 不能凭空造 waiting_human_at；这种情况留给 assert 抛错，靠手工或重启 cleanup 收尾
+    const t = fakeTask({ status: 'waiting_human' })
+    const { task, fixes } = repairTaskInvariants(t)
+    expect(task.waiting_human_at).toBeUndefined()
+    expect(fixes).toEqual([])
+    expect(() => assertTaskInvariants(task)).toThrow()
   })
 })
