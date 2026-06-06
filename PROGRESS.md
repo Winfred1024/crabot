@@ -14,7 +14,7 @@
   - **undo.ts 扩展**：`SNAPSHOT_RESTORE_PATH` 加 schedule + regex 加 schedule + executeReverse export 以便单测
 - 重要决策：update 不进 LLM 内容审核（add 进，因为 add 是首次审；update 只改字段不扩展工具权限）；不引入 trigger 跨类型修改能力（cron → once 等需 delete + add 或 admin web）；不动 admin 协议 / agent 侧 runner / handleUpdateSchedule（已就位）
 
-改动覆盖（7 个 commits）：
+改动覆盖（9 个 commits）：
 - `fix(cli): schedule add 写顶层 target_session 替代 legacy input.target_*`
 - `feat(cli): schedule add 补 --interval-seconds 触发器`
 - `feat(cli): 注册 schedule add 的 --interval-seconds 和 --target-type flag`
