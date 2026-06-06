@@ -9,6 +9,7 @@
  */
 
 import type { CreateTaskParams, Task, TaskStatus } from './types.js'
+import { applyDerivedFields } from './task-state-machine.js'
 
 /**
  * Admin 重启后对磁盘上 loaded tasks 做的状态清扫。
@@ -39,13 +40,9 @@ export function cleanupStaleInflightTasks(
   const next = tasks.map((task) => {
     if (!STALE_INFLIGHT.has(task.status)) return task
     staleCount++
-    return {
-      ...task,
-      status: 'failed' as TaskStatus,
+    return applyDerivedFields(task, 'failed', nowISO, {
       error: task.error ?? 'admin_restarted_during_task',
-      updated_at: nowISO,
-      completed_at: nowISO,
-    }
+    })
   })
   return { tasks: next, staleCount }
 }

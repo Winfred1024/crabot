@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { buildRecoveryTask, cleanupStaleInflightTasks, isAgentRestartStale } from './recovery-handler.js'
 import type { Task, TaskStatus } from './types.js'
+import { assertTaskInvariants } from './task-state-machine.js'
 
 function fakeTask(overrides: Partial<Task>): Task {
   return {
@@ -103,6 +104,30 @@ describe('cleanupStaleInflightTasks', () => {
     const original = fakeTask({ id: 'a', status: 'executing' })
     cleanupStaleInflightTasks([original], NOW)
     expect(original.status).toBe('executing') // 入参未被改写
+  })
+
+  it('cleaned tasks satisfy task invariants', () => {
+    const statuses: TaskStatus[] = ['pending', 'planning', 'executing']
+    const input = statuses.map((s) => fakeTask({ id: s, status: s }))
+    const { tasks } = cleanupStaleInflightTasks(input, NOW)
+    for (const t of tasks) {
+      expect(() => assertTaskInvariants(t)).not.toThrow()
+    }
+  })
+
+  it('does not leave waiting_at/waiting_human_at residue on inputs that had them stale', () => {
+    // 边界：理论上不该发生（pending 状态不该有 waiting_human_at），但作为防御层验证
+    const input = [
+      fakeTask({
+        id: 'a',
+        status: 'pending',
+        // 故意构造脏输入：pending 但带 waiting_human_at
+        waiting_human_at: '2026-05-01T00:00:00.000Z',
+      } as any),
+    ]
+    const { tasks } = cleanupStaleInflightTasks(input, NOW)
+    expect(tasks[0].waiting_human_at).toBeUndefined()
+    expect(() => assertTaskInvariants(tasks[0])).not.toThrow()
   })
 })
 
