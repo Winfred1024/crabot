@@ -93,19 +93,72 @@ describe('buildCreateScheduleBody', () => {
       expect(tt['description']).toBeUndefined()
     })
 
-    it('--target-channel/--target-session 进 task_template.input', () => {
+    it('--target-channel/--target-session/--target-type 进顶层 target_session', () => {
       const body = buildCreateScheduleBody({
         title: 't',
         priority: 'normal',
         cron: '0 0 * * *',
         targetChannel: 'telegram-001',
         targetSession: 'sess-abc',
+        targetType: 'private',
       })
+      expect(body['target_session']).toEqual({
+        channel_id: 'telegram-001',
+        session_id: 'sess-abc',
+        type: 'private',
+      })
+      // task_template.input 不应再被写入 target_*
       const tt = body['task_template'] as Record<string, unknown>
-      expect(tt['input']).toEqual({
-        target_channel_id: 'telegram-001',
-        target_session_id: 'sess-abc',
-      })
+      expect(tt['input']).toBeUndefined()
+    })
+
+    it('三个 target flag 缺 --target-channel 报错', () => {
+      expect(() =>
+        buildCreateScheduleBody({
+          title: 't',
+          priority: 'normal',
+          cron: '0 0 * * *',
+          targetSession: 'sess-abc',
+          targetType: 'private',
+        })
+      ).toThrow(/--target-channel.*--target-session.*--target-type 必须同时提供/)
+    })
+
+    it('三个 target flag 缺 --target-session 报错', () => {
+      expect(() =>
+        buildCreateScheduleBody({
+          title: 't',
+          priority: 'normal',
+          cron: '0 0 * * *',
+          targetChannel: 'telegram-001',
+          targetType: 'private',
+        })
+      ).toThrow(/--target-channel.*--target-session.*--target-type 必须同时提供/)
+    })
+
+    it('三个 target flag 缺 --target-type 报错', () => {
+      expect(() =>
+        buildCreateScheduleBody({
+          title: 't',
+          priority: 'normal',
+          cron: '0 0 * * *',
+          targetChannel: 'telegram-001',
+          targetSession: 'sess-abc',
+        })
+      ).toThrow(/--target-channel.*--target-session.*--target-type 必须同时提供/)
+    })
+
+    it('--target-type 不在白名单报错', () => {
+      expect(() =>
+        buildCreateScheduleBody({
+          title: 't',
+          priority: 'normal',
+          cron: '0 0 * * *',
+          targetChannel: 'telegram-001',
+          targetSession: 'sess-abc',
+          targetType: 'channel',
+        })
+      ).toThrow(/--target-type 必须是 private \| group/)
     })
 
     it('--disabled 把 enabled 设为 false', () => {

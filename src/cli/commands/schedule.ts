@@ -29,6 +29,7 @@ export interface ScheduleAddOpts {
   readonly timezone?: string
   readonly targetChannel?: string
   readonly targetSession?: string
+  readonly targetType?: string
   readonly disabled?: boolean
 }
 
@@ -73,11 +74,13 @@ export function buildCreateScheduleBody(opts: ScheduleAddOpts): Record<string, u
   }
   if (opts.taskType?.trim()) taskTemplate['type'] = opts.taskType.trim()
   if (opts.taskDescription?.trim()) taskTemplate['description'] = opts.taskDescription.trim()
-  if (opts.targetChannel || opts.targetSession) {
-    const input: Record<string, unknown> = {}
-    if (opts.targetChannel) input['target_channel_id'] = opts.targetChannel
-    if (opts.targetSession) input['target_session_id'] = opts.targetSession
-    taskTemplate['input'] = input
+  const hasAnyTarget = !!(opts.targetChannel || opts.targetSession || opts.targetType)
+  const hasAllTarget = !!(opts.targetChannel && opts.targetSession && opts.targetType)
+  if (hasAnyTarget && !hasAllTarget) {
+    throw new CliError(
+      'INVALID_ARGUMENT',
+      '--target-channel / --target-session / --target-type 必须同时提供（要么三个都给，要么都不给）',
+    )
   }
 
   const body: Record<string, unknown> = {
@@ -87,6 +90,15 @@ export function buildCreateScheduleBody(opts: ScheduleAddOpts): Record<string, u
     enabled: !opts.disabled,
   }
   if (opts.description?.trim()) body['description'] = opts.description.trim()
+
+  if (hasAllTarget) {
+    const type = assertEnum('--target-type', opts.targetType, ['private', 'group'] as const)
+    body['target_session'] = {
+      channel_id: opts.targetChannel,
+      session_id: opts.targetSession,
+      type,
+    }
+  }
 
   // creator_friend_id 不暴露 CLI flag，从 env 读 — 由 worker 在 task 启动时
   // 把 task_origin.friend_id 注入到 CRABOT_TASK_FRIEND_ID，agent 没法通过命令行参数伪造身份。
