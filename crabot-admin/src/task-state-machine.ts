@@ -23,6 +23,10 @@ export const VALID_TRANSITIONS: Readonly<Record<TaskStatus, ReadonlyArray<TaskSt
 
 const TERMINAL_STATUSES: ReadonlySet<TaskStatus> = new Set(['completed', 'failed', 'cancelled'])
 
+export function isTerminalStatus(status: TaskStatus): boolean {
+  return TERMINAL_STATUSES.has(status)
+}
+
 export type DerivedFieldOpts = {
   error?: string
   pendingQuestion?: string | null
@@ -48,33 +52,20 @@ export function applyDerivedFields(
     next.started_at = nowISO
   }
 
-  if (TERMINAL_STATUSES.has(newStatus)) {
+  if (isTerminalStatus(newStatus)) {
     next.completed_at = nowISO
   }
 
-  if (newStatus === 'waiting_human') {
-    next.waiting_human_at = nowISO
-  } else {
-    next.waiting_human_at = undefined
-  }
+  next.waiting_human_at = newStatus === 'waiting_human' ? nowISO : undefined
+  next.waiting_at = newStatus === 'waiting' ? nowISO : undefined
 
-  if (newStatus === 'waiting') {
-    next.waiting_at = nowISO
-  } else {
-    next.waiting_at = undefined
-  }
-
-  // pending_question：仅在 waiting_human 时持有，离开必清。
-  // 进入 waiting_human 时调用方可覆盖（null = 显式清空）。
-  //
-  // 与 index.ts 旧 handleUpdateTaskStatus 的差异：旧逻辑在 waiting_human → failed/cancelled
-  // 时只在调用方显式传 pending_question:null 才清空，否则字段残留——这是 INV-4 的来源 bug，
-  // 此处永远清空是有意识的纠正（参见 assertTaskInvariants INV-4）。
+  // pending_question：离开 waiting_human 永远清空（旧 handleUpdateTaskStatus 仅在显式
+  // 传 null 时清，是 INV-4 残留 bug 的来源）。进入 waiting_human 时调用方可覆盖
+  // （opts.pendingQuestion=null 表示显式清空；undefined 表示保留 spread 带过来的旧值）。
   if (newStatus === 'waiting_human') {
     if (opts.pendingQuestion !== undefined) {
       next.pending_question = opts.pendingQuestion ?? undefined
     }
-    // 不提供时保留 input 的 pending_question（即 task.pending_question 通过 spread 已带过来）
   } else {
     next.pending_question = undefined
   }
@@ -113,7 +104,7 @@ export function assertTaskInvariants(task: Task): void {
   }
 
   // INV-3: terminal ⇒ completed_at !== undefined
-  if (TERMINAL_STATUSES.has(task.status) && task.completed_at === undefined) {
+  if (isTerminalStatus(task.status) && task.completed_at === undefined) {
     throw new Error(`Task ${task.id}: INV-3 violated — terminal status=${task.status} but completed_at missing`)
   }
 
@@ -158,7 +149,7 @@ export function repairTaskInvariants(input: Task): { task: Task; fixes: string[]
   }
 
   // INV-3 回填：terminal 但缺 completed_at → 用 updated_at 兜底
-  if (TERMINAL_STATUSES.has(task.status) && task.completed_at === undefined) {
+  if (isTerminalStatus(task.status) && task.completed_at === undefined) {
     fix('completed_at', (t) => { t.completed_at = t.updated_at })
   }
 

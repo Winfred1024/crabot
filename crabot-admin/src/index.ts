@@ -4238,17 +4238,15 @@ export class AdminModule extends ModuleBase {
     const inFlight = Array.from(this.tasks.values()).filter((t) => isAgentRestartStale(t.status))
     if (inFlight.length === 0) return
 
-    const now = generateTimestamp()
     const interrupted = inFlight.filter((t) => !t.tags.includes('recovery'))
 
     // 1. 把所有 in-flight 任务（含 recovery 自身）置 failed
     for (const t of inFlight) {
       this.applyStatusTransition(t, 'failed', { error: 'agent_restarted_during_execution' })
     }
-    // 备注：批量同步时间戳的 `now` 变量保留供下游 buildRecoveryTask 使用；
-    // 每条 task 的 updated_at/completed_at 是各自 generateTimestamp() 的微差时间戳，
-    // 日志可读性差几毫秒可以接受。
     console.log(`[Admin] Self-healing: marked ${inFlight.length} task(s) as failed (incl. ${inFlight.length - interrupted.length} recovery task)`)
+
+    const now = generateTimestamp()
 
     // 2. 生成 recovery 任务（防雪崩：跳过自身就是 recovery 的）
     const params = buildRecoveryTask(interrupted, restartCount, now)
@@ -4371,6 +4369,11 @@ export class AdminModule extends ModuleBase {
   /**
    * 所有 task 状态变更的统一入口。维护派生字段、校验状态机、断言不变量、发布事件。
    *
+   * **In-place mutation**：本方法用 `Object.assign(task, applyDerivedFields(task,...))`
+   * 把派生字段写回入参 `task`，保留对象引用——`this.tasks.get(id)` 拿到的引用、
+   * RPC 返回的 `{ task }` 引用、外层 caller 持有的引用都会同时反映新状态。
+   * 不要按 `applyDerivedFields` 的纯函数语义复制一份去做事——会跟内存 Map 失同步。
+   *
    * 不持久化（upsertTask 由调用方负责）。不发额外事件（admin.task_cancelled 由
    * cancel 路径自行追发）。
    *
@@ -4383,7 +4386,6 @@ export class AdminModule extends ModuleBase {
     opts: {
       error?: string
       pendingQuestion?: string | null
-      skipPublish?: boolean
     } = {},
   ): void {
     const oldStatus = task.status
@@ -4391,24 +4393,18 @@ export class AdminModule extends ModuleBase {
       throw new Error(AdminErrorCode.INVALID_STATUS_TRANSITION)
     }
 
-    const now = generateTimestamp()
-    const next = applyDerivedFields(task, newStatus, now, {
+    const next = applyDerivedFields(task, newStatus, generateTimestamp(), {
       error: opts.error,
       pendingQuestion: opts.pendingQuestion,
     })
-
-    // mutate 回 task（保留对象引用，跟现有调用约定一致）
     Object.assign(task, next)
-
     assertTaskInvariants(task)
 
-    if (!opts.skipPublish) {
-      this.publishAdminEvent('admin.task_status_changed', {
-        task_id: task.id,
-        old_status: oldStatus,
-        new_status: newStatus,
-      })
-    }
+    this.publishAdminEvent('admin.task_status_changed', {
+      task_id: task.id,
+      old_status: oldStatus,
+      new_status: newStatus,
+    })
   }
 
   private async handleUpdateTaskStatus(params: UpdateTaskStatusParams): Promise<{ task: Task }> {
