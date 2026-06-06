@@ -78,3 +78,42 @@ export function applyDerivedFields(
 
   return next
 }
+
+/**
+ * 校验 task 满足派生字段不变量。违反抛错。
+ *
+ * 设计意图：所有走 applyStatusTransition 出来的 task 都必须 pass；
+ * loadData 时 repair 后也必须 pass。pass 不掉 = repair 或派生字段
+ * 实现有 bug，立刻暴露。
+ */
+export function assertTaskInvariants(task: Task): void {
+  // INV-1: status === 'waiting_human' ⇔ waiting_human_at !== undefined
+  if (task.status === 'waiting_human' && task.waiting_human_at === undefined) {
+    throw new Error(`Task ${task.id}: INV-1 violated — status=waiting_human but waiting_human_at missing`)
+  }
+  if (task.status !== 'waiting_human' && task.waiting_human_at !== undefined) {
+    throw new Error(
+      `Task ${task.id}: INV-1 violated — status=${task.status} but waiting_human_at still set`,
+    )
+  }
+
+  // INV-2: status === 'waiting' ⇔ waiting_at !== undefined
+  if (task.status === 'waiting' && task.waiting_at === undefined) {
+    throw new Error(`Task ${task.id}: INV-2 violated — status=waiting but waiting_at missing`)
+  }
+  if (task.status !== 'waiting' && task.waiting_at !== undefined) {
+    throw new Error(`Task ${task.id}: INV-2 violated — status=${task.status} but waiting_at still set`)
+  }
+
+  // INV-3: terminal ⇒ completed_at !== undefined
+  if (TERMINAL_STATUSES.has(task.status) && task.completed_at === undefined) {
+    throw new Error(`Task ${task.id}: INV-3 violated — terminal status=${task.status} but completed_at missing`)
+  }
+
+  // INV-4: status !== 'waiting_human' ⇒ pending_question === undefined
+  if (task.status !== 'waiting_human' && task.pending_question !== undefined) {
+    throw new Error(
+      `Task ${task.id}: INV-4 violated — status=${task.status} but pending_question still set`,
+    )
+  }
+}

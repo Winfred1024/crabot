@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { VALID_TRANSITIONS, applyDerivedFields } from './task-state-machine.js'
+import { VALID_TRANSITIONS, applyDerivedFields, assertTaskInvariants } from './task-state-machine.js'
 import type { Task } from './types.js'
 
 describe('VALID_TRANSITIONS', () => {
@@ -164,5 +164,49 @@ describe('applyDerivedFields', () => {
     applyDerivedFields(input, 'failed', NOW)
     expect(input.status).toBe('waiting_human')
     expect(input.waiting_human_at).toBe('2026-06-04T00:00:00.000Z')
+  })
+})
+
+describe('assertTaskInvariants', () => {
+  it('passes for a clean waiting_human task', () => {
+    const t = fakeTask({ status: 'waiting_human', waiting_human_at: NOW })
+    expect(() => assertTaskInvariants(t)).not.toThrow()
+  })
+
+  it('INV-1: throws when status=waiting_human but waiting_human_at missing', () => {
+    const t = fakeTask({ status: 'waiting_human' })
+    expect(() => assertTaskInvariants(t)).toThrow(/waiting_human_at/)
+  })
+
+  it('INV-1: throws when status≠waiting_human but waiting_human_at present', () => {
+    const t = fakeTask({ status: 'failed', completed_at: NOW, waiting_human_at: NOW })
+    expect(() => assertTaskInvariants(t)).toThrow(/waiting_human_at/)
+  })
+
+  it('INV-2: throws when status=waiting but waiting_at missing', () => {
+    const t = fakeTask({ status: 'waiting' })
+    expect(() => assertTaskInvariants(t)).toThrow(/waiting_at/)
+  })
+
+  it('INV-2: throws when status≠waiting but waiting_at present', () => {
+    const t = fakeTask({ status: 'executing', waiting_at: NOW })
+    expect(() => assertTaskInvariants(t)).toThrow(/waiting_at/)
+  })
+
+  it('INV-3: throws when terminal status missing completed_at', () => {
+    for (const s of ['completed', 'failed', 'cancelled'] as const) {
+      const t = fakeTask({ status: s })
+      expect(() => assertTaskInvariants(t)).toThrow(/completed_at/)
+    }
+  })
+
+  it('INV-4: throws when non-waiting_human status carries pending_question', () => {
+    const t = fakeTask({ status: 'executing', pending_question: 'leftover' })
+    expect(() => assertTaskInvariants(t)).toThrow(/pending_question/)
+  })
+
+  it('passes for clean terminal task without pending_question', () => {
+    const t = fakeTask({ status: 'failed', completed_at: NOW, error: 'oom' })
+    expect(() => assertTaskInvariants(t)).not.toThrow()
   })
 })
