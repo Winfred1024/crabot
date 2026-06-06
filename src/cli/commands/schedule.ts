@@ -170,10 +170,12 @@ export function registerScheduleCommands(parent: Command): void {
     .option('--task-type <type>', 'Task 类型，用于 trace 过滤（如 daily_reflection）')
     .option('--tag <tag>', 'Task 标签（可重复 --tag a --tag b）', collectTag)
     .option('--cron <expr>', 'Cron 表达式（5 字段：分 时 日 月 周）')
+    .option('--interval-seconds <n>', '定时间隔秒数（interval 触发器；与 --cron / --trigger-at 三者互斥）')
     .option('--trigger-at <time>', 'ISO 8601 触发时间（一次性触发器）')
     .option('--timezone <tz>', 'Cron 时区（默认 Asia/Shanghai）')
-    .option('--target-channel <id>', '触发目标 channel instance id（写入 task_template.input.target_channel_id）')
-    .option('--target-session <id>', '触发目标 session id（写入 task_template.input.target_session_id）')
+    .option('--target-channel <id>', '触发目标 channel instance id（写入顶层 target_session.channel_id）')
+    .option('--target-session <id>', '触发目标 session id（写入顶层 target_session.session_id）')
+    .option('--target-type <type>', '目标 session 类型（private|group；三个 target-* flag 必须同时提供）')
     .option('--disabled', '创建时禁用（默认启用）')
     .action(async (opts: ScheduleAddOpts) => {
       const ctx = createContext(parent)
@@ -186,7 +188,11 @@ export function registerScheduleCommands(parent: Command): void {
       ]
       if (opts.name) cmdParts.push(`--name ${JSON.stringify(opts.name)}`)
       if (opts.cron) cmdParts.push(`--cron ${JSON.stringify(opts.cron)}`)
+      if (opts.intervalSeconds) cmdParts.push(`--interval-seconds ${opts.intervalSeconds}`)
       if (opts.triggerAt) cmdParts.push(`--trigger-at ${JSON.stringify(opts.triggerAt)}`)
+      if (opts.targetChannel) cmdParts.push(`--target-channel ${opts.targetChannel}`)
+      if (opts.targetSession) cmdParts.push(`--target-session ${opts.targetSession}`)
+      if (opts.targetType) cmdParts.push(`--target-type ${opts.targetType}`)
 
       const result = await runWrite({
         subcommand: 'schedule add',
