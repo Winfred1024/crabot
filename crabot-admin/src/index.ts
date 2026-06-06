@@ -182,7 +182,6 @@ import {
   VALID_TRANSITIONS,
   applyDerivedFields,
   assertTaskInvariants,
-  repairTaskInvariants,
 } from './task-state-machine.js'
 import { getBuiltinSkills } from './builtin-skills.js'
 import { getBuiltinSubAgents } from './builtin-subagents.js'
