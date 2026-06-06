@@ -156,15 +156,23 @@ describe('runEngine', () => {
       options: baseOptions({ tools: [readTool], onTurn }),
     })
 
-    // onTurn is called for tool-use turns (turn 1), not for the final text turn
-    expect(onTurn).toHaveBeenCalledTimes(1)
-    expect(onTurn).toHaveBeenCalledWith(
+    // 自 cdaa253 起，final text turn 也补 fire 一次让 trace 能记录最后一轮（早 return 路径之前漏记）。
+    expect(onTurn).toHaveBeenCalledTimes(2)
+    expect(onTurn).toHaveBeenNthCalledWith(1,
       expect.objectContaining({
         turnNumber: 1,
         stopReason: 'tool_use',
         toolCalls: expect.arrayContaining([
           expect.objectContaining({ id: 'tu-1', name: 'Read' }),
         ]),
+      })
+    )
+    expect(onTurn).toHaveBeenNthCalledWith(2,
+      expect.objectContaining({
+        turnNumber: 2,
+        stopReason: 'end_turn',
+        assistantText: 'Done',
+        toolCalls: [],
       })
     )
   })
@@ -474,13 +482,15 @@ describe('runEngine silent end_turn retry', () => {
 
     // 第 1 轮（silent end_turn 触发追问）：fire onTurn 但不带标记
     // 第 2 轮（追问后立即调工具）：fire onTurn 带 forcedSummaryAttempt=1
-    // 第 3 轮（end_turn 有 text）：早 return 路径不 fire onTurn — 已知留待后续
-    expect(turns).toHaveLength(2)
+    // 第 3 轮（end_turn 有 text）：自 cdaa253 起也补 fire 让 trace 看到最后一轮
+    expect(turns).toHaveLength(3)
     expect(turns[0].forcedSummaryAttempt).toBeUndefined()
     expect(turns[0].assistantText).toBe('')
     expect(turns[0].toolCount).toBe(0)
     expect(turns[1].forcedSummaryAttempt).toBe(1)
     expect(turns[1].toolCount).toBe(1)
+    expect(turns[2].assistantText).toBe('done after lookup')
+    expect(turns[2].toolCount).toBe(0)
   })
 })
 
