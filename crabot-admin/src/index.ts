@@ -4220,16 +4220,11 @@ export class AdminModule extends ModuleBase {
 
     // 1. 把所有 in-flight 任务（含 recovery 自身）置 failed
     for (const t of inFlight) {
-      const oldStatus = t.status
-      t.status = 'failed'
-      t.error = 'agent_restarted_during_execution'
-      t.updated_at = now
-      this.publishAdminEvent('admin.task_status_changed', {
-        task_id: t.id,
-        old_status: oldStatus,
-        new_status: 'failed',
-      })
+      this.applyStatusTransition(t, 'failed', { error: 'agent_restarted_during_execution' })
     }
+    // 备注：批量同步时间戳的 `now` 变量保留供下游 buildRecoveryTask 使用；
+    // 每条 task 的 updated_at/completed_at 是各自 generateTimestamp() 的微差时间戳，
+    // 日志可读性差几毫秒可以接受。
     console.log(`[Admin] Self-healing: marked ${inFlight.length} task(s) as failed (incl. ${inFlight.length - interrupted.length} recovery task)`)
 
     // 2. 生成 recovery 任务（防雪崩：跳过自身就是 recovery 的）
