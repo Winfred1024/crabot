@@ -182,6 +182,7 @@ import {
   VALID_TRANSITIONS,
   applyDerivedFields,
   assertTaskInvariants,
+  repairTaskInvariants,
 } from './task-state-machine.js'
 import { getBuiltinSkills } from './builtin-skills.js'
 import { getBuiltinSubAgents } from './builtin-subagents.js'
@@ -3753,15 +3754,37 @@ export class AdminModule extends ModuleBase {
       const tasksData = await fs.readFile(this.tasksFilePath, 'utf-8')
       const loaded = JSON.parse(tasksData) as Task[]
       const { tasks: cleaned, staleCount } = cleanupStaleInflightTasks(loaded, generateTimestamp())
-      for (const task of cleaned) {
-        this.tasks.set(task.id, task)
+
+      // 修正历史脏数据（旧版本绕过 applyStatusTransition 的路径留下的残留字段）
+      let repairCount = 0
+      const repairedTasks = cleaned.map((t) => {
+        const { task: repaired, fixes } = repairTaskInvariants(t)
+        if (fixes.length > 0) {
+          repairCount++
+          console.warn(`[Admin] Repaired task ${t.id} on load: fixed ${fixes.join(', ')}`)
+        }
+        return repaired
+      })
+
+      // 兜底：所有 task 必须满足不变量。修不掉的说明 repair 实现有漏洞或磁盘数据
+      // 异常严重（如 status=waiting_human 但 waiting_human_at 缺失，无法凭空回填），
+      // 此时立刻抛错暴露问题，比起静默运行更安全
+      for (const t of repairedTasks) {
+        assertTaskInvariants(t)
+        this.tasks.set(t.id, t)
       }
+
       console.log(
         `[Admin] Loaded ${this.tasks.size} tasks` +
-        (staleCount > 0 ? ` (marked ${staleCount} in-flight task(s) failed due to admin restart)` : '')
+        (staleCount > 0 ? `, marked ${staleCount} in-flight task(s) failed (admin restart)` : '') +
+        (repairCount > 0 ? `, repaired ${repairCount} legacy dirty task(s)` : ''),
       )
-    } catch {
-      console.log('[Admin] No existing tasks data')
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
+        console.log('[Admin] No existing tasks data')
+      } else {
+        throw err  // assert 抛错或其他读取异常，不能静默
+      }
     }
   }
 
