@@ -398,6 +398,118 @@ describe('AnthropicAdapter', () => {
       expect(adapter).toBeDefined()
     })
   })
+
+  describe('streamOnce abort listener lifecycle', () => {
+    // Regression: 2026-06-06 kernel panic. anthropic-adapter 在 task 级长寿命 signal
+    // 上 addEventListener('abort', onAbort, { once: true }) 但从不 removeEventListener。
+    // 正常完成时 abort 不触发 → listener 永远挂着 → 闭包 retain stream → native Buffer
+    // 累积。这里用 signal 上的 add/remove 计数证明 listener 净增量必须为 0。
+    function makeFakeStream(events: Array<Record<string, unknown>>): Record<string, unknown> {
+      const finalMessage = {
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 1, output_tokens: 1 },
+      }
+      return {
+        abort: vi.fn(),
+        finalMessage: vi.fn().mockResolvedValue(finalMessage),
+        [Symbol.asyncIterator]: async function* () {
+          for (const ev of events) yield ev
+        },
+      }
+    }
+
+    function makeCountingSignal(): { signal: AbortSignal; netListeners: () => number } {
+      const real = new AbortController().signal
+      let add = 0
+      let remove = 0
+      const proxy = new Proxy(real, {
+        get(target, prop, receiver) {
+          if (prop === 'addEventListener') {
+            return (...args: unknown[]) => {
+              add++
+              return Reflect.apply(Reflect.get(target, prop), target, args)
+            }
+          }
+          if (prop === 'removeEventListener') {
+            return (...args: unknown[]) => {
+              remove++
+              return Reflect.apply(Reflect.get(target, prop), target, args)
+            }
+          }
+          return Reflect.get(target, prop, receiver)
+        },
+      })
+      return { signal: proxy as AbortSignal, netListeners: () => add - remove }
+    }
+
+    it('removes abort listener after stream completes normally', async () => {
+      const adapter = new AnthropicAdapter({
+        endpoint: 'https://example.test',
+        apikey: 'test-key',
+      })
+      const fakeStream = makeFakeStream([
+        { type: 'message_start', message: { id: 'msg_1' } },
+        { type: 'content_block_start', content_block: { type: 'text', text: '' } },
+        { type: 'content_block_delta', delta: { type: 'text_delta', text: 'hello' } },
+        { type: 'content_block_stop' },
+        { type: 'message_delta' },
+      ])
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vi.spyOn((adapter as any).client.messages, 'stream').mockReturnValue(fakeStream)
+
+      const { signal, netListeners } = makeCountingSignal()
+      const chunks: StreamChunk[] = []
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const gen = (adapter as any).streamOnce({
+        messages: [createUserMessage('hi')],
+        systemPrompt: 'sys',
+        tools: [],
+        model: 'claude-x',
+        signal,
+      })
+      for await (const c of gen) {
+        chunks.push(c as StreamChunk)
+      }
+
+      expect(chunks.at(-1)?.type).toBe('message_end')
+      expect(netListeners()).toBe(0)
+    })
+
+    it('removes abort listener even when stream iteration throws', async () => {
+      const adapter = new AnthropicAdapter({
+        endpoint: 'https://example.test',
+        apikey: 'test-key',
+      })
+      const boom = new Error('stream blew up')
+      const fakeStream: Record<string, unknown> = {
+        abort: vi.fn(),
+        finalMessage: vi.fn().mockResolvedValue({}),
+        [Symbol.asyncIterator]: async function* () {
+          yield { type: 'message_start', message: { id: 'msg_x' } }
+          throw boom
+        },
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vi.spyOn((adapter as any).client.messages, 'stream').mockReturnValue(fakeStream)
+
+      const { signal, netListeners } = makeCountingSignal()
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const gen = (adapter as any).streamOnce({
+        messages: [createUserMessage('hi')],
+        systemPrompt: 'sys',
+        tools: [],
+        model: 'claude-x',
+        signal,
+      })
+
+      await expect(async () => {
+        for await (const _ of gen) {
+          // drain
+        }
+      }).rejects.toBe(boom)
+      expect(netListeners()).toBe(0)
+    })
+  })
 })
 
 // --- OpenAI Adapter Tests ---

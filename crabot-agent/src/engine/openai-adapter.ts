@@ -301,8 +301,13 @@ export class OpenAIAdapter implements LLMAdapter {
 
     let messageStarted = false
     const activeToolCalls = new Map<number, string>()
-
-    for await (const line of readSSELines(response.body)) {
+    // response.body 是 ReadableStream。提前 break（[DONE]）或异常退出时不显式 cancel，
+    // undici 在 keep-alive 路径下可能晚释放 socket / decompressor（这块是 native heap，
+    // V8 看不见）。详见 2026-06-06 kernel watchdog panic 复盘 —— anthropic-adapter 是
+    // 主因，这里属同类防御。
+    const sseBody = response.body
+    try {
+    for await (const line of readSSELines(sseBody)) {
       if (line === '[DONE]') break
 
       let data: Record<string, unknown>
@@ -382,6 +387,9 @@ export class OpenAIAdapter implements LLMAdapter {
           usage,
         }
       }
+    }
+    } finally {
+      try { await sseBody.cancel() } catch { /* already drained / errored */ }
     }
   }
 }
