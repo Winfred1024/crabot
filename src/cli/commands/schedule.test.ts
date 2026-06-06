@@ -1,5 +1,22 @@
 import { describe, it, expect } from 'vitest'
-import { buildCreateScheduleBody } from './schedule.js'
+import {
+  buildCreateScheduleBody,
+  buildUpdateScheduleBody,
+  type ScheduleSnapshot,
+} from './schedule.js'
+
+function makeCronSchedule(): ScheduleSnapshot {
+  return {
+    trigger: { type: 'cron', expression: '0 0 * * *', timezone: 'Asia/Shanghai' },
+    task_template: {
+      title: 'orig title',
+      priority: 'normal',
+      description: 'orig task desc',
+      type: 'orig_type',
+      tags: ['a', 'b'],
+    },
+  }
+}
 
 describe('buildCreateScheduleBody', () => {
   describe('cron 触发器', () => {
@@ -390,5 +407,52 @@ describe('buildCreateScheduleBody', () => {
         timezone: 'Asia/Shanghai',
       })
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// buildUpdateScheduleBody — 顶层标量 + 骨架
+// ---------------------------------------------------------------------------
+
+describe('buildUpdateScheduleBody — 顶层标量', () => {
+  it('至少一个 flag 必给（空 opts 报错）', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeCronSchedule(), {})
+    ).toThrow(/至少需要提供一个修改字段/)
+  })
+
+  it('单独 --name 只写 name 字段', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), { name: '新名字' })
+    expect(body).toEqual({ name: '新名字' })
+  })
+
+  it('--description 写 description', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), { description: '新描述' })
+    expect(body).toEqual({ description: '新描述' })
+  })
+
+  it('--enabled "true" → enabled: true', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), { enabled: 'true' })
+    expect(body).toEqual({ enabled: true })
+  })
+
+  it('--enabled "false" → enabled: false', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), { enabled: 'false' })
+    expect(body).toEqual({ enabled: false })
+  })
+
+  it('--enabled 非法值报错', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeCronSchedule(), { enabled: 'yes' })
+    ).toThrow(/--enabled 必须是 true \| false/)
+  })
+
+  it('多字段一起写', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), {
+      name: '新',
+      description: '新描述',
+      enabled: 'false',
+    })
+    expect(body).toEqual({ name: '新', description: '新描述', enabled: false })
   })
 })

@@ -35,6 +35,51 @@ export interface ScheduleAddOpts {
 }
 
 /**
+ * 本地最小 schedule 类型：仅含 buildUpdateScheduleBody 实际读取的字段。
+ * 不 import crabot-admin/src/types 以保持 CLI 类型独立性（CLI 与 admin 通过 REST body
+ * 通信，admin 协议变化时 CLI 这里编译挂不挂自行决定）。
+ */
+export interface ScheduleSnapshot {
+  readonly trigger:
+    | { readonly type: 'cron'; readonly expression: string; readonly timezone?: string }
+    | { readonly type: 'interval'; readonly seconds: number }
+    | { readonly type: 'once'; readonly execute_at: string }
+  readonly task_template: {
+    readonly title: string
+    readonly priority: string
+    readonly description?: string
+    readonly type?: string
+    readonly tags: readonly string[]
+  }
+}
+
+export interface ScheduleUpdateOpts {
+  readonly name?: string
+  readonly description?: string
+  readonly enabled?: string                  // commander 给 string，函数内 parse
+
+  // trigger 字段级（同类型内）
+  readonly cron?: string
+  readonly timezone?: string
+  readonly intervalSeconds?: string
+  readonly triggerAt?: string
+
+  // task_template 字段级
+  readonly title?: string
+  readonly taskDescription?: string
+  readonly taskPriority?: string
+  readonly taskType?: string
+  readonly tag?: ReadonlyArray<string>
+  readonly clearTags?: boolean
+
+  // target_session 三态
+  readonly targetChannel?: string
+  readonly targetSession?: string
+  readonly targetType?: string
+  readonly clearTarget?: boolean
+}
+
+/**
  * 把 CLI 选项翻译成 admin 协议（CreateScheduleParams）的请求体。
  * 拆出来是为了：单测独立 + 协议字段映射集中在一处。
  * 不合法时抛 CliError('INVALID_ARGUMENT', ...) — 走 main.ts 顶层 catch。
@@ -130,6 +175,51 @@ export function buildCreateScheduleBody(opts: ScheduleAddOpts): Record<string, u
   const envFriendId = process.env.CRABOT_TASK_FRIEND_ID?.trim()
   if (envFriendId) body['creator_friend_id'] = envFriendId
 
+  return body
+}
+
+const ALLOWED_TARGET_TYPES = ['private', 'group'] as const
+
+/**
+ * 构造 admin PATCH /api/schedules/:id 的请求体（UpdateScheduleParams 不含 schedule_id）。
+ *
+ * 字段语义：
+ * - 顶层标量（name/description/enabled）：opts 给了 → 写；没给 → key 不出现
+ * - trigger：opts 任一 trigger flag 给了 → current.trigger 作底字段级 merge 后输出完整
+ *   trigger 对象（admin 协议整体替换）；都没给 → 不写。跨类型修改报错。
+ * - task_template：opts 任一 template flag 给了 → current.task_template 作底字段级 merge
+ *   后输出完整对象；都没给 → 不写。tags 用 --tag 覆盖原 tags（不追加），--clear-tags 清空。
+ * - target_session：--clear-target → null；三个 target-* 都给 → 对象；都没给 → 不写。
+ *
+ * 至少一个修改 flag 必给，否则报 INVALID_ARGUMENT（避免空 PATCH）。
+ */
+export function buildUpdateScheduleBody(
+  current: ScheduleSnapshot,
+  opts: ScheduleUpdateOpts,
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {}
+
+  // 顶层标量
+  if (opts.name?.trim()) body['name'] = opts.name.trim()
+  if (opts.description !== undefined) body['description'] = opts.description.trim()
+  if (opts.enabled !== undefined) {
+    if (opts.enabled !== 'true' && opts.enabled !== 'false') {
+      throw new CliError(
+        'INVALID_ARGUMENT',
+        `--enabled 必须是 true | false，收到: "${opts.enabled}"`,
+      )
+    }
+    body['enabled'] = opts.enabled === 'true'
+  }
+
+  // TODO（task 4b/4c/4d）：trigger / task_template / target_session
+
+  if (Object.keys(body).length === 0) {
+    throw new CliError(
+      'INVALID_ARGUMENT',
+      '至少需要提供一个修改字段（--name / --description / --enabled / trigger flags / task_template flags / target_session flags / --clear-target / --clear-tags）',
+    )
+  }
   return body
 }
 
