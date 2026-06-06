@@ -212,7 +212,70 @@ export function buildUpdateScheduleBody(
     body['enabled'] = opts.enabled === 'true'
   }
 
-  // TODO（task 4b/4c/4d）：trigger / task_template / target_session
+  // trigger 字段级 merge（同类型内更新）
+  const triggerOptKeys = {
+    cron: !!opts.cron,
+    timezone: opts.timezone !== undefined,
+    intervalSeconds: !!opts.intervalSeconds,
+    triggerAt: !!opts.triggerAt,
+  }
+  const hasTriggerOpt = Object.values(triggerOptKeys).some(Boolean)
+  if (hasTriggerOpt) {
+    const ct = current.trigger
+    // 跨类型校验：每个 flag 仅适用于一种 type
+    if ((triggerOptKeys.cron || triggerOptKeys.timezone) && ct.type !== 'cron') {
+      const flag = triggerOptKeys.cron ? '--cron' : '--timezone'
+      throw new CliError(
+        'INVALID_ARGUMENT',
+        `当前 schedule 是 ${ct.type} 类型，${flag} 仅适用于 cron 类型；如需切换类型请走 admin web 或 delete+add`,
+      )
+    }
+    if (triggerOptKeys.intervalSeconds && ct.type !== 'interval') {
+      throw new CliError(
+        'INVALID_ARGUMENT',
+        `当前 schedule 是 ${ct.type} 类型，--interval-seconds 仅适用于 interval 类型；如需切换类型请走 admin web 或 delete+add`,
+      )
+    }
+    if (triggerOptKeys.triggerAt && ct.type !== 'once') {
+      throw new CliError(
+        'INVALID_ARGUMENT',
+        `当前 schedule 是 ${ct.type} 类型，--trigger-at 仅适用于 once 类型；如需切换类型请走 admin web 或 delete+add`,
+      )
+    }
+
+    if (ct.type === 'cron') {
+      const expression = opts.cron?.trim() ?? ct.expression
+      if (expression.split(/\s+/).length < 5) {
+        throw new CliError(
+          'INVALID_ARGUMENT',
+          `--cron 表达式无效: "${expression}"，至少需要 5 个字段（分 时 日 月 周）`,
+        )
+      }
+      const timezone = opts.timezone !== undefined ? (opts.timezone.trim() || 'Asia/Shanghai') : ct.timezone
+      body['trigger'] = { type: 'cron', expression, timezone }
+    } else if (ct.type === 'interval') {
+      const seconds = Number(opts.intervalSeconds)
+      if (!Number.isInteger(seconds) || seconds < 1) {
+        throw new CliError(
+          'INVALID_ARGUMENT',
+          `--interval-seconds 必须是正整数，得到 "${opts.intervalSeconds}"`,
+        )
+      }
+      body['trigger'] = { type: 'interval', seconds }
+    } else {
+      // ct.type === 'once'
+      const raw = opts.triggerAt as string
+      if (Number.isNaN(new Date(raw).getTime())) {
+        throw new CliError(
+          'INVALID_ARGUMENT',
+          `--trigger-at 格式无效: "${raw}"，请使用 ISO 8601 格式，如 2026-04-15T16:45:00+08:00`,
+        )
+      }
+      body['trigger'] = { type: 'once', execute_at: new Date(raw).toISOString() }
+    }
+  }
+
+  // TODO（task 4c/4d）：task_template / target_session
 
   if (Object.keys(body).length === 0) {
     throw new CliError(

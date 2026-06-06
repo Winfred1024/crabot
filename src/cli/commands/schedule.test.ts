@@ -456,3 +456,99 @@ describe('buildUpdateScheduleBody — 顶层标量', () => {
     expect(body).toEqual({ name: '新', description: '新描述', enabled: false })
   })
 })
+
+describe('buildUpdateScheduleBody — trigger 字段级 merge', () => {
+  function makeIntervalSchedule(): ScheduleSnapshot {
+    return { ...makeCronSchedule(), trigger: { type: 'interval', seconds: 60 } }
+  }
+  function makeOnceSchedule(): ScheduleSnapshot {
+    return { ...makeCronSchedule(), trigger: { type: 'once', execute_at: '2026-07-01T00:00:00Z' } }
+  }
+
+  it('cron schedule + --cron 只改 expression 保留 timezone', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), { cron: '15 */4 * * *' })
+    expect(body['trigger']).toEqual({
+      type: 'cron',
+      expression: '15 */4 * * *',
+      timezone: 'Asia/Shanghai',
+    })
+  })
+
+  it('cron schedule + --timezone 只改 timezone 保留 expression', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), { timezone: 'UTC' })
+    expect(body['trigger']).toEqual({
+      type: 'cron',
+      expression: '0 0 * * *',
+      timezone: 'UTC',
+    })
+  })
+
+  it('cron schedule + --cron + --timezone 同时改', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), {
+      cron: '0 9 * * *',
+      timezone: 'UTC',
+    })
+    expect(body['trigger']).toEqual({
+      type: 'cron',
+      expression: '0 9 * * *',
+      timezone: 'UTC',
+    })
+  })
+
+  it('interval schedule + --interval-seconds 更新', () => {
+    const body = buildUpdateScheduleBody(makeIntervalSchedule(), { intervalSeconds: '7200' })
+    expect(body['trigger']).toEqual({ type: 'interval', seconds: 7200 })
+  })
+
+  it('once schedule + --trigger-at 更新（归一化为 UTC ISO）', () => {
+    const body = buildUpdateScheduleBody(makeOnceSchedule(), {
+      triggerAt: '2026-08-01T09:00:00+08:00',
+    })
+    expect(body['trigger']).toEqual({
+      type: 'once',
+      execute_at: '2026-08-01T01:00:00.000Z',
+    })
+  })
+
+  it('cron schedule + --interval-seconds 报跨类型错', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeCronSchedule(), { intervalSeconds: '60' })
+    ).toThrow(/当前 schedule 是 cron 类型.*--interval-seconds 仅适用于 interval 类型/)
+  })
+
+  it('interval schedule + --cron 报跨类型错', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeIntervalSchedule(), { cron: '0 0 * * *' })
+    ).toThrow(/当前 schedule 是 interval 类型.*--cron 仅适用于 cron 类型/)
+  })
+
+  it('once schedule + --cron 报跨类型错', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeOnceSchedule(), { cron: '0 0 * * *' })
+    ).toThrow(/当前 schedule 是 once 类型.*--cron 仅适用于 cron 类型/)
+  })
+
+  it('cron schedule + --trigger-at 报跨类型错', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeCronSchedule(), { triggerAt: '2026-08-01T00:00:00Z' })
+    ).toThrow(/当前 schedule 是 cron 类型.*--trigger-at 仅适用于 once 类型/)
+  })
+
+  it('cron schedule + 非法 cron expression 报错', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeCronSchedule(), { cron: '0 0 * *' })
+    ).toThrow(/--cron 表达式无效/)
+  })
+
+  it('interval schedule + 非正整数报错', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeIntervalSchedule(), { intervalSeconds: '0' })
+    ).toThrow(/--interval-seconds 必须是正整数/)
+  })
+
+  it('once schedule + 非 ISO trigger-at 报错', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeOnceSchedule(), { triggerAt: 'not-iso' })
+    ).toThrow(/--trigger-at 格式无效/)
+  })
+})
