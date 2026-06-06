@@ -178,6 +178,12 @@ import {
 import type { Onboarder } from 'crabot-shared'
 import { tailLogFile } from './module-log-tail.js'
 import { buildRecoveryTask, cleanupStaleInflightTasks, isAgentRestartStale } from './recovery-handler.js'
+import {
+  VALID_TRANSITIONS,
+  applyDerivedFields,
+  assertTaskInvariants,
+  repairTaskInvariants,
+} from './task-state-machine.js'
 import { getBuiltinSkills } from './builtin-skills.js'
 import { getBuiltinSubAgents } from './builtin-subagents.js'
 import { parseCleanupParams } from './trace-cleanup-cron.js'
@@ -4345,69 +4351,61 @@ export class AdminModule extends ModuleBase {
     }
   }
 
+  /**
+   * 所有 task 状态变更的统一入口。维护派生字段、校验状态机、断言不变量、发布事件。
+   *
+   * 不持久化（upsertTask 由调用方负责）。不发额外事件（admin.task_cancelled 由
+   * cancel 路径自行追发）。
+   *
+   * 任何直接 mutate task.status 的新代码 = bug。如发现需要绕过本方法的场景，
+   * 优先检查是不是 VALID_TRANSITIONS 缺一条；不是的话再考虑加 opt。
+   */
+  private applyStatusTransition(
+    task: Task,
+    newStatus: TaskStatus,
+    opts: {
+      error?: string
+      pendingQuestion?: string | null
+      skipPublish?: boolean
+    } = {},
+  ): void {
+    const oldStatus = task.status
+    if (!VALID_TRANSITIONS[oldStatus].includes(newStatus)) {
+      throw new Error(AdminErrorCode.INVALID_STATUS_TRANSITION)
+    }
+
+    const now = generateTimestamp()
+    const next = applyDerivedFields(task, newStatus, now, {
+      error: opts.error,
+      pendingQuestion: opts.pendingQuestion,
+    })
+
+    // mutate 回 task（保留对象引用，跟现有调用约定一致）
+    Object.assign(task, next)
+
+    assertTaskInvariants(task)
+
+    if (!opts.skipPublish) {
+      this.publishAdminEvent('admin.task_status_changed', {
+        task_id: task.id,
+        old_status: oldStatus,
+        new_status: newStatus,
+      })
+    }
+  }
+
   private async handleUpdateTaskStatus(params: UpdateTaskStatusParams): Promise<{ task: Task }> {
     const task = this.tasks.get(params.task_id)
     if (!task) {
       throw new Error(AdminErrorCode.TASK_NOT_FOUND)
     }
 
-    // 验证状态转换
-    const validTransitions: Record<TaskStatus, TaskStatus[]> = {
-      pending: ['planning', 'cancelled'],
-      planning: ['executing', 'failed', 'cancelled'],
-      executing: ['waiting_human', 'waiting', 'completed', 'failed', 'cancelled'],
-      waiting_human: ['executing', 'cancelled', 'failed'],
-      waiting: ['executing', 'failed', 'cancelled'],
-      completed: [],
-      failed: [],
-      cancelled: [],
-    }
+    this.applyStatusTransition(task, params.status, {
+      error: params.error,
+      pendingQuestion: params.pending_question,
+    })
 
-    if (!validTransitions[task.status].includes(params.status)) {
-      throw new Error(AdminErrorCode.INVALID_STATUS_TRANSITION)
-    }
-
-    const oldStatus = task.status
-    task.status = params.status
-    task.updated_at = generateTimestamp()
-
-    if (params.status === 'executing' && !task.started_at) {
-      task.started_at = task.updated_at
-    }
-
-    if (['completed', 'failed', 'cancelled'].includes(params.status)) {
-      task.completed_at = task.updated_at
-    }
-
-    // pending_question 处理：
-    // 1. status === 'waiting_human' 时写入（覆盖式）
-    // 2. status === 'executing' 时自动清空（resume 路径）
-    // 3. 显式传 null 也清空
-    if (params.status === 'waiting_human' && params.pending_question !== undefined) {
-      task.pending_question = params.pending_question ?? undefined
-    } else if (params.status === 'executing' || params.pending_question === null) {
-      task.pending_question = undefined
-    }
-
-    // waiting_human_at：进入 waiting_human 写时间戳，离开时清空
-    if (params.status === 'waiting_human') {
-      task.waiting_human_at = task.updated_at
-    } else {
-      task.waiting_human_at = undefined
-    }
-
-    // waiting_at：进入 waiting（异步子 agent）写时间戳，离开时清空
-    if (params.status === 'waiting') {
-      task.waiting_at = task.updated_at
-    } else {
-      task.waiting_at = undefined
-    }
-
-    if (params.error) {
-      task.error = params.error
-    }
-
-    // 写入任务结果
+    // 应用层副作用（不属于状态机）
     if (params.result) {
       task.result = params.result
     }
@@ -4430,13 +4428,6 @@ export class AdminModule extends ModuleBase {
         }
       }
     }
-
-    // 发布事件
-    this.publishAdminEvent('admin.task_status_changed', {
-      task_id: task.id,
-      old_status: oldStatus,
-      new_status: params.status,
-    })
 
     return { task }
   }
