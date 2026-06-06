@@ -303,7 +303,7 @@ const TOOL_HANDLERS: Record<string, ToolHandler> = {
   },
 }
 
-const SYSTEM_PROMPT = assembleAgentPrompt({ isGroup: false, goalModeEnabled: true })
+const SYSTEM_PROMPT = assembleAgentPrompt({ goalModeEnabled: true })
 
 // ---------------------------------------------------------------------------
 // Test

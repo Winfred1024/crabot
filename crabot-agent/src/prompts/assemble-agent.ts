@@ -28,7 +28,6 @@ import {
 } from './agent-sections.js'
 
 export interface AssembleAgentPromptOptions {
-  readonly isGroup: boolean
   readonly goalModeEnabled: boolean
   readonly adminPersonality?: string
   readonly sceneProfile?: { readonly label: string; readonly content: string }
@@ -60,7 +59,7 @@ export function assembleAgentPrompt(opts: AssembleAgentPromptOptions): string {
   }
 
   parts.push(SYSTEM_DIALOGUE_BOUNDARY)
-  parts.push(buildWorkflow({ goalModeEnabled: opts.goalModeEnabled }))
+  parts.push(buildWorkflow(opts.goalModeEnabled))
   parts.push(SEND_MESSAGE_SPEC)
   parts.push(END_TURN_SELF_CHECK)
   parts.push(TIME_AWARENESS)

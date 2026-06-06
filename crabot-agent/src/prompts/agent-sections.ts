@@ -173,15 +173,26 @@ const WORKFLOW_PLANNING_AND_EXECUTION = `[规划与执行]
 
   最终 send_message(intent="info", 报告结果) → end_turn ✔`
 
-export function buildWorkflow(opts: { goalModeEnabled: boolean }): string {
-  return [
-    '## 工作流',
-    WORKFLOW_READING_COMPREHENSION,
-    WORKFLOW_INFORMATION_COLLECTION,
-    WORKFLOW_INTENT_CLARIFICATION,
-    opts.goalModeEnabled ? WORKFLOW_GOAL_COMMITMENT : '',
-    WORKFLOW_PLANNING_AND_EXECUTION,
-  ].filter(Boolean).join('\n\n')
+// goalModeEnabled 是 per-task 不变量，预计算两份避免每 turn 重建。
+const WORKFLOW_WITH_GOAL = [
+  '## 工作流',
+  WORKFLOW_READING_COMPREHENSION,
+  WORKFLOW_INFORMATION_COLLECTION,
+  WORKFLOW_INTENT_CLARIFICATION,
+  WORKFLOW_GOAL_COMMITMENT,
+  WORKFLOW_PLANNING_AND_EXECUTION,
+].join('\n\n')
+
+const WORKFLOW_WITHOUT_GOAL = [
+  '## 工作流',
+  WORKFLOW_READING_COMPREHENSION,
+  WORKFLOW_INFORMATION_COLLECTION,
+  WORKFLOW_INTENT_CLARIFICATION,
+  WORKFLOW_PLANNING_AND_EXECUTION,
+].join('\n\n')
+
+export function buildWorkflow(goalModeEnabled: boolean): string {
+  return goalModeEnabled ? WORKFLOW_WITH_GOAL : WORKFLOW_WITHOUT_GOAL
 }
 
 export const SEND_MESSAGE_SPEC = `## send_message 工具使用规范

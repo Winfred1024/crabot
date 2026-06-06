@@ -811,7 +811,7 @@ export class AgentHandler {
       // 但 admin RPC 是 async。折中：启动时 query 一次拍快照到 goalSetCache，
       // 之后 worker 调 set_task_goal 工具时由 callAdminRpc 包装层同步更新 cache，
       // 后续 turn 的 todo / send_message 检查 cache 立即生效，免去重复 RPC。
-      const goalModeEnabled = this.extra?.goal_mode_enabled !== false && task.source?.trigger_type !== 'scheduled'
+      const goalModeEnabled = this.isGoalModeEnabled(task.source?.trigger_type)
       let goalSetCache = false
       // conversationLog：记录任务期间 agent↔human 双向对话，audit 输入
       const conversationLog: ConversationEntry[] = []
@@ -1011,7 +1011,7 @@ export class AgentHandler {
         // 3j. todo tool — per-task mutable plan
         // todo 工具永远放行 —— goal 与 todo 解耦，由 prompt 软引导决定是否需要 goal
         // spec: 2026-06-05-goal-soft-control-workflow-redesign-design.md §1
-        tools.push(createTodoTool(taskState.todoStore, { hasGoal: () => true }))
+        tools.push(createTodoTool(taskState.todoStore))
 
         // 3j2. set_task_goal tool — worker 写下完成承诺，触发 audit gate + todo 门控解锁
         // goal mode 关闭时不注入，agent 无法设定目标，audit gate 透明放行
@@ -2112,6 +2112,16 @@ export class AgentHandler {
     return { task_id: taskId, outcome: 'completed' }
   }
 
+  /**
+   * goal mode 是否启用：admin extra 开关 + scheduled 任务硬关。
+   * 与 buildSystemPrompt / endTurnGate / supplement 文案 variant 共用同一口径。
+   * triggerType 用 string | undefined 接受 task.source.trigger_type 和 taskState.triggerType
+   * 两种不同 union，统一只比 'scheduled' 字面。
+   */
+  private isGoalModeEnabled(triggerType: string | undefined): boolean {
+    return this.extra?.goal_mode_enabled !== false && triggerType !== 'scheduled'
+  }
+
   deliverHumanResponse(taskId: TaskId, messages: ChannelMessage[]): void {
     const taskState = this.activeTasks.get(taskId)
     if (!taskState) {
@@ -2130,12 +2140,7 @@ export class AgentHandler {
     if (supplement) {
       const humanQueue = this.humanQueues.get(taskId)
       if (humanQueue) {
-        // goalModeEnabled 推断与 executeTask 一致：extra.goal_mode_enabled 非 false
-        // 且 task.source.trigger_type !== 'scheduled'。deliverHumanResponse 拿不到 task
-        // 对象，从 taskState.triggerType 推算 trigger_type（init 时已记下）。
-        const goalModeEnabled = this.extra?.goal_mode_enabled !== false
-          && taskState.triggerType !== 'scheduled'
-        const template = goalModeEnabled
+        const template = this.isGoalModeEnabled(taskState.triggerType)
           ? SUPPLEMENT_INJECTION_TEMPLATE_GOAL
           : SUPPLEMENT_INJECTION_TEMPLATE_BASIC
         humanQueue.push(template.replace('{supplement_content}', supplement))
@@ -2781,25 +2786,21 @@ export class AgentHandler {
 
   private buildSystemPrompt(
     context: WorkerAgentContext,
-    subAgentsOverride: ReadonlyArray<SubAgentConfig> | undefined,
+    subAgents: ReadonlyArray<SubAgentConfig>,
     goalModeEnabled: boolean,
   ): string {
-    // unified loop spec §3.1：使用 assembleAgentPrompt（12 段统一模板）。
-    // isGroup 从 task_origin.session_type 推断；scheduled task 无 session 时默认 false。
-    const isGroup = context.task_origin?.session_type === 'group'
+    // unified loop spec §3.1：使用 assembleAgentPrompt。
     const sceneProfile = context.scene_profile
       ? { label: context.scene_profile.label, content: context.scene_profile.content }
       : undefined
-    // subAgentsOverride 由 runWorkerLoop 在 loop 启动时 snapshot 后传入，
+    // subAgents 由 runWorkerLoop 在 loop 启动时 snapshot 后传入，
     // 防止 in-flight loop 中 admin 改 subagents 后 system prompt 列表跳变。
-    const subAgentsSource = subAgentsOverride ?? this.subAgents
-    const availableSubAgents = subAgentsSource.map((s) => ({
+    const availableSubAgents = subAgents.map((s) => ({
       toolName: s.name,
       workerHint: s.when_to_use.split('\n')[0] || s.description || s.name,
     }))
     const baseAssembled = this.promptManager
       ? this.promptManager.assembleAgentPrompt({
-        isGroup,
         goalModeEnabled,
         adminPersonality: this.systemPrompt || undefined,
         skillListing: this.buildSkillListingSnapshot(),

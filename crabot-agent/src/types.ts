@@ -576,7 +576,9 @@ export interface ProcessMessageParams {
 }
 
 export interface ProcessMessageResult {
-  decision_types: Array<'direct_reply' | 'create_task' | 'supplement_task' | 'silent'>
+  // worker 端只能产出 direct_reply / create_task；supplement / stay_silent 由 dispatcher
+  // 在 worker spawn 前直接处理，不会出现在 worker 返回里
+  decision_types: Array<'direct_reply' | 'create_task'>
   task_ids?: TaskId[]
 }
 

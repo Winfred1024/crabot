@@ -51,8 +51,8 @@ describe('#2 你和 Crabot 系统的对话边界', () => {
 
 describe('buildWorkflow', () => {
   it('contains all 4 base sections regardless of goal mode', () => {
-    const off = buildWorkflow({ goalModeEnabled: false })
-    const on = buildWorkflow({ goalModeEnabled: true })
+    const off = buildWorkflow(false)
+    const on = buildWorkflow(true)
     for (const seg of [off, on]) {
       expect(seg).toContain('[阅读理解]')
       expect(seg).toContain('[信息收集]')
@@ -63,31 +63,31 @@ describe('buildWorkflow', () => {
   })
 
   it('includes [目标承诺] when goalModeEnabled=true', () => {
-    const result = buildWorkflow({ goalModeEnabled: true })
+    const result = buildWorkflow(true)
     expect(result).toContain('[目标承诺]')
     expect(result).toContain('set_task_goal(objective, acceptance_criteria)')
   })
 
   it('omits [目标承诺] when goalModeEnabled=false', () => {
-    const result = buildWorkflow({ goalModeEnabled: false })
+    const result = buildWorkflow(false)
     expect(result).not.toContain('[目标承诺]')
   })
 
   it('[信息收集] points to research_collector as default', () => {
-    const result = buildWorkflow({ goalModeEnabled: true })
+    const result = buildWorkflow(true)
     expect(result).toContain('research_collector')
     expect(result).toContain('信息收集类工作的默认派遣对象')
   })
 
   it('[规划与执行] retains code_planner + code_writer hard constraint', () => {
-    const result = buildWorkflow({ goalModeEnabled: true })
+    const result = buildWorkflow(true)
     expect(result).toContain('code_planner')
     expect(result).toContain('code_writer')
     expect(result).toContain('禁止用 Write / Edit / Bash 直接修改用户项目代码')
   })
 
   it('sections appear in order: 阅读理解 → 信息收集 → 意图澄清 → [目标承诺] → 规划与执行', () => {
-    const result = buildWorkflow({ goalModeEnabled: true })
+    const result = buildWorkflow(true)
     const idxReading = result.indexOf('[阅读理解]')
     const idxCollection = result.indexOf('[信息收集]')
     const idxClarification = result.indexOf('[意图澄清]')
