@@ -6,16 +6,15 @@ import ModuleManager from './index.js'
 import type { ModuleDefinition } from 'crabot-shared'
 import path from 'node:path'
 import fs from 'node:fs'
+import { homedir } from 'node:os'
 
 // 获取模块路径
 const CRABOT_ROOT = path.resolve(process.cwd(), '..')
 const ADMIN_DIR = path.join(CRABOT_ROOT, 'crabot-admin')
 const AGENT_DIR = path.join(CRABOT_ROOT, 'crabot-agent')
-const DATA_DIR = process.env.DATA_DIR || path.join(CRABOT_ROOT,
-  parseInt(process.env.CRABOT_PORT_OFFSET || '0', 10) > 0
-    ? `data-${process.env.CRABOT_PORT_OFFSET}`
-    : 'data'
-)
+const PORT_OFF = parseInt(process.env.CRABOT_PORT_OFFSET || '0', 10)
+const DATA_DIR = process.env.DATA_DIR
+  || path.join(homedir(), '.crabot', PORT_OFF > 0 ? `data-${PORT_OFF}` : 'data')
 const WORKSPACE_DIR = process.env.WORKSPACE_DIR || path.dirname(DATA_DIR)
 // 写回 process.env 确保子进程通过 process.env spread 时能继承此值
 process.env.WORKSPACE_DIR = WORKSPACE_DIR

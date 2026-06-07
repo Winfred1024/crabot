@@ -8,12 +8,42 @@ import { randomBytes } from 'node:crypto'
 import { createInterface } from 'node:readline'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { homedir } from 'node:os'
+import net from 'node:net'
+import { resolveDataDir } from './lib/data-dir.mjs'
+import { writePid, clearPid, checkSingleInstance, isPidAlive } from './lib/pid.mjs'
+import { scanModules, chainUpgrade } from './upgrade-lib/migrate.mjs'
+import { runScript } from './upgrade-lib/runner.mjs'
+import { hasInstance, readInstance } from './lib/instance.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
+
+// auto-init：缺 instance.json → 同步调 crabot init（在 const OFFSET 读取前）
+{
+  const homeCrabot = resolve(homedir(), '.crabot')
+  if (!hasInstance(homeCrabot)) {
+    console.log('[crabot] first run, auto-running init...')
+    const initEntry = resolve(__dirname, 'init.mjs')
+    const r = spawnSync(process.execPath, [initEntry], { stdio: 'inherit', env: { ...process.env } })
+    if (r.status !== 0) {
+      console.error('[crabot] init failed; aborting start')
+      process.exit(1)
+    }
+    // init 跑完，从 instance.json 读 port_offset / data_dir，覆盖 process.env
+    const inst = readInstance(homeCrabot)
+    if (inst.port_offset && !process.env.CRABOT_PORT_OFFSET) {
+      process.env.CRABOT_PORT_OFFSET = String(inst.port_offset)
+    }
+    if (!process.env.DATA_DIR) {
+      process.env.DATA_DIR = inst.data_dir
+    }
+  }
+}
+
 const OFFSET = parseInt(process.env.CRABOT_PORT_OFFSET || '0', 10)
+const DAEMON_MODE = process.argv.includes('-d') || process.argv.includes('--daemon')
 
 // ── 环境变量 ──
 
@@ -32,8 +62,7 @@ function loadEnvFile(filePath) {
   }
 }
 
-const DATA_DIR = process.env.DATA_DIR
-  || (OFFSET > 0 ? resolve(ROOT, `data-${OFFSET}`) : resolve(ROOT, 'data'))
+const DATA_DIR = resolveDataDir({ envValue: process.env.DATA_DIR, offset: OFFSET })
 process.env.DATA_DIR = DATA_DIR
 
 loadEnvFile(resolve(DATA_DIR, 'admin/.env'))
@@ -81,6 +110,18 @@ for (const sub of ['admin', 'agent', 'memory']) {
 
 const adminEnvPath = resolve(DATA_DIR, 'admin/.env')
 
+if (DAEMON_MODE && !process.env.CRABOT_ADMIN_PASSWORD) {
+  // 后台模式下不能交互；检查 admin/.env 是否已有密码
+  const envExists = existsSync(adminEnvPath)
+  const envHasPassword = envExists && /^CRABOT_ADMIN_PASSWORD=/m.test(
+    readFileSync(adminEnvPath, 'utf-8'),
+  )
+  if (!envHasPassword) {
+    console.error('[crabot] No admin password set. Run `crabot start` (foreground) once to set it interactively.')
+    process.exit(1)
+  }
+}
+
 if (!process.env.CRABOT_ADMIN_PASSWORD) {
   const prompter = createPrompter()
   const password = await prompter.ask('Set admin password: ')
@@ -108,28 +149,167 @@ if (!existsSync(mmEntry)) {
   process.exit(1)
 }
 
+// system mode 下检测 cluster.version 是否过期
+{
+  const homeCrabot = resolve(homedir(), '.crabot')
+  if (hasInstance(homeCrabot)) {
+    const inst = readInstance(homeCrabot)
+    if (inst.mode === 'system') {
+      let current = 0
+      try { current = parseInt(readFileSync('/etc/crabot/cluster.version', 'utf-8').trim(), 10) || 0 } catch {}
+      const applied = inst.applied_cluster_version ?? 0
+      if (current > applied) {
+        if (DAEMON_MODE) {
+          console.error(`[crabot] cluster config has updates (v${applied}→v${current}). Run \`crabot sync\` first, or use foreground start.`)
+          process.exit(1)
+        }
+        console.log(`[crabot] root 默认配置已更新（版本 ${applied} → ${current}）。是否拉取最新默认？[y/N]`)
+        const answer = (await readStdinLine()).trim().toLowerCase()
+        if (answer === 'y' || answer === 'yes') {
+          const syncEntry = resolve(__dirname, 'sync.mjs')
+          const r = spawnSync(process.execPath, [syncEntry], { stdio: 'inherit', env: { ...process.env } })
+          if (r.status !== 0) {
+            console.error('[crabot] sync failed; aborting start')
+            process.exit(1)
+          }
+        } else {
+          console.log('[crabot] sync skipped; aborting start (run again to retry)')
+          process.exit(1)
+        }
+      }
+    }
+  }
+}
+
+// 单实例预检
+const single = checkSingleInstance(DATA_DIR)
+if (!single.ok) {
+  console.error(`[crabot] already running (pid=${single.runningPid}). Run 'crabot stop' first.`)
+  process.exit(1)
+}
+
+// 端口预检（避免拿到 EADDRINUSE 才报错）
+async function probePort(port) {
+  return await new Promise((res) => {
+    const srv = net.createServer()
+    srv.once('error', () => res(false))
+    srv.once('listening', () => srv.close(() => res(true)))
+    srv.listen(port, '127.0.0.1')
+  })
+}
+if (!await probePort(19000 + OFFSET)) {
+  console.error(`[crabot] port ${19000 + OFFSET} already in use. Check 'lsof -i :${19000 + OFFSET}'.`)
+  process.exit(1)
+}
+
 const MM_PORT = 19000 + OFFSET
 const WEB_PORT = 3000 + OFFSET
 
 console.log(`[crabot] Starting Module Manager (port ${MM_PORT})...`)
 console.log(`[crabot] Admin Web: http://localhost:${WEB_PORT}`)
 
-const child = spawn(process.execPath, [mmEntry], {
-  cwd: resolve(ROOT, 'crabot-core'),
-  stdio: 'inherit',
-  env: { ...process.env },
-})
+// Migration 兜底：start 自动跑缺失的 migration（覆盖 upgrade-time 漏跑场景）
+const pending = scanModules(ROOT, DATA_DIR)
+if (pending.length > 0) {
+  console.log(`[crabot] applying ${pending.length} pending migration(s)...`)
+  for (const m of pending) {
+    console.log(`[crabot]   ${m.moduleId}: ${m.dataVersion ?? 'fresh'} → ${m.codeVersion}`)
+    const result = await chainUpgrade(
+      resolve(ROOT, m.moduleId),
+      m.dataDir,
+      m.dataVersion,
+      m.codeVersion,
+      runScript,
+    )
+    if (!result.ok) {
+      console.error(`[crabot] migration failed for ${m.moduleId}: ${result.error}`)
+      process.exit(1)
+    }
+  }
+  console.log('[crabot] migrations done')
+}
 
-child.on('exit', (code) => {
-  process.exit(code ?? 1)
-})
+if (!DAEMON_MODE) {
+  // 前台模式：写本进程 PID（stop 时 SIGTERM 给我，我转发给 MM）
+  writePid(DATA_DIR, process.pid)
 
-// 转发信号，优雅关闭
-for (const sig of ['SIGINT', 'SIGTERM']) {
-  process.on(sig, () => child.kill(sig))
+  const child = spawn(process.execPath, [mmEntry], {
+    cwd: resolve(ROOT, 'crabot-core'),
+    stdio: 'inherit',
+    env: { ...process.env },
+  })
+
+  const cleanup = () => clearPid(DATA_DIR)
+  child.on('exit', (code) => {
+    cleanup()
+    process.exit(code ?? 1)
+  })
+  child.on('error', (err) => {
+    cleanup()
+    console.error(`[crabot] failed to spawn Module Manager: ${err.message}`)
+    process.exit(1)
+  })
+  process.on('exit', cleanup)
+
+  for (const sig of ['SIGINT', 'SIGTERM']) {
+    process.on(sig, () => child.kill(sig))
+  }
+} else {
+  // 后台模式：spawn detached supervisor，父进程轮询 health 后退出
+  const supervisorEntry = resolve(__dirname, 'supervisor.mjs')
+  const sup = spawn(process.execPath, [supervisorEntry], {
+    detached: true,
+    stdio: 'ignore',
+    env: {
+      ...process.env,
+      CRABOT_SUPERVISOR_DATA_DIR: DATA_DIR,
+      CRABOT_SUPERVISOR_MM_ENTRY: mmEntry,
+      CRABOT_SUPERVISOR_MM_CWD: resolve(ROOT, 'crabot-core'),
+    },
+  })
+  // 父进程立即写 supervisor.pid 到 mm.pid（避免 race）
+  writePid(DATA_DIR, sup.pid)
+  sup.unref()
+
+  console.log('[crabot] Starting in background...')
+  console.log('[crabot] Waiting for Module Manager to become healthy... (up to 30s)')
+
+  // 健康轮询（最多 30s）
+  const deadline = Date.now() + 30_000
+  while (Date.now() < deadline) {
+    if (!isPidAlive(sup.pid)) {
+      console.error('[crabot] supervisor exited unexpectedly. Check logs at', resolve(DATA_DIR, 'logs/mm.stderr.log'))
+      process.exit(1)
+    }
+    try {
+      const r = await fetch(`http://localhost:${MM_PORT}/health`, { signal: AbortSignal.timeout(1500) })
+      if (r.ok) {
+        const r2 = await fetch(`http://localhost:${WEB_PORT}/health`, { signal: AbortSignal.timeout(1500) })
+        if (r2.ok) {
+          console.log(`[crabot] \x1b[32m●\x1b[0m MM ready (port ${MM_PORT})`)
+          console.log(`[crabot] \x1b[32m●\x1b[0m Admin Web ready (port ${WEB_PORT})`)
+          console.log(`[crabot] Started. PID ${sup.pid}. Run \`crabot status\` to check, \`crabot stop\` to stop.`)
+          process.exit(0)
+        }
+      }
+    } catch { /* keep trying */ }
+    await new Promise(r => setTimeout(r, 1000))
+  }
+  console.error(`[crabot] timeout after 30s. Check logs at ${resolve(DATA_DIR, 'logs/mm.stderr.log')}`)
+  console.error(`[crabot] supervisor still running at pid ${sup.pid}; if it eventually starts, fine; otherwise crabot stop.`)
+  process.exit(1)
 }
 
 // ── 辅助函数 ──
+
+async function readStdinLine() {
+  return new Promise((res) => {
+    let buf = ''
+    process.stdin.setEncoding('utf-8')
+    process.stdin.once('data', (chunk) => { buf += chunk; res(buf) })
+    process.stdin.resume()
+  })
+}
 
 function createPrompter() {
   if (process.stdin.isTTY) {

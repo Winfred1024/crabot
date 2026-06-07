@@ -12,9 +12,11 @@ REQUIRED_NODE_VERSION="22.14.0"
 FROM_SOURCE=false
 
 # 解析参数
+SYSTEM_MODE=false
 for arg in "$@"; do
   case "$arg" in
     --from-source) FROM_SOURCE=true ;;
+    --system) SYSTEM_MODE=true ;;
     --version=*) CRABOT_VERSION="${arg#*=}" ;;
     --install-dir=*) INSTALL_DIR="${arg#*=}" ;;
   esac
@@ -32,6 +34,15 @@ info()    { echo -e "${GREEN}[crabot]${NC} $1"; }
 warn()    { echo -e "${YELLOW}[crabot]${NC} $1"; }
 error()   { echo -e "${RED}[crabot]${NC} $1"; }
 section() { echo -e "\n${BOLD}${CYAN}── $1 ──${NC}\n"; }
+
+# --system 模式：需要 root；覆盖默认安装目录
+if [ "$SYSTEM_MODE" = "true" ]; then
+  if [ "$(id -u)" -ne 0 ]; then
+    error "--system requires root; rerun with sudo"
+    exit 1
+  fi
+  INSTALL_DIR="${INSTALL_DIR:-/opt/crabot}"
+fi
 
 # --- OS 检测 ---
 detect_platform() {
@@ -94,6 +105,35 @@ ensure_node() {
   info "Node.js $(node -v) installed via nvm"
 }
 
+# --- system-level Node 探测（--system 模式，要求 nobody 可达）---
+ensure_system_node() {
+  if ! sudo -u nobody bash -c 'command -v node && node --version' &>/dev/null; then
+    error "system-level Node not found (probe user 'nobody' cannot run \`node --version\`)."
+    error "install Node 22+ system-wide first, e.g.:"
+    error "  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -"
+    error "  sudo apt install -y nodejs"
+    exit 1
+  fi
+  local v
+  v=$(sudo -u nobody node --version | tr -d 'v')
+  if ! version_ge "$v" "$REQUIRED_NODE_VERSION"; then
+    error "system Node $v < required $REQUIRED_NODE_VERSION"
+    exit 1
+  fi
+  info "system Node $v found"
+}
+
+# --- system-level uv 探测（--system 模式，要求 nobody 可达）---
+ensure_system_uv() {
+  if ! sudo -u nobody bash -c 'command -v uv && uv --version' &>/dev/null; then
+    error "system-level uv not found (probe user 'nobody' cannot run \`uv --version\`)."
+    error "install uv system-wide first, e.g.:"
+    error "  curl -LsSf https://astral.sh/uv/install.sh | sudo sh -s -- --install-dir /usr/local"
+    exit 1
+  fi
+  info "system uv found"
+}
+
 # --- uv 检查/安装 ---
 ensure_uv() {
   if command -v uv &>/dev/null; then
@@ -137,8 +177,13 @@ main() {
   platform=$(detect_platform)
   info "Platform: $platform"
 
-  ensure_node
-  ensure_uv
+  if [ "$SYSTEM_MODE" = "true" ]; then
+    ensure_system_node
+    ensure_system_uv
+  else
+    ensure_node
+    ensure_uv
+  fi
 
   if [ "$FROM_SOURCE" = true ]; then
     ensure_pnpm
@@ -208,41 +253,109 @@ main() {
     (cd "$INSTALL_DIR/crabot-memory" && uv sync)
   fi
 
+  if [ "$SYSTEM_MODE" = "true" ]; then
+    section "Creating /etc/crabot/ skeleton"
+
+    # 创建 crabot group（如不存在）
+    if ! getent group crabot &>/dev/null; then
+      groupadd -r crabot
+      info "created group 'crabot'"
+    fi
+
+    mkdir -p /etc/crabot/defaults /etc/crabot/registry
+    chown root:root /etc/crabot
+    chown root:root /etc/crabot/defaults
+    chown root:crabot /etc/crabot/registry
+    chmod 0755 /etc/crabot /etc/crabot/defaults
+    chmod 0775 /etc/crabot/registry
+
+    if [ ! -f /etc/crabot/registry/ports.json ]; then
+      echo '[]' > /etc/crabot/registry/ports.json
+      chown root:crabot /etc/crabot/registry/ports.json
+      chmod 0664 /etc/crabot/registry/ports.json
+    fi
+
+    if [ ! -f /etc/crabot/cluster.version ]; then
+      echo 0 > /etc/crabot/cluster.version
+      chmod 0644 /etc/crabot/cluster.version
+    fi
+
+    # logrotate
+    cat > /etc/logrotate.d/crabot <<'LR'
+/home/*/.crabot/data*/logs/*.log {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su root root
+}
+LR
+    info "created /etc/logrotate.d/crabot"
+  fi
+
   # PATH 设置
   section "Setting up PATH"
-  local bin_dir="$HOME/.local/bin"
-  mkdir -p "$bin_dir"
 
-  local crabot_path
-  if [ "$FROM_SOURCE" = true ]; then
-    crabot_path="$(pwd)/cli.mjs"
+  if [ "$SYSTEM_MODE" = "true" ]; then
+    local crabot_path
+    if [ "$FROM_SOURCE" = true ]; then
+      crabot_path="$(pwd)/cli.mjs"
+    else
+      crabot_path="$INSTALL_DIR/cli.mjs"
+    fi
+    ln -sf "$crabot_path" /usr/local/bin/crabot
+    chmod +x "$crabot_path"
+    info "linked /usr/local/bin/crabot → $crabot_path"
+    # 跳过写 ~/.shellrc——root 跑了不该污染 root 的 rc
   else
-    crabot_path="$INSTALL_DIR/cli.mjs"
-  fi
-  ln -sf "$crabot_path" "$bin_dir/crabot"
-  chmod +x "$crabot_path"
+    local bin_dir="$HOME/.local/bin"
+    mkdir -p "$bin_dir"
 
-  # 持久化 PATH 到 shell profile
-  # 注意：不能用 `echo "$PATH" | grep` 判断，因为 ensure_uv 可能已经把 $bin_dir
-  # 临时 export 到本进程 PATH 里，导致误判"已在 PATH"而不写 rc。
-  # 必须直接检查 shell profile 文件内容。
-  local shell_rc
-  case "$SHELL" in
-    */zsh)  shell_rc="$HOME/.zshrc" ;;
-    */bash) shell_rc="$HOME/.bashrc" ;;
-    *)      shell_rc="$HOME/.profile" ;;
-  esac
-  if [ -f "$shell_rc" ] && grep -q "$bin_dir" "$shell_rc"; then
-    info "PATH already configured in $shell_rc"
+    local crabot_path
+    if [ "$FROM_SOURCE" = true ]; then
+      crabot_path="$(pwd)/cli.mjs"
+    else
+      crabot_path="$INSTALL_DIR/cli.mjs"
+    fi
+    ln -sf "$crabot_path" "$bin_dir/crabot"
+    chmod +x "$crabot_path"
+
+    # 持久化 PATH 到 shell profile
+    # 注意：不能用 `echo "$PATH" | grep` 判断，因为 ensure_uv 可能已经把 $bin_dir
+    # 临时 export 到本进程 PATH 里，导致误判"已在 PATH"而不写 rc。
+    # 必须直接检查 shell profile 文件内容。
+    local shell_rc
+    case "$SHELL" in
+      */zsh)  shell_rc="$HOME/.zshrc" ;;
+      */bash) shell_rc="$HOME/.bashrc" ;;
+      *)      shell_rc="$HOME/.profile" ;;
+    esac
+    if [ -f "$shell_rc" ] && grep -q "$bin_dir" "$shell_rc"; then
+      info "PATH already configured in $shell_rc"
+    else
+      echo "export PATH=\"$bin_dir:\$PATH\"" >> "$shell_rc"
+      warn "Added $bin_dir to PATH in $shell_rc. Restart your shell or run:"
+      echo "  export PATH=\"$bin_dir:\$PATH\""
+    fi
+  fi
+
+  if [ "$SYSTEM_MODE" = "true" ]; then
+    section "Done! (system mode)"
+    info "下一步："
+    info "  1. 把员工加入 crabot group:"
+    info "     sudo usermod -a -G crabot alice"
+    info "     sudo usermod -a -G crabot bob"
+    info "  2. (可选) 编辑 /etc/crabot/defaults/provider.yaml 给员工铺默认 LLM"
+    info "  3. 编辑后递增版本：echo \$((\$(cat /etc/crabot/cluster.version)+1)) | sudo tee /etc/crabot/cluster.version"
+    info "  4. 通知员工：crabot start 即可"
   else
-    echo "export PATH=\"$bin_dir:\$PATH\"" >> "$shell_rc"
-    warn "Added $bin_dir to PATH in $shell_rc. Restart your shell or run:"
-    echo "  export PATH=\"$bin_dir:\$PATH\""
+    section "Done!"
+    info "Run 'crabot start' to start Crabot (will prompt for admin password on first run)."
+    info "Run 'crabot --help' for all commands."
   fi
-
-  section "Done!"
-  info "Run 'crabot start' to start Crabot (will prompt for admin password on first run)."
-  info "Run 'crabot --help' for all commands."
 }
 
 # 仅在被直接执行时跑 main；被 source 时（例如测试）只暴露函数。

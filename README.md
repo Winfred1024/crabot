@@ -106,13 +106,76 @@ crabot start
 3. 配置智能体实例（选择模型 slot、MCP 工具、权限模板）
 4. 连接消息渠道（Telegram / 微信）
 
-### 多实例部署
+## 团队部署（System Mode）
 
-同一台机器可运行多个 Crabot 实例，通过 `CRABOT_PORT_OFFSET` 隔离端口和数据目录：
+针对"root 全局安装 + 多 Linux 用户各跑自己实例"的服务器部署形态。每个用户拿到独立 OFFSET 自动分配的端口、独立的 `~/.crabot/data-<OFF>/`，互不污染。
+
+### 管理员视角
 
 ```bash
-CRABOT_PORT_OFFSET=100 crabot start   # 所有端口 +100，数据目录变为 data-100/
+# 1. 装系统依赖（Node 22+ 和 uv 必须系统级可达，不要装在 root 的 ~/）
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -
+sudo apt install -y nodejs
+curl -LsSf https://astral.sh/uv/install.sh | sudo sh -s -- --install-dir /usr/local
+
+# 2. 装 Crabot（system mode）
+curl -fsSL https://raw.githubusercontent.com/smilefufu/crabot/main/install.sh | sudo bash -s -- --system
+
+# 装完后：
+#   - 代码在 /opt/crabot
+#   - /etc/crabot/ 骨架已创建（defaults/ + registry/ + cluster.version）
+#   - crabot group 已创建
+#   - /etc/logrotate.d/crabot 已铺
+#   - /usr/local/bin/crabot 软链已建
+
+# 3. 加员工到 crabot group
+sudo usermod -a -G crabot alice
+sudo usermod -a -G crabot bob
+# 员工需要重新登录 shell 才能生效
+
+# 4. (可选) 给员工铺默认 LLM Provider
+sudo vi /etc/crabot/defaults/provider.yaml
+sudo bash -c 'echo $(($(cat /etc/crabot/cluster.version)+1)) > /etc/crabot/cluster.version'
+
+# 5. 后续升级（普通用户的 crabot start 会自动跑 migration）
+sudo crabot upgrade
 ```
+
+### 员工视角
+
+第一次：
+
+```
+$ crabot start
+[init] 检测到 system mode 安装（/opt/crabot）
+[init] 申请端口偏移... 已分配 OFFSET=100
+[init] 拉取 root 默认配置...
+[init] 写入 shell 配置：~/.bashrc
+[init] 完成。请重新登录 shell 或执行 `source ~/.bashrc` 让环境变量生效。
+
+Set admin password: ****
+[crabot] Starting Module Manager (port 19100)...
+[crabot] Admin Web: http://localhost:3100
+```
+
+日常用后台 + 状态查询：
+
+```bash
+crabot start -d         # 后台启动（日志写到 ~/.crabot/data-<OFF>/logs/，自动轮转）
+crabot status           # 看自己实例的端口/状态/cluster 更新提示
+crabot sync             # 主动接收 root 最新默认配置
+crabot stop             # 停掉
+```
+
+### 排错
+
+| 症状 | 解决 |
+|---|---|
+| `permission denied: /etc/crabot/registry/ports.json` | `sudo usermod -a -G crabot $USER`，重新登录 |
+| `already running (pid=N)` | `crabot stop` 后再 start |
+| `No admin password set`（`-d` 模式） | 先 `crabot start`（前台）一次设密码 |
+| `please ask the administrator` | 让 root 跑 `sudo crabot upgrade` |
+| `crabot start` 卡在 "root 默认配置已更新" | 按 y 接收或 N 跳过 |
 
 ## CLI
 
