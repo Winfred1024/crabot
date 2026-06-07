@@ -13,7 +13,7 @@ import { homedir } from 'node:os'
 import net from 'node:net'
 import { resolveDataDir } from './lib/data-dir.mjs'
 import { writePid, clearPid, checkSingleInstance, isPidAlive } from './lib/pid.mjs'
-import { scanModules, chainUpgrade } from './upgrade-lib/migrate.mjs'
+import { scanModules, chainUpgrade, writeSchemaVersion } from './upgrade-lib/migrate.mjs'
 import { runScript } from './upgrade-lib/runner.mjs'
 import { hasInstance, readInstance } from './lib/instance.mjs'
 
@@ -209,6 +209,13 @@ console.log(`[crabot] Starting Module Manager (port ${MM_PORT})...`)
 console.log(`[crabot] Admin Web: http://localhost:${WEB_PORT}`)
 
 // Migration 兜底：start 自动跑缺失的 migration（覆盖 upgrade-time 漏跑场景）
+//
+// 注意：chainUpgrade 和 writeSchemaVersion 是分离的两步，必须都调；
+// 漏调 writeSchemaVersion 会导致 migration 跑完但 SCHEMA_VERSION 不更新，
+// 下次启动 scanModules 又把这个模块判为 pending → 死循环 + module 永远 block。
+// upgrade.mjs 主路径走 runMigrations 包了这两步；此处 start 兜底手动调两步。
+// follow-up: 把 "chainUpgrade + writeSchemaVersion" 包成 atomic helper，
+// 让所有 caller 都不可能漏。
 const pending = scanModules(ROOT, DATA_DIR)
 if (pending.length > 0) {
   console.log(`[crabot] applying ${pending.length} pending migration(s)...`)
@@ -225,6 +232,7 @@ if (pending.length > 0) {
       console.error(`[crabot] migration failed for ${m.moduleId}: ${result.error}`)
       process.exit(1)
     }
+    await writeSchemaVersion(m.dataDir, m.codeVersion)
   }
   console.log('[crabot] migrations done')
 }
