@@ -10,6 +10,9 @@ import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { homedir } from 'node:os'
+import net from 'node:net'
+import { resolveDataDir } from './lib/data-dir.mjs'
+import { writePid, clearPid, checkSingleInstance } from './lib/pid.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
@@ -32,8 +35,7 @@ function loadEnvFile(filePath) {
   }
 }
 
-const DATA_DIR = process.env.DATA_DIR
-  || (OFFSET > 0 ? resolve(ROOT, `data-${OFFSET}`) : resolve(ROOT, 'data'))
+const DATA_DIR = resolveDataDir({ envValue: process.env.DATA_DIR, offset: OFFSET })
 process.env.DATA_DIR = DATA_DIR
 
 loadEnvFile(resolve(DATA_DIR, 'admin/.env'))
@@ -108,11 +110,35 @@ if (!existsSync(mmEntry)) {
   process.exit(1)
 }
 
+// 单实例预检
+const single = checkSingleInstance(DATA_DIR)
+if (!single.ok) {
+  console.error(`[crabot] already running (pid=${single.runningPid}). Run 'crabot stop' first.`)
+  process.exit(1)
+}
+
+// 端口预检（避免拿到 EADDRINUSE 才报错）
+async function probePort(port) {
+  return await new Promise((res) => {
+    const srv = net.createServer()
+    srv.once('error', () => res(false))
+    srv.once('listening', () => srv.close(() => res(true)))
+    srv.listen(port, '127.0.0.1')
+  })
+}
+if (!await probePort(19000 + OFFSET)) {
+  console.error(`[crabot] port ${19000 + OFFSET} already in use. Check 'lsof -i :${19000 + OFFSET}'.`)
+  process.exit(1)
+}
+
 const MM_PORT = 19000 + OFFSET
 const WEB_PORT = 3000 + OFFSET
 
 console.log(`[crabot] Starting Module Manager (port ${MM_PORT})...`)
 console.log(`[crabot] Admin Web: http://localhost:${WEB_PORT}`)
+
+// 前台模式：写本进程 PID（stop 时 SIGTERM 给我，我转发给 MM）
+writePid(DATA_DIR, process.pid)
 
 const child = spawn(process.execPath, [mmEntry], {
   cwd: resolve(ROOT, 'crabot-core'),
@@ -120,11 +146,13 @@ const child = spawn(process.execPath, [mmEntry], {
   env: { ...process.env },
 })
 
+const cleanup = () => clearPid(DATA_DIR)
 child.on('exit', (code) => {
+  cleanup()
   process.exit(code ?? 1)
 })
+process.on('exit', cleanup)
 
-// 转发信号，优雅关闭
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => child.kill(sig))
 }
