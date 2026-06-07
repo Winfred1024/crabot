@@ -142,7 +142,14 @@ function signalNumber(signal: NodeJS.Signals): number | undefined {
   return map[signal as string]
 }
 
-/** ripgrep 默认就跳 .git 等 hidden VCS 目录，这里只额外排掉非 hidden 的"基本不想搜"目录。 */
+/**
+ * ripgrep 默认就跳 .git 等 hidden VCS 目录，这里额外排掉：
+ * - 非 hidden 的"基本不想搜"目录（node_modules / dist / .cache 等）
+ * - **巨型诊断文件**：crabot-agent 启动带 --heapsnapshot-near-heap-limit=3，
+ *   OOM 时自动 dump 几个 3-4 GB 的 .heapsnapshot 到 cwd。配合 `--no-ignore`
+ *   时（grep-tool 默认开），rg 会扫到这些文件并 mmap，2026-06-07 panic 现场
+ *   单个 rg RSS 17.5 GB 就是这么来的。无论用户传不传 .gitignore，强制跳过。
+ */
 export const DEFAULT_EXCLUDE_GLOBS: ReadonlyArray<string> = [
   '!node_modules',
   '!.git',
@@ -151,4 +158,5 @@ export const DEFAULT_EXCLUDE_GLOBS: ReadonlyArray<string> = [
   '!dist',
   '!.next',
   '!.cache',
+  '!*.heapsnapshot',
 ]
