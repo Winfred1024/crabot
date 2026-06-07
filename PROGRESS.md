@@ -1,8 +1,53 @@
 # Crabot 项目进度
 
-> 最后更新：2026-06-06 — CLI schedule add target schema 修复 + schedule update 命令
+> 最后更新：2026-06-07 — Skill 保留上一版 + Admin UI diff + 修 undo bug
 
-## 最新里程碑（2026-06-06 — CLI schedule add target schema 修复 + schedule update 命令）
+## 最新里程碑（2026-06-07 — Skill 保留上一版 + Admin UI diff + 修 undo bug）
+
+skill 加 N=1 上一版快照（嵌入式存进 skills.json），新增 restore swap 能力 + REST endpoint + CLI 命令；Admin Web 加角标 + diff modal + 应用上一版按钮；顺手修了 `crabot skill add --overwrite` 的 undo bug（旧 reverse 是 delete 等于删库）。
+
+- 起因：master 想优化 skill 后能对比"改前 vs 改后"或一键回退；agent 自我反思后改自己的 skill 也需要回退能力。同时发现 `crabot skill add --overwrite` 的 undo 实际是 delete，是 silent data loss bug
+- 设计：
+  - SkillRegistryEntry 加 previous_snapshot 嵌入字段（N=1 覆盖式，含 content + skill_dir 附属文件；单文件 1MB / 总 5MB 阈值）
+  - SkillManager.restore() swap 语义；磁盘 atomic rename 写回；失败 throw 不更新 json 保持一致
+  - admin install 响应加 was_overwrite 标志；CLI 据此分支（true → restore reverse，false/undefined → delete reverse，旧 admin 兼容）
+  - Admin Web 用 react-diff-viewer-continued 渲染 diff，左侧文件列表 + 右侧 split/unified diff
+- 重要决策：builtin skill 不参与（update 路径已被拦死，restore 也拒）；附属文件 diff MVP 仅显示快照侧（当前侧需 admin 加 dir-files endpoint，留作 follow-up）；不支持任意历史（N=1 满足 80% 场景）
+
+改动覆盖（9 个 commits）：
+- `feat(admin): SkillRegistryEntry 加 previous_snapshot + update 打快照`
+- `feat(admin): SkillManager 加 restore + writeSkillDirFiles`
+- `feat(admin): POST /api/skills/:id/restore + install 响应加 was_overwrite`
+- `feat(cli): 新增 crabot skill restore <ref> 命令`
+- `fix(cli): skill add --overwrite 的 reverse 改成 restore（修 undo bug）`
+- `feat(cli): undo executeReverse 加 skill restore <ref> 分支`
+- `docs(skill): 重生成 crabot-cli 命令参考（含 skill restore）`
+- `feat(admin-web): Skills 页加上一版角标 + 对比 modal + 应用上一版按钮`
+- `docs(progress): skill 上一版 + Admin UI diff 完成`
+
+spec：[`crabot-docs/superpowers/specs/2026-06-07-skill-previous-version-and-diff-design.md`](crabot-docs/superpowers/specs/2026-06-07-skill-previous-version-and-diff-design.md)
+plan：[`crabot-docs/superpowers/plans/2026-06-07-skill-previous-version-and-diff.md`](crabot-docs/superpowers/plans/2026-06-07-skill-previous-version-and-diff.md)
+
+测试：skill-snapshot.test.ts 全套（readSkillDirFiles / writeSkillDirFiles / update snapshot / restore swap）；skill.test.ts（buildSkillAddReverse 分支）；undo.test.ts（skill restore dispatch）。
+
+**待办（用户手动 e2e）**：
+1. 装一个 user skill → `crabot skill show <name>` 看 previous_snapshot 为 undefined
+2. 改 SKILL.md 后 `crabot skill add --path X --overwrite` → previous_snapshot 有值，UI 角标显示 `v_prev → v_current`
+3. UI 详情 "查看对比" → diff modal 显示 SKILL.md 红绿差异
+4. UI "应用上一版" → 二次确认 → content 复位
+5. `crabot skill restore <name>` 再切回去 → swap 工作
+6. `crabot undo`（在 --overwrite 后跑）→ 走 skill restore 路径而不是 delete
+7. builtin skill restore → 报错 "是内置的，不能 restore"
+8. 在 skill 目录里加 references/foo.png → update → restore → png 被删
+
+**Follow-up（独立 spec / session）**：
+- admin 加 `GET /api/skills/:id/dir-files` endpoint 把当前附属文件传给前端，让 diff modal 完整显示双侧 references diff
+- snapshot 多版本历史（N=3 或无限）作为下一阶段
+- `skill add --overwrite` 加 LLM 内容审核（同 schedule add，agent 改 builtin/user skill 时双闸门）
+
+---
+
+## 上一里程碑（2026-06-06 — CLI schedule add target schema 修复 + schedule update 命令）
 
 修 CLI `schedule add` 的 target schema bug（旧实现写 legacy `task_template.input.target_*`，新协议要求顶层 `target_session`），补 `--interval-seconds` 触发器对齐 admin UI，并新增 `schedule update <ref>` 命令字段覆盖范围对齐 admin UI 编辑器。
 
