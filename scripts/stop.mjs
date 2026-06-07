@@ -7,6 +7,8 @@ import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execSync } from 'node:child_process'
 import http from 'node:http'
+import { resolveDataDir } from './lib/data-dir.mjs'
+import { readPid, clearPid, isPidAlive } from './lib/pid.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
@@ -14,8 +16,7 @@ const OFFSET = parseInt(process.env.CRABOT_PORT_OFFSET || '0', 10)
 const MM_PORT = 19000 + OFFSET
 const ADMIN_RPC_PORT = 19001 + OFFSET
 const WEB_PORT = 3000 + OFFSET
-const DATA_DIR = process.env.DATA_DIR
-  || (OFFSET > 0 ? resolve(ROOT, `data-${OFFSET}`) : resolve(ROOT, 'data'))
+const DATA_DIR = resolveDataDir({ envValue: process.env.DATA_DIR, offset: OFFSET })
 const IS_WIN = process.platform === 'win32'
 
 const info = (msg) => console.log(`\x1b[32m[crabot]\x1b[0m ${msg}`)
@@ -86,6 +87,18 @@ function shutdownRpc(port, timeoutMs = 5000) {
 
 info('Stopping Crabot...')
 
+// 0. PID-first：如果有 mm.pid，先发 SIGTERM 给它（前台模式 = start 进程；后台模式 = supervisor）
+const startPid = readPid(DATA_DIR)
+if (startPid !== null && isPidAlive(startPid)) {
+  info(`Sending SIGTERM to mm.pid=${startPid}...`)
+  try { process.kill(startPid, 'SIGTERM') } catch { /* ok */ }
+  // 等最多 15s
+  for (let i = 0; i < 15; i++) {
+    if (!isPidAlive(startPid)) break
+    await sleep(1000)
+  }
+}
+
 // 1. 请 MM 优雅关闭（级联关闭所有子模块）
 await shutdownRpc(MM_PORT)
 
@@ -136,5 +149,8 @@ for (const port of ports) {
     killTree(pid)
   }
 }
+
+// 6. 清理 mm.pid 文件
+clearPid(DATA_DIR)
 
 info('Stopped.')
