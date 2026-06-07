@@ -3,15 +3,12 @@
 // Crabot Password — 修改管理员密码
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
-import { resolve, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { resolve } from 'node:path'
 import { createInterface } from 'node:readline'
+import { resolveDataDir } from './lib/data-dir.mjs'
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
-const ROOT = resolve(__dirname, '..')
 const OFFSET = parseInt(process.env.CRABOT_PORT_OFFSET || '0', 10)
-const DATA_DIR = process.env.DATA_DIR
-  || (OFFSET > 0 ? resolve(ROOT, `data-${OFFSET}`) : resolve(ROOT, 'data'))
+const DATA_DIR = resolveDataDir({ envValue: process.env.DATA_DIR, offset: OFFSET })
 
 const adminDir = resolve(DATA_DIR, 'admin')
 const adminEnvPath = resolve(adminDir, '.env')
