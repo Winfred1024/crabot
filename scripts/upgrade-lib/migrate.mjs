@@ -54,6 +54,14 @@ function findScript(upgradeDir, fromN, toN) {
   return null
 }
 
+/**
+ * 低层：跑迁移脚本链（v<from> → v<to>）。
+ *
+ * 注意：**只跑脚本，不写 SCHEMA_VERSION**。caller 若直接用本函数，必须在成功后
+ * 自己调 writeSchemaVersion 收尾，否则 module 下次启动仍判 pending（死循环）。
+ * 推荐用 applyMigration 包装版（chainUpgrade + writeSchemaVersion 原子），
+ * 避免漏调。本函数保留为低层 API 给特殊场景（如 dry-run）。
+ */
 export async function chainUpgrade(moduleDir, dataDir, fromVersion, toVersion, runScriptFn) {
   const fromN = parseVersion(fromVersion)
   const toN = parseVersion(toVersion)
@@ -74,6 +82,22 @@ export async function chainUpgrade(moduleDir, dataDir, fromVersion, toVersion, r
 
 export async function writeSchemaVersion(dataDir, version) {
   await writeFile(join(dataDir, 'SCHEMA_VERSION'), `${version}\n`, 'utf-8')
+}
+
+/**
+ * 高层：跑迁移脚本链 + 成功时写 SCHEMA_VERSION（原子组合，推荐入口）。
+ *
+ * 不做 backup（caller 决定）。runMigrations 内部用本函数 + 外加 backup；start.mjs
+ * 兜底直接用本函数（启动不备份）。两者都通过本函数走 → 不可能漏写 SCHEMA_VERSION。
+ *
+ * 返回与 chainUpgrade 同 shape：`{ ok: true } | { ok: false, failedAt }`。
+ * failed 时 SCHEMA_VERSION 不写（保持 json + 磁盘一致：下次启动重试同一 migration）。
+ */
+export async function applyMigration(moduleDir, dataDir, fromVersion, toVersion, runScriptFn) {
+  const result = await chainUpgrade(moduleDir, dataDir, fromVersion, toVersion, runScriptFn)
+  if (!result.ok) return result
+  await writeSchemaVersion(dataDir, toVersion)
+  return { ok: true }
 }
 
 function timestamp() {
@@ -102,7 +126,7 @@ export async function runMigrations(crabotHome, dataDir, runScriptFn, logger) {
     logger.info(`[${t.moduleId}] backup → ${backupPath}`)
 
     const moduleDir = join(crabotHome, t.moduleId)
-    const result = await chainUpgrade(moduleDir, t.dataDir, t.dataVersion, t.codeVersion, runScriptFn)
+    const result = await applyMigration(moduleDir, t.dataDir, t.dataVersion, t.codeVersion, runScriptFn)
     if (!result.ok) {
       logger.error(`[${t.moduleId}] FAILED at ${result.failedAt}`)
       return {
@@ -112,7 +136,6 @@ export async function runMigrations(crabotHome, dataDir, runScriptFn, logger) {
         backupPath,
       }
     }
-    await writeSchemaVersion(t.dataDir, t.codeVersion)
     logger.info(`[${t.moduleId}] done`)
     migrated.push(t.moduleId)
   }

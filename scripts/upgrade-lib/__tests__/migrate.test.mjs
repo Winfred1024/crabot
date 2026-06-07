@@ -275,3 +275,53 @@ describe('runMigrations', () => {
     expect(rfs(join(dataDir, 'admin', 'SCHEMA_VERSION'), 'utf-8').trim()).toBe('v1')
   })
 })
+
+describe('applyMigration', () => {
+  let crabotHome, dataDir, moduleDir, moduleData
+
+  beforeEach(() => {
+    crabotHome = mkdtempSync(join(tmpdir(), 'crabot-am-h-'))
+    dataDir = mkdtempSync(join(tmpdir(), 'crabot-am-d-'))
+    moduleDir = join(crabotHome, 'crabot-memory')
+    moduleData = join(dataDir, 'memory')
+    mkdirSync(moduleDir, { recursive: true })
+    mkdirSync(moduleData, { recursive: true })
+    mkdirSync(join(moduleDir, 'upgrade'), { recursive: true })
+    writeFileSync(join(moduleDir, 'upgrade', 'from_v1_to_v2.mjs'), '// noop\n')
+  })
+
+  afterEach(() => {
+    rmSync(crabotHome, { recursive: true, force: true })
+    rmSync(dataDir, { recursive: true, force: true })
+  })
+
+  it('成功时写 SCHEMA_VERSION 到 toVersion', async () => {
+    const { applyMigration } = await import('../migrate.mjs')
+    const result = await applyMigration(moduleDir, moduleData, 'v1', 'v2',
+      async () => ({ exitCode: 0, stdout: '', stderr: '' }))
+    expect(result).toEqual({ ok: true })
+    const { readFileSync: rfs } = await import('node:fs')
+    expect(rfs(join(moduleData, 'SCHEMA_VERSION'), 'utf-8').trim()).toBe('v2')
+  })
+
+  it('chainUpgrade 失败时不写 SCHEMA_VERSION（json + 磁盘一致性）', async () => {
+    const { applyMigration } = await import('../migrate.mjs')
+    const result = await applyMigration(moduleDir, moduleData, 'v1', 'v2',
+      async () => ({ exitCode: 5, stdout: '', stderr: 'boom' }))
+    expect(result.ok).toBe(false)
+    expect(result.failedAt).toBe('from_v1_to_v2.mjs')
+    const { existsSync } = await import('node:fs')
+    expect(existsSync(join(moduleData, 'SCHEMA_VERSION'))).toBe(false)
+  })
+
+  it('from == to 时是 no-op（不写 SCHEMA_VERSION 避免没必要的 disk write）', async () => {
+    // 注：从语义角度，应该写——但 chainUpgrade 内部 toN <= fromN return {ok:true} 不跑脚本
+    // applyMigration 还是会 writeSchemaVersion（result.ok=true 不区分是否跑了脚本）
+    const { applyMigration } = await import('../migrate.mjs')
+    const result = await applyMigration(moduleDir, moduleData, 'v2', 'v2',
+      async () => ({ exitCode: 0, stdout: '', stderr: '' }))
+    expect(result).toEqual({ ok: true })
+    const { readFileSync: rfs } = await import('node:fs')
+    expect(rfs(join(moduleData, 'SCHEMA_VERSION'), 'utf-8').trim()).toBe('v2')
+  })
+})
