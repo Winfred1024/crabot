@@ -637,6 +637,40 @@ export class SkillManager {
     return updated
   }
 
+  async restore(id: string): Promise<SkillRegistryEntry> {
+    const entry = this.skills.get(id)
+    if (!entry) throw new Error(`Skill not found: ${id}`)
+    if (entry.is_builtin) throw new Error(`Skill "${entry.name}" 是内置的，不能 restore`)
+    if (!entry.previous_snapshot) throw new Error(`Skill "${entry.name}" 没有上一版可恢复`)
+
+    const snap = entry.previous_snapshot
+
+    // 生成新 previous（当前 current 作为新的"上一版"），实现 swap 语义
+    const newSnapshot: SkillRegistryEntry['previous_snapshot'] = {
+      content: entry.content,
+      version: entry.version,
+      files: entry.skill_dir ? await readSkillDirFiles(entry.skill_dir) : undefined,
+      updated_at: entry.updated_at,
+      snapshotted_at: generateTimestamp(),
+    }
+
+    // 先写磁盘（atomic），失败 throw 不更新 json，保证 json + 磁盘一致
+    if (entry.skill_dir) {
+      await writeSkillDirFiles(entry.skill_dir, snap.content, snap.files)
+    }
+
+    const updated: SkillRegistryEntry = {
+      ...entry,
+      content: snap.content,
+      version: snap.version,
+      previous_snapshot: newSnapshot,
+      updated_at: generateTimestamp(),
+    }
+    this.skills.set(id, updated)
+    await this.save()
+    return updated
+  }
+
   async delete(id: string): Promise<void> {
     const entry = this.skills.get(id)
     if (!entry) throw new Error(`Skill not found: ${id}`)
@@ -1235,4 +1269,76 @@ export async function readSkillDirFiles(dir: string): Promise<Record<string, str
 
   await walk(dir, '')
   return tooLarge ? undefined : result
+}
+
+/**
+ * 把 SKILL.md content + files 原子性写回 skill_dir。
+ *
+ * 行为：
+ * - SKILL.md 写 content（tmp + rename）
+ * - files 中每条按相对路径写（base64: 前缀解码回二进制）
+ * - 嵌套路径自动 mkdir -p
+ * - 清理：遍历 skill_dir，删除不在 (SKILL.md ∪ files keys ∪ SNAPSHOT_SKIPPED_NAMES ∪ '.' 开头) 的所有文件
+ * - 删除空的子目录（post-order）
+ * - files = undefined 时只重写 SKILL.md，不动其它（snapshot 时 files 已放弃）
+ * - 任一步失败 throw（不留半成品中间状态由调用方决定回滚）
+ */
+export async function writeSkillDirFiles(
+  dir: string,
+  content: string,
+  files: Record<string, string> | undefined,
+): Promise<void> {
+  await fs.mkdir(dir, { recursive: true })
+
+  // 1. 写 SKILL.md（atomic）
+  await atomicWrite(path.join(dir, 'SKILL.md'), Buffer.from(content, 'utf-8'))
+
+  // 2. 写 files（只在 files 提供时）
+  if (files !== undefined) {
+    for (const [relPath, value] of Object.entries(files)) {
+      const fullPath = path.join(dir, relPath)
+      await fs.mkdir(path.dirname(fullPath), { recursive: true })
+      const buf = value.startsWith('base64:')
+        ? Buffer.from(value.slice('base64:'.length), 'base64')
+        : Buffer.from(value, 'utf-8')
+      await atomicWrite(fullPath, buf)
+    }
+
+    // 3. 清理：遍历现有目录删除不在 keep 集合内的（除 SKILL.md / SNAPSHOT_SKIPPED_NAMES / 隐藏文件）
+    const keepSet = new Set(Object.keys(files))
+    await cleanupExtraFiles(dir, '', keepSet)
+  }
+}
+
+async function atomicWrite(filePath: string, buf: Buffer): Promise<void> {
+  const tmpPath = `${filePath}.tmp.${process.pid}.${Date.now()}`
+  await fs.writeFile(tmpPath, buf)
+  await fs.rename(tmpPath, filePath)
+}
+
+async function cleanupExtraFiles(
+  rootDir: string,
+  relPrefix: string,
+  keepSet: Set<string>,
+): Promise<void> {
+  const currentDir = path.join(rootDir, relPrefix)
+  const entries = await fs.readdir(currentDir, { withFileTypes: true })
+  for (const ent of entries) {
+    const name = ent.name
+    if (SNAPSHOT_SKIPPED_NAMES.has(name) || name.startsWith('.')) continue
+    const relPath = relPrefix ? `${relPrefix}/${name}` : name
+    const fullPath = path.join(currentDir, name)
+    if (ent.isDirectory()) {
+      await cleanupExtraFiles(rootDir, relPath, keepSet)
+      // post-order：清理后看子目录是否变空，空则删
+      const remaining = await fs.readdir(fullPath)
+      if (remaining.length === 0) {
+        await fs.rmdir(fullPath)
+      }
+    } else if (ent.isFile()) {
+      if (!keepSet.has(relPath)) {
+        await fs.unlink(fullPath)
+      }
+    }
+  }
 }
