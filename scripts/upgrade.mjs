@@ -25,7 +25,7 @@ const args = process.argv.slice(2)
 const ASSUME_YES = args.includes('-y') || args.includes('--yes')
 
 const OFFSET = parseInt(process.env.CRABOT_PORT_OFFSET || '0', 10)
-const DATA_DIR = resolveDataDir({ envValue: process.env.DATA_DIR, offset: OFFSET })
+const DATA_DIR = resolveDataDir({ envValue: process.env.DATA_DIR, offset: OFFSET, repoRoot: CRABOT_HOME })
 
 const logger = {
   info: (m) => console.log(m),

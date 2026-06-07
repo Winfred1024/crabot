@@ -1,5 +1,7 @@
-import { describe, it, expect } from 'vitest'
-import { resolve } from 'node:path'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { resolve, join } from 'node:path'
 import { homedir } from 'node:os'
 import { resolveDataDir } from '../data-dir.mjs'
 
@@ -9,6 +11,17 @@ describe('resolveDataDir', () => {
       .toBe('/explicit/path')
     expect(resolveDataDir({ envValue: '/explicit/path', offset: 100 }))
       .toBe('/explicit/path')
+  })
+
+  it('env DATA_DIR 即使 $REPO/data/admin 存在也优先', () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'crabot-resolvedd-'))
+    try {
+      mkdirSync(join(repoRoot, 'data', 'admin'), { recursive: true })
+      expect(resolveDataDir({ envValue: '/explicit', offset: 0, repoRoot }))
+        .toBe('/explicit')
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true })
+    }
   })
 
   it('offset=0 时默认 ~/.crabot/data', () => {
@@ -21,5 +34,44 @@ describe('resolveDataDir', () => {
       .toBe(resolve(homedir(), '.crabot/data-100'))
     expect(resolveDataDir({ envValue: undefined, offset: 200 }))
       .toBe(resolve(homedir(), '.crabot/data-200'))
+  })
+
+  describe('legacy source install 兼容', () => {
+    let repoRoot
+
+    beforeEach(() => {
+      repoRoot = mkdtempSync(join(tmpdir(), 'crabot-resolvedd-'))
+    })
+    afterEach(() => {
+      rmSync(repoRoot, { recursive: true, force: true })
+    })
+
+    it('repoRoot + offset=0 + $REPO/data/admin 存在 → 用 $REPO/data', () => {
+      mkdirSync(join(repoRoot, 'data', 'admin'), { recursive: true })
+      expect(resolveDataDir({ envValue: undefined, offset: 0, repoRoot }))
+        .toBe(join(repoRoot, 'data'))
+    })
+
+    it('$REPO/data 存在但 admin/ 不存在（半新不旧）→ 回退默认 ~/.crabot/data', () => {
+      mkdirSync(join(repoRoot, 'data'), { recursive: true })
+      expect(resolveDataDir({ envValue: undefined, offset: 0, repoRoot }))
+        .toBe(resolve(homedir(), '.crabot/data'))
+    })
+
+    it('repoRoot 给了但 $REPO/data 整个不存在 → 默认 ~/.crabot/data', () => {
+      expect(resolveDataDir({ envValue: undefined, offset: 0, repoRoot }))
+        .toBe(resolve(homedir(), '.crabot/data'))
+    })
+
+    it('offset>0 时不触发兼容分支（system mode 永远走 ~/.crabot/data-<OFF>）', () => {
+      mkdirSync(join(repoRoot, 'data', 'admin'), { recursive: true })
+      expect(resolveDataDir({ envValue: undefined, offset: 100, repoRoot }))
+        .toBe(resolve(homedir(), '.crabot/data-100'))
+    })
+
+    it('不传 repoRoot 时不触发兼容分支（向后兼容旧 caller）', () => {
+      expect(resolveDataDir({ envValue: undefined, offset: 0 }))
+        .toBe(resolve(homedir(), '.crabot/data'))
+    })
   })
 })

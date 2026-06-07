@@ -62,8 +62,19 @@ function loadEnvFile(filePath) {
   }
 }
 
-const DATA_DIR = resolveDataDir({ envValue: process.env.DATA_DIR, offset: OFFSET })
+const DATA_DIR = resolveDataDir({ envValue: process.env.DATA_DIR, offset: OFFSET, repoRoot: ROOT })
 process.env.DATA_DIR = DATA_DIR
+
+// 一次性提示：走了 legacy source install 兼容分支
+// 条件：未设 DATA_DIR + offset=0 + 落到了 $REPO/data 而不是 ~/.crabot/data
+if (!process.env.DATA_DIR_NOTICE_SHOWN && !process.env.DATA_DIR && OFFSET === 0) {
+  const repoData = resolve(ROOT, 'data')
+  if (DATA_DIR === repoData) {
+    console.warn(`[crabot] using legacy source install data at ${repoData}`)
+    console.warn(`[crabot]   (set DATA_DIR=~/.crabot/data to switch to user-mode default)`)
+    process.env.DATA_DIR_NOTICE_SHOWN = '1'
+  }
+}
 
 loadEnvFile(resolve(DATA_DIR, 'admin/.env'))
 loadEnvFile(resolve(ROOT, '.env'))
