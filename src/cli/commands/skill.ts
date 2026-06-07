@@ -124,6 +124,35 @@ export function registerSkillCommands(parent: Command): void {
     })
 
   skill
+    .command('restore <ref>')
+    .description('恢复 skill 到上一版（swap：current ↔ previous，可再次 restore 切回）')
+    .option('--confirm <token>', 'Confirmation token from preview response')
+    .action(async (ref: string, opts: { confirm?: string }) => {
+      const ctx = createContext(parent)
+      const { id } = await resolveRef(ctx.client, 'skill', ref)
+      const args: Record<string, unknown> = { _positional: ref }
+      if (opts.confirm) args['--confirm'] = opts.confirm
+      const cmdText = opts.confirm
+        ? `skill restore ${ref} --confirm ${opts.confirm}`
+        : `skill restore ${ref}`
+
+      const result = await runWrite({
+        subcommand: 'skill restore',
+        args,
+        command_text: cmdText,
+        execute: () => ctx.client.post(`/api/skills/${id}/restore`),
+        reverse: {
+          command: `skill restore ${ref}`,  // 再 restore 一次就 swap 回去
+          preview_description: `swap skill ${ref} back to before this restore`,
+        },
+        dataDir: ctx.dataDir,
+        actor: ctx.actor,
+        mode: ctx.mode,
+      })
+      renderResult(maskSensitive(result), { mode: ctx.mode })
+    })
+
+  skill
     .command('delete <ref>')
     .description('Delete a skill')
     .option('--confirm <token>', 'Confirmation token from preview response')
