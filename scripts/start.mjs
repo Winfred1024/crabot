@@ -13,6 +13,8 @@ import { homedir } from 'node:os'
 import net from 'node:net'
 import { resolveDataDir } from './lib/data-dir.mjs'
 import { writePid, clearPid, checkSingleInstance } from './lib/pid.mjs'
+import { scanModules, chainUpgrade } from './upgrade-lib/migrate.mjs'
+import { runScript } from './upgrade-lib/runner.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
@@ -136,6 +138,27 @@ const WEB_PORT = 3000 + OFFSET
 
 console.log(`[crabot] Starting Module Manager (port ${MM_PORT})...`)
 console.log(`[crabot] Admin Web: http://localhost:${WEB_PORT}`)
+
+// Migration 兜底：start 自动跑缺失的 migration（覆盖 upgrade-time 漏跑场景）
+const pending = scanModules(ROOT, DATA_DIR)
+if (pending.length > 0) {
+  console.log(`[crabot] applying ${pending.length} pending migration(s)...`)
+  for (const m of pending) {
+    console.log(`[crabot]   ${m.moduleId}: ${m.dataVersion ?? 'fresh'} → ${m.codeVersion}`)
+    const result = await chainUpgrade(
+      resolve(ROOT, m.moduleId),
+      m.dataDir,
+      m.dataVersion,
+      m.codeVersion,
+      runScript,
+    )
+    if (!result.ok) {
+      console.error(`[crabot] migration failed for ${m.moduleId}: ${result.error}`)
+      process.exit(1)
+    }
+  }
+  console.log('[crabot] migrations done')
+}
 
 // 前台模式：写本进程 PID（stop 时 SIGTERM 给我，我转发给 MM）
 writePid(DATA_DIR, process.pid)
