@@ -2,7 +2,7 @@
 
 > 此文件由 `scripts/gen-skill-ref.mjs` 自动生成（基于 `crabot --schema` 输出）。请勿手动编辑。
 
-生成时间：2026-06-06T15:14:46.569Z  CLI 版本：1.0.0
+生成时间：2026-06-07T13:51:07.303Z  CLI 版本：1.0.0
 
 ## 命令清单
 
@@ -29,6 +29,7 @@
 | `crabot skill list` | List all skills | read | ❌ |
 | `crabot skill show` | Show a skill | read | ❌ |
 | `crabot skill add` | Add a skill from git or local path | write | ❌ |
+| `crabot skill restore` | 恢复 skill 到上一版（swap：current ↔ previous，可再次 restore 切回） | write | ❌ |
 | `crabot skill delete` | Delete a skill | write | ✅ |
 | `crabot schedule list` | List all schedules | read | ❌ |
 | `crabot schedule show` | Show a schedule | read | ❌ |
@@ -206,6 +207,20 @@ Add a skill from git or local path
 | `--skill-md-url <url>` | GitHub raw SKILL.md URL（多 skill 仓库时显式指定要装的那个） |  |
 | `--path <dir>` | Local directory path（包含 SKILL.md） |  |
 | `--overwrite` | 同名 skill 已存在时覆盖 |  |
+
+### `crabot skill restore`
+
+恢复 skill 到上一版（swap：current ↔ previous，可再次 restore 切回）
+
+**位置参数**:
+
+- `<ref>`（必填）
+
+**Flag**:
+
+| Flag | 说明 | 必填 |
+|---|---|---|
+| `--confirm <token>` | Confirmation token from preview response |  |
 
 ### `crabot skill delete`
 
