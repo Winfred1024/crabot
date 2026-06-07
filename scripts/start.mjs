@@ -15,7 +15,6 @@ import { resolveDataDir } from './lib/data-dir.mjs'
 import { writePid, clearPid, checkSingleInstance, isPidAlive } from './lib/pid.mjs'
 import { scanModules, chainUpgrade } from './upgrade-lib/migrate.mjs'
 import { runScript } from './upgrade-lib/runner.mjs'
-import { detectMode } from './lib/mode.mjs'
 import { hasInstance, readInstance } from './lib/instance.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
