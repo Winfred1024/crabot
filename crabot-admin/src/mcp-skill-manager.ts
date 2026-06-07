@@ -9,6 +9,10 @@ import path from 'path'
 import AdmZip from 'adm-zip'
 import { generateId, generateTimestamp } from 'crabot-shared'
 
+const MAX_FILE_SIZE_BYTES = 1 * 1024 * 1024  // 1MB 单文件上限
+const MAX_TOTAL_SIZE_BYTES = 5 * 1024 * 1024 // 5MB 总大小上限
+const SNAPSHOT_SKIPPED_NAMES = new Set(['SKILL.md', '.skill_dir', '.DS_Store'])
+
 // ============================================================================
 // SKILL.md frontmatter 解析
 // ============================================================================
@@ -122,6 +126,21 @@ export interface SkillRegistryEntry {
   enabled: boolean
   created_at: string
   updated_at: string
+  /**
+   * 上一版快照（N=1 覆盖式）。
+   * - 缺失/undefined：从未通过 update() 改过 content
+   * - 有值：最近一次 update 之前的完整快照
+   *
+   * 仅 update() 检测到 content 实际变化 + 非 builtin 时写入。
+   * 详见 spec 2026-06-07-skill-previous-version-and-diff-design.md §4.1。
+   */
+  previous_snapshot?: {
+    content: string
+    version: string
+    files?: Record<string, string>  // key=skill_dir 相对路径，value=文本或 'base64:<encoded>'
+    updated_at: string
+    snapshotted_at: string
+  }
 }
 
 /** 必要工具配置 */
@@ -592,9 +611,25 @@ export class SkillManager {
     if (!entry.can_disable && params.enabled === false) {
       throw new Error(`Skill "${entry.name}" cannot be disabled`)
     }
+
+    // 仅 content 真实变化（且非 builtin）才打 snapshot
+    // toggle enabled / is_essential 不触发，避免无谓覆盖既有 previous_snapshot
+    const contentChanged = params.content !== undefined && params.content !== entry.content
+    const previousSnapshot: SkillRegistryEntry['previous_snapshot'] | undefined =
+      contentChanged && !entry.is_builtin
+        ? {
+            content: entry.content,
+            version: entry.version,
+            files: entry.skill_dir ? await readSkillDirFiles(entry.skill_dir) : undefined,
+            updated_at: entry.updated_at,
+            snapshotted_at: generateTimestamp(),
+          }
+        : entry.previous_snapshot
+
     const updated: SkillRegistryEntry = {
       ...entry,
       ...params,
+      previous_snapshot: previousSnapshot,
       updated_at: generateTimestamp(),
     }
     this.skills.set(id, updated)
@@ -1151,4 +1186,53 @@ export class EssentialToolsManager {
     await this.atomicWriteFile(this.filePath, JSON.stringify(this.config, null, 2))
     return this.get()
   }
+}
+
+/**
+ * 递归读 skill_dir 下的所有附属文件（SKILL.md 已单独存 content，不读）。
+ *
+ * - 跳过 SKILL.md / .skill_dir / .DS_Store / 任何 '.' 开头文件
+ * - 文本文件按 utf-8 直存
+ * - 二进制（含 NUL byte 或 utf-8 round-trip 不一致）用 'base64:' 前缀编码
+ * - 单文件 > 1MB 跳过 + console.warn
+ * - 累计 > 5MB 返回 undefined（仅留 SKILL.md content）
+ */
+export async function readSkillDirFiles(dir: string): Promise<Record<string, string> | undefined> {
+  const result: Record<string, string> = {}
+  let totalSize = 0
+  let tooLarge = false
+
+  async function walk(currentDir: string, relativePrefix: string): Promise<void> {
+    if (tooLarge) return
+    const entries = await fs.readdir(currentDir, { withFileTypes: true })
+    for (const ent of entries) {
+      if (tooLarge) return
+      const name = ent.name
+      if (SNAPSHOT_SKIPPED_NAMES.has(name) || name.startsWith('.')) continue
+      const fullPath = path.join(currentDir, name)
+      const relPath = relativePrefix ? `${relativePrefix}/${name}` : name
+      if (ent.isDirectory()) {
+        await walk(fullPath, relPath)
+      } else if (ent.isFile()) {
+        const stat = await fs.stat(fullPath)
+        if (stat.size > MAX_FILE_SIZE_BYTES) {
+          console.warn(`[skill snapshot] 跳过大文件 ${fullPath} (${stat.size} bytes > ${MAX_FILE_SIZE_BYTES})`)
+          continue
+        }
+        totalSize += stat.size
+        if (totalSize > MAX_TOTAL_SIZE_BYTES) {
+          console.warn(`[skill snapshot] 总大小超 ${MAX_TOTAL_SIZE_BYTES}，放弃 files snapshot`)
+          tooLarge = true
+          return
+        }
+        const buf = await fs.readFile(fullPath)
+        const text = buf.toString('utf-8')
+        const isBinary = buf.includes(0) || Buffer.from(text, 'utf-8').compare(buf) !== 0
+        result[relPath] = isBinary ? `base64:${buf.toString('base64')}` : text
+      }
+    }
+  }
+
+  await walk(dir, '')
+  return tooLarge ? undefined : result
 }
