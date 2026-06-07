@@ -100,7 +100,7 @@ describe('SkillManager.update — snapshot 行为', () => {
   })
 
   it('content 变化 + 非 builtin → previous_snapshot 写入', async () => {
-    const created = await manager.importFromLocalPath(skillSrcDir)
+    const { entry: created } = await manager.importFromLocalPath(skillSrcDir)
     expect(created.previous_snapshot).toBeUndefined()
 
     await fs.writeFile(
@@ -119,7 +119,7 @@ describe('SkillManager.update — snapshot 行为', () => {
   })
 
   it('仅 enabled toggle（content 不变）→ previous_snapshot 保留原值', async () => {
-    const created = await manager.importFromLocalPath(skillSrcDir)
+    const { entry: created } = await manager.importFromLocalPath(skillSrcDir)
     // 先做一次 content update 制造 previous_snapshot
     const afterFirstUpdate = await manager.update(created.id, { content: 'v2', version: '1.1.0' })
     const firstSnapshotted = afterFirstUpdate.previous_snapshot!.snapshotted_at
@@ -131,7 +131,7 @@ describe('SkillManager.update — snapshot 行为', () => {
   })
 
   it('连续两次 content update → 第一版被覆盖（N=1）', async () => {
-    const created = await manager.importFromLocalPath(skillSrcDir)
+    const { entry: created } = await manager.importFromLocalPath(skillSrcDir)
     await manager.update(created.id, { content: 'v2', version: '1.1.0' })
     const afterSecond = await manager.update(created.id, { content: 'v3', version: '1.2.0' })
     expect(afterSecond.previous_snapshot!.content).toBe('v2')
@@ -154,7 +154,7 @@ describe('SkillManager.update — snapshot 行为', () => {
 
   it('skill_dir 有附属文件 → previous_snapshot.files 包含它们', async () => {
     await fs.writeFile(path.join(skillSrcDir, 'helper.md'), 'helper v1', 'utf-8')
-    const created = await manager.importFromLocalPath(skillSrcDir)
+    const { entry: created } = await manager.importFromLocalPath(skillSrcDir)
 
     // update() 读 skill_dir 当时的磁盘状态（snapshot 在 update 应用前抓拍）
     // Task 2 的 writeSkillDirFiles 之后才会改文件；这里只验证 read 阶段
@@ -276,7 +276,7 @@ describe('SkillManager.restore', () => {
   })
 
   it('无 previous_snapshot → throw', async () => {
-    const created = await manager.importFromLocalPath(skillSrcDir)
+    const { entry: created } = await manager.importFromLocalPath(skillSrcDir)
     await expect(manager.restore(created.id)).rejects.toThrow(/没有上一版可恢复/)
   })
 
@@ -292,7 +292,7 @@ describe('SkillManager.restore', () => {
   })
 
   it('正常 swap：current ↔ previous，磁盘 SKILL.md 也写回', async () => {
-    const created = await manager.importFromLocalPath(skillSrcDir)
+    const { entry: created } = await manager.importFromLocalPath(skillSrcDir)
     await fs.writeFile(
       path.join(skillSrcDir, 'SKILL.md'),
       '---\nname: t\ndescription: t\nversion: 1.1.0\n---\nv2',
@@ -314,7 +314,7 @@ describe('SkillManager.restore', () => {
   })
 
   it('连续两次 restore → 来回 swap', async () => {
-    const created = await manager.importFromLocalPath(skillSrcDir)
+    const { entry: created } = await manager.importFromLocalPath(skillSrcDir)
     await manager.update(created.id, { content: 'v2', version: '1.1.0' })
     await manager.restore(created.id)  // 第一次 restore，content 回 v1
     const second = await manager.restore(created.id)  // 第二次 restore，content 回 v2
@@ -323,7 +323,7 @@ describe('SkillManager.restore', () => {
 
   it('附属文件也被 restore（包括新增的要删）', async () => {
     await fs.writeFile(path.join(skillSrcDir, 'helper.md'), 'helper v1', 'utf-8')
-    const created = await manager.importFromLocalPath(skillSrcDir)
+    const { entry: created } = await manager.importFromLocalPath(skillSrcDir)
 
     // update：admin 不会动 helper.md（admin 只 read，没 write 外部 dir）
     // 模拟用户在 update 之后又往 skillSrcDir 加了 extra.md（模拟 "--overwrite 时用户改了多个文件"）

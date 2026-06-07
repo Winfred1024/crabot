@@ -1326,6 +1326,12 @@ export class AdminModule extends ModuleBase {
         return
       }
 
+      if (pathname.match(/^\/api\/skills\/[^/]+\/restore$/) && req.method === 'POST') {
+        const id = decodeURIComponent(pathname.split('/')[3])
+        await this.handleRestoreSkillApi(req, res, id)
+        return
+      }
+
       if (pathname === '/api/skills/scan-workspace' && req.method === 'POST') {
         await this.handleScanWorkspaceSkillsApi(req, res)
         return
@@ -6409,9 +6415,11 @@ export class AdminModule extends ModuleBase {
   ): Promise<void> {
     try {
       const body = await this.readJsonBody<{ skill_md_url: string; source_git_url?: string; overwrite?: boolean }>(req)
-      const skill = await this.skillManager.importFromGit(body.skill_md_url, body.source_git_url, body.overwrite)
+      const { entry, was_overwrite } = await this.skillManager.importFromGit(
+        body.skill_md_url, body.source_git_url, body.overwrite,
+      )
       res.writeHead(201, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify(skill))
+      res.end(JSON.stringify({ ...entry, was_overwrite }))
     } catch (err) {
       if (err instanceof DuplicateSkillError) {
         this.writeDuplicateSkillResponse(res, err)
@@ -6428,10 +6436,10 @@ export class AdminModule extends ModuleBase {
   ): Promise<void> {
     try {
       const body = await this.readJsonBody<{ dir_path: string; overwrite?: boolean }>(req)
-      const skill = await this.skillManager.importFromLocalPath(body.dir_path, body.overwrite)
+      const { entry, was_overwrite } = await this.skillManager.importFromLocalPath(body.dir_path, body.overwrite)
       this.triggerPushAfter('skill import-local')
       res.writeHead(201, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify(skill))
+      res.end(JSON.stringify({ ...entry, was_overwrite }))
     } catch (err) {
       if (err instanceof DuplicateSkillError) {
         this.writeDuplicateSkillResponse(res, err)
@@ -6449,10 +6457,12 @@ export class AdminModule extends ModuleBase {
     try {
       // base64 编码后约为原始大小的 1.37 倍，允许最大 50MB zip 文件
       const body = await this.readJsonBody<{ base64_content: string; filename: string; overwrite?: boolean }>(req, 70 * 1024 * 1024)
-      const skill = await this.skillManager.importFromZip(body.base64_content, body.filename, body.overwrite)
+      const { entry, was_overwrite } = await this.skillManager.importFromZip(
+        body.base64_content, body.filename, body.overwrite,
+      )
       this.triggerPushAfter('skill import-upload')
       res.writeHead(201, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify(skill))
+      res.end(JSON.stringify({ ...entry, was_overwrite }))
     } catch (err) {
       if (err instanceof DuplicateSkillError) {
         this.writeDuplicateSkillResponse(res, err)
@@ -6460,6 +6470,22 @@ export class AdminModule extends ModuleBase {
       }
       res.writeHead(400, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'import failed' }))
+    }
+  }
+
+  private async handleRestoreSkillApi(
+    _req: IncomingMessage,
+    res: ServerResponse,
+    id: string,
+  ): Promise<void> {
+    try {
+      const entry = await this.skillManager.restore(id)
+      this.triggerPushAfter('skill restore')
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(entry))
+    } catch (err) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'restore failed' }))
     }
   }
 

@@ -65,8 +65,8 @@ function buildAdmin(deps: {
     create: vi.fn().mockResolvedValue({ id: 'new-skill-id', name: 'foo' }),
     update: vi.fn().mockResolvedValue({ id: 'skill-id', name: 'foo' }),
     delete: vi.fn().mockResolvedValue(undefined),
-    importFromLocalPath: vi.fn().mockResolvedValue({ id: 'imported-skill-id', name: 'foo' }),
-    importFromZip: vi.fn().mockResolvedValue({ id: 'zipped-skill-id', name: 'foo' }),
+    importFromLocalPath: vi.fn().mockResolvedValue({ entry: { id: 'imported-skill-id', name: 'foo' }, was_overwrite: false }),
+    importFromZip: vi.fn().mockResolvedValue({ entry: { id: 'zipped-skill-id', name: 'foo' }, was_overwrite: false }),
     ...deps.skillManagerStubs,
   }
   admin.config = { moduleId: 'test-admin' }

@@ -533,7 +533,7 @@ export class SkillManager {
       skill_dir?: string
     },
     overwrite?: boolean
-  ): Promise<SkillRegistryEntry> {
+  ): Promise<{ entry: SkillRegistryEntry; was_overwrite: true }> {
     if (existing.is_builtin) {
       throw new Error(`Skill "${existing.name}" 是内置的，不可通过导入覆盖`)
     }
@@ -559,9 +559,9 @@ export class SkillManager {
       }
       this.skills.set(updated.id, patched)
       await this.save()
-      return patched
+      return { entry: patched, was_overwrite: true }
     }
-    return updated
+    return { entry: updated, was_overwrite: true }
   }
 
   async create(params: {
@@ -880,7 +880,11 @@ export class SkillManager {
    * 从 GitHub 安装指定 skill（通过 skill_md_url 获取内容）
    * 仅允许 raw.githubusercontent.com 的 HTTPS URL，防止 SSRF
    */
-  async importFromGit(skillMdUrl: string, sourceGitUrl?: string, overwrite?: boolean): Promise<SkillRegistryEntry> {
+  async importFromGit(
+    skillMdUrl: string,
+    sourceGitUrl?: string,
+    overwrite?: boolean,
+  ): Promise<{ entry: SkillRegistryEntry; was_overwrite: boolean }> {
     // 严格限制只允许 GitHub raw 内容 URL，防止 SSRF
     let parsedUrl: URL
     try {
@@ -911,20 +915,24 @@ export class SkillManager {
         source_package: sourceGitUrl,
       }, overwrite)
     }
-    return this.create({
+    const entry = await this.create({
       name: parsed.name,
       description: parsed.description,
       version: parsed.version,
       content,
       source_package: sourceGitUrl,
     })
+    return { entry, was_overwrite: false }
   }
 
   /**
    * 从本地目录路径导入（读取 <dirPath>/SKILL.md）
    * 禁止访问系统敏感目录，防止路径穿越
    */
-  async importFromLocalPath(dirPath: string, overwrite?: boolean): Promise<SkillRegistryEntry> {
+  async importFromLocalPath(
+    dirPath: string,
+    overwrite?: boolean,
+  ): Promise<{ entry: SkillRegistryEntry; was_overwrite: boolean }> {
     const resolved = path.resolve(dirPath)
     // 禁止访问敏感系统路径
     const FORBIDDEN_PREFIXES = ['/etc', '/proc', '/sys', '/dev', '/var/run', '/root', '/boot']
@@ -961,13 +969,17 @@ export class SkillManager {
     const updated: SkillRegistryEntry = { ...entry, skill_dir: resolved, updated_at: generateTimestamp() }
     this.skills.set(entry.id, updated)
     await this.save()
-    return updated
+    return { entry: updated, was_overwrite: false }
   }
 
   /**
    * 从 zip/skills 文件的 base64 内容导入
    */
-  async importFromZip(base64Content: string, filename: string, overwrite?: boolean): Promise<SkillRegistryEntry> {
+  async importFromZip(
+    base64Content: string,
+    filename: string,
+    overwrite?: boolean,
+  ): Promise<{ entry: SkillRegistryEntry; was_overwrite: boolean }> {
     const buffer = Buffer.from(base64Content, 'base64')
     const zip = new AdmZip(buffer)
     const entries = zip.getEntries()
@@ -991,13 +1003,14 @@ export class SkillManager {
         source_package: filename,
       }, overwrite)
     }
-    return this.create({
+    const entry = await this.create({
       name: parsed.name,
       description: parsed.description,
       version: parsed.version,
       content,
       source_package: filename,
     })
+    return { entry, was_overwrite: false }
   }
 
   // --------------------------------------------------------------------------
