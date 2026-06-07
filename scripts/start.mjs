@@ -244,6 +244,11 @@ if (!DAEMON_MODE) {
     cleanup()
     process.exit(code ?? 1)
   })
+  child.on('error', (err) => {
+    cleanup()
+    console.error(`[crabot] failed to spawn Module Manager: ${err.message}`)
+    process.exit(1)
+  })
   process.on('exit', cleanup)
 
   for (const sig of ['SIGINT', 'SIGTERM']) {

@@ -8,8 +8,13 @@ export function hasInstance(homeDir) {
 }
 
 export function readInstance(homeDir) {
-  const raw = readFileSync(join(homeDir, FILENAME), 'utf-8')
-  return JSON.parse(raw)
+  const path = join(homeDir, FILENAME)
+  const raw = readFileSync(path, 'utf-8')
+  try {
+    return JSON.parse(raw)
+  } catch (err) {
+    throw new Error(`instance.json 损坏（${path}：${err.message}）；请删除后重新运行 \`crabot init\``)
+  }
 }
 
 export function writeInstance(homeDir, manifest) {

@@ -4,16 +4,27 @@
 
 import { readFileSync, existsSync, unlinkSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { homedir } from 'node:os'
 import { execSync } from 'node:child_process'
 import http from 'node:http'
 import { resolveDataDir } from './lib/data-dir.mjs'
 import { readPid, clearPid, isPidAlive } from './lib/pid.mjs'
+import { hasInstance, readInstance } from './lib/instance.mjs'
 
-const OFFSET = parseInt(process.env.CRABOT_PORT_OFFSET || '0', 10)
+// 解析 OFFSET / DATA_DIR：优先 env；否则 instance.json；最后 fallback 到 helper 默认
+// （避免 system mode 员工忘 source ~/.zshrc 时 stop 用错 offset 找不到自己的实例）
+const HOME_DIR = resolve(homedir(), '.crabot')
+const INSTANCE = hasInstance(HOME_DIR) ? readInstance(HOME_DIR) : null
+const OFFSET = parseInt(
+  process.env.CRABOT_PORT_OFFSET || (INSTANCE?.port_offset ?? '0'),
+  10,
+)
 const MM_PORT = 19000 + OFFSET
 const ADMIN_RPC_PORT = 19001 + OFFSET
 const WEB_PORT = 3000 + OFFSET
-const DATA_DIR = resolveDataDir({ envValue: process.env.DATA_DIR, offset: OFFSET })
+const DATA_DIR = process.env.DATA_DIR
+  || INSTANCE?.data_dir
+  || resolveDataDir({ offset: OFFSET })
 const IS_WIN = process.platform === 'win32'
 
 const info = (msg) => console.log(`\x1b[32m[crabot]\x1b[0m ${msg}`)
