@@ -32,9 +32,9 @@ export type DispatchAction =
       readonly text: string
       /**
        * 可选预回复：dispatcher 判断任务复杂时给出。executor 在 spawnAgentInstance
-       * 之前 await 一次 channel.send_message 发出去；失败则降级为直接 spawn worker。
-       * worker 启动后通过 channel get_history 看到聊天历史里"crab"身份刚发过的这条 ack，
-       * 自然不会重复 ack。
+       * 之前 await 一次 channel.send_message 发出去，再把 ack 元数据透给 spawn 闭包，
+       * 由 spawn 拼成 outbound ChannelMessage 追加进 worker 的 recent_messages，
+       * 让 worker 第一轮 prompt 就看到"自己刚发过 ack"，不会重复 ack。
        *
        * 不带 immediate_reply 的 new_task 表示 dispatcher 判断这是 1-2 步能答完的简单任务，
        * worker 一轮回完就行，不需要预回复。
@@ -73,6 +73,17 @@ export interface DispatchResult {
   readonly actions: ReadonlyArray<DispatchAction>
 }
 
+/**
+ * sendImmediateReply 调用成功后返回的 ack 元数据。
+ * executor 转手给 spawnAgentInstance(spawnOptions.immediateReply)，
+ * 由 spawn 实现拼成 outbound ChannelMessage 注入 worker 的 recent_messages。
+ */
+export interface ImmediateReplySentInfo {
+  readonly text: string
+  readonly platform_message_id: string
+  readonly sent_at: string
+}
+
 /** 动作执行器的运行时上下文（注入 unified-agent 提供的回调）。 */
 export interface ExecuteContext {
   readonly dispatchCtx: DispatchContext
@@ -81,18 +92,27 @@ export interface ExecuteContext {
   readonly pushSupplement: (taskId: string, text: string) => Promise<'delivered' | 'fallback'>
   /** new_task spawn 回调：启动一个 agent 实例。
    *  实施细节：内部调 admin create_task with client-provided id 注册，然后跑 runWorkerLoop + finalizeTask。
+   *  spawnOptions.immediateReply 透传 dispatcher 已发出的 ack 元数据（仅 new_task
+   *  带 immediate_reply 且 sendImmediateReply 成功时由 executor 注入），让 spawn 实现把
+   *  这条 outbound 拼进 worker 的 recent_messages。
    *  返回值 spawnedTraceId 用于 cross-trace link。 */
-  readonly spawnAgentInstance: (text: string) => Promise<{ readonly spawnedTraceId: string }>
+  readonly spawnAgentInstance: (
+    text: string,
+    spawnOptions?: { readonly immediateReply?: ImmediateReplySentInfo },
+  ) => Promise<{ readonly spawnedTraceId: string }>
   /** channel send 回调：dispatcher 失败兜底走这条向人类报错。 */
   readonly sendErrorToUser: (errorText: string) => Promise<void>
   /**
    * 预回复回调（仅 new_task 携带 immediate_reply 时由 executor 调用一次）。
    * 闭包封装 channel.send_message RPC，把 dispatcher 给的简短 ack 发给当前会话。
-   * 不注入或抛错都不阻塞后续 spawnAgentInstance。
+   * 返回值带 channel 落 outbound 后的 platform_message_id / sent_at，executor 转手
+   * 经 spawnAgentInstance.spawnOptions.immediateReply 透给 spawn 实现拼进 worker
+   * recent_messages。
+   * 不注入或抛错都不阻塞后续 spawnAgentInstance（错时按 worker 看不到 ack 的语义降级）。
    *
    * Spec: 2026-06-03-dispatcher-immediate-reply-and-overdue-removal-design.md
    */
-  readonly sendImmediateReply?: (text: string) => Promise<void>
+  readonly sendImmediateReply?: (text: string) => Promise<ImmediateReplySentInfo>
   /**
    * 接住消息后的 reaction 回调（可选）。
    * Executor 在 new_task / supplement（含 fallback 降级）成功后调用一次，传该批
