@@ -3,15 +3,12 @@
 // Crabot Stop — 跨平台优雅关闭所有服务（macOS / Linux / Windows）
 
 import { readFileSync, existsSync, unlinkSync } from 'node:fs'
-import { resolve, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { resolve } from 'node:path'
 import { execSync } from 'node:child_process'
 import http from 'node:http'
 import { resolveDataDir } from './lib/data-dir.mjs'
 import { readPid, clearPid, isPidAlive } from './lib/pid.mjs'
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
-const ROOT = resolve(__dirname, '..')
 const OFFSET = parseInt(process.env.CRABOT_PORT_OFFSET || '0', 10)
 const MM_PORT = 19000 + OFFSET
 const ADMIN_RPC_PORT = 19001 + OFFSET
