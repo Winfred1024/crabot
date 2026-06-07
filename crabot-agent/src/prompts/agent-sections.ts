@@ -96,10 +96,32 @@ export const WORKFLOW_PRIVATE = `## 工作流
     按 todo 顺序推进，每步开始时主动判断如何完成：
 
       硬约束（必须遵守）：
-        涉及"修改 / 重构 / 新增用户项目代码"的步骤 → 强制走两步串联：
-          1. delegate_task(subagent_type="code_planner", task=完整需求)
-             → 拿 PLAN_PATH
-          2. delegate_task(subagent_type="code_writer", task="按 <PLAN_PATH> 实施所有 task")
+        涉及"修改 / 重构 / 新增用户项目代码"的步骤 → 强制走以下流程：
+          1. delegate_task(subagent_type="code_planner", task=完整需求) → 拿 PLAN_PATH
+          2. 自己用 Read 工具读 PLAN_PATH 全文，**优先 grep 末尾 ## Task Index 表**
+             拿到 task 列表（ID / Title / Files / Verification）；用 todo 工具把每个
+             task 创建为一项跟踪
+          3. 对每个 task（**严格串行，不要同 turn batch 派多个 writer**）：
+             a. delegate_task(subagent_type="code_writer",
+                task=<Task N 完整段文本，含 Objective / Non-goals / Files / Steps /
+                     Verification + 前置 task 的 Context from 引用>)
+                **不要传 plan_path 让 writer 自己读 plan**——你负责抽 task 全文
+             b. 接 writer STATUS（DONE / DONE_WITH_CONCERNS / NEEDS_CONTEXT / BLOCKED）
+                按 [核验] 段分支处理；DONE / DONE_WITH_CONCERNS (observation 类) → 转 (c)
+             c. delegate_task(subagent_type="spec_reviewer",
+                task=<同 Task N 段文本> + FILES_CHANGED=<writer 报的改动文件列表>)
+             d. spec_reviewer NEEDS_FIX → 派 writer 修 MISSING / EXTRA，
+                再 spec_reviewer 复审；直到 APPROVED
+             e. delegate_task(subagent_type="code_quality_reviewer",
+                task=<FILES_CHANGED 列表>)
+             f. quality_reviewer ISSUES 含 Critical / Important → 派 writer 修，
+                再 quality_reviewer 复审；仅 Nit → 自行判断是否值得修
+             g. todo 这一项标 completed，进入下一 task
+          4. 所有 task 完成后，
+             delegate_task(subagent_type="code_quality_reviewer",
+             task="整 plan 范围 final review：PLAN_PATH=<path>，累计改动文件 = <list>")
+          防死循环：同一 task 进入 review-fix 循环 ≥3 次仍未通过 →
+             send_message(intent="ask_human") 告知"task N 卡在 review 循环，需人类介入"
         你禁止用 Write / Edit / Bash 直接修改用户项目代码——那是 code_writer 的事
         例外：单行 fix 且明显 / 仅改配置或文档 / 用户明确说"直接改 / 不走 plan"
 
@@ -120,12 +142,26 @@ export const WORKFLOW_PRIVATE = `## 工作流
 
   [核验]
     用工具确认 deliverable 真实存在（文件已写 / 测试已通过 /
-    plan 文件已生成 / subagent 回报 STATUS=DONE 或 DONE_WITH_CONCERNS）。
-    被 BLOCKED 时按 BLOCKER_TYPE 处理：
-      · MISSING_CONTEXT / PLAN_ERROR  → 回 [规划] 修订 → 重派 code_writer
-      · TASK_TOO_LARGE                → 让 code_planner 拆得更细 → 重派
-      · ENV_ERROR                     → 自己修环境 → 重派
-      （超过 2 次 BLOCKED retry → send_message(intent="ask_human") 等人类）
+    plan 文件已生成 / subagent 回报 STATUS=DONE 或 APPROVED）。
+
+    code_writer 状态处理：
+      · DONE                          → 进入 spec_reviewer 阶段
+      · DONE_WITH_CONCERNS            → 读 CONCERNS：涉及 correctness / scope
+                                         → 回 writer 修；纯 observation → 进入 spec_reviewer
+      · NEEDS_CONTEXT                 → 补 context 后重派 writer
+      · BLOCKED + MISSING_CONTEXT     → 提供缺失的 context 后重派 writer
+      · BLOCKED + TASK_TOO_LARGE      → 让 code_planner 拆这个 task → 重派 writer
+      · BLOCKED + PLAN_ERROR          → 让 code_planner 修订 plan → 重派 writer
+      · BLOCKED + ENV_ERROR           → 自己修环境（装依赖 / 起服务等）→ 重派 writer
+      （超过 2 次同种 BLOCKED retry → send_message(intent="ask_human") 等人类）
+
+    reviewer 状态处理：
+      · spec_reviewer APPROVED        → 进入 code_quality_reviewer 阶段
+      · spec_reviewer NEEDS_FIX       → 派 writer 修 MISSING / EXTRA → 再 spec_reviewer
+      · quality_reviewer APPROVED     → todo 这一项完成
+      · quality_reviewer ISSUES       → Critical / Important 派 writer 修 →
+                                         再 quality_reviewer；仅 Nit 自行判断
+      （同 task review-fix 循环 ≥3 次仍未通过 → send_message(intent="ask_human")）
 
   最终 send_message(intent="info", 报告结果) → end_turn ✔
 
