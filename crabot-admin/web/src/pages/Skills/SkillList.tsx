@@ -7,6 +7,7 @@ import { Loading } from '../../components/Common/Loading'
 import { StatusBadge } from '../../components/Common/StatusBadge'
 import type { SkillRegistryEntry } from '../../types'
 import { useToast } from '../../contexts/ToastContext'
+import { SkillDiffModal } from './SkillDiffModal'
 
 type FormData = {
   name: string
@@ -100,6 +101,9 @@ export const SkillList: React.FC = () => {
   const [localPath, setLocalPath] = useState('')
   // Upload state
   const fileInputRef = useRef<HTMLInputElement>(null)
+  // 上一版对比 modal + 恢复中状态
+  const [diffSkill, setDiffSkill] = useState<SkillRegistryEntry | null>(null)
+  const [restoringId, setRestoringId] = useState<string | null>(null)
 
   useEffect(() => { load() }, [])
 
@@ -301,6 +305,24 @@ export const SkillList: React.FC = () => {
       await load()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '删除失败')
+    }
+  }
+
+  const handleRestore = async (s: SkillRegistryEntry) => {
+    if (!s.previous_snapshot) return
+    if (!confirm(
+      `将「${s.name}」与上一版交换（当前 v${s.version} ↔ 上一版 v${s.previous_snapshot.version}）。\n` +
+      `当前版本会被保存为新的上一版，可再次点击撤销。继续？`
+    )) return
+    setRestoringId(s.id)
+    try {
+      await skillService.restore(s.id)
+      toast.success(`已恢复 ${s.name} 到上一版`)
+      await load()
+    } catch (err) {
+      toast.error(`恢复失败: ${err instanceof Error ? err.message : '未知错误'}`)
+    } finally {
+      setRestoringId(null)
     }
   }
 
@@ -519,6 +541,11 @@ export const SkillList: React.FC = () => {
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.25rem' }}>
                     <span style={{ fontWeight: 600, fontSize: '1rem' }}>{s.name}</span>
                     <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>v{s.version}</span>
+                    {s.previous_snapshot && (
+                      <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', opacity: 0.7 }}>
+                        (上一版 v{s.previous_snapshot.version})
+                      </span>
+                    )}
                     {s.is_builtin && (
                       <span style={{ fontSize: '0.75rem', padding: '0.1rem 0.5rem', background: 'rgba(139,92,246,0.15)', color: '#8b5cf6', borderRadius: '4px' }}>内置</span>
                     )}
@@ -550,6 +577,41 @@ export const SkillList: React.FC = () => {
                       {s.content}
                     </pre>
                   )}
+                  {!s.is_builtin && s.previous_snapshot && (
+                    <div style={{
+                      marginTop: '0.75rem',
+                      padding: '0.6rem 0.75rem',
+                      border: '1px solid var(--border-color, #3a3a3e)',
+                      borderRadius: '6px',
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      alignItems: 'center',
+                      gap: '0.75rem',
+                    }}>
+                      <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>上一版</span>
+                      <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                        v{s.previous_snapshot.version}
+                        （快照于 {new Date(s.previous_snapshot.snapshotted_at).toLocaleString()}）
+                      </span>
+                      <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.4rem' }}>
+                        <Button
+                          variant="secondary"
+                          onClick={() => setDiffSkill(s)}
+                          style={{ fontSize: '0.78rem', padding: '0.25rem 0.65rem' }}
+                        >
+                          查看对比
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          onClick={() => handleRestore(s)}
+                          disabled={restoringId === s.id}
+                          style={{ fontSize: '0.78rem', padding: '0.25rem 0.65rem' }}
+                        >
+                          {restoringId === s.id ? '应用中...' : '应用上一版'}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <div style={{ display: 'flex', gap: '0.5rem', flexShrink: 0 }}>
                   <Button
@@ -575,6 +637,14 @@ export const SkillList: React.FC = () => {
             </Card>
           ))}
         </div>
+      )}
+
+      {diffSkill && (
+        <SkillDiffModal
+          skill={diffSkill}
+          open={!!diffSkill}
+          onClose={() => setDiffSkill(null)}
+        />
       )}
     </MainLayout>
   )

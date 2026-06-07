@@ -186,6 +186,17 @@ export interface SkillRegistryEntry {
   enabled: boolean
   created_at: string
   updated_at: string
+  /**
+   * 上一版快照（N=1 覆盖式）。仅 update() 检测到 content 变化 + 非 builtin 时写入。
+   * 详见 spec 2026-06-07-skill-previous-version-and-diff-design.md §4.1。
+   */
+  previous_snapshot?: {
+    content: string
+    version: string
+    files?: Record<string, string>
+    updated_at: string
+    snapshotted_at: string
+  }
 }
 
 export interface EssentialToolsConfig {

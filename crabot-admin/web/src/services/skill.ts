@@ -54,6 +54,10 @@ export const skillService = {
   async scanWorkspace(): Promise<{ added: number; workspace_dir: string }> {
     return api.post('/skills/scan-workspace', {})
   },
+
+  async restore(id: string): Promise<SkillRegistryEntry> {
+    return api.post<SkillRegistryEntry>(`/skills/${id}/restore`, {})
+  },
 }
 
 /**
