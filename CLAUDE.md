@@ -219,19 +219,26 @@ node scripts/debug-agent.mjs modules  # 查看 MM 注册的模块
 - Vite 开发服务器（port 5173）代理 `/api` 和 `/ws` 到后端 port 3000
 - **改了前端代码不生效？** 检查是通过 port 5173（Vite）还是 port 3000（静态文件）访问的
 
-### 多实例部署
+### 实例隔离（单实例约束）
 
-同一台机器可运行多个 Crabot 实例，通过 `CRABOT_PORT_OFFSET` 环境变量隔离端口和数据：
+Crabot **强制单实例运行**。每个用户 / 每台机器（dev 模式）最多跑一个 Crabot MM。多用户场景请走 system mode（见下方）。
 
-```bash
-# 实例 A（默认，无需配置）
-./dev.sh
+- 生产 user mode（`install.sh` 默认装的 `~/.crabot`）：永远 OFFSET=0，DATA_DIR=`~/.crabot/data`
+- 生产 system mode：每个 Linux 用户由 `crabot init` 自动绑定唯一 OFFSET，DATA_DIR=`~/.crabot/data-<OFF>`
+- dev 模式（`./dev.sh`）：永远 OFFSET=0，DATA_DIR=`$REPO_ROOT/data`
 
-# 实例 B（所有端口 +100，数据目录自动变为 data-100/）
-CRABOT_PORT_OFFSET=100 ./dev.sh
+`CRABOT_PORT_OFFSET` **不再是用户级配置入口**——它只在 system mode 下由 `crabot init` 内部自动分配，写入员工 shell rc + `~/.crabot/instance.json` 后**不要再手动改**。
 
-# 实例 C（也可显式指定数据目录）
-CRABOT_PORT_OFFSET=200 DATA_DIR=/data/tenant-c ./dev.sh
-```
+单实例约束的实现：`scripts/start.mjs` / `dev.sh` 启动前检查 `$DATA_DIR/mm.pid`，活进程 → 报错"already running"；stale → 清理后继续。
 
-端口映射规则：所有默认端口 + offset（如 offset=100 时，MM=19100, Admin RPC=19101, Admin Web=3100）。每个实例占用 100 个端口范围（19002-19099 → 19102-19199）。
+### System Mode 多用户部署
+
+针对"root 全局安装 + 多 Linux 用户各跑自己实例"的服务器部署形态。
+
+- **入口**：`sudo install.sh --system` 装到 `/opt/crabot`，创建 `/etc/crabot/` 骨架 + `crabot` group + `/etc/logrotate.d/crabot` + `/usr/local/bin/crabot` 软链
+- **员工首次跑 `crabot start`** 自动触发 `crabot init`：从 `/etc/crabot/registry/ports.json` 申请 OFFSET（文件锁原子分配，永久绑定该 Linux 用户）+ 拉取 `/etc/crabot/defaults/*.yaml` 默认配置 + 写 shell rc
+- **下发更新**：root 改 `/etc/crabot/defaults/*.yaml` + 递增 `/etc/crabot/cluster.version`；员工下次 `crabot start` 看到提示，按 y/N 决定是否 `crabot sync`；后台模式（`-d`）下不提示，直接报错让员工先手动 sync
+- **合并语义**：按 name 合并；root 同名条目整条覆盖；员工独有保留
+- **后台 + 状态命令**：`crabot start -d`（spawn supervisor + 日志轮转 10MB×5）；`crabot status`（人类视图 + `--json`）；`crabot stop` 自动找 PID（兼容前台/后台）
+- **Migration**：`crabot upgrade` 主路径 + `crabot start` 兜底两边都跑（idempotent）
+- **upgrade 权限**：system mode 下非 root 跑 `crabot upgrade` → 拒绝，提示请联系管理员
