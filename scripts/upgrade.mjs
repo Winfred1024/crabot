@@ -17,6 +17,7 @@ import {
 } from './upgrade-lib/release.mjs'
 import { runSourceUpgrade, syncPythonDeps } from './upgrade-lib/source.mjs'
 import { resolveDataDir } from './lib/data-dir.mjs'
+import { detectMode as detectInstallScope } from './lib/mode.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const CRABOT_HOME = resolve(__dirname, '..')
@@ -156,6 +157,14 @@ async function runSourceMode() {
 }
 
 async function main() {
+  // system mode 下普通用户跑 upgrade → 拒绝并提示
+  const scope = detectInstallScope('/etc/crabot')
+  if (scope === 'system' && process.getuid && process.getuid() !== 0) {
+    console.error('[crabot] this is a system-mode install at ' + CRABOT_HOME + ';')
+    console.error('[crabot] please ask the administrator to run `sudo crabot upgrade`.')
+    process.exit(1)
+  }
+
   if (isMmRunning()) {
     console.error('[upgrade] Module Manager appears to be running. Run `crabot stop` first.')
     process.exit(1)
