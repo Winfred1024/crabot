@@ -10,7 +10,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "commander": "^13.0.0"
+    "commander": "^13.0.0",
+    "js-yaml": "^4.2.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
