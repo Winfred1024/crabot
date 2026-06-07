@@ -1,16 +1,42 @@
 import { describe, it, expect } from 'vitest'
+import { buildSkillAddReverse } from './skill.js'
 
-describe('skill restore command', () => {
-  it('占位：execute 调 POST /api/skills/:id/restore', () => {
-    // 主要逻辑在 commander action 内，间接通过 e2e / undo dispatch test 覆盖
-    // 本文件留作 buildXxxBody 等纯函数单测的钩子（如未来 restore 需要 body）
-    expect(true).toBe(true)
+describe('buildSkillAddReverse', () => {
+  it('was_overwrite=true → skill restore reverse', () => {
+    const reverse = buildSkillAddReverse(
+      { id: 'sk-1', was_overwrite: true },
+      { source: 'path /tmp/foo' },
+    )
+    expect(reverse).toEqual({
+      command: 'skill restore sk-1',
+      preview_description: 'restore skill sk-1 to version before this overwrite',
+    })
   })
-})
 
-describe('add reverseFromResult 分支', () => {
-  // 这里直接测 reverseFromResult 函数本身——必须先把它从 action 内的闭包
-  // 抽到模块顶层 export，参见 Task 5
-  it.todo('was_overwrite=true → skill restore reverse')
-  it.todo('was_overwrite=false → skill delete reverse')
+  it('was_overwrite=false → skill delete reverse', () => {
+    const reverse = buildSkillAddReverse(
+      { id: 'sk-1', was_overwrite: false },
+      { source: 'path /tmp/foo' },
+    )
+    expect(reverse).toEqual({
+      command: 'skill delete sk-1',
+      preview_description: 'delete newly imported skill from path /tmp/foo (sk-1)',
+    })
+  })
+
+  it('was_overwrite 缺失（旧 admin）→ skill delete reverse（兼容）', () => {
+    const reverse = buildSkillAddReverse(
+      { id: 'sk-1' },
+      { source: 'git https://example.com/repo' },
+    )
+    expect(reverse).toEqual({
+      command: 'skill delete sk-1',
+      preview_description: 'delete newly imported skill from git https://example.com/repo (sk-1)',
+    })
+  })
+
+  it('result 为 null → id = <unknown>', () => {
+    const reverse = buildSkillAddReverse(null, { source: 'path /tmp/foo' })
+    expect(reverse.command).toBe('skill delete <unknown>')
+  })
 })
