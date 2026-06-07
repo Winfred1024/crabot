@@ -5,6 +5,9 @@
   "scripts": {
     "test": "vitest run"
   },
+  "dependencies": {
+    "proper-lockfile": "^4.1.2"
+  },
   "devDependencies": {
     "vitest": "^2.1.0"
   }
