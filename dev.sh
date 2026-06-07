@@ -19,16 +19,11 @@ if [ -d "$HOME/.local/bin" ]; then
   esac
 fi
 
-PORT_OFFSET="${CRABOT_PORT_OFFSET:-0}"
-MM_PORT=$((19000 + PORT_OFFSET))
-ADMIN_RPC_PORT=$((19001 + PORT_OFFSET))
-ADMIN_WEB_PORT=$((3000 + PORT_OFFSET))
-
-if [ "$PORT_OFFSET" -gt 0 ]; then
-  DATA_DIR="${DATA_DIR:-$SCRIPT_DIR/data-$PORT_OFFSET}"
-else
-  DATA_DIR="${DATA_DIR:-$SCRIPT_DIR/data}"
-fi
+# dev 模式强制单实例：写死端口和 DATA_DIR
+MM_PORT=19000
+ADMIN_RPC_PORT=19001
+ADMIN_WEB_PORT=3000
+DATA_DIR="${DATA_DIR:-$SCRIPT_DIR/data}"
 MEMORY_DIR="${MEMORY_DIR:-$SCRIPT_DIR/crabot-memory}"
 
 # 颜色
@@ -391,7 +386,18 @@ start() {
     fi
   fi
 
-  # 4. Module Manager（前台 exec，会自动拉起 Memory + Admin + Agent + Vite）
+  # 4. 单实例预检
+  if [ -f "$DATA_DIR/mm.pid" ]; then
+    local existing_pid
+    existing_pid=$(cat "$DATA_DIR/mm.pid")
+    if kill -0 "$existing_pid" 2>/dev/null; then
+      log_error "already running (pid=$existing_pid). Run './dev.sh stop' first."
+      exit 1
+    fi
+    rm -f "$DATA_DIR/mm.pid"
+  fi
+
+  # 5. Module Manager（后台 spawn + 捕获 PID + trap 清理；前台 wait 保持 Ctrl-C 体验）
   #
   # stdout/stderr 同时落盘到 module-manager.log —— 包含 MM 自己的 health check
   # 失败警告 / auto-restart 决策 / 子进程 spawn 等关键事件。早期版本只 exec 到
@@ -400,8 +406,12 @@ start() {
   cd "$SCRIPT_DIR/crabot-core"
   local mm_log="$DATA_DIR/logs/module-manager.log"
   mkdir -p "$(dirname "$mm_log")"
-  # 通过 tee 同时输出到终端与文件；exec 仍让 node 接管 shell 进程
-  exec node dist/main.js 2>&1 | tee -a "$mm_log"
+  # 用 process substitution 让 tee 不切走主进程；node 自己当 wait 的目标
+  node dist/main.js > >(tee -a "$mm_log") 2>&1 &
+  local mm_pid=$!
+  echo "$mm_pid" > "$DATA_DIR/mm.pid"
+  trap 'kill -TERM '"$mm_pid"' 2>/dev/null; rm -f "'"$DATA_DIR"'/mm.pid"' INT TERM EXIT
+  wait "$mm_pid"
 }
 
 # ── 主入口 ────────────────────────────────────────────────
