@@ -12,13 +12,14 @@ import { spawn } from 'node:child_process'
 import { homedir } from 'node:os'
 import net from 'node:net'
 import { resolveDataDir } from './lib/data-dir.mjs'
-import { writePid, clearPid, checkSingleInstance } from './lib/pid.mjs'
+import { writePid, clearPid, checkSingleInstance, isPidAlive } from './lib/pid.mjs'
 import { scanModules, chainUpgrade } from './upgrade-lib/migrate.mjs'
 import { runScript } from './upgrade-lib/runner.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
 const OFFSET = parseInt(process.env.CRABOT_PORT_OFFSET || '0', 10)
+const DAEMON_MODE = process.argv.includes('-d') || process.argv.includes('--daemon')
 
 // ── 环境变量 ──
 
@@ -84,6 +85,18 @@ for (const sub of ['admin', 'agent', 'memory']) {
 // ── 密码检查 ──
 
 const adminEnvPath = resolve(DATA_DIR, 'admin/.env')
+
+if (DAEMON_MODE && !process.env.CRABOT_ADMIN_PASSWORD) {
+  // 后台模式下不能交互；检查 admin/.env 是否已有密码
+  const envExists = existsSync(adminEnvPath)
+  const envHasPassword = envExists && /^CRABOT_ADMIN_PASSWORD=/m.test(
+    readFileSync(adminEnvPath, 'utf-8'),
+  )
+  if (!envHasPassword) {
+    console.error('[crabot] No admin password set. Run `crabot start` (foreground) once to set it interactively.')
+    process.exit(1)
+  }
+}
 
 if (!process.env.CRABOT_ADMIN_PASSWORD) {
   const prompter = createPrompter()
@@ -160,24 +173,70 @@ if (pending.length > 0) {
   console.log('[crabot] migrations done')
 }
 
-// 前台模式：写本进程 PID（stop 时 SIGTERM 给我，我转发给 MM）
-writePid(DATA_DIR, process.pid)
+if (!DAEMON_MODE) {
+  // 前台模式：写本进程 PID（stop 时 SIGTERM 给我，我转发给 MM）
+  writePid(DATA_DIR, process.pid)
 
-const child = spawn(process.execPath, [mmEntry], {
-  cwd: resolve(ROOT, 'crabot-core'),
-  stdio: 'inherit',
-  env: { ...process.env },
-})
+  const child = spawn(process.execPath, [mmEntry], {
+    cwd: resolve(ROOT, 'crabot-core'),
+    stdio: 'inherit',
+    env: { ...process.env },
+  })
 
-const cleanup = () => clearPid(DATA_DIR)
-child.on('exit', (code) => {
-  cleanup()
-  process.exit(code ?? 1)
-})
-process.on('exit', cleanup)
+  const cleanup = () => clearPid(DATA_DIR)
+  child.on('exit', (code) => {
+    cleanup()
+    process.exit(code ?? 1)
+  })
+  process.on('exit', cleanup)
 
-for (const sig of ['SIGINT', 'SIGTERM']) {
-  process.on(sig, () => child.kill(sig))
+  for (const sig of ['SIGINT', 'SIGTERM']) {
+    process.on(sig, () => child.kill(sig))
+  }
+} else {
+  // 后台模式：spawn detached supervisor，父进程轮询 health 后退出
+  const supervisorEntry = resolve(__dirname, 'supervisor.mjs')
+  const sup = spawn(process.execPath, [supervisorEntry], {
+    detached: true,
+    stdio: 'ignore',
+    env: {
+      ...process.env,
+      CRABOT_SUPERVISOR_DATA_DIR: DATA_DIR,
+      CRABOT_SUPERVISOR_MM_ENTRY: mmEntry,
+      CRABOT_SUPERVISOR_MM_CWD: resolve(ROOT, 'crabot-core'),
+    },
+  })
+  // 父进程立即写 supervisor.pid 到 mm.pid（避免 race）
+  writePid(DATA_DIR, sup.pid)
+  sup.unref()
+
+  console.log('[crabot] Starting in background...')
+  console.log('[crabot] Waiting for Module Manager to become healthy... (up to 30s)')
+
+  // 健康轮询（最多 30s）
+  const deadline = Date.now() + 30_000
+  while (Date.now() < deadline) {
+    if (!isPidAlive(sup.pid)) {
+      console.error('[crabot] supervisor exited unexpectedly. Check logs at', resolve(DATA_DIR, 'logs/mm.stderr.log'))
+      process.exit(1)
+    }
+    try {
+      const r = await fetch(`http://localhost:${MM_PORT}/health`, { signal: AbortSignal.timeout(1500) })
+      if (r.ok) {
+        const r2 = await fetch(`http://localhost:${WEB_PORT}/health`, { signal: AbortSignal.timeout(1500) })
+        if (r2.ok) {
+          console.log(`[crabot] \x1b[32m●\x1b[0m MM ready (port ${MM_PORT})`)
+          console.log(`[crabot] \x1b[32m●\x1b[0m Admin Web ready (port ${WEB_PORT})`)
+          console.log(`[crabot] Started. PID ${sup.pid}. Run \`crabot status\` to check, \`crabot stop\` to stop.`)
+          process.exit(0)
+        }
+      }
+    } catch { /* keep trying */ }
+    await new Promise(r => setTimeout(r, 1000))
+  }
+  console.error(`[crabot] timeout after 30s. Check logs at ${resolve(DATA_DIR, 'logs/mm.stderr.log')}`)
+  console.error(`[crabot] supervisor still running at pid ${sup.pid}; if it eventually starts, fine; otherwise crabot stop.`)
+  process.exit(1)
 }
 
 // ── 辅助函数 ──
