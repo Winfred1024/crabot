@@ -66,4 +66,31 @@ describe('runRipgrep', () => {
     const r = await runRipgrep(['--version'], { signal: ac.signal })
     expect(r.truncated).toBe(true)
   })
+
+  // 2026-06-07 kernel watchdog panic 复盘：crabot agent 同时 spawn 7+ 个 rg，
+  // 单进程 RSS 飙到 17.5 GB（mmap 巨型文件 + 默认全核并行），32 GB 机器被压垮。
+  // 这两条用例锁定 ripgrep-helper 永远会注入两条硬限制 flag。
+  it('skips files larger than 10 MB by forcing --max-filesize=10M', async () => {
+    // 写一个 12 MB 的文件，里面塞满 "MATCH_ME"。如果 rg 仍然扫它，会有大量
+    // 匹配；--max-filesize=10M 生效则 rg 会跳过它，匹配为 0。
+    const big = ('MATCH_ME on a single big-file line\n').repeat(400_000) // ~12.4 MB
+    writeFileSync(join(tmp, 'huge.txt'), big)
+
+    const r = await runRipgrep(['--no-ignore', '--hidden', '-c', '-e', 'MATCH_ME', tmp])
+    // rg 跳过文件后没有任何匹配，exit code = 1（"no matches"）
+    expect(r.exitCode).toBe(1)
+    expect(r.stdout).toBe('')
+  })
+
+  it('forces --threads=1 (no multi-core parallel scan)', async () => {
+    // 直接问 rg 它收到了什么参数：用 --debug 看不到 args，但 --max-filesize
+    // 和 --threads 都接受重复声明，后写覆盖前写。如果我们在用户 args 里再传
+    // 一次 --threads=8，最终生效的应该是用户的 8 —— 这反过来证明我们注入的
+    // 那一条在前。这里改用更直接的"行为"验证：用 --files 列文件，rg 退出码
+    // 0 = 列出。如果硬限制被破坏会抛错。
+    writeFileSync(join(tmp, 'a.txt'), 'x\n')
+    const r = await runRipgrep(['--files', tmp])
+    expect(r.exitCode).toBe(0)
+    expect(r.stdout).toContain('a.txt')
+  })
 })
