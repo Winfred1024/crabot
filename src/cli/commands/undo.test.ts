@@ -131,3 +131,34 @@ describe('executeReverse — schedule restore-snapshot', () => {
     expect(result).toEqual({ schedule: { id: 'sched-1', name: 'restored' } })
   })
 })
+
+describe('executeReverse — skill restore', () => {
+  it('skill restore <ref> 走 POST /api/skills/:id/restore', async () => {
+    let postedPath: string | undefined
+    const client = {
+      post: async <T>(path: string, _body?: unknown): Promise<T> => {
+        postedPath = path
+        return { id: 'sk-1', name: 'restored' } as T
+      },
+      getList: async <T>(_path: string): Promise<T[]> => {
+        return [{ id: 'sk-1', name: 'my-skill' }] as T[]
+      },
+    }
+    const entry: UndoEntry = {
+      id: 'undo-1',
+      executed_at: '2026-06-07T00:00:00Z',
+      expires_at: '2026-06-07T00:30:00Z',
+      actor: 'human',
+      original_command: 'skill add --path /tmp/foo --overwrite',
+      reverse: {
+        command: 'skill restore sk-1',
+        preview_description: 'restore skill sk-1',
+      },
+      snapshot: null,
+    }
+    const ctx = { client } as unknown as CliContext
+    const result = await executeReverse(ctx, entry)
+    expect(postedPath).toBe('/api/skills/sk-1/restore')
+    expect(result).toEqual({ id: 'sk-1', name: 'restored' })
+  })
+})

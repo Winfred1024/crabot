@@ -41,6 +41,13 @@ export async function executeReverse(ctx: CliContext, entry: UndoEntry): Promise
     return ctx.client.patch(SNAPSHOT_RESTORE_PATH[domain](id), entry.snapshot ?? {})
   }
 
+  // skill restore（不复用 --restore-snapshot 通用机制，admin 端 own snapshot）
+  if (cmd.startsWith('skill restore ')) {
+    const ref = cmd.substring('skill restore '.length).trim().split(/\s+/)[0]!
+    const { id } = await resolveRef(ctx.client, 'skill', ref)
+    return ctx.client.post(`/api/skills/${id}/restore`)
+  }
+
   // mcp undo-import
   if (cmd.startsWith('mcp undo-import ')) {
     const ids = cmd.substring('mcp undo-import '.length).split(',').filter(Boolean)
