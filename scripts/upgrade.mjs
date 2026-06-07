@@ -16,6 +16,7 @@ import {
   writeVersionFile,
 } from './upgrade-lib/release.mjs'
 import { runSourceUpgrade, syncPythonDeps } from './upgrade-lib/source.mjs'
+import { resolveDataDir } from './lib/data-dir.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const CRABOT_HOME = resolve(__dirname, '..')
@@ -23,8 +24,7 @@ const args = process.argv.slice(2)
 const ASSUME_YES = args.includes('-y') || args.includes('--yes')
 
 const OFFSET = parseInt(process.env.CRABOT_PORT_OFFSET || '0', 10)
-const DATA_DIR = process.env.DATA_DIR
-  || (OFFSET > 0 ? join(CRABOT_HOME, `data-${OFFSET}`) : join(CRABOT_HOME, 'data'))
+const DATA_DIR = resolveDataDir({ envValue: process.env.DATA_DIR, offset: OFFSET })
 
 const logger = {
   info: (m) => console.log(m),
