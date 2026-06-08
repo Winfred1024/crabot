@@ -2,7 +2,7 @@
 
 > 此文件由 `scripts/gen-skill-ref.mjs` 自动生成（基于 `crabot --schema` 输出）。请勿手动编辑。
 
-生成时间：2026-06-01T01:41:51.654Z  CLI 版本：1.0.0
+生成时间：2026-06-07T13:51:07.303Z  CLI 版本：1.0.0
 
 ## 命令清单
 
@@ -29,10 +29,12 @@
 | `crabot skill list` | List all skills | read | ❌ |
 | `crabot skill show` | Show a skill | read | ❌ |
 | `crabot skill add` | Add a skill from git or local path | write | ❌ |
+| `crabot skill restore` | 恢复 skill 到上一版（swap：current ↔ previous，可再次 restore 切回） | write | ❌ |
 | `crabot skill delete` | Delete a skill | write | ✅ |
 | `crabot schedule list` | List all schedules | read | ❌ |
 | `crabot schedule show` | Show a schedule | read | ❌ |
 | `crabot schedule add` | Add a schedule | write | ❌ |
+| `crabot schedule update` | Update a schedule | write | ❌ |
 | `crabot schedule trigger` | Manually trigger a schedule | write | ✅ |
 | `crabot schedule delete` | Delete a schedule | write | ✅ |
 | `crabot schedule pause` | Pause a schedule (composite) | write | ❌ |
@@ -206,6 +208,20 @@ Add a skill from git or local path
 | `--path <dir>` | Local directory path（包含 SKILL.md） |  |
 | `--overwrite` | 同名 skill 已存在时覆盖 |  |
 
+### `crabot skill restore`
+
+恢复 skill 到上一版（swap：current ↔ previous，可再次 restore 切回）
+
+**位置参数**:
+
+- `<ref>`（必填）
+
+**Flag**:
+
+| Flag | 说明 | 必填 |
+|---|---|---|
+| `--confirm <token>` | Confirmation token from preview response |  |
+
 ### `crabot skill delete`
 
 Delete a skill
@@ -236,11 +252,44 @@ Add a schedule
 | `--task-type <type>` | Task 类型，用于 trace 过滤（如 daily_reflection） |  |
 | `--tag <tag>` | Task 标签（可重复 --tag a --tag b） |  |
 | `--cron <expr>` | Cron 表达式（5 字段：分 时 日 月 周） |  |
+| `--interval-seconds <n>` | 定时间隔秒数（interval 触发器；与 --cron / --trigger-at 三者互斥） |  |
 | `--trigger-at <time>` | ISO 8601 触发时间（一次性触发器） |  |
 | `--timezone <tz>` | Cron 时区（默认 Asia/Shanghai） |  |
-| `--target-channel <id>` | 触发目标 channel instance id（写入 task_template.input.target_channel_id） |  |
-| `--target-session <id>` | 触发目标 session id（写入 task_template.input.target_session_id） |  |
+| `--target-channel <id>` | 触发目标 channel instance id（写入顶层 target_session.channel_id） |  |
+| `--target-session <id>` | 触发目标 session id（写入顶层 target_session.session_id） |  |
+| `--target-type <type>` | 目标 session 类型（private\|group；三个 target-* flag 必须同时提供） |  |
 | `--disabled` | 创建时禁用（默认启用） |  |
+
+### `crabot schedule update`
+
+Update a schedule
+
+**位置参数**:
+
+- `<ref>`（必填）
+
+**Flag**:
+
+| Flag | 说明 | 必填 |
+|---|---|---|
+| `--name <name>` | Schedule 名称 |  |
+| `--description <desc>` | Schedule 描述（人读层面） |  |
+| `--enabled <true|false>` | 启用状态 |  |
+| `--cron <expr>` | Cron 表达式（仅 cron 类型 schedule） |  |
+| `--timezone <tz>` | Cron 时区（仅 cron 类型 schedule） |  |
+| `--interval-seconds <n>` | 定时间隔秒数（仅 interval 类型 schedule） |  |
+| `--trigger-at <time>` | ISO 8601 触发时间（仅 once 类型 schedule） |  |
+| `--title <title>` | Task template title |  |
+| `--task-description <desc>` | Task 描述 |  |
+| `--task-priority <p>` | Task 优先级 (low\|normal\|high\|urgent) |  |
+| `--task-type <type>` | Task 类型 |  |
+| `--tag <tag>` | Task 标签（覆盖原 tags；可重复 --tag a --tag b） |  |
+| `--clear-tags` | 清空 task tags |  |
+| `--target-channel <id>` | 目标 channel instance id（三个 target-* 必须同时提供） |  |
+| `--target-session <id>` | 目标 session id |  |
+| `--target-type <type>` | 目标 session 类型 (private\|group) |  |
+| `--clear-target` | 清除已配置的 target_session（与三个 target-* 互斥） |  |
+| `--confirm <token>` | Confirmation token from preview response |  |
 
 ### `crabot schedule trigger`
 

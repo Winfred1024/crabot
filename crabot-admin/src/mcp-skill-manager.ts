@@ -9,6 +9,10 @@ import path from 'path'
 import AdmZip from 'adm-zip'
 import { generateId, generateTimestamp } from 'crabot-shared'
 
+const MAX_FILE_SIZE_BYTES = 1 * 1024 * 1024  // 1MB 单文件上限
+const MAX_TOTAL_SIZE_BYTES = 5 * 1024 * 1024 // 5MB 总大小上限
+const SNAPSHOT_SKIPPED_NAMES = new Set(['SKILL.md', '.skill_dir', '.DS_Store'])
+
 // ============================================================================
 // SKILL.md frontmatter 解析
 // ============================================================================
@@ -122,6 +126,21 @@ export interface SkillRegistryEntry {
   enabled: boolean
   created_at: string
   updated_at: string
+  /**
+   * 上一版快照（N=1 覆盖式）。
+   * - 缺失/undefined：从未通过 update() 改过 content
+   * - 有值：最近一次 update 之前的完整快照
+   *
+   * 仅 update() 检测到 content 实际变化 + 非 builtin 时写入。
+   * 详见 spec 2026-06-07-skill-previous-version-and-diff-design.md §4.1。
+   */
+  previous_snapshot?: {
+    content: string
+    version: string
+    files?: Record<string, string>  // key=skill_dir 相对路径，value=文本或 'base64:<encoded>'
+    updated_at: string
+    snapshotted_at: string
+  }
 }
 
 /** 必要工具配置 */
@@ -514,7 +533,7 @@ export class SkillManager {
       skill_dir?: string
     },
     overwrite?: boolean
-  ): Promise<SkillRegistryEntry> {
+  ): Promise<{ entry: SkillRegistryEntry; was_overwrite: true }> {
     if (existing.is_builtin) {
       throw new Error(`Skill "${existing.name}" 是内置的，不可通过导入覆盖`)
     }
@@ -540,9 +559,9 @@ export class SkillManager {
       }
       this.skills.set(updated.id, patched)
       await this.save()
-      return patched
+      return { entry: patched, was_overwrite: true }
     }
-    return updated
+    return { entry: updated, was_overwrite: true }
   }
 
   async create(params: {
@@ -592,9 +611,59 @@ export class SkillManager {
     if (!entry.can_disable && params.enabled === false) {
       throw new Error(`Skill "${entry.name}" cannot be disabled`)
     }
+
+    // 仅 content 真实变化（且非 builtin）才打 snapshot
+    // toggle enabled / is_essential 不触发，避免无谓覆盖既有 previous_snapshot
+    const contentChanged = params.content !== undefined && params.content !== entry.content
+    const previousSnapshot: SkillRegistryEntry['previous_snapshot'] | undefined =
+      contentChanged && !entry.is_builtin
+        ? {
+            content: entry.content,
+            version: entry.version,
+            files: entry.skill_dir ? await readSkillDirFiles(entry.skill_dir) : undefined,
+            updated_at: entry.updated_at,
+            snapshotted_at: generateTimestamp(),
+          }
+        : entry.previous_snapshot
+
     const updated: SkillRegistryEntry = {
       ...entry,
       ...params,
+      previous_snapshot: previousSnapshot,
+      updated_at: generateTimestamp(),
+    }
+    this.skills.set(id, updated)
+    await this.save()
+    return updated
+  }
+
+  async restore(id: string): Promise<SkillRegistryEntry> {
+    const entry = this.skills.get(id)
+    if (!entry) throw new Error(`Skill not found: ${id}`)
+    if (entry.is_builtin) throw new Error(`Skill "${entry.name}" 是内置的，不能 restore`)
+    if (!entry.previous_snapshot) throw new Error(`Skill "${entry.name}" 没有上一版可恢复`)
+
+    const snap = entry.previous_snapshot
+
+    // 生成新 previous（当前 current 作为新的"上一版"），实现 swap 语义
+    const newSnapshot: SkillRegistryEntry['previous_snapshot'] = {
+      content: entry.content,
+      version: entry.version,
+      files: entry.skill_dir ? await readSkillDirFiles(entry.skill_dir) : undefined,
+      updated_at: entry.updated_at,
+      snapshotted_at: generateTimestamp(),
+    }
+
+    // 先写磁盘（atomic），失败 throw 不更新 json，保证 json + 磁盘一致
+    if (entry.skill_dir) {
+      await writeSkillDirFiles(entry.skill_dir, snap.content, snap.files)
+    }
+
+    const updated: SkillRegistryEntry = {
+      ...entry,
+      content: snap.content,
+      version: snap.version,
+      previous_snapshot: newSnapshot,
       updated_at: generateTimestamp(),
     }
     this.skills.set(id, updated)
@@ -811,7 +880,11 @@ export class SkillManager {
    * 从 GitHub 安装指定 skill（通过 skill_md_url 获取内容）
    * 仅允许 raw.githubusercontent.com 的 HTTPS URL，防止 SSRF
    */
-  async importFromGit(skillMdUrl: string, sourceGitUrl?: string, overwrite?: boolean): Promise<SkillRegistryEntry> {
+  async importFromGit(
+    skillMdUrl: string,
+    sourceGitUrl?: string,
+    overwrite?: boolean,
+  ): Promise<{ entry: SkillRegistryEntry; was_overwrite: boolean }> {
     // 严格限制只允许 GitHub raw 内容 URL，防止 SSRF
     let parsedUrl: URL
     try {
@@ -842,20 +915,24 @@ export class SkillManager {
         source_package: sourceGitUrl,
       }, overwrite)
     }
-    return this.create({
+    const entry = await this.create({
       name: parsed.name,
       description: parsed.description,
       version: parsed.version,
       content,
       source_package: sourceGitUrl,
     })
+    return { entry, was_overwrite: false }
   }
 
   /**
    * 从本地目录路径导入（读取 <dirPath>/SKILL.md）
    * 禁止访问系统敏感目录，防止路径穿越
    */
-  async importFromLocalPath(dirPath: string, overwrite?: boolean): Promise<SkillRegistryEntry> {
+  async importFromLocalPath(
+    dirPath: string,
+    overwrite?: boolean,
+  ): Promise<{ entry: SkillRegistryEntry; was_overwrite: boolean }> {
     const resolved = path.resolve(dirPath)
     // 禁止访问敏感系统路径
     const FORBIDDEN_PREFIXES = ['/etc', '/proc', '/sys', '/dev', '/var/run', '/root', '/boot']
@@ -892,13 +969,17 @@ export class SkillManager {
     const updated: SkillRegistryEntry = { ...entry, skill_dir: resolved, updated_at: generateTimestamp() }
     this.skills.set(entry.id, updated)
     await this.save()
-    return updated
+    return { entry: updated, was_overwrite: false }
   }
 
   /**
    * 从 zip/skills 文件的 base64 内容导入
    */
-  async importFromZip(base64Content: string, filename: string, overwrite?: boolean): Promise<SkillRegistryEntry> {
+  async importFromZip(
+    base64Content: string,
+    filename: string,
+    overwrite?: boolean,
+  ): Promise<{ entry: SkillRegistryEntry; was_overwrite: boolean }> {
     const buffer = Buffer.from(base64Content, 'base64')
     const zip = new AdmZip(buffer)
     const entries = zip.getEntries()
@@ -922,13 +1003,14 @@ export class SkillManager {
         source_package: filename,
       }, overwrite)
     }
-    return this.create({
+    const entry = await this.create({
       name: parsed.name,
       description: parsed.description,
       version: parsed.version,
       content,
       source_package: filename,
     })
+    return { entry, was_overwrite: false }
   }
 
   // --------------------------------------------------------------------------
@@ -1150,5 +1232,126 @@ export class EssentialToolsManager {
     this.config = { ...this.config, ...params }
     await this.atomicWriteFile(this.filePath, JSON.stringify(this.config, null, 2))
     return this.get()
+  }
+}
+
+/**
+ * 递归读 skill_dir 下的所有附属文件（SKILL.md 已单独存 content，不读）。
+ *
+ * - 跳过 SKILL.md / .skill_dir / .DS_Store / 任何 '.' 开头文件
+ * - 文本文件按 utf-8 直存
+ * - 二进制（含 NUL byte 或 utf-8 round-trip 不一致）用 'base64:' 前缀编码
+ * - 单文件 > 1MB 跳过 + console.warn
+ * - 累计 > 5MB 返回 undefined（仅留 SKILL.md content）
+ */
+export async function readSkillDirFiles(dir: string): Promise<Record<string, string> | undefined> {
+  const result: Record<string, string> = {}
+  let totalSize = 0
+  let tooLarge = false
+
+  async function walk(currentDir: string, relativePrefix: string): Promise<void> {
+    if (tooLarge) return
+    const entries = await fs.readdir(currentDir, { withFileTypes: true })
+    for (const ent of entries) {
+      if (tooLarge) return
+      const name = ent.name
+      if (SNAPSHOT_SKIPPED_NAMES.has(name) || name.startsWith('.')) continue
+      const fullPath = path.join(currentDir, name)
+      const relPath = relativePrefix ? `${relativePrefix}/${name}` : name
+      if (ent.isDirectory()) {
+        await walk(fullPath, relPath)
+      } else if (ent.isFile()) {
+        const stat = await fs.stat(fullPath)
+        if (stat.size > MAX_FILE_SIZE_BYTES) {
+          console.warn(`[skill snapshot] 跳过大文件 ${fullPath} (${stat.size} bytes > ${MAX_FILE_SIZE_BYTES})`)
+          continue
+        }
+        totalSize += stat.size
+        if (totalSize > MAX_TOTAL_SIZE_BYTES) {
+          console.warn(`[skill snapshot] 总大小超 ${MAX_TOTAL_SIZE_BYTES}，放弃 files snapshot`)
+          tooLarge = true
+          return
+        }
+        const buf = await fs.readFile(fullPath)
+        const text = buf.toString('utf-8')
+        const isBinary = buf.includes(0) || Buffer.from(text, 'utf-8').compare(buf) !== 0
+        result[relPath] = isBinary ? `base64:${buf.toString('base64')}` : text
+      }
+    }
+  }
+
+  await walk(dir, '')
+  return tooLarge ? undefined : result
+}
+
+/**
+ * 把 SKILL.md content + files 原子性写回 skill_dir。
+ *
+ * 行为：
+ * - SKILL.md 写 content（tmp + rename）
+ * - files 中每条按相对路径写（base64: 前缀解码回二进制）
+ * - 嵌套路径自动 mkdir -p
+ * - 清理：遍历 skill_dir，删除不在 (SKILL.md ∪ files keys ∪ SNAPSHOT_SKIPPED_NAMES ∪ '.' 开头) 的所有文件
+ * - 删除空的子目录（post-order）
+ * - files = undefined 时只重写 SKILL.md，不动其它（snapshot 时 files 已放弃）
+ * - 任一步失败 throw（不留半成品中间状态由调用方决定回滚）
+ */
+export async function writeSkillDirFiles(
+  dir: string,
+  content: string,
+  files: Record<string, string> | undefined,
+): Promise<void> {
+  await fs.mkdir(dir, { recursive: true })
+
+  // 1. 写 SKILL.md（atomic）
+  await atomicWrite(path.join(dir, 'SKILL.md'), Buffer.from(content, 'utf-8'))
+
+  // 2. 写 files（只在 files 提供时）
+  if (files !== undefined) {
+    for (const [relPath, value] of Object.entries(files)) {
+      const fullPath = path.join(dir, relPath)
+      await fs.mkdir(path.dirname(fullPath), { recursive: true })
+      const buf = value.startsWith('base64:')
+        ? Buffer.from(value.slice('base64:'.length), 'base64')
+        : Buffer.from(value, 'utf-8')
+      await atomicWrite(fullPath, buf)
+    }
+
+    // 3. 清理：遍历现有目录删除不在 keep 集合内的（除 SKILL.md / SNAPSHOT_SKIPPED_NAMES / 隐藏文件）
+    const keepSet = new Set(Object.keys(files))
+    await cleanupExtraFiles(dir, '', keepSet)
+  }
+}
+
+async function atomicWrite(filePath: string, buf: Buffer): Promise<void> {
+  const tmpPath = `${filePath}.tmp.${process.pid}.${Date.now()}`
+  await fs.writeFile(tmpPath, buf)
+  await fs.rename(tmpPath, filePath)
+}
+
+async function cleanupExtraFiles(
+  rootDir: string,
+  relPrefix: string,
+  keepSet: Set<string>,
+): Promise<void> {
+  const currentDir = path.join(rootDir, relPrefix)
+  const entries = await fs.readdir(currentDir, { withFileTypes: true })
+  for (const ent of entries) {
+    const name = ent.name
+    if (SNAPSHOT_SKIPPED_NAMES.has(name) || name.startsWith('.')) continue
+    const relPath = relPrefix ? `${relPrefix}/${name}` : name
+    const fullPath = path.join(currentDir, name)
+    if (ent.isDirectory()) {
+      await cleanupExtraFiles(rootDir, relPath, keepSet)
+      // post-order：清理后看子目录是否变空，空则删
+      const remaining = await fs.readdir(fullPath)
+      if (remaining.length === 0) {
+        await fs.rmdir(fullPath)
+      }
+    } else if (ent.isFile()) {
+      if (!keepSet.has(relPath)) {
+        await fs.unlink(fullPath)
+      }
+    }
   }
 }

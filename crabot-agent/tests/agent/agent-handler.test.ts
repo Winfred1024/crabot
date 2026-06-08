@@ -10,6 +10,7 @@ import { resolveSceneAnchorLabel } from '../../src/mcp/crab-memory.js'
 import type {
   ExecuteTaskParams,
   WorkerAgentContext,
+  ChannelMessage,
 } from '../../src/types.js'
 import type { BgEntityRecord } from '../../src/engine/bg-entities/types.js'
 
@@ -44,7 +45,6 @@ function makeTask(overrides?: Partial<ExecuteTaskParams['task']>): ExecuteTaskPa
   return {
     task_id: 'task_1',
     task_title: 'Fix login bug',
-    task_description: 'Fix the authentication issue in login flow',
     task_type: 'user_request',
     priority: 'high',
     ...overrides,
@@ -71,13 +71,15 @@ function makeEngineResult(overrides?: Partial<{
   finalText: string
   totalTurns: number
   error?: string
-}>): { outcome: 'completed' | 'failed' | 'max_turns' | 'aborted'; finalText: string; totalTurns: number; usage: { inputTokens: number; outputTokens: number }; error?: string; finalMessages: readonly never[] } {
+}>): { outcome: 'completed' | 'failed' | 'max_turns' | 'aborted'; finalText: string; totalTurns: number; usage: { inputTokens: number; outputTokens: number }; error?: string; finalMessages: readonly never[]; tool_call_count: number; wrote_memory_or_scene: boolean } {
   return {
     outcome: (overrides?.outcome ?? 'completed') as 'completed' | 'failed' | 'max_turns' | 'aborted',
     finalText: overrides?.finalText ?? 'Task completed successfully.',
     totalTurns: overrides?.totalTurns ?? 1,
     usage: { inputTokens: 100, outputTokens: 50 },
     finalMessages: [],
+    tool_call_count: 0,
+    wrote_memory_or_scene: false,
     ...(overrides?.error ? { error: overrides.error } : {}),
   }
 }
@@ -232,6 +234,216 @@ describe('AgentHandler', () => {
       expect(callArgs.prompt).toContain('## 任务来源（crab-messaging 工具请使用这些 ID）')
       expect(callArgs.prompt).toContain('- Channel ID: feishu-fengyan')
       expect(callArgs.prompt).toContain('- Session ID: e283b6c6-373a-4568-ab6f-db134fa71790')
+    })
+  })
+
+  describe('buildTaskMessage unified timeline', () => {
+    function makeMsg(overrides: Partial<ChannelMessage> & { id: string; text: string; ts: string }): ChannelMessage {
+      return {
+        platform_message_id: overrides.id,
+        session: { session_id: 'sess-1', channel_id: 'ch-1', type: 'group' },
+        sender: { platform_user_id: 'u1', platform_display_name: 'Alice' },
+        content: { type: 'text', text: overrides.text },
+        features: { is_mention_crab: false },
+        platform_timestamp: overrides.ts,
+        ...overrides,
+      } as ChannelMessage
+    }
+
+    it('dispatcher trigger: merges trigger_messages + recent_messages sorted by timestamp', async () => {
+      mockRunEngine.mockResolvedValue(makeEngineResult())
+
+      const hist1 = makeMsg({ id: 'h1', text: 'history one', ts: '2024-01-01T00:00:00Z' })
+      const hist2 = makeMsg({ id: 'h2', text: 'history two', ts: '2024-01-01T00:01:00Z' })
+      const userMsg = makeMsg({ id: 't1', text: 'user trigger', ts: '2024-01-01T00:02:00Z' })
+
+      const handler = makeHandler()
+      await handler.executeTask({
+        task: makeTask(),
+        context: {
+          ...makeContext(),
+          trigger_messages: [userMsg],
+          recent_messages: [hist1, hist2],
+        },
+      })
+
+      expect(mockRunEngine).toHaveBeenCalledTimes(1)
+      const prompt = mockRunEngine.mock.calls[0][0].prompt as string
+      expect(prompt).toContain('## 会话历史')
+      expect(prompt).not.toContain('## 用户请求')
+      expect(prompt).not.toContain('## 最近相关消息')
+      expect(prompt).not.toContain('## 任务分类')
+      expect(prompt).not.toContain('## 任务描述')
+
+      // Verify chronological ordering: hist1 (h1) → hist2 (h2) → userMsg (t1)
+      const idxH1 = prompt.indexOf('id="h1"')
+      const idxH2 = prompt.indexOf('id="h2"')
+      const idxT1 = prompt.indexOf('id="t1"')
+      expect(idxH1).toBeGreaterThan(-1)
+      expect(idxH2).toBeGreaterThan(-1)
+      expect(idxT1).toBeGreaterThan(-1)
+      expect(idxH1).toBeLessThan(idxH2)
+      expect(idxH2).toBeLessThan(idxT1)
+    })
+
+    it('scheduled with target_session: renders task_origin section', async () => {
+      mockRunEngine.mockResolvedValue(makeEngineResult())
+
+      const scheduledTrigger: ChannelMessage = {
+        platform_message_id: 'sys_scheduled_1',
+        session: { session_id: 'system', channel_id: 'system', type: 'private' },
+        sender: { platform_user_id: 'system', platform_display_name: 'System' },
+        content: { type: 'system_event', event_type: 'scheduled' },
+        features: { is_mention_crab: false },
+        platform_timestamp: '2024-01-01T08:00:00Z',
+      }
+
+      const handler = makeHandler()
+      await handler.executeTask({
+        task: makeTask({ source: { trigger_type: 'scheduled' } }),
+        context: {
+          ...makeContext(),
+          trigger_messages: [scheduledTrigger],
+          task_origin: {
+            channel_id: 'wechat-x',
+            session_id: 'sess-y',
+            session_type: 'group',
+          },
+        },
+      })
+
+      expect(mockRunEngine).toHaveBeenCalledTimes(1)
+      const prompt = mockRunEngine.mock.calls[0][0].prompt as string
+      expect(prompt).toContain('## 任务来源')
+      expect(prompt).toContain('Channel ID: wechat-x')
+      expect(prompt).toContain('Session ID: sess-y')
+    })
+
+    it('scheduled without target_session: no task_origin section (SYSTEM_CHANNEL_ID)', async () => {
+      mockRunEngine.mockResolvedValue(makeEngineResult())
+
+      const scheduledTrigger: ChannelMessage = {
+        platform_message_id: 'sys_scheduled_2',
+        session: { session_id: 'system', channel_id: 'system', type: 'private' },
+        sender: { platform_user_id: 'system', platform_display_name: 'System' },
+        content: { type: 'system_event', event_type: 'scheduled' },
+        features: { is_mention_crab: false },
+        platform_timestamp: '2024-01-01T08:00:00Z',
+      }
+
+      const handler = makeHandler()
+      await handler.executeTask({
+        task: makeTask({ source: { trigger_type: 'scheduled' } }),
+        context: {
+          ...makeContext(),
+          trigger_messages: [scheduledTrigger],
+          task_origin: {
+            channel_id: 'system',
+            session_id: 'system',
+            session_type: 'private',
+          },
+        },
+      })
+
+      expect(mockRunEngine).toHaveBeenCalledTimes(1)
+      const prompt = mockRunEngine.mock.calls[0][0].prompt as string
+      expect(prompt).not.toContain('## 任务来源')
+    })
+
+    it('empty trigger_messages and empty recent_messages: shows empty history note', async () => {
+      mockRunEngine.mockResolvedValue(makeEngineResult())
+
+      const handler = makeHandler()
+      await handler.executeTask({
+        task: makeTask(),
+        context: {
+          ...makeContext(),
+          trigger_messages: [],
+          recent_messages: [],
+        },
+      })
+
+      expect(mockRunEngine).toHaveBeenCalledTimes(1)
+      const prompt = mockRunEngine.mock.calls[0][0].prompt as string
+      expect(prompt).toContain('## 会话历史')
+      expect(prompt).toContain('本会话无消息')
+      expect(prompt).not.toContain('## 任务描述')
+      expect(prompt).not.toContain('## 用户请求')
+      expect(prompt).not.toContain('## 最近相关消息')
+    })
+  })
+
+  describe('systemPrompt SYSTEM_TRIGGER_NO_TARGET guidance', () => {
+    function makeSystemEventTrigger(channelId: string): ChannelMessage {
+      return {
+        platform_message_id: `sys:${channelId}`,
+        session: { session_id: channelId, channel_id: channelId, type: 'private' },
+        sender: { platform_user_id: 'crabot', platform_display_name: 'Crabot' },
+        content: { type: 'system_event', event_type: 'scheduled', text: '执行 X' },
+        features: { is_mention_crab: false },
+        platform_timestamp: '2024-01-01T08:00:00Z',
+      } as ChannelMessage
+    }
+
+    it('injects 系统触发任务说明 段 when scheduled trigger has SYSTEM_CHANNEL_ID', async () => {
+      mockRunEngine.mockResolvedValue(makeEngineResult())
+
+      const handler = makeHandler()
+      await handler.executeTask({
+        task: makeTask({ source: { trigger_type: 'scheduled' } }),
+        context: {
+          ...makeContext(),
+          trigger_messages: [makeSystemEventTrigger('system')],
+        },
+      })
+
+      const callArgs = mockRunEngine.mock.calls[0][0]
+      const resolved = (callArgs.options.systemPrompt as () => string)()
+      expect(resolved).toContain('## 系统触发任务说明')
+      expect(resolved).toContain('不可直接调 crab-messaging.send_message')
+    })
+
+    it('does NOT inject 系统触发任务说明 段 when scheduled trigger has real channel', async () => {
+      mockRunEngine.mockResolvedValue(makeEngineResult())
+
+      const handler = makeHandler()
+      await handler.executeTask({
+        task: makeTask({ source: { trigger_type: 'scheduled' } }),
+        context: {
+          ...makeContext(),
+          trigger_messages: [makeSystemEventTrigger('wechat-real')],
+        },
+      })
+
+      const callArgs = mockRunEngine.mock.calls[0][0]
+      const resolved = (callArgs.options.systemPrompt as () => string)()
+      expect(resolved).not.toContain('## 系统触发任务说明')
+    })
+
+    it('does NOT inject 系统触发任务说明 段 for normal dispatcher-triggered task', async () => {
+      mockRunEngine.mockResolvedValue(makeEngineResult())
+
+      const userMsg: ChannelMessage = {
+        platform_message_id: 'u1',
+        session: { session_id: 'sess-1', channel_id: 'wechat-1', type: 'private' },
+        sender: { platform_user_id: 'user-1', platform_display_name: 'Alice' },
+        content: { type: 'text', text: 'hi' },
+        features: { is_mention_crab: false },
+        platform_timestamp: '2024-01-01T08:00:00Z',
+      } as ChannelMessage
+
+      const handler = makeHandler()
+      await handler.executeTask({
+        task: makeTask(),
+        context: {
+          ...makeContext(),
+          trigger_messages: [userMsg],
+        },
+      })
+
+      const callArgs = mockRunEngine.mock.calls[0][0]
+      const resolved = (callArgs.options.systemPrompt as () => string)()
+      expect(resolved).not.toContain('## 系统触发任务说明')
     })
   })
 
@@ -921,38 +1133,12 @@ describe('AgentHandler bg-entities admin RPC', () => {
     })
 
     it('passes onAfterCompaction that prepends todo active list to messages', async () => {
-      // todo 写模式被 hasGoal 门控（spec §5），先调 set_task_goal 解锁 cache
-      const rpcClient = {
-        call: vi.fn().mockImplementation(async (_port: number, method: string) => {
-          if (method === 'get_task') return { task: { id: 'task_1' } } // no goal initially
-          if (method === 'set_task_goal') return { task: { id: 'task_1' } }
-          return {}
-        }),
-      }
-      const handler = new AgentHandler(
-        { modelId: 'test-model', format: 'anthropic' as const, env: { ANTHROPIC_BASE_URL: 'http://localhost:4000', ANTHROPIC_API_KEY: 'test-key' } },
-        { systemPrompt: 'You are a helpful worker.' },
-        {
-          deps: {
-            rpcClient: rpcClient as never,
-            moduleId: 'worker-test',
-            resolveChannelPort: async () => 0,
-            getMemoryPort: async () => 0,
-            getAdminPort: async () => 19001,
-          },
-        },
-      )
+      // todo 工具永远放行 —— 直接写入即可（goal 与 todo 已解耦）
+      const handler = makeHandler()
       let capturedHook: ((msgs: ReadonlyArray<unknown>) => ReadonlyArray<unknown>) | undefined
       mockRunEngine.mockImplementation(async (params) => {
         capturedHook = params.options.onAfterCompaction as typeof capturedHook
         const toolsFn = params.options.tools as () => ReadonlyArray<{ name: string; call: Function }>
-        // 先 set_task_goal 解锁 todo 写模式
-        const setGoalTool = toolsFn().find(t => t.name === 'set_task_goal')!
-        await setGoalTool.call({
-          objective: '研究 X 可行性',
-          acceptance_criteria: [{ id: 'c1', kind: 'semantic', spec: '结论清晰' }],
-        }, {} as never)
-        // 然后写 todo
         const todoTool = toolsFn().find(t => t.name === 'todo')!
         await todoTool.call({
           todos: [{ id: 'work', content: '研究 X', status: 'in_progress' }],

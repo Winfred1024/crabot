@@ -184,6 +184,27 @@ export class FeishuClient {
     }
   }
 
+  /**
+   * 在指定消息上加一个 reaction（emoji）。
+   * 飞书 SDK 对此端点无强类型，用底层 client.request。
+   * scope：im:message 已覆盖（无需 im:message.reactions:write_only）。
+   *
+   * https://open.feishu.cn/document/server-docs/im-v1/message-reaction/create
+   */
+  async addReaction(messageId: string, emojiType: string): Promise<void> {
+    const resp = await this.client.request<{ code?: number; msg?: string }>({
+      url: `/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/reactions`,
+      method: 'POST',
+      data: { reaction_type: { emoji_type: emojiType } },
+    })
+    if (resp.code && resp.code !== 0) {
+      throw new FeishuClientError({
+        code: 'CHANNEL_SEND_FAILED',
+        message: resp.msg ?? `add_reaction failed (code=${resp.code})`,
+      })
+    }
+  }
+
   // ── send ───────────────────────────────────────────────────────────────────
 
   async sendText(receive: SendReceive, text: string): Promise<SendResult> {

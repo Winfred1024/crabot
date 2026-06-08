@@ -1,5 +1,22 @@
 import { describe, it, expect } from 'vitest'
-import { buildCreateScheduleBody } from './schedule.js'
+import {
+  buildCreateScheduleBody,
+  buildUpdateScheduleBody,
+  type ScheduleSnapshot,
+} from './schedule.js'
+
+function makeCronSchedule(): ScheduleSnapshot {
+  return {
+    trigger: { type: 'cron', expression: '0 0 * * *', timezone: 'Asia/Shanghai' },
+    task_template: {
+      title: 'orig title',
+      priority: 'normal',
+      description: 'orig task desc',
+      type: 'orig_type',
+      tags: ['a', 'b'],
+    },
+  }
+}
 
 describe('buildCreateScheduleBody', () => {
   describe('cron 触发器', () => {
@@ -93,19 +110,72 @@ describe('buildCreateScheduleBody', () => {
       expect(tt['description']).toBeUndefined()
     })
 
-    it('--target-channel/--target-session 进 task_template.input', () => {
+    it('--target-channel/--target-session/--target-type 进顶层 target_session', () => {
       const body = buildCreateScheduleBody({
         title: 't',
         priority: 'normal',
         cron: '0 0 * * *',
         targetChannel: 'telegram-001',
         targetSession: 'sess-abc',
+        targetType: 'private',
       })
+      expect(body['target_session']).toEqual({
+        channel_id: 'telegram-001',
+        session_id: 'sess-abc',
+        type: 'private',
+      })
+      // task_template.input 不应再被写入 target_*
       const tt = body['task_template'] as Record<string, unknown>
-      expect(tt['input']).toEqual({
-        target_channel_id: 'telegram-001',
-        target_session_id: 'sess-abc',
-      })
+      expect(tt['input']).toBeUndefined()
+    })
+
+    it('三个 target flag 缺 --target-channel 报错', () => {
+      expect(() =>
+        buildCreateScheduleBody({
+          title: 't',
+          priority: 'normal',
+          cron: '0 0 * * *',
+          targetSession: 'sess-abc',
+          targetType: 'private',
+        })
+      ).toThrow(/--target-channel.*--target-session.*--target-type 必须同时提供/)
+    })
+
+    it('三个 target flag 缺 --target-session 报错', () => {
+      expect(() =>
+        buildCreateScheduleBody({
+          title: 't',
+          priority: 'normal',
+          cron: '0 0 * * *',
+          targetChannel: 'telegram-001',
+          targetType: 'private',
+        })
+      ).toThrow(/--target-channel.*--target-session.*--target-type 必须同时提供/)
+    })
+
+    it('三个 target flag 缺 --target-type 报错', () => {
+      expect(() =>
+        buildCreateScheduleBody({
+          title: 't',
+          priority: 'normal',
+          cron: '0 0 * * *',
+          targetChannel: 'telegram-001',
+          targetSession: 'sess-abc',
+        })
+      ).toThrow(/--target-channel.*--target-session.*--target-type 必须同时提供/)
+    })
+
+    it('--target-type 不在白名单报错', () => {
+      expect(() =>
+        buildCreateScheduleBody({
+          title: 't',
+          priority: 'normal',
+          cron: '0 0 * * *',
+          targetChannel: 'telegram-001',
+          targetSession: 'sess-abc',
+          targetType: 'channel',
+        })
+      ).toThrow(/--target-type 必须是 private \| group/)
     })
 
     it('--disabled 把 enabled 设为 false', () => {
@@ -143,6 +213,57 @@ describe('buildCreateScheduleBody', () => {
     })
   })
 
+  describe('interval 触发器', () => {
+    it('--interval-seconds 进 trigger', () => {
+      const body = buildCreateScheduleBody({
+        title: 'patrol',
+        priority: 'normal',
+        intervalSeconds: '3600',
+      })
+      expect(body['trigger']).toEqual({ type: 'interval', seconds: 3600 })
+    })
+
+    it('interval 与 cron 互斥', () => {
+      expect(() =>
+        buildCreateScheduleBody({
+          title: 't',
+          priority: 'normal',
+          intervalSeconds: '60',
+          cron: '0 0 * * *',
+        })
+      ).toThrow(/--cron \/ --interval-seconds \/ --trigger-at 三者互斥/)
+    })
+
+    it('interval 与 trigger-at 互斥', () => {
+      expect(() =>
+        buildCreateScheduleBody({
+          title: 't',
+          priority: 'normal',
+          intervalSeconds: '60',
+          triggerAt: '2026-05-01T09:00:00+08:00',
+        })
+      ).toThrow(/--cron \/ --interval-seconds \/ --trigger-at 三者互斥/)
+    })
+
+    it('interval-seconds 非正整数报错', () => {
+      expect(() =>
+        buildCreateScheduleBody({
+          title: 't',
+          priority: 'normal',
+          intervalSeconds: '0',
+        })
+      ).toThrow(/--interval-seconds 必须是正整数/)
+
+      expect(() =>
+        buildCreateScheduleBody({
+          title: 't',
+          priority: 'normal',
+          intervalSeconds: 'abc',
+        })
+      ).toThrow(/--interval-seconds 必须是正整数/)
+    })
+  })
+
   describe('参数校验', () => {
     it('--title 为空报错', () => {
       expect(() =>
@@ -164,13 +285,13 @@ describe('buildCreateScheduleBody', () => {
       ).toThrow(/priority 必须是/)
     })
 
-    it('--cron 和 --trigger-at 都缺失报错', () => {
+    it('三种 trigger flag 都缺失报错', () => {
       expect(() =>
         buildCreateScheduleBody({
           title: 't',
           priority: 'normal',
         })
-      ).toThrow(/必须提供 --cron.*或 --trigger-at/)
+      ).toThrow(/必须提供 --cron \/ --interval-seconds \/ --trigger-at/)
     })
 
     it('--cron 和 --trigger-at 同时提供报错', () => {
@@ -181,7 +302,7 @@ describe('buildCreateScheduleBody', () => {
           cron: '0 0 * * *',
           triggerAt: '2026-05-01T09:00:00+08:00',
         })
-      ).toThrow(/互斥/)
+      ).toThrow(/--cron \/ --interval-seconds \/ --trigger-at 三者互斥/)
     })
 
     it('cron 字段不足 5 个报错', () => {
@@ -286,5 +407,282 @@ describe('buildCreateScheduleBody', () => {
         timezone: 'Asia/Shanghai',
       })
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// buildUpdateScheduleBody — 顶层标量 + 骨架
+// ---------------------------------------------------------------------------
+
+describe('buildUpdateScheduleBody — 顶层标量', () => {
+  it('至少一个 flag 必给（空 opts 报错）', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeCronSchedule(), {})
+    ).toThrow(/至少需要提供一个修改字段/)
+  })
+
+  it('单独 --name 只写 name 字段', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), { name: '新名字' })
+    expect(body).toEqual({ name: '新名字' })
+  })
+
+  it('--description 写 description', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), { description: '新描述' })
+    expect(body).toEqual({ description: '新描述' })
+  })
+
+  it('--enabled "true" → enabled: true', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), { enabled: 'true' })
+    expect(body).toEqual({ enabled: true })
+  })
+
+  it('--enabled "false" → enabled: false', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), { enabled: 'false' })
+    expect(body).toEqual({ enabled: false })
+  })
+
+  it('--enabled 非法值报错', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeCronSchedule(), { enabled: 'yes' })
+    ).toThrow(/--enabled 必须是 true \| false/)
+  })
+
+  it('多字段一起写', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), {
+      name: '新',
+      description: '新描述',
+      enabled: 'false',
+    })
+    expect(body).toEqual({ name: '新', description: '新描述', enabled: false })
+  })
+})
+
+describe('buildUpdateScheduleBody — trigger 字段级 merge', () => {
+  function makeIntervalSchedule(): ScheduleSnapshot {
+    return { ...makeCronSchedule(), trigger: { type: 'interval', seconds: 60 } }
+  }
+  function makeOnceSchedule(): ScheduleSnapshot {
+    return { ...makeCronSchedule(), trigger: { type: 'once', execute_at: '2026-07-01T00:00:00Z' } }
+  }
+
+  it('cron schedule + --cron 只改 expression 保留 timezone', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), { cron: '15 */4 * * *' })
+    expect(body['trigger']).toEqual({
+      type: 'cron',
+      expression: '15 */4 * * *',
+      timezone: 'Asia/Shanghai',
+    })
+  })
+
+  it('cron schedule + --timezone 只改 timezone 保留 expression', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), { timezone: 'UTC' })
+    expect(body['trigger']).toEqual({
+      type: 'cron',
+      expression: '0 0 * * *',
+      timezone: 'UTC',
+    })
+  })
+
+  it('cron schedule + --cron + --timezone 同时改', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), {
+      cron: '0 9 * * *',
+      timezone: 'UTC',
+    })
+    expect(body['trigger']).toEqual({
+      type: 'cron',
+      expression: '0 9 * * *',
+      timezone: 'UTC',
+    })
+  })
+
+  it('interval schedule + --interval-seconds 更新', () => {
+    const body = buildUpdateScheduleBody(makeIntervalSchedule(), { intervalSeconds: '7200' })
+    expect(body['trigger']).toEqual({ type: 'interval', seconds: 7200 })
+  })
+
+  it('once schedule + --trigger-at 更新（归一化为 UTC ISO）', () => {
+    const body = buildUpdateScheduleBody(makeOnceSchedule(), {
+      triggerAt: '2026-08-01T09:00:00+08:00',
+    })
+    expect(body['trigger']).toEqual({
+      type: 'once',
+      execute_at: '2026-08-01T01:00:00.000Z',
+    })
+  })
+
+  it('cron schedule + --interval-seconds 报跨类型错', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeCronSchedule(), { intervalSeconds: '60' })
+    ).toThrow(/当前 schedule 是 cron 类型.*--interval-seconds 仅适用于 interval 类型/)
+  })
+
+  it('interval schedule + --cron 报跨类型错', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeIntervalSchedule(), { cron: '0 0 * * *' })
+    ).toThrow(/当前 schedule 是 interval 类型.*--cron 仅适用于 cron 类型/)
+  })
+
+  it('once schedule + --cron 报跨类型错', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeOnceSchedule(), { cron: '0 0 * * *' })
+    ).toThrow(/当前 schedule 是 once 类型.*--cron 仅适用于 cron 类型/)
+  })
+
+  it('cron schedule + --trigger-at 报跨类型错', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeCronSchedule(), { triggerAt: '2026-08-01T00:00:00Z' })
+    ).toThrow(/当前 schedule 是 cron 类型.*--trigger-at 仅适用于 once 类型/)
+  })
+
+  it('cron schedule + 非法 cron expression 报错', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeCronSchedule(), { cron: '0 0 * *' })
+    ).toThrow(/--cron 表达式无效/)
+  })
+
+  it('interval schedule + 非正整数报错', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeIntervalSchedule(), { intervalSeconds: '0' })
+    ).toThrow(/--interval-seconds 必须是正整数/)
+  })
+
+  it('once schedule + 非 ISO trigger-at 报错', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeOnceSchedule(), { triggerAt: 'not-iso' })
+    ).toThrow(/--trigger-at 格式无效/)
+  })
+})
+
+describe('buildUpdateScheduleBody — task_template 字段级 merge', () => {
+  it('--title 只改 title 保留 priority/tags/description/type', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), { title: '新标题' })
+    expect(body['task_template']).toEqual({
+      title: '新标题',
+      priority: 'normal',
+      description: 'orig task desc',
+      type: 'orig_type',
+      tags: ['a', 'b'],
+    })
+  })
+
+  it('--task-priority 只改 priority', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), { taskPriority: 'urgent' })
+    const tt = body['task_template'] as Record<string, unknown>
+    expect(tt['priority']).toBe('urgent')
+    expect(tt['title']).toBe('orig title')
+    expect(tt['tags']).toEqual(['a', 'b'])
+  })
+
+  it('--task-priority 不在白名单报错', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeCronSchedule(), { taskPriority: 'medium' })
+    ).toThrow(/--task-priority 必须是 low \| normal \| high \| urgent/)
+  })
+
+  it('--task-description 改', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), { taskDescription: '新任务描述' })
+    expect((body['task_template'] as Record<string, unknown>)['description']).toBe('新任务描述')
+  })
+
+  it('--task-type 改', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), { taskType: 'new_type' })
+    expect((body['task_template'] as Record<string, unknown>)['type']).toBe('new_type')
+  })
+
+  it('--tag 覆盖原 tags（不追加）', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), { tag: ['c', 'd'] })
+    expect((body['task_template'] as Record<string, unknown>)['tags']).toEqual(['c', 'd'])
+  })
+
+  it('--clear-tags 清空 tags', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), { clearTags: true })
+    expect((body['task_template'] as Record<string, unknown>)['tags']).toEqual([])
+  })
+
+  it('--tag 与 --clear-tags 互斥', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeCronSchedule(), { tag: ['x'], clearTags: true })
+    ).toThrow(/--tag 与 --clear-tags 互斥/)
+  })
+
+  it('--title + --task-priority 同时改', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), {
+      title: '新',
+      taskPriority: 'high',
+    })
+    const tt = body['task_template'] as Record<string, unknown>
+    expect(tt['title']).toBe('新')
+    expect(tt['priority']).toBe('high')
+  })
+})
+
+describe('buildUpdateScheduleBody — target_session 三态', () => {
+  it('三个 target-* 都给 → 顶层 target_session', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), {
+      targetChannel: 'telegram-001',
+      targetSession: 'sess-abc',
+      targetType: 'private',
+    })
+    expect(body['target_session']).toEqual({
+      channel_id: 'telegram-001',
+      session_id: 'sess-abc',
+      type: 'private',
+    })
+  })
+
+  it('--clear-target → target_session: null', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), { clearTarget: true })
+    expect(body['target_session']).toBeNull()
+  })
+
+  it('三个 target-* 缺一报错（缺 channel）', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeCronSchedule(), {
+        targetSession: 'sess-abc',
+        targetType: 'private',
+      })
+    ).toThrow(/--target-channel.*--target-session.*--target-type 必须同时提供/)
+  })
+
+  it('三个 target-* 缺一报错（缺 session）', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeCronSchedule(), {
+        targetChannel: 'telegram-001',
+        targetType: 'private',
+      })
+    ).toThrow(/--target-channel.*--target-session.*--target-type 必须同时提供/)
+  })
+
+  it('三个 target-* 缺一报错（缺 type）', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeCronSchedule(), {
+        targetChannel: 'telegram-001',
+        targetSession: 'sess-abc',
+      })
+    ).toThrow(/--target-channel.*--target-session.*--target-type 必须同时提供/)
+  })
+
+  it('--clear-target 与 --target-channel 互斥', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeCronSchedule(), {
+        clearTarget: true,
+        targetChannel: 'telegram-001',
+      })
+    ).toThrow(/--clear-target 与 --target-\* 互斥/)
+  })
+
+  it('--target-type 不在白名单报错', () => {
+    expect(() =>
+      buildUpdateScheduleBody(makeCronSchedule(), {
+        targetChannel: 'telegram-001',
+        targetSession: 'sess-abc',
+        targetType: 'channel',
+      })
+    ).toThrow(/--target-type 必须是 private \| group/)
+  })
+
+  it('不给任何 target flag → body 里不出现 target_session key', () => {
+    const body = buildUpdateScheduleBody(makeCronSchedule(), { name: '只改名字' })
+    expect('target_session' in body).toBe(false)
   })
 })

@@ -10,10 +10,12 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "commander": "^13.0.0"
+    "commander": "^13.0.0",
+    "js-yaml": "^4.2.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "rotating-file-stream": "^3.2.9",
     "typescript": "^5.0.0",
     "vitest": "^1.0.0"
   }

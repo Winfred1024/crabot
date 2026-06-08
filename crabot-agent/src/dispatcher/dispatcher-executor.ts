@@ -15,7 +15,29 @@
  * Spec: crabot-docs/superpowers/specs/2026-05-19-prefront-dispatcher-design.md §3.4 §3.6 §6
  */
 
-import type { DispatchAction, ExecuteContext } from './dispatcher-types.js'
+import type { DispatchAction, ExecuteContext, ImmediateReplySentInfo } from './dispatcher-types.js'
+
+/**
+ * 取批次最后一条消息的 platform_message_id。空批次返回 null。
+ * 选最后一条原因：人类视角"我刚说的最后一句话被接住了"最自然。
+ */
+function lastTriggerMessageId(ctx: ExecuteContext): string | null {
+  const msgs = ctx.dispatchCtx.messages
+  if (msgs.length === 0) return null
+  return msgs[msgs.length - 1].platform_message_id
+}
+
+async function fireReaction(ctx: ExecuteContext): Promise<void> {
+  if (!ctx.reactToTriggerMessage) return
+  const id = lastTriggerMessageId(ctx)
+  if (!id) return
+  try {
+    await ctx.reactToTriggerMessage(id)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.warn(`[dispatcher-executor] reactToTriggerMessage failed (non-fatal): ${msg}`)
+  }
+}
 
 export async function executeDispatchActions(
   actions: ReadonlyArray<DispatchAction>,
@@ -48,17 +70,21 @@ export async function executeDispatchActions(
         } else if (span && ctx.trace) {
           ctx.trace.endSpan(span.span_id, 'completed', { outcome: 'supplement_delivered' })
         }
+        await fireReaction(ctx)
       } else if (action.kind === 'new_task') {
         // 预回复（如果 dispatcher 判定复杂任务带了 immediate_reply）：
-        // 在 spawnAgentInstance 之前 await 一次 channel.send_message，让用户立即收到 ack。
-        // worker 起来后会通过 fetchRecentMessages 看到这条 outbound，不会重复 ack。
-        // 失败兜底：warn 不阻塞 spawn——预回复不是必发，worker 起来照常跑。
+        // 1) 在 spawnAgentInstance 之前 await 一次 channel.send_message 把 ack 发给用户；
+        // 2) 捕获 channel 返回的 platform_message_id / sent_at；
+        // 3) 把 ack 元数据透给 spawnAgentInstance(spawnOptions.immediateReply)，
+        //    让 spawn 实现拼成一条 outbound ChannelMessage 注入 worker 的 recent_messages，
+        //    worker 第一轮 prompt 就能看到"自己刚发过这条 ack"，不会重复 ack。
+        // 失败兜底：warn 不阻塞 spawn——预回复不是必发，worker 起来照常跑（语义降级为
+        // "没发预回复"，会有重复 ack 的概率回升，但不会断流程）。
         // Spec: 2026-06-03-dispatcher-immediate-reply-and-overdue-removal-design.md
-        let immediateReplySent = false
+        let immediateReplyInfo: ImmediateReplySentInfo | undefined
         if (action.immediate_reply && ctx.sendImmediateReply) {
           try {
-            await ctx.sendImmediateReply(action.immediate_reply)
-            immediateReplySent = true
+            immediateReplyInfo = await ctx.sendImmediateReply(action.immediate_reply)
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err)
             console.warn(
@@ -66,14 +92,18 @@ export async function executeDispatchActions(
             )
           }
         }
-        const { spawnedTraceId } = await ctx.spawnAgentInstance(action.text)
+        const { spawnedTraceId } = await ctx.spawnAgentInstance(
+          action.text,
+          immediateReplyInfo ? { immediateReply: immediateReplyInfo } : undefined,
+        )
         if (span && ctx.trace) {
           ctx.trace.endSpan(span.span_id, 'completed', {
             outcome: 'new_task_spawned',
             spawned_trace_id: spawnedTraceId,
-            immediate_reply_sent: immediateReplySent,
+            immediate_reply_sent: immediateReplyInfo !== undefined,
           })
         }
+        await fireReaction(ctx)
       } else if (action.kind === 'stay_silent') {
         // 无副作用——attention scheduler 通过"是否有非 stay_silent 动作"判断退避
         if (span && ctx.trace) {

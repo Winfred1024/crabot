@@ -6,8 +6,9 @@
  * 本模块仅负责 schedule 触发的任务。
  */
 
-import type { RpcClient } from 'crabot-shared'
+import { SYSTEM_SESSION, type RpcClient } from 'crabot-shared'
 import type {
+  ChannelMessage,
   ExecuteTaskParams,
   ExecuteTaskResult,
   WorkerAgentContext,
@@ -23,6 +24,16 @@ interface AdminTask {
   priority: string
   plan?: string
   task_type?: string
+  /**
+   * Schedule 目标会话（来自 Schedule.target_session 顶层字段）。
+   * - 有值：ScheduledTaskRunner 用它填 trigger_message.session
+   * - 无值：trigger_message.session 用 SYSTEM_SESSION 哨兵
+   */
+  target_session?: {
+    channel_id: string
+    session_id: string
+    type: 'private' | 'group'
+  }
 }
 
 export class ScheduledTaskRunner {
@@ -106,18 +117,52 @@ export class ScheduledTaskRunner {
         return
       }
 
+      // 构造 system_event trigger_message
+      //   - target_session 有值 → session 用 schedule 目标
+      //   - 无值（恢复任务 / 无目标 schedule） → session 用 SYSTEM_SESSION 哨兵
+      //     （crab-messaging.send_message 拒收，worker 必须按文本走 send_master_private 等）
+      const session = task.target_session
+        ? {
+            channel_id: task.target_session.channel_id as ChannelMessage['session']['channel_id'],
+            session_id: task.target_session.session_id as ChannelMessage['session']['session_id'],
+            type: task.target_session.type,
+          }
+        : {
+            channel_id: SYSTEM_SESSION.channel_id,
+            session_id: SYSTEM_SESSION.session_id,
+            type: SYSTEM_SESSION.type,
+          }
+
+      const triggerMsg: ChannelMessage = {
+        platform_message_id: `system:scheduled:${task.id}`,
+        session,
+        sender: {
+          platform_user_id: 'crabot',
+          platform_display_name: 'Crabot',
+        },
+        content: {
+          type: 'system_event',
+          event_type: 'scheduled',
+          text: task.description ?? '',
+        },
+        features: { is_mention_crab: false },
+        platform_timestamp: new Date().toISOString(),
+      }
+
       try {
         const taskPayload: ExecuteTaskParams = {
           task: {
             task_id: task.id,
             task_title: task.title,
-            task_description: task.description ?? '',
             priority: task.priority,
             plan: task.plan,
             task_type: task.task_type,
             source: { trigger_type: 'scheduled' },
           },
-          context: workerContext,
+          context: {
+            ...workerContext,
+            trigger_messages: [triggerMsg],
+          },
         }
 
         // worker handler 内部已完成：update_task_status + update_task_outcome + 记忆写入

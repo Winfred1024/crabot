@@ -17,6 +17,7 @@ export interface CreateScheduleData {
   enabled?: boolean
   trigger: ScheduleTrigger
   task_template: ScheduleTaskTemplate
+  target_session?: Schedule['target_session']
 }
 
 export const scheduleService = {
@@ -47,7 +48,10 @@ export const scheduleService = {
 
   async update(
     id: string,
-    data: Partial<Pick<Schedule, 'name' | 'description' | 'enabled' | 'trigger' | 'task_template'>>
+    data: Partial<Pick<Schedule, 'name' | 'description' | 'enabled' | 'trigger' | 'task_template'>> & {
+      /** 显式 null 表示清除 target_session（与 admin RPC 语义一致） */
+      target_session?: Schedule['target_session'] | null
+    }
   ): Promise<{ schedule: Schedule }> {
     return api.patch<{ schedule: Schedule }>(`/schedules/${encodeURIComponent(id)}`, data)
   },

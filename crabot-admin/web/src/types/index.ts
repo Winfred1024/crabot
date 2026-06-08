@@ -186,6 +186,17 @@ export interface SkillRegistryEntry {
   enabled: boolean
   created_at: string
   updated_at: string
+  /**
+   * 上一版快照（N=1 覆盖式）。仅 update() 检测到 content 变化 + 非 builtin 时写入。
+   * 详见 spec 2026-06-07-skill-previous-version-and-diff-design.md §4.1。
+   */
+  previous_snapshot?: {
+    content: string
+    version: string
+    files?: Record<string, string>
+    updated_at: string
+    snapshotted_at: string
+  }
 }
 
 export interface EssentialToolsConfig {
@@ -650,6 +661,16 @@ export interface Schedule {
   is_builtin?: boolean
   trigger: ScheduleTrigger
   task_template: ScheduleTaskTemplate
+  /**
+   * 触发的 task 的目标会话（可选）。
+   * 详见 protocol-admin §3.19 / spec 2026-06-04-trigger-messages-unified-design §7。
+   * 配置后 schedule 触发时 worker 直接知道往哪发；未配置则任务自行决定汇报对象。
+   */
+  target_session?: {
+    channel_id: string
+    session_id: string
+    type: 'private' | 'group'
+  }
   last_triggered_at?: string
   next_trigger_at?: string
   execution_count: number

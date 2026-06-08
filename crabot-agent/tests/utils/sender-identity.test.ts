@@ -79,4 +79,31 @@ describe('resolveSenderIdentity', () => {
   it('未注册 friend_id 且无 senderFriend → stranger', () => {
     expect(resolveSenderIdentity({ msg: makeMsg({ friend_id: undefined }) })).toBe('stranger')
   })
+
+  // ============================================================================
+  // channel-outbound 兜底（spec: 2026-06-03-dispatcher-immediate-reply-and-overdue-removal-design.md §6）
+  // dispatcher 预回复注入的 ChannelMessage 用 platform_user_id='self'，
+  // telegram message-store outbound 落盘也用 'self'，
+  // admin-web get_chat_history assistant 消息用 'assistant'。
+  // 群聊场景下原来会被错误识别成 'stranger'，本次兜底统一归到 'assistant'。
+  // ============================================================================
+
+  it('platform_user_id="self" → assistant（私聊）', () => {
+    const msg = makeMsg({ platform_user_id: 'self', platform_display_name: 'Crabot' })
+    expect(resolveSenderIdentity({ msg, senderFriend: baseFriend })).toBe('assistant')
+  })
+
+  it('platform_user_id="self" → assistant（群聊，dispatcher ack 注入场景）', () => {
+    const msg = makeMsg({
+      platform_user_id: 'self',
+      platform_display_name: 'Crabot',
+      type: 'group',
+    })
+    expect(resolveSenderIdentity({ msg, senderFriend: baseFriend, isGroup: true })).toBe('assistant')
+  })
+
+  it('platform_user_id="assistant" → assistant（admin-web 历史）', () => {
+    const msg = makeMsg({ platform_user_id: 'assistant', platform_display_name: 'Crabot' })
+    expect(resolveSenderIdentity({ msg, senderFriend: baseFriend })).toBe('assistant')
+  })
 })

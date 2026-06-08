@@ -122,8 +122,7 @@ export function renderActiveTasksSection(input: RenderActiveTasksInput): string[
       for (const t of scheduledTasks) lines.push(...renderTask(t, false))
     }
 
-    lines.push('\n当消息可能是对某个任务的纠偏/补充时，使用 supplement_task 工具。')
-    lines.push('**带 [定时/巡检任务，禁止 supplement] 标签的任务一律不可作为 supplement 目标**。')
+    lines.push('\n**带 [定时/巡检任务，禁止 supplement] 标签的任务由 dispatcher 在 spawn 前过滤；如果它出现在本列表里，说明它仍可被查询，但不会接收 supplement**。')
   }
 
   // 历史查询提示——active list 是否为空都要输出，agent 必须撞到

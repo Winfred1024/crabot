@@ -9,7 +9,7 @@
 
 import { createMcpServer, type McpServer } from './mcp-helpers.js'
 import { z } from 'zod/v4'
-import type { RpcClient } from 'crabot-shared'
+import { SYSTEM_CHANNEL_ID, SYSTEM_SESSION_ID, type RpcClient } from 'crabot-shared'
 import type { Friend } from '../types.js'
 import * as path from 'path'
 import { annotatePagination } from './pagination-annotator.js'
@@ -627,6 +627,15 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
         const filename = args.filename as string | undefined
         const mentions = args.mentions as Array<{ friend_id?: string; platform_user_id?: string; at_name?: string }> | undefined
         const quote_message_id = args.quote_message_id as string | undefined
+
+        // === SYSTEM_SESSION 哨兵拒收：schedule 无 target_session 时 ScheduledTaskRunner
+        // 注入的占位 session 不可作为真实发送目标。worker 应按 trigger_message 的
+        // system_event 文本指引调 send_master_private 或其他工具汇报。 ===
+        if (channel_id === SYSTEM_CHANNEL_ID || session_id === SYSTEM_SESSION_ID) {
+          return wrapText({
+            error: '此 session 是系统占位符（schedule 无 target_session 场景），不可直接发送。请按 trigger_message 的文本指引调 send_master_private 或选定真实 channel/session 后再发。',
+          })
+        }
 
         // === ask_human：先验证 task context 存在，再继续（不提前切状态） ===
         if (intent === 'ask_human') {

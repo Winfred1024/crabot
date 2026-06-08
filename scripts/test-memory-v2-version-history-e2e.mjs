@@ -12,7 +12,7 @@
  *   7. GET    /api/memory/v2/entries/:id/versions/99 校验 error
  *   8. DELETE /api/memory/v2/entries/:id       清理
  *
- * 前置条件：./dev.sh 已在跑（默认 port 3000；CRABOT_PORT_OFFSET 可调）。
+ * 前置条件：./dev.sh 已在跑（dev 模式单实例，固定 port 3000）。
  * 脚本不自管启停 stack。
  *
  * Run: node scripts/test-memory-v2-version-history-e2e.mjs
@@ -25,16 +25,14 @@ import { fileURLToPath } from 'node:url'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT_DIR = resolve(__dirname, '..')
 
-const OFFSET = parseInt(process.env.CRABOT_PORT_OFFSET || '0', 10)
-const PORT = 3000 + OFFSET
+const PORT = 3000
 const ROOT = `http://localhost:${PORT}/api`
 const BASE = `${ROOT}/memory/v2`
 
-// 与 dev.sh / start.mjs 对齐：优先环境变量，否则读 data{,-N}/admin/.env
+// 与 dev.sh / start.mjs 对齐：优先环境变量，否则读 dev.sh 的 DATA_DIR（$ROOT/data）
 function loadAdminPassword() {
   if (process.env.CRABOT_ADMIN_PASSWORD) return process.env.CRABOT_ADMIN_PASSWORD
-  const dataDir = process.env.DATA_DIR
-    || (OFFSET > 0 ? resolve(ROOT_DIR, `data-${OFFSET}`) : resolve(ROOT_DIR, 'data'))
+  const dataDir = process.env.DATA_DIR || resolve(ROOT_DIR, 'data')
   const envPath = resolve(dataDir, 'admin/.env')
   if (existsSync(envPath)) {
     for (const line of readFileSync(envPath, 'utf-8').split('\n')) {
@@ -80,7 +78,7 @@ try {
     body: JSON.stringify({ password: PASSWORD }),
   })
 } catch (e) {
-  fail(`cannot reach ${ROOT}: ${e.message}\n请先 ./dev.sh 启动开发环境（或设置 CRABOT_PORT_OFFSET）。`)
+  fail(`cannot reach ${ROOT}: ${e.message}\n请先 ./dev.sh 启动开发环境。`)
 }
 if (loginRes.status !== 200) {
   const t = await loginRes.text()

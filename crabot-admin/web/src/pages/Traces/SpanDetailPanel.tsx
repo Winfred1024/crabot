@@ -154,6 +154,9 @@ export const SpanDetailPanel: React.FC<{
     if (d.text_summary) rows.push({ label: '摘要', value: String(d.text_summary) })
     if (d.reason) rows.push({ label: '原因', value: String(d.reason) })
     if (d.outcome) rows.push({ label: '结果', value: String(d.outcome) })
+    if (d.kind === 'new_task' && d.immediate_reply_sent != null) {
+      rows.push({ label: '预回复', value: d.immediate_reply_sent ? '已发送' : '未发送' })
+    }
     if (d.spawned_trace_id) {
       rows.push({
         label: '派生 Trace',

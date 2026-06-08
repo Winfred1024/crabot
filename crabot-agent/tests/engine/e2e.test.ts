@@ -299,9 +299,11 @@ describe('Engine E2E', () => {
       expect(result.totalTurns).toBe(3)
 
       // Verify tool calls were tracked
-      expect(turnEvents).toHaveLength(2)
+      // 自 cdaa253 起，final text turn 也补 fire 一次让 trace 能记录最后一轮。
+      expect(turnEvents).toHaveLength(3)
       expect(turnEvents[0].toolCalls[0].name).toBe('Bash')
       expect(turnEvents[1].toolCalls[0].name).toBe('Read')
+      expect(turnEvents[2].toolCalls).toHaveLength(0)
     })
   })
 

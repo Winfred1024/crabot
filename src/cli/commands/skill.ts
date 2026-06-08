@@ -6,6 +6,30 @@ import { maskSensitive } from '../mask.js'
 import { runWrite } from '../run-write.js'
 import { buildDeleteParams } from './_utils.js'
 
+/**
+ * 根据 admin install 响应的 was_overwrite 字段，决定 reverse 是 restore（覆盖场景）
+ * 还是 delete（首次安装场景）。
+ *
+ * 旧 admin 不返回 was_overwrite → undefined 走 delete 分支，跟旧 CLI 行为一致（兼容）。
+ */
+export function buildSkillAddReverse(
+  result: unknown,
+  context: { source: string },
+): { command: string; preview_description: string } {
+  const skill = (result ?? {}) as { id?: string; was_overwrite?: boolean }
+  const skillId = skill.id ?? '<unknown>'
+  if (skill.was_overwrite) {
+    return {
+      command: `skill restore ${skillId}`,
+      preview_description: `restore skill ${skillId} to version before this overwrite`,
+    }
+  }
+  return {
+    command: `skill delete ${skillId}`,
+    preview_description: `delete newly imported skill from ${context.source} (${skillId})`,
+  }
+}
+
 const COLUMNS: Column[] = [
   { key: 'id', header: 'ID', transform: (v) => shortId(String(v ?? '')) },
   { key: 'name', header: 'NAME' },
@@ -82,13 +106,9 @@ export function registerSkillCommands(parent: Command): void {
             if (opts.overwrite) installBody['overwrite'] = true
             return ctx.client.post<unknown>('/api/skills/import-git/install', installBody)
           },
-          reverseFromResult: (r) => {
-            const newId = (r as { id?: string })?.id ?? '<unknown>'
-            return {
-              command: `skill delete ${newId}`,
-              preview_description: `delete skill imported from git ${gitUrl ?? opts.skillMdUrl} (${newId})`,
-            }
-          },
+          reverseFromResult: (r) => buildSkillAddReverse(r, {
+            source: `git ${gitUrl ?? opts.skillMdUrl}`,
+          }),
           dataDir: ctx.dataDir,
           actor: ctx.actor,
           mode: ctx.mode,
@@ -106,13 +126,9 @@ export function registerSkillCommands(parent: Command): void {
             if (opts.overwrite) body['overwrite'] = true
             return ctx.client.post<unknown>('/api/skills/import-local', body)
           },
-          reverseFromResult: (r) => {
-            const newId = (r as { id?: string })?.id ?? '<unknown>'
-            return {
-              command: `skill delete ${newId}`,
-              preview_description: `delete skill imported from path ${localPath} (${newId})`,
-            }
-          },
+          reverseFromResult: (r) => buildSkillAddReverse(r, {
+            source: `path ${localPath}`,
+          }),
           dataDir: ctx.dataDir,
           actor: ctx.actor,
           mode: ctx.mode,
@@ -121,6 +137,35 @@ export function registerSkillCommands(parent: Command): void {
       } else {
         add.error('Either --git, --skill-md-url, or --path is required')
       }
+    })
+
+  skill
+    .command('restore <ref>')
+    .description('恢复 skill 到上一版（swap：current ↔ previous，可再次 restore 切回）')
+    .option('--confirm <token>', 'Confirmation token from preview response')
+    .action(async (ref: string, opts: { confirm?: string }) => {
+      const ctx = createContext(parent)
+      const { id } = await resolveRef(ctx.client, 'skill', ref)
+      const args: Record<string, unknown> = { _positional: ref }
+      if (opts.confirm) args['--confirm'] = opts.confirm
+      const cmdText = opts.confirm
+        ? `skill restore ${ref} --confirm ${opts.confirm}`
+        : `skill restore ${ref}`
+
+      const result = await runWrite({
+        subcommand: 'skill restore',
+        args,
+        command_text: cmdText,
+        execute: () => ctx.client.post(`/api/skills/${id}/restore`),
+        reverse: {
+          command: `skill restore ${ref}`,  // 再 restore 一次就 swap 回去
+          preview_description: `swap skill ${ref} back to before this restore`,
+        },
+        dataDir: ctx.dataDir,
+        actor: ctx.actor,
+        mode: ctx.mode,
+      })
+      renderResult(maskSensitive(result), { mode: ctx.mode })
     })
 
   skill

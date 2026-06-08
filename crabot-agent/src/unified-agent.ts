@@ -32,6 +32,7 @@ import type {
   TraceCallback,
   BuiltinToolConfig,
   SkillConfig,
+  TaskOrigin,
   WorkerAgentContext,
 } from './types.js'
 import { SessionManager } from './orchestration/session-manager.js'
@@ -44,7 +45,7 @@ import { AttentionScheduler, type AttentionConfig, type BufferedMessage } from '
 import { SessionLaneRegistry } from './orchestration/session-lane.js'
 import { AgentHandler, type SdkEnvConfig, type ExecuteTriggerMessageParams, type ExecuteTriggerMessageResult, adapterFromSdkEnv } from './agent/agent-handler.js'
 import { dispatch } from './dispatcher/dispatcher.js'
-import type { DispatchTraceCallback } from './dispatcher/dispatcher-types.js'
+import type { DispatchTraceCallback, ImmediateReplySentInfo } from './dispatcher/dispatcher-types.js'
 import { executeDispatchActions } from './dispatcher/dispatcher-executor.js'
 import type { ToolPermissionConfig, ToolDefinition as EngineToolDefinition } from './engine/types.js'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
@@ -620,13 +621,8 @@ export class UnifiedAgent extends ModuleBase {
       }
 
       // 预回复回调：dispatcher 判 new_task 复杂时发一条 ack 给当前 session
-      const sendImmediateReply = async (text: string) => {
-        const channelPort = await this.getChannelPort(session.channel_id)
-        await this.rpcClient.call(channelPort, 'send_message', {
-          session_id: session.session_id,
-          content: { type: 'text', text },
-        }, this.config.moduleId)
-      }
+      const sendImmediateReply = (text: string) =>
+        this.sendDispatcherImmediateReply(session.channel_id, session.session_id, text)
 
       const traceCallbackPrivate = this.buildDispatchTraceCallback(trace.trace_id)
       const dumpPromptPrivate = this.buildDispatchPromptDumpCallback(trace.trace_id)
@@ -659,12 +655,24 @@ export class UnifiedAgent extends ModuleBase {
           }
         },
         sendImmediateReply,
-        spawnAgentInstance: async (actionText: string) => {
+        reactToTriggerMessage: this.buildReactToTriggerMessage(session.channel_id, session.session_id),
+        spawnAgentInstance: async (actionText: string, spawnOptions) => {
           const triggerIds = new Set(messages.map(m => m.platform_message_id))
-          const history = (frontContext.recent_messages ?? []).filter(
+          const baseHistory = (frontContext.recent_messages ?? []).filter(
             (m) => !triggerIds.has(m.platform_message_id)
           )
-          const allMessages = [...history, ...messages]
+          // dispatcher 已发的预回复只注入 frontContext.recent_messages（worker prompt 的"聊天历史"段），
+          // 不进 params.messages（"当前消息"段是触发批次，注进去会重复渲染）。
+          const ackMessage = spawnOptions?.immediateReply
+            ? this.buildDispatcherAckChannelMessage(
+                spawnOptions.immediateReply,
+                session.channel_id,
+                session.session_id,
+                'private',
+              )
+            : null
+          const recentMessagesWithAck = ackMessage ? [...baseHistory, ackMessage] : baseHistory
+          const allMessages = [...baseHistory, ...messages]
           const params: ExecuteTriggerMessageParams = {
             messages: allMessages,
             activeTasks: frontContext.active_tasks ?? [],
@@ -676,7 +684,9 @@ export class UnifiedAgent extends ModuleBase {
             channelId: session.channel_id,
             sessionId: session.session_id,
             dispatchActionText: actionText,
-            frontContext,
+            frontContext: ackMessage
+              ? { ...frontContext, recent_messages: recentMessagesWithAck }
+              : frontContext,
           }
           const taskTraceId = await this.spawnTaskTrace({
             dispatchTraceId: trace.trace_id,
@@ -829,13 +839,8 @@ export class UnifiedAgent extends ModuleBase {
       }
 
       // 预回复回调：dispatcher 判 new_task 复杂时发一条 ack 给当前群聊 session
-      const sendImmediateReply = async (text: string) => {
-        const channelPort = await this.getChannelPort(session.channel_id)
-        await this.rpcClient.call(channelPort, 'send_message', {
-          session_id: sessionId,
-          content: { type: 'text', text },
-        }, this.config.moduleId)
-      }
+      const sendImmediateReply = (text: string) =>
+        this.sendDispatcherImmediateReply(session.channel_id, sessionId, text)
 
       const traceCallbackGroup = this.buildDispatchTraceCallback(trace.trace_id)
       const dumpPromptGroup = this.buildDispatchPromptDumpCallback(trace.trace_id)
@@ -871,16 +876,27 @@ export class UnifiedAgent extends ModuleBase {
           }
         },
         sendImmediateReply,
-        spawnAgentInstance: async (actionText: string) => {
+        reactToTriggerMessage: this.buildReactToTriggerMessage(session.channel_id, sessionId),
+        spawnAgentInstance: async (actionText: string, spawnOptions) => {
           // 群聊：把 attention 批次 messages（已含群成员发的文件/图片）+ recent_messages 历史去重后整批传给 worker。
           // 不用 action.text 覆盖触发消息的 content.text，让 worker 拿到完整保真的消息上下文；
-          // 但 actionText 单独作为 task title/description 透传（dispatchActionText），影响 Front
-          // 后续 supplement_task 决策时活跃任务清单的可识别度。
+          // 但 actionText 单独作为 task title/description 透传（dispatchActionText），影响
+          // dispatcher 后续 supplement 决策时活跃任务清单的可识别度。
           const currentIds = new Set(messages.map((m) => m.platform_message_id))
-          const history = (frontContext.recent_messages ?? []).filter(
+          const baseHistory = (frontContext.recent_messages ?? []).filter(
             (m) => !currentIds.has(m.platform_message_id)
           )
-          const allMessages = [...history, ...messages]
+          // dispatcher 已发的预回复只注入 frontContext.recent_messages（"聊天历史"段），不进 params.messages。
+          const ackMessage = spawnOptions?.immediateReply
+            ? this.buildDispatcherAckChannelMessage(
+                spawnOptions.immediateReply,
+                session.channel_id,
+                sessionId,
+                'group',
+              )
+            : null
+          const recentMessagesWithAck = ackMessage ? [...baseHistory, ackMessage] : baseHistory
+          const allMessages = [...baseHistory, ...messages]
           const params: ExecuteTriggerMessageParams = {
             messages: allMessages,
             activeTasks: frontContext.active_tasks ?? [],
@@ -892,7 +908,9 @@ export class UnifiedAgent extends ModuleBase {
             channelId: session.channel_id,
             sessionId,
             dispatchActionText: actionText,
-            frontContext,
+            frontContext: ackMessage
+              ? { ...frontContext, recent_messages: recentMessagesWithAck }
+              : frontContext,
           }
           const taskTraceId = await this.spawnTaskTrace({
             dispatchTraceId: trace.trace_id,
@@ -1047,132 +1065,6 @@ export class UnifiedAgent extends ModuleBase {
       read_min_visibility: 'internal',
       read_accessible_scopes: memoryScopes,
     }
-  }
-
-  /**
-   * 本地投递纠偏消息给 Worker。
-   * 返回 true 表示成功投递，false 表示任务不存在或为定时/巡检任务（调用方应回退为 create_task）。
-   */
-  private async handleLocalSupplement(
-    decision: import('./types.js').SupplementTaskDecision,
-    session: { channel_id: string; session_id: string },
-    traceId: string,
-    parentSpanId: string,
-    activeTasks: ReadonlyArray<import('./types.js').TaskSummary>,
-  ): Promise<boolean> {
-    // Step 1: Verify task exists BEFORE doing anything
-    if (!this.agentHandler!.hasActiveTask(decision.task_id)) {
-      const span = this.traceStore.startSpan(traceId, {
-        type: 'tool_call' as const,
-        parent_span_id: parentSpanId,
-        details: {
-          tool_name: 'supplement_fallback',
-          input_summary: `task ${decision.task_id} not found, will fallback to create_task`,
-        },
-      })
-      this.traceStore.endSpan(traceId, span.span_id, 'completed', {
-        output_summary: 'task not found, fallback to create_task',
-      })
-      return false
-    }
-
-    // Step 1.5: Engine 兜底——定时/巡检任务不接受 supplement，降级为 create_task
-    // （Front prompt 已显式禁止，但 LLM 可能误判，此处兜底防止覆盖巡检本职）
-    const target = activeTasks.find(t => t.task_id === decision.task_id)
-    if (target?.trigger_type === 'scheduled') {
-      const span = this.traceStore.startSpan(traceId, {
-        type: 'tool_call' as const,
-        parent_span_id: parentSpanId,
-        details: {
-          tool_name: 'supplement_fallback',
-          input_summary: `task ${decision.task_id} is scheduled (${target.title}), downgrade supplement to create_task`,
-        },
-      })
-      this.traceStore.endSpan(traceId, span.span_id, 'completed', {
-        output_summary: 'scheduled task, fallback to create_task',
-      })
-      return false
-    }
-
-    // Step 1.7: 若 task 处于 waiting_human（worker 在等人类答 ask_human），先调 admin
-    //           RPC 切回 executing 状态并清空 pending_question。注入 deliverHumanResponse
-    //           之前必须切，否则状态机不一致。
-    if (target?.status === 'waiting_human') {
-      try {
-        const adminPort = await this.getAdminPort()
-        await this.rpcClient.call(adminPort, 'update_task_status', {
-          task_id: decision.task_id,
-          status: 'executing',
-          pending_question: null,
-        }, this.config.moduleId)
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        console.error(`[handleLocalSupplement] failed to transition task ${decision.task_id} back to executing: ${msg}`)
-        // 不强行中止——deliverHumanResponse 会触发 humanQueue.push，barrier 也会 clear，
-        // worker 仍能恢复；状态不同步可通过 admin web 手工矫正
-      }
-    }
-
-    // Step 2: Task verified — send acknowledgement
-    const replyText = `收到，正在调整：${decision.supplement_content.slice(0, 60)}`
-    const replySpan = this.traceStore.startSpan(traceId, {
-      type: 'tool_call' as const,
-      parent_span_id: parentSpanId,
-      details: {
-        tool_name: 'supplement_reply',
-        input_summary: `reply: "${replyText.slice(0, 100)}"`,
-      },
-    })
-    if (replyText) {
-      try {
-        const channelPort = await this.getChannelPort(session.channel_id)
-        await this.rpcClient.call(channelPort, 'send_message', {
-          session_id: session.session_id,
-          content: { type: 'text', text: replyText },
-        }, this.config.moduleId)
-        this.traceStore.endSpan(traceId, replySpan.span_id, 'completed', {
-          output_summary: 'sent',
-        })
-      } catch (err) {
-        this.traceStore.endSpan(traceId, replySpan.span_id, 'failed', {
-          error: err instanceof Error ? err.message : String(err),
-        })
-      }
-    } else {
-      this.traceStore.endSpan(traceId, replySpan.span_id, 'completed', {
-        output_summary: 'skipped (no text)',
-      })
-    }
-
-    // Step 3: Deliver supplement to local Worker
-    const deliverSpan = this.traceStore.startSpan(traceId, {
-      type: 'tool_call' as const,
-      parent_span_id: parentSpanId,
-      details: {
-        tool_name: 'supplement_deliver',
-        input_summary: `task_id=${decision.task_id}, content="${decision.supplement_content.slice(0, 100)}"`,
-      },
-    })
-    try {
-      this.agentHandler!.deliverHumanResponse(decision.task_id, [{
-        platform_message_id: `supplement-${Date.now()}`,
-        session: { channel_id: session.channel_id, session_id: session.session_id, type: 'private' as const },
-        sender: { friend_id: 'system', platform_user_id: 'system', platform_display_name: 'System' },
-        content: { type: 'text' as const, text: `用户补充指示：${decision.supplement_content}` },
-        features: { is_mention_crab: false },
-        platform_timestamp: new Date().toISOString(),
-      }])
-      this.traceStore.endSpan(traceId, deliverSpan.span_id, 'completed', {
-        output_summary: `delivered to task ${decision.task_id}`,
-      })
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error)
-      this.traceStore.endSpan(traceId, deliverSpan.span_id, 'failed', {
-        error: msg,
-      })
-    }
-
-    return true
   }
 
   /**
@@ -1426,38 +1318,10 @@ export class UnifiedAgent extends ModuleBase {
         return { decision_types: [] }
       }
 
-      // 映射 exitToolCall → decision_types / task_ids
+      // 推导 decision_types。worker 端已无 supplement/silent 早退工具（dispatcher 在 spawn 前
+      // 已做完这两类决策），剩下只有 direct_reply 一种结果。
       const decisionTypes: string[] = []
-      const taskIds: TaskId[] = []
-
-      if (result.exitToolCall) {
-        const exitName = result.exitToolCall.name
-        if (exitName === 'supplement_task') {
-          decisionTypes.push('supplement_task')
-          const exitInput = result.exitToolCall.input
-          const targetTaskId = exitInput['target_task_id']
-          const supplementText = exitInput['supplement_text']
-          if (typeof targetTaskId === 'string' && typeof supplementText === 'string') {
-            const delivered = await this.handleLocalSupplement(
-              {
-                type: 'supplement_task',
-                task_id: targetTaskId,
-                supplement_content: supplementText,
-              },
-              message.session,
-              '',
-              '',
-              context.active_tasks ?? [],
-            )
-            if (delivered) {
-              taskIds.push(targetTaskId)
-            }
-          }
-        } else if (exitName === 'stay_silent') {
-          decisionTypes.push('silent')
-        }
-        // 其他 exit tool（理论不应出现）：忽略
-      } else if (result.sentMessage) {
+      if (result.sentMessage) {
         decisionTypes.push('direct_reply')
       } else {
         console.warn(`[${this.config.moduleId}] handleProcessMessage unified loop ended without send_message (finalText len=${result.finalText.length}, ignored)`)
@@ -1465,7 +1329,6 @@ export class UnifiedAgent extends ModuleBase {
 
       return {
         decision_types: decisionTypes,
-        task_ids: taskIds.length > 0 ? taskIds : undefined,
       }
     }
 
@@ -1609,8 +1472,10 @@ export class UnifiedAgent extends ModuleBase {
         }
       }
 
-      // 预回复回调（admin_chat 路径）：走 chat_callback direct_reply，与 sendErrorToUser 同通道
-      const sendImmediateReply = async (text: string) => {
+      // 预回复回调（admin_chat 路径）：走 chat_callback direct_reply，与 sendErrorToUser 同通道。
+      // chat_callback 返回 {received:true}，无 platform_message_id —— 这里合成 ack 元数据
+      // 让 spawnAgentInstance 能把这条 outbound 拼进 worker recent_messages。
+      const sendImmediateReply = async (text: string): Promise<ImmediateReplySentInfo> => {
         await this.rpcClient.call(
           await this.getAdminPort(),
           'chat_callback',
@@ -1621,6 +1486,11 @@ export class UnifiedAgent extends ModuleBase {
           },
           this.config.moduleId
         )
+        return {
+          text,
+          platform_message_id: `dispatcher-ack-${crypto.randomUUID()}`,
+          sent_at: new Date().toISOString(),
+        }
       }
 
       const traceCallbackAdmin = this.buildDispatchTraceCallback(trace.trace_id)
@@ -1636,6 +1506,7 @@ export class UnifiedAgent extends ModuleBase {
       })
 
       // 执行动作
+      // admin_chat 不注入 reactToTriggerMessage：无 channel-side platform message，无 add_reaction RPC 通道
       await executeDispatchActions(actions, {
         dispatchCtx,
         sendImmediateReply,
@@ -1691,17 +1562,27 @@ export class UnifiedAgent extends ModuleBase {
             return 'fallback'
           }
         },
-        spawnAgentInstance: async (actionText: string) => {
+        spawnAgentInstance: async (actionText: string, spawnOptions) => {
           // admin_chat：把当前 trigger + recent_messages 去重后整批传给 worker，保留媒体上下文。
           // 注：admin chat 由 admin REST 串行串发（前端 fetch 等响应才会发下一条），天然单线，
           //     不走 SessionLane；这里 awaitWorker=true 同步等 worker 完成，便于把错误反映到 HTTP 响应。
           //     trace 模型仍拆分 dispatch / task：dispatch trace 标 completed 与 worker 完成对齐，
           //     task trace 由 spawnTaskTrace 独立 endTrace。
           const triggerIds = new Set([message.platform_message_id])
-          const history = (frontContext.recent_messages ?? []).filter(
+          const baseHistory = (frontContext.recent_messages ?? []).filter(
             (m) => !triggerIds.has(m.platform_message_id)
           )
-          const allMessages = [...history, message]
+          // dispatcher 已发的预回复只注入 frontContext.recent_messages（"聊天历史"段），不进 params.messages。
+          const ackMessage = spawnOptions?.immediateReply
+            ? this.buildDispatcherAckChannelMessage(
+                spawnOptions.immediateReply,
+                'admin-web',
+                sessionId,
+                'private',
+              )
+            : null
+          const recentMessagesWithAck = ackMessage ? [...baseHistory, ackMessage] : baseHistory
+          const allMessages = [...baseHistory, message]
           const params: ExecuteTriggerMessageParams = {
             messages: allMessages,
             activeTasks: frontContext.active_tasks ?? [],
@@ -1713,7 +1594,9 @@ export class UnifiedAgent extends ModuleBase {
             channelId: 'admin-web',
             sessionId,
             dispatchActionText: actionText,
-            frontContext,
+            frontContext: ackMessage
+              ? { ...frontContext, recent_messages: recentMessagesWithAck }
+              : frontContext,
           }
           const taskTraceId = await this.spawnTaskTrace({
             dispatchTraceId: trace.trace_id,
@@ -1728,13 +1611,13 @@ export class UnifiedAgent extends ModuleBase {
       })
 
       // 从 actions 推导 decision_types 和 task_ids（保持与旧接口的兼容）
-      const decisionTypes: string[] = actions.length === 0
-        ? []
-        : actions.map(a => {
-            if (a.kind === 'supplement') return 'supplement_task'
-            if (a.kind === 'new_task') return 'create_task'
-            return 'silent'
-          })
+      // worker 端已无 supplement_task / stay_silent 工具；dispatcher 的 supplement
+      // 已在 dispatcher-executor 直接执行（pushSupplement），new_task 通过 spawnTask
+      // 落库。这里只把 dispatcher 的 new_task 动作回报为 create_task；supplement /
+      // stay_silent 走 dispatcher 侧副作用，不再在 ProcessMessageResult 里回报。
+      const decisionTypes: string[] = actions
+        .filter(a => a.kind === 'new_task')
+        .map(() => 'create_task')
       const taskIds: TaskId[] = actions
         .filter((a): a is Extract<typeof a, { kind: 'supplement' }> => a.kind === 'supplement')
         .map(a => a.target_task_id)
@@ -1761,6 +1644,17 @@ export class UnifiedAgent extends ModuleBase {
     description: string
     input?: Record<string, unknown>
     preferred_worker_specialization?: string
+    /**
+     * Schedule 的目标会话（一等字段，来自 Schedule.target_session）。
+     * Task 11 之后 legacy input.target_channel_id/_session_id 已迁移到此字段。
+     * - 有值：task_origin + trigger_message.session 都用此目标
+     * - 无值：ScheduledTaskRunner 用 SYSTEM_SESSION 哨兵填 trigger_message.session
+     */
+    target_session?: {
+      channel_id: string
+      session_id: string
+      type: 'private' | 'group'
+    }
     /** Admin 解析后下发的执行权限（按 schedule.creator 或系统内置 master_private 计算） */
     resolved_permissions?: ResolvedPermissions
   }): Promise<{ task_id: string; assigned_worker: ModuleId }> {
@@ -1771,6 +1665,7 @@ export class UnifiedAgent extends ModuleBase {
       description,
       input,
       preferred_worker_specialization,
+      target_session,
       resolved_permissions,
     } = params
 
@@ -1799,8 +1694,7 @@ export class UnifiedAgent extends ModuleBase {
           description,
           assigned_worker: workerId,
           // trigger_type='scheduled' 让 Front prompt 给任务打 [定时/巡检任务，禁止 supplement]
-          // 标签，并让 engine 兜底（unified-agent.handleLocalSupplement）
-          // 把 LLM 误投递的 supplement 自动降级为 create_task。漏传过会导致防线全部失效。
+          // 标签，防止 LLM 把 supplement 误投到巡检任务上覆盖本职。漏传过会导致防线失效。
           source: {
             origin: 'system',
             source_module_id: this.config.moduleId,
@@ -1819,23 +1713,15 @@ export class UnifiedAgent extends ModuleBase {
 
       const workerContext = await this.contextAssembler.assembleScheduledTaskContext()
 
-      const targetChannelId = typeof input?.target_channel_id === 'string'
-        ? input.target_channel_id
-        : undefined
-      const targetSessionId = typeof input?.target_session_id === 'string'
-        ? input.target_session_id
-        : undefined
-      const targetSessionType = input?.target_session_type === 'private' || input?.target_session_type === 'group'
-        ? input.target_session_type
-        : undefined
-
-      const workerContextWithTarget: WorkerAgentContext = targetChannelId && targetSessionId
+      // target_session 由 Admin 从 Schedule.target_session 一等字段透传。
+      // Task 11 之前 legacy input.target_channel_id/_session_id 路径已迁移并删除。
+      const workerContextWithTarget: WorkerAgentContext = target_session
         ? {
             ...workerContext,
             task_origin: {
-              channel_id: targetChannelId,
-              session_id: targetSessionId,
-              ...(targetSessionType ? { session_type: targetSessionType } : {}),
+              channel_id: target_session.channel_id as TaskOrigin['channel_id'],
+              session_id: target_session.session_id as TaskOrigin['session_id'],
+              session_type: target_session.type,
             },
           }
         : workerContext
@@ -1851,6 +1737,7 @@ export class UnifiedAgent extends ModuleBase {
           description,
           priority: 'normal',
           task_type,
+          ...(target_session ? { target_session } : {}),
         },
         workerContextWithPerms,
       )
@@ -2301,6 +2188,73 @@ export class UnifiedAgent extends ModuleBase {
         source: 'dispatcher',
         ...record,
       })
+    }
+  }
+
+  /**
+   * 构造 dispatcher reactToTriggerMessage 闭包。
+   * dispatcher 接住消息后调 channel.add_reaction(kind='acknowledged')。
+   * channel 不支持 add_reaction（如 wechat 未注册此 RPC）时 RPC 自身会抛 method-not-found，
+   * caller（dispatcher-executor.fireReaction）内部 catch + warn，主流程不受影响。
+   *
+   * Spec: 2026-06-04-channel-task-pickup-reaction-design.md §4
+   */
+  private buildReactToTriggerMessage(
+    channelId: string,
+    sessionId: string,
+  ): (platformMessageId: string) => Promise<void> {
+    return async (platformMessageId: string) => {
+      const channelPort = await this.getChannelPort(channelId)
+      await this.rpcClient.call(channelPort, 'add_reaction', {
+        session_id: sessionId,
+        platform_message_id: platformMessageId,
+        kind: 'acknowledged',
+      }, this.config.moduleId)
+    }
+  }
+
+  /**
+   * 调 channel.send_message 发 dispatcher 预回复，返回带 platform_message_id / sent_at
+   * 的 ack 元数据，供 spawnAgentInstance 把这条 outbound 拼进 worker 的 recent_messages。
+   * Spec: 2026-06-03-dispatcher-immediate-reply-and-overdue-removal-design.md §6
+   */
+  private async sendDispatcherImmediateReply(
+    channelId: string,
+    sessionId: string,
+    text: string,
+  ): Promise<ImmediateReplySentInfo> {
+    const channelPort = await this.getChannelPort(channelId)
+    const result = await this.rpcClient.call<
+      { session_id: string; content: { type: 'text'; text: string } },
+      { platform_message_id: string; sent_at: string }
+    >(channelPort, 'send_message', {
+      session_id: sessionId,
+      content: { type: 'text', text },
+    }, this.config.moduleId)
+    return { text, platform_message_id: result.platform_message_id, sent_at: result.sent_at }
+  }
+
+  /**
+   * 把 dispatcher 已发出的预回复拼成一条 outbound ChannelMessage，由 spawnAgentInstance
+   * 注入 worker 的 recent_messages 末尾。worker prompt 渲染时，platform_user_id='self'
+   * 会被 resolveSenderIdentity 识别为 'assistant'，worker 一眼就能看出是自己刚发过。
+   */
+  private buildDispatcherAckChannelMessage(
+    info: ImmediateReplySentInfo,
+    channelId: string,
+    sessionId: string,
+    sessionType: 'private' | 'group',
+  ): ChannelMessage {
+    return {
+      platform_message_id: info.platform_message_id,
+      session: { session_id: sessionId, channel_id: channelId, type: sessionType },
+      sender: {
+        platform_user_id: 'self',
+        platform_display_name: 'Crabot',
+      },
+      content: { type: 'text', text: info.text },
+      features: { is_mention_crab: false },
+      platform_timestamp: info.sent_at,
     }
   }
 

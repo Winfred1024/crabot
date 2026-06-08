@@ -6,17 +6,23 @@ import ModuleManager from './index.js'
 import type { ModuleDefinition } from 'crabot-shared'
 import path from 'node:path'
 import fs from 'node:fs'
+import { homedir } from 'node:os'
 
 // 获取模块路径
 const CRABOT_ROOT = path.resolve(process.cwd(), '..')
 const ADMIN_DIR = path.join(CRABOT_ROOT, 'crabot-admin')
 const AGENT_DIR = path.join(CRABOT_ROOT, 'crabot-agent')
-const DATA_DIR = process.env.DATA_DIR || path.join(CRABOT_ROOT,
-  parseInt(process.env.CRABOT_PORT_OFFSET || '0', 10) > 0
-    ? `data-${process.env.CRABOT_PORT_OFFSET}`
-    : 'data'
-)
-const WORKSPACE_DIR = process.env.WORKSPACE_DIR || path.dirname(DATA_DIR)
+const PORT_OFF = parseInt(process.env.CRABOT_PORT_OFFSET || '0', 10)
+const DATA_DIR = process.env.DATA_DIR
+  || path.join(homedir(), '.crabot', PORT_OFF > 0 ? `data-${PORT_OFF}` : 'data')
+// Agent worker tools 的工作目录（bash / read / write / edit / glob / grep 的 cwd）。
+// 默认 = 用户家目录：agent 一上来就能直接看到用户真实文件（~/code/ 等），而不是
+// Crabot 自身的安装根（既无用又混淆）。WORKSPACE_DIR env 显式设置则覆盖。
+//
+// 历史默认是 dirname(DATA_DIR)：dev mode 下碰巧等于 $REPO（合理），其他模式
+// 都是 ~/.crabot（agent 只能看到 Crabot 自己的 cli.mjs/data/ 等内脏，对用户工作
+// 毫无意义）。2026-06-08 改为统一 homedir()。
+const WORKSPACE_DIR = process.env.WORKSPACE_DIR || homedir()
 // 写回 process.env 确保子进程通过 process.env spread 时能继承此值
 process.env.WORKSPACE_DIR = WORKSPACE_DIR
 

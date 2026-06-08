@@ -298,7 +298,7 @@ export interface WorkerRoutingInfo {
 export type MessageType = 'text' | 'image' | 'file' | 'system_event'
 
 /** 仅 type='system_event' 时使用，见 base-protocol.md §5.4 system_event */
-export type SystemEventType = 'members_added'
+export type SystemEventType = 'members_added' | 'scheduled'
 
 export interface MessageContent {
   type: MessageType
@@ -576,7 +576,9 @@ export interface ProcessMessageParams {
 }
 
 export interface ProcessMessageResult {
-  decision_types: Array<'direct_reply' | 'create_task' | 'supplement_task' | 'silent'>
+  // worker 端只能产出 direct_reply / create_task；supplement / stay_silent 由 dispatcher
+  // 在 worker spawn 前直接处理，不会出现在 worker 返回里
+  decision_types: Array<'direct_reply' | 'create_task'>
   task_ids?: TaskId[]
 }
 
@@ -718,7 +720,6 @@ export interface ExecuteTaskParams {
   task: {
     task_id: TaskId
     task_title: string
-    task_description: string
     priority: string
     plan?: string
     task_type?: string

@@ -1,8 +1,166 @@
 # Crabot 项目进度
 
-> 最后更新：2026-06-03 — SceneProfile v0.3.0：删 global + scene 参数权限分级
+> 最后更新：2026-06-07 — Skill 保留上一版 + Admin UI diff + 修 undo bug
 
-## 最新里程碑（2026-06-03 — SceneProfile v0.3.0：删 global + scene 参数权限分级）
+## 最新里程碑（2026-06-07 — Skill 保留上一版 + Admin UI diff + 修 undo bug）
+
+skill 加 N=1 上一版快照（嵌入式存进 skills.json），新增 restore swap 能力 + REST endpoint + CLI 命令；Admin Web 加角标 + diff modal + 应用上一版按钮；顺手修了 `crabot skill add --overwrite` 的 undo bug（旧 reverse 是 delete 等于删库）。
+
+- 起因：master 想优化 skill 后能对比"改前 vs 改后"或一键回退；agent 自我反思后改自己的 skill 也需要回退能力。同时发现 `crabot skill add --overwrite` 的 undo 实际是 delete，是 silent data loss bug
+- 设计：
+  - SkillRegistryEntry 加 previous_snapshot 嵌入字段（N=1 覆盖式，含 content + skill_dir 附属文件；单文件 1MB / 总 5MB 阈值）
+  - SkillManager.restore() swap 语义；磁盘 atomic rename 写回；失败 throw 不更新 json 保持一致
+  - admin install 响应加 was_overwrite 标志；CLI 据此分支（true → restore reverse，false/undefined → delete reverse，旧 admin 兼容）
+  - Admin Web 用 react-diff-viewer-continued 渲染 diff，左侧文件列表 + 右侧 split/unified diff
+- 重要决策：builtin skill 不参与（update 路径已被拦死，restore 也拒）；附属文件 diff MVP 仅显示快照侧（当前侧需 admin 加 dir-files endpoint，留作 follow-up）；不支持任意历史（N=1 满足 80% 场景）
+
+改动覆盖（9 个 commits）：
+- `feat(admin): SkillRegistryEntry 加 previous_snapshot + update 打快照`
+- `feat(admin): SkillManager 加 restore + writeSkillDirFiles`
+- `feat(admin): POST /api/skills/:id/restore + install 响应加 was_overwrite`
+- `feat(cli): 新增 crabot skill restore <ref> 命令`
+- `fix(cli): skill add --overwrite 的 reverse 改成 restore（修 undo bug）`
+- `feat(cli): undo executeReverse 加 skill restore <ref> 分支`
+- `docs(skill): 重生成 crabot-cli 命令参考（含 skill restore）`
+- `feat(admin-web): Skills 页加上一版角标 + 对比 modal + 应用上一版按钮`
+- `docs(progress): skill 上一版 + Admin UI diff 完成`
+
+spec：[`crabot-docs/superpowers/specs/2026-06-07-skill-previous-version-and-diff-design.md`](crabot-docs/superpowers/specs/2026-06-07-skill-previous-version-and-diff-design.md)
+plan：[`crabot-docs/superpowers/plans/2026-06-07-skill-previous-version-and-diff.md`](crabot-docs/superpowers/plans/2026-06-07-skill-previous-version-and-diff.md)
+
+测试：skill-snapshot.test.ts 全套（readSkillDirFiles / writeSkillDirFiles / update snapshot / restore swap）；skill.test.ts（buildSkillAddReverse 分支）；undo.test.ts（skill restore dispatch）。
+
+**待办（用户手动 e2e）**：
+1. 装一个 user skill → `crabot skill show <name>` 看 previous_snapshot 为 undefined
+2. 改 SKILL.md 后 `crabot skill add --path X --overwrite` → previous_snapshot 有值，UI 角标显示 `v_prev → v_current`
+3. UI 详情 "查看对比" → diff modal 显示 SKILL.md 红绿差异
+4. UI "应用上一版" → 二次确认 → content 复位
+5. `crabot skill restore <name>` 再切回去 → swap 工作
+6. `crabot undo`（在 --overwrite 后跑）→ 走 skill restore 路径而不是 delete
+7. builtin skill restore → 报错 "是内置的，不能 restore"
+8. 在 skill 目录里加 references/foo.png → update → restore → png 被删
+
+**Follow-up（独立 spec / session）**：
+- admin 加 `GET /api/skills/:id/dir-files` endpoint 把当前附属文件传给前端，让 diff modal 完整显示双侧 references diff
+- snapshot 多版本历史（N=3 或无限）作为下一阶段
+- `skill add --overwrite` 加 LLM 内容审核（同 schedule add，agent 改 builtin/user skill 时双闸门）
+
+---
+
+## 上一里程碑（2026-06-06 — CLI schedule add target schema 修复 + schedule update 命令）
+
+修 CLI `schedule add` 的 target schema bug（旧实现写 legacy `task_template.input.target_*`，新协议要求顶层 `target_session`），补 `--interval-seconds` 触发器对齐 admin UI，并新增 `schedule update <ref>` 命令字段覆盖范围对齐 admin UI 编辑器。
+
+- 起因：2026-06-05 的 trigger_messages 统一改造把 `Schedule.target_session` 升级为顶层一等字段，admin POST handler 不再读 `task_template.input.target_*`；CLI 旧实现仍写 legacy 字段 → CLI 新建带 target 的 schedule 触发时 trigger_message.session 是 SYSTEM_SESSION 哨兵，send_message 硬拒绝 → schedule 触发了但 worker 发不出消息。同时 CLI 缺 update 命令，改任何字段只能 delete + add（违反 rollback-over-confirm 原则）。
+- 设计：
+  - **修 add target schema**：CLI 写顶层 `target_session: {channel_id, session_id, type}`，三个 target-* flag 共生共死（任一缺失抛 INVALID_ARGUMENT）；新增 `--target-type <private|group>` flag
+  - **补 add --interval-seconds**：admin UI 已支持 interval 触发器，CLI 此前只有 cron + once；三种 trigger flag 互斥
+  - **新增 schedule update**：字段覆盖范围对齐 admin UI 编辑器（name/description/enabled/trigger 字段级（同类型内）/task_template 字段级/target_session 三态）；纯函数 `buildUpdateScheduleBody(current, opts)` 集中字段映射 + 校验；GET snapshot → merge → PATCH，undo 走 `--restore-snapshot` 通用路径；TS 类型 `ScheduleSnapshot` 本地最小定义（CLI 不 import admin 类型）
+  - **undo.ts 扩展**：`SNAPSHOT_RESTORE_PATH` 加 schedule + regex 加 schedule + executeReverse export 以便单测
+- 重要决策：update 不进 LLM 内容审核（add 进，因为 add 是首次审；update 只改字段不扩展工具权限）；不引入 trigger 跨类型修改能力（cron → once 等需 delete + add 或 admin web）；不动 admin 协议 / agent 侧 runner / handleUpdateSchedule（已就位）
+
+改动覆盖（9 个 commits）：
+- `fix(cli): schedule add 写顶层 target_session 替代 legacy input.target_*`
+- `feat(cli): schedule add 补 --interval-seconds 触发器`
+- `feat(cli): 注册 schedule add 的 --interval-seconds 和 --target-type flag`
+- `feat(cli): 加 buildUpdateScheduleBody 骨架 + 顶层标量字段`
+- `feat(cli): buildUpdateScheduleBody 支持 trigger 字段级 merge`
+- `feat(cli): buildUpdateScheduleBody 支持 task_template 字段级 merge`
+- `feat(cli): buildUpdateScheduleBody 支持 target_session 三态`
+- `feat(cli): 新增 schedule update <ref> 命令`
+- `docs(skill): 重生成 crabot-cli 命令参考（schedule add/update 字段更新）`
+
+spec：[`crabot-docs/superpowers/specs/2026-06-06-cli-schedule-update-and-target-fix-design.md`](crabot-docs/superpowers/specs/2026-06-06-cli-schedule-update-and-target-fix-design.md)
+plan：[`crabot-docs/superpowers/plans/2026-06-06-cli-schedule-update-and-target-fix.md`](crabot-docs/superpowers/plans/2026-06-06-cli-schedule-update-and-target-fix.md)
+
+测试：schedule.test.ts 65/65（29 add 既有 + 7+12+9+8=36 buildUpdateScheduleBody 全套），undo.test.ts 7/7（6 既有 + 1 新 executeReverse schedule restore-snapshot）。
+
+**待办（用户手动 e2e）**：
+1. `crabot schedule add --title test --priority normal --cron "*/5 * * * *" --target-channel <CH> --target-session <SESS> --target-type private --disabled` → GET 验证顶层 `target_session` 有值
+2. `crabot schedule update <id> --description "改了"` + `crabot undo` 验证 snapshot 还原
+3. 改 target_session 后跑 `crabot schedule trigger` 验证 trigger_message.session 切到新目标
+4. 改内置 daily-reflection schedule description 验证 is_builtin 可编辑
+5. 跨类型修改报错文案符合 spec §5（如 cron schedule 给 `--interval-seconds` 报"当前 schedule 是 cron 类型..."）
+6. 三个 target-* 缺一报错文案
+
+**Follow-up（独立 task / session）**：
+- CLI `schedule update` 不进 LLM 内容审核的决策可能需要 revisit（如果用户实际 use case 揭示 update 也能造成 worker 越权）
+- cmdParts 段历史性缺少 `--description` / `--task-description` / `--task-type` / `--tag` / `--timezone` / `--disabled` 的 push（pre-existing issue，影响 undo log 回溯完整性）
+- 部分实施步骤里 TS LSP diagnostics 出现陈旧 cache（说 export 不存在但 tsc 实际通过），不阻塞，但若频繁出现可考虑研究 LSP cache 失效机制
+
+---
+
+## 上一里程碑（2026-06-05 — Goal 模式软约束化 + worker workflow 重组）
+
+把 goal 模式从代码层硬门控改成 prompt 软约束；worker workflow 重组成 5 段方括号名字风格（[阅读理解]/[信息收集]/[意图澄清]/[目标承诺]/[规划与执行]）；删除 worker turn-0 supplement_task / stay_silent 早退工具（dispatcher 已吃掉决策）；GOAL_MODE_GUIDANCE 拆为流程图融入 WORKFLOW + 深度说明独立段 GOAL_MODE_DETAILS；supplement 注入文案常量化 + goal mode on/off 双 variant；删除 WORKFLOW_GROUP（群聊主流程跟私聊一致）。
+
+- 起因：goal 模式当前两个落地决策过紧——(a) todo 工具被 hasGoal 硬门控，讨论场景也想用 todo 列分支被卡；(b) goal 判断段（GOAL_MODE_GUIDANCE）跟主工作流（WORKFLOW_PRIVATE）分裂，LLM 视角下流程跟决策点不在一起。同时 research_collector 在流程图里没显式位置（跟 code_planner 硬绑定不一致），实测 LLM 经常不派、context 撑大
+- 设计：
+  - **代码层**：取消 todo 工具的 hasGoal 硬门控（一行：`hasGoal: () => true`）；删除 worker 端 supplement_task / stay_silent 工具及相关代码（实际是 dead code，dispatcher 在 worker spawn 前已经做了相应决策）
+  - **prompt 层**：WORKFLOW_PRIVATE 拆为 5 段方括号名字常量 + `buildWorkflow({ goalModeEnabled })` 函数化（goal mode 关时省略 [目标承诺] 段位）；GOAL_MODE_GUIDANCE → GOAL_MODE_DETAILS 用 agent 视角重写（没有 engine / hook / harness 等工程术语）；删 WORKFLOW_GROUP（dispatcher 已吃掉群独有 turn 0 triage）
+  - **supplement 文案双 variant**：goal mode on/off 分别注入不同模板（GOAL 含 set_task_goal 三分支提示，BASIC 只含 "调整方向" 一句），由 deliverHumanResponse 按 taskState.triggerType 推算
+  - **research_collector 流程位置**：when_to_use 首句加 "信息收集类工作的默认派遣对象——main 工作流 [信息收集] 段位优先派此 subagent"，跟 code_planner 在流程图硬绑定一致
+- 重要决策：保留 dispatcher 端 supplement / stay_silent 决策（dispatcher 该有的能力不动）；保留 engine `turnZeroOnly` 框架作扩展点；保留 audit gate + endTurnGate 机制；scheduled 任务硬关 goal mode 保留（独立 follow-up 重新设计 audit 路径）
+
+改动覆盖（7 个 commits）：
+- `refactor(dispatcher): refine immediate_reply guidance`（pre-existing dirty diff cleanup）
+- `feat(agent): remove todo hasGoal hard gating, todo always allowed`
+- `refactor(agent): goal mode soft-control prompt redesign (WORKFLOW + GOAL_MODE_DETAILS + supplement template)`（Task 2-5 合并）
+- `refactor(agent): remove worker-side supplement_task and stay_silent tools (dispatcher already covers these decisions)`
+- `feat(admin): research_collector when_to_use first line emphasizes default for [信息收集] step`
+- `docs(progress): mark goal soft-control workflow redesign as complete`
+
+spec：[`crabot-docs/superpowers/specs/2026-06-05-goal-soft-control-workflow-redesign-design.md`](crabot-docs/superpowers/specs/2026-06-05-goal-soft-control-workflow-redesign-design.md)
+plan：[`crabot-docs/superpowers/plans/2026-06-05-goal-soft-control-workflow-redesign.md`](crabot-docs/superpowers/plans/2026-06-05-goal-soft-control-workflow-redesign.md)
+
+测试：crabot-agent 1174/1180（4 pre-existing engine 失败无关：trace-store SIGKILL / e2e permission / query-loop onTurn × 2）；crabot-admin tsc + build 全绿。
+
+**待办（用户手动）**：
+- Task 8 端到端 6 场景验证：讨论场景（无 goal + todo）/ 任务场景（有 goal + audit gate）/ supplement 注入文案 / scheduled task（goal mode 硬关）/ dispatcher 路径未损坏 / WORKFLOW_GROUP 删除后群聊行为一致
+
+**Follow-up（独立 spec / session）**：
+- scheduled 任务 audit 死锁问题——audit fail 时无法 ask_human 会永远循环。候选解法：A. audit fail N 次后 admin 代 agent 调 send_master_private 主动通知；B. scheduled audit 改"事后报告"不阻塞 worker；C. fail 一次即 task 标 failed。倾向 B+C 组合
+- `createTodoTool` 接口的 `hasGoal` 参数本期保留向后兼容，可在确认无引用后彻底移除
+- `agent-handle-trigger.test.ts` 等测试文件里残留的 `triggerArrivedAtMs` / `overdueInjected` 字段引用（pre-existing tech debt，2026-06-03 dispatcher-immediate-reply spec 删 overdue 时遗留）
+
+---
+
+## 上一里程碑（2026-06-05 — trigger_messages 统一 + Schedule.target_session 一等字段）
+
+把 worker 接收任务输入的两条并行通道（`task.task_description` + `context.trigger_messages`）收敛为单通道，schedule 的目标会话从半结构化 input 字段升级为一等可选字段。
+
+- 起因：`task_description` 字段在 dispatcher 触发路径只作"一句话分类标注"无实际价值，但在 scheduled 路径作为唯一输入兜底；同时 schedule 目标会话半埋在 `task_template.input.target_*`（部分 schedule 干脆把目标群 ID 直接埋在 description 文本里），口径不一致
+- 设计：
+  - `trigger_messages` 成为 worker 接收任务输入的**唯一通道**
+  - `ExecuteTaskParams.task.task_description` 字段彻底删除（agent 协议 + 调用点）
+  - Scheduled task 通过 `system_event` 子类型 `scheduled` 表达（sender=crabot 自身）
+  - `Schedule.target_session?: { channel_id, session_id, type }` 升级一等可选字段，admin RPC + web UI 全套支持
+  - 无 target_session 时用 `SYSTEM_SESSION` 哨兵（`crabot-shared`），`crab-messaging.send_message` 硬拒绝该哨兵
+  - `buildTaskMessage` 重写为单段 `## 会话历史` 时间线，合并 trigger + recent 按 timestamp 排序
+
+改动覆盖（10 个 commits）：
+- **crabot-docs**：`protocol-agent-v2.md` §3.4 trigger_messages 注释补强；`base-protocol.md` `SystemEventType` 加 `'scheduled'` + system_event 双来源约束（Channel 平台事件 vs 系统内部触发）
+- **crabot-shared**：新增 `SYSTEM_SESSION` 哨兵常量
+- **crabot-agent**：`types.ts` SystemEventType 扩展；`ExecuteTaskParams.task.task_description` 删除；dispatcher schema/prompt 无需改动（已无该字段）；`buildTaskMessage` 重写单段时间线；`ScheduledTaskRunner` 构造 system_event trigger_message；`crab-messaging.send_message` 拒收 SYSTEM_SESSION；worker prompt 加 "系统触发任务说明" 段
+- **crabot-admin**：`Schedule.target_session` 一等字段 + create/update/get/list RPC 支持 + `validateTargetSession` 校验；启动时一次性迁移 `task_template.input.target_*` → `target_session`（幂等，channel offline 兜底）
+- **crabot-admin-web**：Schedule 编辑器加 channel + session 联动 dropdown，自动派生 session.type，支持"清除目标会话"
+
+spec：[`crabot-docs/superpowers/specs/2026-06-04-trigger-messages-unified-design.md`](crabot-docs/superpowers/specs/2026-06-04-trigger-messages-unified-design.md)
+plan：[`crabot-docs/superpowers/plans/2026-06-04-trigger-messages-unified.md`](crabot-docs/superpowers/plans/2026-06-04-trigger-messages-unified.md)
+
+测试：crabot-agent 1175/1181（4 pre-existing engine 失败无关）；crabot-admin 561/561；admin-web tsc + build 全绿。subagent 路径 `BgAgentRegistryRecord.task_description` 等 13 处 task_description 引用按 spec 明确保留不动。
+
+**待办（用户手动）**：
+- Task 13 端到端 4 场景验证（每日反思无 target / github-ai-news 迁移后有 target / 普通消息触发无回归 / agi-a-share 文本埋藏未迁移）
+- agi-a-share schedule 目标群 ID 当前仍埋在 description 文本里，可在 admin web 手动改成 target_session 配置
+
+**已知 follow-up**：
+- crabot-shared dist 传播到 channel-feishu pnpm cache 偶发延迟（dev.sh / Task 2 / Task 10 实施时遇到过），单独 follow-up
+- `runScheduleMigration` 在 schedules-load try 块内，若 persist 失败 outer catch 会误打 "No existing schedules data" 日志（cosmetic）
+
+---
+
+## 上一里程碑（2026-06-03 — SceneProfile v0.3.0：删 global + scene 参数权限分级）
 
 修一个被 trace c829e70b 暴露的产品语义错误 + agent 工具签名 bug：
 

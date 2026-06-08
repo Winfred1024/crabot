@@ -428,6 +428,30 @@ export class TelegramChannel extends ModuleBase {
     this.registerMethod('get_platform_user_info', this.handleGetPlatformUserInfo.bind(this))
     this.registerMethod('get_config', this.handleGetConfig.bind(this))
     this.registerMethod('update_config', this.handleUpdateConfig.bind(this))
+    this.registerMethod('add_reaction', this.handleAddReaction.bind(this))
+  }
+
+  /**
+   * kind → emoji 映射。'acknowledged' = 已接收开始处理。
+   * Spec: 2026-06-04-channel-task-pickup-reaction-design.md §3
+   */
+  private static readonly REACTION_EMOJI_BY_KIND: Record<string, string> = {
+    acknowledged: '🫡',
+  }
+
+  private async handleAddReaction(params: {
+    session_id: string
+    platform_message_id: string
+    kind: string
+  }): Promise<{ added: boolean }> {
+    const session = this.sessionManager.findById(params.session_id)
+    if (!session) throwError('NOT_FOUND', `Session not found: ${params.session_id}`)
+    const emoji = TelegramChannel.REACTION_EMOJI_BY_KIND[params.kind]
+    if (!emoji) throwError('INVALID_ARGUMENT', `Unknown reaction kind: ${params.kind}`)
+    const msgId = parseInt(params.platform_message_id, 10)
+    if (!Number.isFinite(msgId)) throwError('INVALID_ARGUMENT', `Invalid platform_message_id: ${params.platform_message_id}`)
+    await this.client.setMessageReaction(session.platform_session_id, msgId, emoji)
+    return { added: true }
   }
 
   // ============================================================================
@@ -577,7 +601,7 @@ export class TelegramChannel extends ModuleBase {
   private handleGetCapabilities(): ChannelCapabilities {
     return {
       supported_message_types: ['text', 'image', 'file'],
-      supported_features: [],
+      supported_features: ['reaction'],
       supports_history_query: true,
       supports_platform_user_query: true,
       max_message_length: MAX_MESSAGE_LENGTH,
@@ -784,6 +808,13 @@ function buildReplyQuotePrefix(replyTo: TgMessage): string {
   const time = new Date(replyTo.date * 1000).toISOString().slice(11, 16) // HH:MM (UTC)
   const text = replyTo.text ?? replyTo.caption ?? '[非文本消息]'
   return `> [引用 ${sender} ${time} msg_id=${replyTo.message_id}] ${text}\n\n`
+}
+
+/** 抛带 code 的 Error，让 ModuleBase RPC 层映射成结构化错误码 */
+function throwError(code: string, message: string): never {
+  const err = new Error(message) as Error & { code: string }
+  err.code = code
+  throw err
 }
 
 function storedMessageToProtocol(m: StoredMessage) {

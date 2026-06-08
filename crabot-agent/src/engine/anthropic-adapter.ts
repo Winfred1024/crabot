@@ -228,59 +228,70 @@ export class AnthropicAdapter implements LLMAdapter {
       ...(tools.length > 0 ? { tools } : {}),
     })
 
+    // signal 通常是 task 级长寿命的（一个 task 内每个 turn 都共用）。如果只 addEventListener
+    // 不 removeEventListener，每次 LLM call 都会在 signal 上挂一个 onAbort 闭包，闭包又
+    // retain 完整的 stream 对象（含 TLS / Zlib / 累积 Buffer，多在 native heap），长跑后
+    // RSS 可飙到 10GB+ 量级。详见 2026-06-06 kernel watchdog panic 复盘。
+    let onAbort: (() => void) | null = null
     if (params.signal) {
-      const onAbort = () => stream.abort()
+      onAbort = () => stream.abort()
       params.signal.addEventListener('abort', onAbort, { once: true })
     }
 
-    let currentToolId: string | null = null
+    try {
+      let currentToolId: string | null = null
 
-    for await (const event of stream) {
-      switch (event.type) {
-        case 'message_start':
-          yield { type: 'message_start', messageId: event.message.id }
-          break
+      for await (const event of stream) {
+        switch (event.type) {
+          case 'message_start':
+            yield { type: 'message_start', messageId: event.message.id }
+            break
 
-        case 'content_block_start':
-          if (event.content_block.type === 'tool_use') {
-            currentToolId = event.content_block.id
-            yield {
-              type: 'tool_use_start',
-              id: event.content_block.id,
-              name: event.content_block.name,
+          case 'content_block_start':
+            if (event.content_block.type === 'tool_use') {
+              currentToolId = event.content_block.id
+              yield {
+                type: 'tool_use_start',
+                id: event.content_block.id,
+                name: event.content_block.name,
+              }
             }
-          }
-          break
+            break
 
-        case 'content_block_delta':
-          if (event.delta.type === 'text_delta') {
-            yield { type: 'text_delta', text: event.delta.text }
-          } else if (event.delta.type === 'input_json_delta') {
-            yield {
-              type: 'tool_use_delta',
-              id: currentToolId ?? '',
-              inputJson: event.delta.partial_json,
+          case 'content_block_delta':
+            if (event.delta.type === 'text_delta') {
+              yield { type: 'text_delta', text: event.delta.text }
+            } else if (event.delta.type === 'input_json_delta') {
+              yield {
+                type: 'tool_use_delta',
+                id: currentToolId ?? '',
+                inputJson: event.delta.partial_json,
+              }
             }
-          }
-          break
+            break
 
-        case 'content_block_stop':
-          if (currentToolId !== null) {
-            yield { type: 'tool_use_end', id: currentToolId }
-            currentToolId = null
-          }
-          break
+          case 'content_block_stop':
+            if (currentToolId !== null) {
+              yield { type: 'tool_use_end', id: currentToolId }
+              currentToolId = null
+            }
+            break
 
-        case 'message_delta':
-          break
+          case 'message_delta':
+            break
+        }
       }
-    }
 
-    const finalMessage = await stream.finalMessage()
-    yield {
-      type: 'message_end',
-      stopReason: finalMessage.stop_reason ?? null,
-      usage: extractAnthropicUsage(finalMessage.usage),
+      const finalMessage = await stream.finalMessage()
+      yield {
+        type: 'message_end',
+        stopReason: finalMessage.stop_reason ?? null,
+        usage: extractAnthropicUsage(finalMessage.usage),
+      }
+    } finally {
+      if (params.signal && onAbort) {
+        params.signal.removeEventListener('abort', onAbort)
+      }
     }
   }
 }

@@ -60,6 +60,7 @@ import type {
   AgentTrace,
 } from '../types.js'
 import type { RpcClient } from 'crabot-shared'
+import { SYSTEM_CHANNEL_ID } from 'crabot-shared'
 import { createCrabMemoryServer } from '../mcp/crab-memory.js'
 import type { MemoryTaskContext } from '../mcp/crab-memory.js'
 import { mcpServerToToolDefinitions } from './mcp-tool-bridge.js'
@@ -73,6 +74,11 @@ import { createSubagentCoordinatorTools } from './subagent-coordinator-tools.js'
 import { buildSubAgentFailureOutput } from './subagent-error-classifier.js'
 import { filterToolsForSubAgent } from './subagent-tool-filter.js'
 import { assembleSubAgentPrompt } from './subagent-prompt-assembler.js'
+import {
+  SYSTEM_TRIGGER_NO_TARGET_GUIDANCE,
+  SUPPLEMENT_INJECTION_TEMPLATE_GOAL,
+  SUPPLEMENT_INJECTION_TEMPLATE_BASIC,
+} from '../prompts/agent-sections.js'
 import type { SubAgentConfig } from '../types.js'
 import { HumanMessageQueue } from '../engine/human-message-queue.js'
 import { createCodingExpertHookRegistry, createCliPermissionHook } from '../hooks/defaults.js'
@@ -336,7 +342,7 @@ export interface ExecuteTriggerMessageParams {
   /**
    * Dispatch LLM 生成的任务摘要（dispatchAction.text）。
    * 用作 task title / description；缺省时回退到 triggerSummary（原始消息切片）。
-   * 仅影响 task 元数据展示（Admin UI / Front supplement_task 决策清单 / Worker prompt 任务信息段），
+   * 仅影响 task 元数据展示（Admin UI / Dispatcher supplement 决策清单 / Worker prompt 任务信息段），
    * worker 拿到的 trigger_messages 仍是原始保真消息。
    */
   readonly dispatchActionText?: string
@@ -353,7 +359,7 @@ export interface ExecuteTriggerMessageResult {
   readonly outcome: 'completed' | 'failed' | 'max_turns' | 'aborted'
   /** 最终 assistant 文本（未必是发给用户的——可能仍是内部 reasoning） */
   readonly finalText: string
-  /** 早退工具调用（supplement_task / stay_silent）。若 loop 自然结束则 undefined */
+  /** 早退工具调用（exitsLoop=true 的工具，如 submit_audit_result）。若 loop 自然结束则 undefined */
   readonly exitToolCall?: { readonly name: string; readonly input: Record<string, unknown> }
   /** loop 内是否调过 send_message（任一 messaging tool） */
   readonly sentMessage: boolean
@@ -805,7 +811,7 @@ export class AgentHandler {
       // 但 admin RPC 是 async。折中：启动时 query 一次拍快照到 goalSetCache，
       // 之后 worker 调 set_task_goal 工具时由 callAdminRpc 包装层同步更新 cache，
       // 后续 turn 的 todo / send_message 检查 cache 立即生效，免去重复 RPC。
-      const goalModeEnabled = this.extra?.goal_mode_enabled !== false && task.source?.trigger_type !== 'scheduled'
+      const goalModeEnabled = this.isGoalModeEnabled(task.source?.trigger_type)
       let goalSetCache = false
       // conversationLog：记录任务期间 agent↔human 双向对话，audit 输入
       const conversationLog: ConversationEntry[] = []
@@ -1003,9 +1009,9 @@ export class AgentHandler {
         }
 
         // 3j. todo tool — per-task mutable plan
-        // hasGoal 门控：复杂任务必须先 set_task_goal 才能 todo 写模式（goal mode 关闭时透明放行）
-        // spec: 2026-05-23-goal-mode-design.md §5
-        tools.push(createTodoTool(taskState.todoStore, { hasGoal: goalModeEnabled ? () => goalSetCache : () => true }))
+        // todo 工具永远放行 —— goal 与 todo 解耦，由 prompt 软引导决定是否需要 goal
+        // spec: 2026-06-05-goal-soft-control-workflow-redesign-design.md §1
+        tools.push(createTodoTool(taskState.todoStore))
 
         // 3j2. set_task_goal tool — worker 写下完成承诺，触发 audit gate + todo 门控解锁
         // goal mode 关闭时不注入，agent 无法设定目标，audit gate 透明放行
@@ -1055,7 +1061,10 @@ export class AgentHandler {
       }
 
       // System prompt 也改为 callback：admin push config 触发 updateSystemPrompt 后下一轮生效。
-      const buildSystemPromptDynamic = (): string => this.buildSystemPrompt(context, subAgentsSnapshot)
+      // goalModeEnabled 沿用 runWorkerLoop 启动时计算的快照（line 810），跟 audit gate 口径一致：
+      // extra.goal_mode_enabled !== false && trigger_type !== 'scheduled'。
+      const buildSystemPromptDynamic = (): string =>
+        this.buildSystemPrompt(context, subAgentsSnapshot, goalModeEnabled)
 
       // 5. Build task message（一次性，task 启动后用户请求/记忆等不变）
       // 若 opts 提供了 initialPrompt，跳过 buildTaskMessage（trigger 流自己构造 prompt）。
@@ -1194,7 +1203,7 @@ export class AgentHandler {
 
       // 7. Run engine — systemPrompt 和 tools 传 lambda，每轮 LLM 调用前 query-loop 重新 resolve
       // maxTurns: 主任务允许长时间执行（探索类任务可能跑 1000+ turn）；context-manager 在
-      // 80% 窗口时自动 compaction 兜底。真正死循环可通过 supplement_task 或 abort 中断。
+      // 80% 窗口时自动 compaction 兜底。真正死循环可通过用户 supplement（dispatcher 注入）或 abort 中断。
       let compactionSpanId: string | undefined = undefined
       let compactionStartedAtMs: number | undefined = undefined
       const engineResult = await runEngine({
@@ -1528,7 +1537,7 @@ export class AgentHandler {
     context: WorkerAgentContext
     /**
      * Task 的标题 / 触发摘要。优先用 dispatch LLM 生成的 actionText（清晰任务化），
-     * 缺省回退到 messages 最后一条切 100 字。同时作为 task_title / task_description /
+     * 缺省回退到 messages 最后一条切 100 字。同时作为 task_title /
      * activeTasks.title / task trace.trigger.summary 使用。
      */
     taskTitle: string
@@ -1544,7 +1553,7 @@ export class AgentHandler {
     const lastMsgText = lastMsg?.content.type === 'text' ? (lastMsg.content.text ?? '') : '[非文本]'
     const triggerSummary = lastMsgText.slice(0, 100)
     // 优先用 Dispatch LLM 生成的任务摘要（清晰、抽象到任务层面），缺省时才回退到原始消息切片。
-    // Spec: title 不只是 UI 展示——Front 在做 supplement_task 决策时活跃任务清单里展示的就是它。
+    // Spec: title 不只是 UI 展示——dispatcher 做 supplement 决策时活跃任务清单里展示的就是它。
     const taskTitle = (dispatchActionText && dispatchActionText.trim().length > 0)
       ? dispatchActionText.slice(0, 200)
       : triggerSummary
@@ -1567,7 +1576,6 @@ export class AgentHandler {
     const task: ExecuteTaskParams['task'] = {
       task_id: syntheticTaskId,
       task_title: taskTitle,
-      task_description: taskTitle,
       priority: 'normal',
     }
 
@@ -1692,12 +1700,11 @@ export class AgentHandler {
    *
    * 与 executeTask 的区别：
    * - executeTask 处理 admin 已注册的 task（带 task_id）
-   * - executeTriggerMessage 处理新触发消息，可能早退（supplement/silent），可能自然结束
+   * - executeTriggerMessage 处理新触发消息，loop 自然结束（worker 端已无 supplement/silent 早退工具）
    *
    * Caller（unified-agent）根据 result.exitToolCall 自行 dispatch：
-   * - exitToolCall.name === 'supplement_task' → 路由 supplement_text 到目标 task
-   * - exitToolCall.name === 'stay_silent' → 忽略
-   * - undefined → loop 自然结束（agent 已通过 send_message 工具回复人类，或没回复）
+   * - exitToolCall === undefined → loop 自然结束（agent 已通过 send_message 工具回复人类，或没回复）
+   * - 其他 exitsLoop 工具（如 submit_audit_result）由对应专用 caller 处理
    *
    * 新代码（SessionLane handler）应直接调 register + run 分步接口。
    * Spec: 2026-05-20-session-lane-dispatcher-design.md §3.3 §7
@@ -1717,10 +1724,10 @@ export class AgentHandler {
   /**
    * 构造 trigger 场景的 user prompt。
    *
-   * - 删除群聊决策提示（trigger loop 用 send_message + stay_silent + supplement_task）
    * - 删除末尾 "## 指令" 段（工具 schema 自解释）
-   * - 新增尾部提醒：用 send_message 工具回复（含 channel_id / session_id）
+   * - 尾部提醒：用 send_message 工具回复（含 channel_id / session_id）
    * - 场景画像从 frontContext 读取（已在 system prompt 里，此处不再重复渲染）
+   * - 不注入 supplement / silent 决策提示——dispatcher 在 spawn 前已做完
    */
   private async buildTriggerUserPrompt(params: ExecuteTriggerMessageParams, currentTaskId: TaskId): Promise<string> {
     const { messages, activeTasks, isGroup, senderFriend, channelId, sessionId, frontContext } = params
@@ -1830,10 +1837,6 @@ export class AgentHandler {
     // ── 行动提醒 ──
     parts.push(`\n## 行动提醒`)
     parts.push(`- 给人类回复用 \`send_message\` 工具（channel_id="${channelId}"，session_id="${sessionId}"）；最终交付也用 intent="info"，发完直接 end_turn。`)
-    if (isGroup) {
-      parts.push(`- 若本批消息与你无关（群成员之间的讨论），调 \`stay_silent\` 退出 loop。`)
-    }
-    parts.push(`- 若本消息是对某个活跃任务的纠偏/补充，turn 0 调 \`supplement_task\` 退出 loop。`)
 
     return parts.join('\n')
   }
@@ -2109,6 +2112,16 @@ export class AgentHandler {
     return { task_id: taskId, outcome: 'completed' }
   }
 
+  /**
+   * goal mode 是否启用：admin extra 开关 + scheduled 任务硬关。
+   * 与 buildSystemPrompt / endTurnGate / supplement 文案 variant 共用同一口径。
+   * triggerType 用 string | undefined 接受 task.source.trigger_type 和 taskState.triggerType
+   * 两种不同 union，统一只比 'scheduled' 字面。
+   */
+  private isGoalModeEnabled(triggerType: string | undefined): boolean {
+    return this.extra?.goal_mode_enabled !== false && triggerType !== 'scheduled'
+  }
+
   deliverHumanResponse(taskId: TaskId, messages: ChannelMessage[]): void {
     const taskState = this.activeTasks.get(taskId)
     if (!taskState) {
@@ -2127,14 +2140,10 @@ export class AgentHandler {
     if (supplement) {
       const humanQueue = this.humanQueues.get(taskId)
       if (humanQueue) {
-        humanQueue.push(
-          `[实时纠偏 - 来自用户]\n` +
-          `用户在任务执行期间发来了补充指示：\n\n` +
-          `"${supplement}"\n\n` +
-          `请结合当前任务进展，调整你的执行方向。\n` +
-          `如果这条指示改变了原定要求，而你已用 set_task_goal 写过承诺，` +
-          `你现在可以重新调一次 set_task_goal 把目标改成新方向。`,
-        )
+        const template = this.isGoalModeEnabled(taskState.triggerType)
+          ? SUPPLEMENT_INJECTION_TEMPLATE_GOAL
+          : SUPPLEMENT_INJECTION_TEMPLATE_BASIC
+        humanQueue.push(template.replace('{supplement_content}', supplement))
         log(`[supplement] pushed to humanMessageQueue for task ${taskId}`)
       }
       // 发放"改目标券"：真实人类 supplement 到达 = 授权 worker 重设一次 goal（上限 1，不叠加）。
@@ -2777,24 +2786,22 @@ export class AgentHandler {
 
   private buildSystemPrompt(
     context: WorkerAgentContext,
-    subAgentsOverride?: ReadonlyArray<SubAgentConfig>,
+    subAgents: ReadonlyArray<SubAgentConfig>,
+    goalModeEnabled: boolean,
   ): string {
-    // unified loop spec §3.1：使用 assembleAgentPrompt（12 段统一模板）。
-    // isGroup 从 task_origin.session_type 推断；scheduled task 无 session 时默认 false。
-    const isGroup = context.task_origin?.session_type === 'group'
+    // unified loop spec §3.1：使用 assembleAgentPrompt。
     const sceneProfile = context.scene_profile
       ? { label: context.scene_profile.label, content: context.scene_profile.content }
       : undefined
-    // subAgentsOverride 由 runWorkerLoop 在 loop 启动时 snapshot 后传入，
+    // subAgents 由 runWorkerLoop 在 loop 启动时 snapshot 后传入，
     // 防止 in-flight loop 中 admin 改 subagents 后 system prompt 列表跳变。
-    const subAgentsSource = subAgentsOverride ?? this.subAgents
-    const availableSubAgents = subAgentsSource.map((s) => ({
+    const availableSubAgents = subAgents.map((s) => ({
       toolName: s.name,
       workerHint: s.when_to_use.split('\n')[0] || s.description || s.name,
     }))
     const baseAssembled = this.promptManager
       ? this.promptManager.assembleAgentPrompt({
-        isGroup,
+        goalModeEnabled,
         adminPersonality: this.systemPrompt || undefined,
         skillListing: this.buildSkillListingSnapshot(),
         availableSubAgents: availableSubAgents.length > 0 ? availableSubAgents : undefined,
@@ -2811,6 +2818,14 @@ export class AgentHandler {
       for (const m of context.sandbox_path_mappings) {
         parts.push(`- ${m.sandbox_path} -> ${m.host_path} (${m.read_only ? '只读' : '读写'})`)
       }
+    }
+    // 系统触发任务 + 无 target_session 时给 worker 明确指引（避免它对着 SYSTEM_SESSION 占位 session 调 send_message）
+    const firstTrigger = context.trigger_messages?.[0]
+    if (
+      firstTrigger?.content?.type === 'system_event'
+      && firstTrigger.session?.channel_id === SYSTEM_CHANNEL_ID
+    ) {
+      parts.push('\n' + SYSTEM_TRIGGER_NO_TARGET_GUIDANCE)
     }
     return parts.join('\n')
   }
@@ -2863,33 +2878,15 @@ export class AgentHandler {
     parts.push(`- 优先级: ${task.priority}`)
     if (task.plan) { parts.push(`- 计划: ${task.plan}`) }
 
-    // trigger_messages: 用户的原始请求（核心内容）
-    // 统一走 formatChannelMessageLine，所有结构化字段（reply_to / quote / mentions / id 等）
-    // 由 helper 渲染；引用原文在 quotedMessages 命中时嵌套 <quoted_message>。
-    if (context.trigger_messages && context.trigger_messages.length > 0) {
-      parts.push(`\n## 用户请求（共 ${context.trigger_messages.length} 条消息）`)
-      for (const msg of context.trigger_messages) {
-        parts.push(formatChannelMessageLine(msg, {
-          timezone, now, maxLen: 2000,
-          identity: identityResolver(msg),
-          quotedMessages,
-        }))
-      }
-      if (task.task_description) {
-        parts.push(`\n## 任务分类\n${task.task_description}`)
-      }
-    } else {
-      // 无 trigger_messages（如定时任务），回退到 task_description
-      parts.push(`\n## 任务描述\n${task.task_description}`)
-    }
-
     if (context.sender_friend) {
       parts.push(`\n## 发送者信息`)
       parts.push(`- 名称: ${context.sender_friend.display_name}`)
       parts.push(`- 权限: ${context.sender_friend.permission}`)
     }
 
-    if (context.task_origin) {
+    // 系统 session（SYSTEM_CHANNEL_ID）时不渲染 task_origin —— 它对 LLM 无意义且会
+    // 误导 crab-messaging 工具尝试往系统 channel 发消息。
+    if (context.task_origin && context.task_origin.channel_id !== SYSTEM_CHANNEL_ID) {
       parts.push('\n## 任务来源（crab-messaging 工具请使用这些 ID）')
       parts.push(`- Channel ID: ${context.task_origin.channel_id}`)
       parts.push(`- Session ID: ${context.task_origin.session_id}`)
@@ -2916,17 +2913,30 @@ export class AgentHandler {
     parts.push('都必须先调 `crab-memory.search_long_term`（传 query 按主题精准检索），必要时再用 `crab-memory.get_memory_detail` 取详情。')
     parts.push('禁止凭印象或常识回答此类问题——上下文里没有相关记忆 ≠ 用户没有相关偏好。')
 
-    // 最近消息（仅当前 session）：本 session 本地历史，回答跨 session 指代请看上方"短期记忆"
-    parts.push(`\n## 最近相关消息（当前 session，最近 ${recentHours} 小时，${context.recent_messages?.length ?? 0} 条）`)
-    if (context.recent_messages && context.recent_messages.length > 0) {
-      for (const m of context.recent_messages) {
-        parts.push(formatChannelMessageLine(m, {
-          timezone, now, maxLen: 500,
-          identity: identityResolver(m),
+    // === 会话历史（合并 recent + trigger 单段时间线） ===
+    // 协议语义：recent_messages 是触发消息之前的本 session 历史；trigger_messages 是
+    // 决策时的输入消息。dedupe by platform_message_id 防御性 —— 理论上不重叠，
+    // 实际防御后续路径偶发重复。稳定排序保证同 timestamp 时 recent 在前、trigger 在后。
+    const seen = new Set<string>()
+    const allMessages: ChannelMessage[] = []
+    for (const m of [...recentMsgsForPrefetch, ...triggerMsgs]) {
+      if (seen.has(m.platform_message_id)) continue
+      seen.add(m.platform_message_id)
+      allMessages.push(m)
+    }
+    allMessages.sort((a, b) => (a.platform_timestamp ?? '').localeCompare(b.platform_timestamp ?? ''))
+
+    if (allMessages.length > 0) {
+      parts.push(`\n## 会话历史（共 ${allMessages.length} 条，含触发消息；当前 session 最近 ${recentHours} 小时）`)
+      for (const msg of allMessages) {
+        parts.push(formatChannelMessageLine(msg, {
+          timezone, now, maxLen: 2000,
+          identity: identityResolver(msg),
           quotedMessages,
         }))
       }
     } else {
+      parts.push(`\n## 会话历史`)
       parts.push(`过去 ${recentHours} 小时本会话无消息。如需更早的本会话历史，调 \`get_history\` 工具。`)
     }
 

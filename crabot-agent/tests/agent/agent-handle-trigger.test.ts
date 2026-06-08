@@ -53,9 +53,9 @@ describe('AgentHandler.executeTriggerMessage 类型契约', () => {
       finalText: '',
       sentMessage: false,
       overdueInjected: false,
-      exitToolCall: { name: 'supplement_task', input: { target_task_id: 't1', supplement_text: 'fix' } },
+      exitToolCall: { name: 'submit_audit_result', input: { pass: true } },
     }
-    expect(withExit.exitToolCall?.name).toBe('supplement_task')
+    expect(withExit.exitToolCall?.name).toBe('submit_audit_result')
   })
 
   it('ExecuteTriggerMessageResult 支持 error optional', () => {

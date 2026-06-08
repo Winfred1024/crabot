@@ -20,7 +20,7 @@ export type SessionType = 'private' | 'group'
 export type ChannelFeature = 'mention' | 'quote' | 'reaction' | 'thread'
 
 /** system_event 子类型，见 base-protocol.md §5.4 system_event */
-export type SystemEventType = 'members_added'
+export type SystemEventType = 'members_added' | 'scheduled'
 
 export interface MessageContent {
   type: MessageType

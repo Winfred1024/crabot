@@ -18,14 +18,7 @@ const TOOL_DESCRIPTION =
   '- 假设颠覆 → replace 整个 plan，不要硬改\n\n' +
   '工具会返回最新完整列表，便于你 confirm 状态。'
 
-export interface TodoToolDeps {
-  /** 可选；缺省时不门控（兼容旧调用方）。
-   *  Phase 2 起 agent-handler 注入 () => task.goal !== undefined
-   *  spec: 2026-05-23-goal-mode-design.md §5 */
-  readonly hasGoal?: () => boolean
-}
-
-export function createTodoTool(store: TodoStore, deps?: TodoToolDeps): ToolDefinition {
+export function createTodoTool(store: TodoStore): ToolDefinition {
   return defineTool({
     name: 'todo',
     description: TOOL_DESCRIPTION,
@@ -59,20 +52,8 @@ export function createTodoTool(store: TodoStore, deps?: TodoToolDeps): ToolDefin
     call: async (input) => {
       const { todos, merge } = input as { todos?: unknown; merge?: boolean }
 
-      // Read mode 不门控（无 todos 字段 = 读）
       if (todos === undefined) {
         return { output: JSON.stringify(store.list()), isError: false }
-      }
-
-      // Write mode：检查 hasGoal 门控
-      if (deps?.hasGoal && !deps.hasGoal()) {
-        return {
-          output:
-            'todo: 本任务尚未 set_task_goal。复杂任务（多步骤改动 / 跨 turn / 用户明确说"确保 X"）'
-            + '请先调 set_task_goal 写下 objective + acceptance_criteria，再用 todo 拆步骤。'
-            + '简单任务（单次工具调用即可、直接问答）请直接干，不必走 todo。',
-          isError: true,
-        }
       }
 
       if (!Array.isArray(todos)) {

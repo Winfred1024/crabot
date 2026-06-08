@@ -72,6 +72,7 @@ import {
   type TaskPriority,
   type ScheduleTrigger,
   type ScheduleTriggerType,
+  type ScheduleTargetSession,
   type AdminEventPayloads,
   type ModelProvider,
   type CreateModelProviderParams,
@@ -146,6 +147,10 @@ import { ModelProviderManager } from './model-provider-manager.js'
 import { AgentManager } from './agent-manager.js'
 import { buildOnboardFinishResponse } from './onboard-finish-response.js'
 import { ChannelManager } from './channel-manager.js'
+import {
+  migrateScheduleTargetSession,
+  type SessionTypeLookup,
+} from './schedule-migration.js'
 import { ModuleInstaller } from './module-installer.js'
 import { ChatManager } from './chat-manager.js'
 import { PtyManager } from './pty-manager.js'
@@ -173,6 +178,12 @@ import {
 import type { Onboarder } from 'crabot-shared'
 import { tailLogFile } from './module-log-tail.js'
 import { buildRecoveryTask, cleanupStaleInflightTasks, isAgentRestartStale } from './recovery-handler.js'
+import {
+  VALID_TRANSITIONS,
+  applyDerivedFields,
+  assertTaskInvariants,
+  repairTaskInvariants,
+} from './task-state-machine.js'
 import { getBuiltinSkills } from './builtin-skills.js'
 import { getBuiltinSubAgents } from './builtin-subagents.js'
 import { parseCleanupParams } from './trace-cleanup-cron.js'
@@ -1312,6 +1323,12 @@ export class AdminModule extends ModuleBase {
 
       if (pathname === '/api/skills/import-upload' && req.method === 'POST') {
         await this.handleImportSkillUploadApi(req, res)
+        return
+      }
+
+      if (pathname.match(/^\/api\/skills\/[^/]+\/restore$/) && req.method === 'POST') {
+        const id = decodeURIComponent(pathname.split('/')[3])
+        await this.handleRestoreSkillApi(req, res, id)
         return
       }
 
@@ -3728,6 +3745,9 @@ export class AdminModule extends ModuleBase {
         this.schedules.set(schedule.id, schedule)
       }
       console.log(`[Admin] Loaded ${this.schedules.size} schedules`)
+
+      // 一次性迁移 legacy task_template.input.target_* → target_session（幂等，跑失败 no-op）
+      await this.runScheduleMigration()
     } catch {
       console.log('[Admin] No existing schedules data')
     }
@@ -3740,15 +3760,77 @@ export class AdminModule extends ModuleBase {
       const tasksData = await fs.readFile(this.tasksFilePath, 'utf-8')
       const loaded = JSON.parse(tasksData) as Task[]
       const { tasks: cleaned, staleCount } = cleanupStaleInflightTasks(loaded, generateTimestamp())
-      for (const task of cleaned) {
-        this.tasks.set(task.id, task)
+
+      // 修正历史脏数据（旧版本绕过 applyStatusTransition 的路径留下的残留字段）
+      let repairCount = 0
+      const repairedTasks = cleaned.map((t) => {
+        const { task: repaired, fixes } = repairTaskInvariants(t)
+        if (fixes.length > 0) {
+          repairCount++
+          console.warn(`[Admin] Repaired task ${t.id} on load: fixed ${fixes.join(', ')}`)
+        }
+        return repaired
+      })
+
+      // 兜底：所有 task 必须满足不变量。修不掉的说明 repair 实现有漏洞或磁盘数据
+      // 异常严重（如 status=waiting_human 但 waiting_human_at 缺失，无法凭空回填），
+      // 此时立刻抛错暴露问题，比起静默运行更安全
+      for (const t of repairedTasks) {
+        assertTaskInvariants(t)
+        this.tasks.set(t.id, t)
       }
+
       console.log(
         `[Admin] Loaded ${this.tasks.size} tasks` +
-        (staleCount > 0 ? ` (marked ${staleCount} in-flight task(s) failed due to admin restart)` : '')
+        (staleCount > 0 ? `, marked ${staleCount} in-flight task(s) failed (admin restart)` : '') +
+        (repairCount > 0 ? `, repaired ${repairCount} legacy dirty task(s)` : ''),
       )
-    } catch {
-      console.log('[Admin] No existing tasks data')
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
+        console.log('[Admin] No existing tasks data')
+      } else {
+        throw err  // assert 抛错或其他读取异常，不能静默
+      }
+    }
+  }
+
+  /**
+   * 一次性迁移历史 schedule：把 task_template.input.target_channel_id / target_session_id
+   * 提升为顶层 target_session 字段（Task 10 引入）。
+   *
+   * 幂等：已迁移过的 schedule 直接跳过；session.type 查不到时保留 input.target_* 兜底，
+   * 下次启动重试。
+   *
+   * 注意：本方法在 loadData 内调用，此时 RPC client 已就绪但 channel 模块可能还未启动。
+   * 失败 schedule 会保留 input.target_* 字段，等下次启动（channel 起来后）补迁移。
+   */
+  private async runScheduleMigration(): Promise<void> {
+    const sessionTypeLookup: SessionTypeLookup = async (channelId, sessionId) => {
+      try {
+        const session = await this.resolveChannelSession(channelId as ModuleId, sessionId)
+        return session.type
+      } catch {
+        return undefined
+      }
+    }
+
+    let migratedCount = 0
+    for (const schedule of Array.from(this.schedules.values())) {
+      const migrated = await migrateScheduleTargetSession(schedule, sessionTypeLookup)
+      if (migrated !== schedule) {
+        this.schedules.set(migrated.id, migrated)
+        migratedCount++
+      }
+    }
+    if (migratedCount > 0) {
+      const schedulesArray = Array.from(this.schedules.values())
+      await this.atomicWriteFile(
+        this.schedulesFilePath,
+        JSON.stringify(schedulesArray, null, 2),
+      )
+      console.log(
+        `[Admin] Migrated ${migratedCount} schedule(s) to target_session field`,
+      )
     }
   }
 
@@ -4162,22 +4244,15 @@ export class AdminModule extends ModuleBase {
     const inFlight = Array.from(this.tasks.values()).filter((t) => isAgentRestartStale(t.status))
     if (inFlight.length === 0) return
 
-    const now = generateTimestamp()
     const interrupted = inFlight.filter((t) => !t.tags.includes('recovery'))
 
     // 1. 把所有 in-flight 任务（含 recovery 自身）置 failed
     for (const t of inFlight) {
-      const oldStatus = t.status
-      t.status = 'failed'
-      t.error = 'agent_restarted_during_execution'
-      t.updated_at = now
-      this.publishAdminEvent('admin.task_status_changed', {
-        task_id: t.id,
-        old_status: oldStatus,
-        new_status: 'failed',
-      })
+      this.applyStatusTransition(t, 'failed', { error: 'agent_restarted_during_execution' })
     }
     console.log(`[Admin] Self-healing: marked ${inFlight.length} task(s) as failed (incl. ${inFlight.length - interrupted.length} recovery task)`)
+
+    const now = generateTimestamp()
 
     // 2. 生成 recovery 任务（防雪崩：跳过自身就是 recovery 的）
     const params = buildRecoveryTask(interrupted, restartCount, now)
@@ -4297,69 +4372,59 @@ export class AdminModule extends ModuleBase {
     }
   }
 
+  /**
+   * 所有 task 状态变更的统一入口。维护派生字段、校验状态机、断言不变量、发布事件。
+   *
+   * **In-place mutation**：本方法用 `Object.assign(task, applyDerivedFields(task,...))`
+   * 把派生字段写回入参 `task`，保留对象引用——`this.tasks.get(id)` 拿到的引用、
+   * RPC 返回的 `{ task }` 引用、外层 caller 持有的引用都会同时反映新状态。
+   * 不要按 `applyDerivedFields` 的纯函数语义复制一份去做事——会跟内存 Map 失同步。
+   *
+   * 不持久化（upsertTask 由调用方负责）。不发额外事件（admin.task_cancelled 由
+   * cancel 路径自行追发）。
+   *
+   * 任何直接 mutate task.status 的新代码 = bug。如发现需要绕过本方法的场景，
+   * 优先检查是不是 VALID_TRANSITIONS 缺一条；不是的话再考虑加 opt。
+   */
+  private applyStatusTransition(
+    task: Task,
+    newStatus: TaskStatus,
+    opts: {
+      error?: string
+      pendingQuestion?: string | null
+    } = {},
+  ): void {
+    const oldStatus = task.status
+    if (!VALID_TRANSITIONS[oldStatus].includes(newStatus)) {
+      throw new Error(AdminErrorCode.INVALID_STATUS_TRANSITION)
+    }
+
+    const next = applyDerivedFields(task, newStatus, generateTimestamp(), {
+      error: opts.error,
+      pendingQuestion: opts.pendingQuestion,
+    })
+    Object.assign(task, next)
+    assertTaskInvariants(task)
+
+    this.publishAdminEvent('admin.task_status_changed', {
+      task_id: task.id,
+      old_status: oldStatus,
+      new_status: newStatus,
+    })
+  }
+
   private async handleUpdateTaskStatus(params: UpdateTaskStatusParams): Promise<{ task: Task }> {
     const task = this.tasks.get(params.task_id)
     if (!task) {
       throw new Error(AdminErrorCode.TASK_NOT_FOUND)
     }
 
-    // 验证状态转换
-    const validTransitions: Record<TaskStatus, TaskStatus[]> = {
-      pending: ['planning', 'cancelled'],
-      planning: ['executing', 'failed', 'cancelled'],
-      executing: ['waiting_human', 'waiting', 'completed', 'failed', 'cancelled'],
-      waiting_human: ['executing', 'cancelled', 'failed'],
-      waiting: ['executing', 'failed', 'cancelled'],
-      completed: [],
-      failed: [],
-      cancelled: [],
-    }
+    this.applyStatusTransition(task, params.status, {
+      error: params.error,
+      pendingQuestion: params.pending_question,
+    })
 
-    if (!validTransitions[task.status].includes(params.status)) {
-      throw new Error(AdminErrorCode.INVALID_STATUS_TRANSITION)
-    }
-
-    const oldStatus = task.status
-    task.status = params.status
-    task.updated_at = generateTimestamp()
-
-    if (params.status === 'executing' && !task.started_at) {
-      task.started_at = task.updated_at
-    }
-
-    if (['completed', 'failed', 'cancelled'].includes(params.status)) {
-      task.completed_at = task.updated_at
-    }
-
-    // pending_question 处理：
-    // 1. status === 'waiting_human' 时写入（覆盖式）
-    // 2. status === 'executing' 时自动清空（resume 路径）
-    // 3. 显式传 null 也清空
-    if (params.status === 'waiting_human' && params.pending_question !== undefined) {
-      task.pending_question = params.pending_question ?? undefined
-    } else if (params.status === 'executing' || params.pending_question === null) {
-      task.pending_question = undefined
-    }
-
-    // waiting_human_at：进入 waiting_human 写时间戳，离开时清空
-    if (params.status === 'waiting_human') {
-      task.waiting_human_at = task.updated_at
-    } else {
-      task.waiting_human_at = undefined
-    }
-
-    // waiting_at：进入 waiting（异步子 agent）写时间戳，离开时清空
-    if (params.status === 'waiting') {
-      task.waiting_at = task.updated_at
-    } else {
-      task.waiting_at = undefined
-    }
-
-    if (params.error) {
-      task.error = params.error
-    }
-
-    // 写入任务结果
+    // 应用层副作用（不属于状态机）
     if (params.result) {
       task.result = params.result
     }
@@ -4382,13 +4447,6 @@ export class AdminModule extends ModuleBase {
         }
       }
     }
-
-    // 发布事件
-    this.publishAdminEvent('admin.task_status_changed', {
-      task_id: task.id,
-      old_status: oldStatus,
-      new_status: params.status,
-    })
 
     return { task }
   }
@@ -4580,40 +4638,23 @@ export class AdminModule extends ModuleBase {
       throw new Error(AdminErrorCode.TASK_NOT_FOUND)
     }
 
-    // pending 状态可以直接取消
-    if (task.status === 'pending') {
-      task.status = 'cancelled'
-      task.completed_at = generateTimestamp()
-      task.updated_at = generateTimestamp()
-      if (params.reason) {
-        task.error = params.reason
+    // VALID_TRANSITIONS 已覆盖 pending/planning/executing/waiting_human → cancelled。
+    // applyStatusTransition 会抛 INVALID_STATUS_TRANSITION（含 waiting / 终态等不可取消的情况）。
+    // TODO: pending 之外的 in-flight 取消应通知 worker，现在仍是直切。
+    try {
+      this.applyStatusTransition(task, 'cancelled', { error: params.reason })
+    } catch (err) {
+      // 把状态机的 INVALID_STATUS_TRANSITION 翻译成 admin 域的 TASK_NOT_CANCELLABLE
+      if (err instanceof Error && err.message === AdminErrorCode.INVALID_STATUS_TRANSITION) {
+        throw new Error(AdminErrorCode.TASK_NOT_CANCELLABLE)
       }
-      await this.upsertTask(task)
-
-      this.publishAdminEvent('admin.task_cancelled', {
-        task_id: task.id,
-        reason: params.reason,
-      })
-
-      return { task, cancelled: true }
+      throw err
     }
 
-    // 其他状态需要检查是否可取消
-    const cancellableStatuses: TaskStatus[] = ['planning', 'executing', 'waiting_human']
-    if (!cancellableStatuses.includes(task.status)) {
-      throw new Error(AdminErrorCode.TASK_NOT_CANCELLABLE)
-    }
-
-    // TODO: 调用 Worker Agent 的 cancel_task 方法
-    // 暂时直接取消
-    task.status = 'cancelled'
-    task.completed_at = generateTimestamp()
-    task.updated_at = generateTimestamp()
-    if (params.reason) {
-      task.error = params.reason
-    }
     await this.upsertTask(task)
 
+    // 兼容事件：保留 admin.task_cancelled（含 reason），与 applyStatusTransition 已发的
+    // admin.task_status_changed 并行存在
     this.publishAdminEvent('admin.task_cancelled', {
       task_id: task.id,
       reason: params.reason,
@@ -4625,6 +4666,28 @@ export class AdminModule extends ModuleBase {
   // ============================================================================
   // Schedule 协议方法
   // ============================================================================
+
+  /**
+   * 校验 target_session 字段。
+   *
+   * 当前只做轻量校验：
+   * - channel_id / session_id 非空
+   * - type 必须是 'private' | 'group'
+   *
+   * channel 注册存在性 / channel 侧 session 存在性 / type 一致性 校验延后（follow-up）。
+   * 因为 schedule 可能在 channel 还未启动时创建（先配后用），过严校验会阻塞合法场景。
+   */
+  private validateTargetSession(target: ScheduleTargetSession): void {
+    if (!target.channel_id || typeof target.channel_id !== 'string') {
+      throw new Error('target_session.channel_id is required and must be a non-empty string')
+    }
+    if (!target.session_id || typeof target.session_id !== 'string') {
+      throw new Error('target_session.session_id is required and must be a non-empty string')
+    }
+    if (target.type !== 'private' && target.type !== 'group') {
+      throw new Error(`target_session.type must be 'private' or 'group', got: ${String(target.type)}`)
+    }
+  }
 
   private async handleCreateSchedule(params: CreateScheduleParams): Promise<{ schedule: Schedule }> {
     // 验证 cron 表达式
@@ -4647,6 +4710,11 @@ export class AdminModule extends ModuleBase {
       throw new Error(`creator_friend_id ${params.creator_friend_id} not found`)
     }
 
+    // 校验 target_session
+    if (params.target_session !== undefined) {
+      this.validateTargetSession(params.target_session)
+    }
+
     const now = generateTimestamp()
     const schedule: Schedule = {
       id: generateId(),
@@ -4662,6 +4730,7 @@ export class AdminModule extends ModuleBase {
       creator_friend_id: params.creator_friend_id,
       created_at: now,
       updated_at: now,
+      target_session: params.target_session,
     }
 
     this.schedules.set(schedule.id, schedule)
@@ -4737,6 +4806,15 @@ export class AdminModule extends ModuleBase {
       }
     }
 
+    // target_session 三态：undefined 不变 / null 清除 / 对象更新
+    let targetSessionPatch: { target_session?: ScheduleTargetSession | undefined } = {}
+    if (params.target_session === null) {
+      targetSessionPatch = { target_session: undefined }
+    } else if (params.target_session !== undefined) {
+      this.validateTargetSession(params.target_session)
+      targetSessionPatch = { target_session: params.target_session }
+    }
+
     const merged: Schedule = {
       ...existing,
       ...(params.name !== undefined ? { name: params.name } : {}),
@@ -4744,6 +4822,7 @@ export class AdminModule extends ModuleBase {
       ...(params.enabled !== undefined ? { enabled: params.enabled } : {}),
       ...(params.trigger !== undefined ? { trigger: params.trigger } : {}),
       ...(params.task_template !== undefined ? { task_template: params.task_template } : {}),
+      ...targetSessionPatch,
       updated_at: generateTimestamp(),
     }
     const schedule: Schedule = {
@@ -4873,6 +4952,10 @@ export class AdminModule extends ModuleBase {
           title: string
           description: string
           input?: Record<string, unknown>
+          /** Schedule 的目标会话（一等字段，Task 10 引入）。
+           *  Agent 用它填 task_origin + ScheduledTaskRunner 构造 trigger_message.session。
+           *  无值时 ScheduledTaskRunner 走 SYSTEM_SESSION 哨兵分支。 */
+          target_session?: ScheduleTargetSession
           resolved_permissions?: ResolvedPermissions
         },
         { task_id: string; assigned_worker: string }
@@ -4885,6 +4968,7 @@ export class AdminModule extends ModuleBase {
           title,
           description,
           ...(input ? { input } : {}),
+          ...(schedule.target_session ? { target_session: schedule.target_session } : {}),
           ...(resolvedPermissions ? { resolved_permissions: resolvedPermissions } : {}),
         },
         this.config.moduleId
@@ -6331,9 +6415,11 @@ export class AdminModule extends ModuleBase {
   ): Promise<void> {
     try {
       const body = await this.readJsonBody<{ skill_md_url: string; source_git_url?: string; overwrite?: boolean }>(req)
-      const skill = await this.skillManager.importFromGit(body.skill_md_url, body.source_git_url, body.overwrite)
+      const { entry, was_overwrite } = await this.skillManager.importFromGit(
+        body.skill_md_url, body.source_git_url, body.overwrite,
+      )
       res.writeHead(201, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify(skill))
+      res.end(JSON.stringify({ ...entry, was_overwrite }))
     } catch (err) {
       if (err instanceof DuplicateSkillError) {
         this.writeDuplicateSkillResponse(res, err)
@@ -6350,10 +6436,10 @@ export class AdminModule extends ModuleBase {
   ): Promise<void> {
     try {
       const body = await this.readJsonBody<{ dir_path: string; overwrite?: boolean }>(req)
-      const skill = await this.skillManager.importFromLocalPath(body.dir_path, body.overwrite)
+      const { entry, was_overwrite } = await this.skillManager.importFromLocalPath(body.dir_path, body.overwrite)
       this.triggerPushAfter('skill import-local')
       res.writeHead(201, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify(skill))
+      res.end(JSON.stringify({ ...entry, was_overwrite }))
     } catch (err) {
       if (err instanceof DuplicateSkillError) {
         this.writeDuplicateSkillResponse(res, err)
@@ -6371,10 +6457,12 @@ export class AdminModule extends ModuleBase {
     try {
       // base64 编码后约为原始大小的 1.37 倍，允许最大 50MB zip 文件
       const body = await this.readJsonBody<{ base64_content: string; filename: string; overwrite?: boolean }>(req, 70 * 1024 * 1024)
-      const skill = await this.skillManager.importFromZip(body.base64_content, body.filename, body.overwrite)
+      const { entry, was_overwrite } = await this.skillManager.importFromZip(
+        body.base64_content, body.filename, body.overwrite,
+      )
       this.triggerPushAfter('skill import-upload')
       res.writeHead(201, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify(skill))
+      res.end(JSON.stringify({ ...entry, was_overwrite }))
     } catch (err) {
       if (err instanceof DuplicateSkillError) {
         this.writeDuplicateSkillResponse(res, err)
@@ -6382,6 +6470,22 @@ export class AdminModule extends ModuleBase {
       }
       res.writeHead(400, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'import failed' }))
+    }
+  }
+
+  private async handleRestoreSkillApi(
+    _req: IncomingMessage,
+    res: ServerResponse,
+    id: string,
+  ): Promise<void> {
+    try {
+      const entry = await this.skillManager.restore(id)
+      this.triggerPushAfter('skill restore')
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(entry))
+    } catch (err) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'restore failed' }))
     }
   }
 

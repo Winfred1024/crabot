@@ -310,3 +310,45 @@ describe('FeishuClient.getChat permission errors', () => {
     expect((caught as RpcError).details?.missing_scope).toBe('im:chat:readonly')
   })
 })
+
+describe('addReaction', () => {
+  it('调 /open-apis/im/v1/messages/:id/reactions POST，body 含 reaction_type.emoji_type', async () => {
+    const client = makeClient()
+    const requestMock = (client as any).client.request as ReturnType<typeof vi.fn>
+    requestMock.mockReset()
+    requestMock.mockResolvedValue({ code: 0 })
+
+    await client.addReaction('om_abc', 'OnIt')
+
+    expect(requestMock).toHaveBeenCalledTimes(1)
+    const arg = requestMock.mock.calls[0][0]
+    expect(arg.method).toBe('POST')
+    expect(arg.url).toBe('/open-apis/im/v1/messages/om_abc/reactions')
+    expect(arg.data).toEqual({ reaction_type: { emoji_type: 'OnIt' } })
+  })
+
+  it('飞书返回 code !== 0 抛 FeishuClientError(CHANNEL_SEND_FAILED)', async () => {
+    const client = makeClient()
+    const requestMock = (client as any).client.request as ReturnType<typeof vi.fn>
+    requestMock.mockReset()
+    requestMock.mockResolvedValue({ code: 230001, msg: 'message not found' })
+
+    await expect(client.addReaction('om_x', 'OnIt')).rejects.toMatchObject({
+      name: 'FeishuClientError',
+      code: 'CHANNEL_SEND_FAILED',
+      message: expect.stringContaining('message not found'),
+    })
+  })
+
+  it('message_id 含特殊字符时 URL 编码', async () => {
+    const client = makeClient()
+    const requestMock = (client as any).client.request as ReturnType<typeof vi.fn>
+    requestMock.mockReset()
+    requestMock.mockResolvedValue({ code: 0 })
+
+    await client.addReaction('om/with slash', 'OnIt')
+
+    const arg = requestMock.mock.calls[0][0]
+    expect(arg.url).toBe('/open-apis/im/v1/messages/om%2Fwith%20slash/reactions')
+  })
+})

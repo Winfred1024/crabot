@@ -27,9 +27,9 @@ describe('shouldSkipTaskReflection', () => {
     }))).toBe(false)
   })
 
-  it('早退（supplement/silent，有 exitToolCall）→ skip', () => {
+  it('早退（exitsLoop 工具触发，有 exitToolCall）→ skip', () => {
     expect(shouldSkipTaskReflection(r({
-      exitToolCall: { name: 'supplement_task', input: {} },
+      exitToolCall: { name: 'submit_audit_result', input: {} },
       tool_call_count: TOOL_CALL_REFLECTION_THRESHOLD * 2,  // 即使长跑也 skip
     }))).toBe(true)
   })

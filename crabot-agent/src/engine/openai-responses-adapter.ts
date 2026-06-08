@@ -220,7 +220,12 @@ export class OpenAIResponsesAdapter implements LLMAdapter {
     // we use internally so replay emits both id and call_id to the Responses API.
     const activeFunctionCalls = new Map<string, { encodedId: string; name: string }>()
 
-    for await (const { event, data } of readSSEEvents(response.body)) {
+    // response.body 异常退出或 throw 不显式 cancel 时，undici 在 keep-alive 路径下
+    // 可能晚释放 socket / decompressor（native heap）。详见 2026-06-06 kernel watchdog
+    // panic 复盘 —— anthropic-adapter 是主因，这里属同类防御。
+    const sseBody = response.body
+    try {
+    for await (const { event, data } of readSSEEvents(sseBody)) {
       let parsed: Record<string, unknown>
       try {
         parsed = JSON.parse(data)
@@ -349,6 +354,9 @@ export class OpenAIResponsesAdapter implements LLMAdapter {
         default:
           break
       }
+    }
+    } finally {
+      try { await sseBody.cancel() } catch { /* already drained / errored */ }
     }
   }
 }
