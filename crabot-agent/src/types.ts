@@ -775,8 +775,19 @@ export interface WorkerTaskState {
    */
   readonly outboundBuffer: Array<{
     readonly channel_id: string
+    readonly session_id: string
     readonly content: string
     readonly intent: 'info'
+    readonly content_type?: 'text' | 'image' | 'file'
+    readonly media_url?: string
+    readonly file_path?: string
+    readonly filename?: string
+    readonly mentions?: ReadonlyArray<{
+      readonly friend_id?: string
+      readonly platform_user_id?: string
+      readonly at_name?: string
+    }>
+    readonly quote_message_id?: string
     readonly sent_at_attempt_ms: number
   }>
   /** Active audit subagent id；设置后表示 task 处于"等审态"。undefined = 工作态。 */

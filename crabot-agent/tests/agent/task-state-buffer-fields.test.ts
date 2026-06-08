@@ -49,6 +49,7 @@ describe('WorkerTaskState 新增字段（Task 5）', () => {
     const ts = makeStub()
     ts.outboundBuffer.push({
       channel_id: 'wechat:friend:abc',
+      session_id: 'session_abc',
       content: 'hello',
       intent: 'info',
       sent_at_attempt_ms: Date.now(),
