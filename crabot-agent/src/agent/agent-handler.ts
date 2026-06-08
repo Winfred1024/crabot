@@ -913,7 +913,6 @@ export class AgentHandler {
       // permissionConfig（auditor 调 dangerous 工具如 Bash 时 runtime permission check 才能放行）。
       // spec: 2026-05-23-goal-mode-design.md §6 / §7.2（auditor 工具来源）
       let auditBaseTools: ReadonlyArray<ToolDefinition> = []
-      let auditPermissionCfg: ToolPermissionConfig | undefined
 
       // wait_for_signal 用：跟踪本任务派出的 async subagent entity_ids。
       // delegate_task 异步路径返回 `{agent_id, status:'launched'}`，我们在 wrapper 里
@@ -1038,9 +1037,8 @@ export class AgentHandler {
         // baseTools 构造后立刻把 outer auditBaseTools 接上，给 audit gate 的 getter 用。
         // 见 mcpConfigFactory 上方的 outer let 声明。
         const baseTools = filterToolsByPermission(baseToolsRaw, baseToolsPermissionConfig)
-        // 把 baseTools / baseToolsPermissionConfig 接到 outer，audit gate getter 用。
+        // 把 baseTools 接到 outer，audit gate getter 用。
         auditBaseTools = baseTools
-        auditPermissionCfg = baseToolsPermissionConfig
 
         if (subAgentsSnapshot.length > 0) {
           const baseRunSubAgent = this.makeRunSubAgent({
