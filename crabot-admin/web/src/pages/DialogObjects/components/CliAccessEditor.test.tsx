@@ -31,6 +31,6 @@ describe('CliAccessEditor', () => {
     render(<CliAccessEditor value={baseValue} onChange={(v) => { captured = v }} />)
     const scheduleWrite = screen.getByLabelText('schedule-write')
     fireEvent.click(scheduleWrite)
-    expect(captured?.schedule).toBe('write')
+    expect(captured!.schedule).toBe('write')
   })
 })
