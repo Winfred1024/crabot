@@ -15,13 +15,18 @@ export function createSetCwdTool(ctx: SetCwdContext): ToolDefinition {
     name: 'set_cwd',
     category: 'file_io',
     description:
-      '把当前 task 的工作目录（cwd）切到指定项目根。' +
-      '后续工具调用和派出的 subagent 都自动用新 cwd。\n' +
-      '使用时机：任务关联具体项目时，先用 search_memory 找项目目录，' +
-      '找到后调本工具切过去。本 task 内一次就够，不需要反复切换。\n' +
-      '切完继续按主工作流推进（[意图澄清] / [目标承诺] / [规划与执行]）——' +
-      '本工具只切 cwd 不改流程节奏。项目背景文档（CLAUDE.md / AGENTS.md）' +
-      '由调查方按需 Read，本工具不读。',
+      '**作用**：把当前 task 的工作目录（cwd）改成 path。' +
+      '调用后，本 task 后续的 Bash / Read / Grep / Glob / Write / Edit 工具，' +
+      '以及通过 delegate_task 派出的所有 subagent，都自动用 path 作为工作目录' +
+      '——你不需要在每次工具调用里写绝对路径。\n' +
+      '未调用时 cwd 默认是 agent 进程启动目录（通常是 home），不一定是用户期望的项目根。\n\n' +
+      '**何时调**：任务关联一个具体代码项目时调。' +
+      '典型流程：search_memory 查到项目目录 → set_cwd(/path)。' +
+      '本 task 内一次就够，不需要反复切。\n\n' +
+      '**何时不调**：任务跟具体项目无关（讨论 / 闲聊 / 通用问答 / 纯配置问题）。\n\n' +
+      '**不做的事**：本工具不读 CLAUDE.md / AGENTS.md，' +
+      '也不改变你的工作流节奏。项目背景文档由调查方（research_collector）' +
+      '/ 规划方（code_planner）在自己流程里按需 Read。',
     inputSchema: {
       type: 'object',
       properties: {

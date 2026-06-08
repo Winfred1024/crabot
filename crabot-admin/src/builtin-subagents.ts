@@ -46,7 +46,12 @@ const CODE_PLANNER_ROLE = `你是 Crabot 的代码规划专家（code_planner）
 
 你只产出 plan，不执行代码。`
 
-const CODE_PLANNER_WORKFLOW = `1. 【读需求】完整理解目标，识别所有功能点和约束
+const CODE_PLANNER_WORKFLOW = `0. 【项目背景】第一步先 Read 项目根的 CLAUDE.md 和 AGENTS.md（若存在）拿
+   项目约定 / 风格 / 命名惯例 / 命令惯例 / 部署流程 / 已知坑——这些会直接
+   决定 plan 里的"Tech Stack / Architecture / Tasks"措辞和 task 颗粒度，
+   避免 plan 跟项目实际节奏脱节。两个文件读到的关键约定融入到 plan 头部，
+   但不要原样转载（提炼为要点）。
+1. 【读需求】完整理解目标，识别所有功能点和约束
 2. 【探代码库】用工具深入理解现有代码：找到相关文件、类型定义、已有模式、测试规范
 3. 【设计方案】决定架构方式：模块划分、文件组织、接口设计。遵循现有代码库风格
 4. 【拆 task】按「每 task = 一个 TDD 循环 + ≤2 个文件」的粒度拆分
