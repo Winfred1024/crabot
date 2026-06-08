@@ -805,7 +805,7 @@ describe('Admin Web API', () => {
       const response = await getFriendPermissions(token, 'missing-friend-read-test')
 
       expect(response.statusCode).toBe(404)
-      expect(response.body.error).toBe('Friend not found')
+      expect((response.body as unknown as { error: string }).error).toBe('Friend not found')
     })
 
     it('should return 404 for an unknown friend when updating permissions', async () => {
@@ -829,7 +829,7 @@ describe('Admin Web API', () => {
       })
 
       expect(response.statusCode).toBe(404)
-      expect(response.body.error).toBe('Friend not found')
+      expect((response.body as unknown as { error: string }).error).toBe('Friend not found')
     })
 
     it('should read the master friend with empty memory scopes and master storage defaults', async () => {
@@ -1360,7 +1360,7 @@ function getFriendPermissions(token: string, friendId: string) {
       storage: FriendPermissionConfig['storage']
       memory_scopes: string[]
     } | null
-  } | { error: string }>(
+  }>(
     TEST_WEB_PORT,
     `/api/friends/${friendId}/permissions`,
     'GET',
@@ -1374,7 +1374,7 @@ function putFriendPermissions(
   friendId: string,
   config: Omit<FriendPermissionConfig, 'updated_at'>
 ) {
-  return makeWebRequest<{ config: FriendPermissionConfig } | { error: string }>(
+  return makeWebRequest<{ config: FriendPermissionConfig }>(
     TEST_WEB_PORT,
     `/api/friends/${friendId}/permissions`,
     'PUT',
