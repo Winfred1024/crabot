@@ -1,0 +1,108 @@
+// crabot-agent/src/agent/audit-result-marker.ts
+
+export interface AuditPendingMarker {
+  readonly type: 'audit_pending'
+  readonly auditId: string
+}
+
+export interface AuditResultMarker {
+  readonly type: 'audit_result'
+  readonly auditId: string
+  readonly pass: boolean
+  readonly failedCriteria: ReadonlyArray<string>
+  readonly detailedReport: string
+}
+
+export interface AuditAbortedMarker {
+  readonly type: 'audit_aborted'
+  readonly auditId: string
+  readonly reason: string
+}
+
+export type SystemMarker = AuditPendingMarker | AuditResultMarker | AuditAbortedMarker
+
+/**
+ * Build a system marker as a tag-wrapped user message. Tag前缀风格与 <sub_agent_notification>
+ * 一致，避免给 humanMessageQueue 加结构化 push API。
+ */
+export function buildAuditPendingMarker(params: { auditId: string }): string {
+  return [
+    '<audit_pending>',
+    `<audit_id>${params.auditId}</audit_id>`,
+    '<instruction>',
+    '你的最终交付正在系统自检中。请调 wait_for_signal 工具挂起等待审核结果；',
+    '期间如有用户补充指示也会唤醒你。不要直接 end_turn。',
+    '</instruction>',
+    '</audit_pending>',
+  ].join('\n')
+}
+
+export function buildAuditResultMarker(params: {
+  auditId: string
+  pass: boolean
+  failedCriteria: ReadonlyArray<string>
+  detailedReport: string
+}): string {
+  const payload = JSON.stringify({
+    audit_id: params.auditId,
+    pass: params.pass,
+    failed_criteria: params.failedCriteria,
+  })
+  return [
+    '<audit_result>',
+    payload,
+    '</audit_result>',
+    params.detailedReport ? `<detailed_report>\n${params.detailedReport}\n</detailed_report>` : '',
+  ].filter(Boolean).join('\n')
+}
+
+export function buildAuditAbortedMarker(params: { auditId: string; reason: string }): string {
+  return [
+    '<audit_aborted>',
+    `<audit_id>${params.auditId}</audit_id>`,
+    `<reason>${params.reason}</reason>`,
+    '</audit_aborted>',
+  ].join('\n')
+}
+
+/** Parse a humanQueue message and identify if it's a system marker. */
+export function parseSystemMarker(text: string): SystemMarker | null {
+  if (!text || typeof text !== 'string') return null
+
+  if (text.startsWith('<audit_pending>')) {
+    const idMatch = /<audit_id>([^<]+)<\/audit_id>/.exec(text)
+    return idMatch ? { type: 'audit_pending', auditId: idMatch[1] } : null
+  }
+
+  if (text.startsWith('<audit_result>')) {
+    const jsonMatch = /<audit_result>\s*([\s\S]+?)\s*<\/audit_result>/.exec(text)
+    if (!jsonMatch) return null
+    try {
+      const payload = JSON.parse(jsonMatch[1]) as {
+        audit_id?: string
+        pass?: boolean
+        failed_criteria?: ReadonlyArray<string>
+      }
+      const reportMatch = /<detailed_report>\n([\s\S]+?)\n<\/detailed_report>/.exec(text)
+      return {
+        type: 'audit_result',
+        auditId: payload.audit_id ?? '',
+        pass: payload.pass === true,
+        failedCriteria: Array.isArray(payload.failed_criteria) ? payload.failed_criteria.map(String) : [],
+        detailedReport: reportMatch ? reportMatch[1] : '',
+      }
+    } catch {
+      return null
+    }
+  }
+
+  if (text.startsWith('<audit_aborted>')) {
+    const idMatch = /<audit_id>([^<]+)<\/audit_id>/.exec(text)
+    const reasonMatch = /<reason>([^<]+)<\/reason>/.exec(text)
+    return idMatch
+      ? { type: 'audit_aborted', auditId: idMatch[1], reason: reasonMatch ? reasonMatch[1] : '' }
+      : null
+  }
+
+  return null
+}
