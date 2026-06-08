@@ -661,6 +661,16 @@ set_task_goal 重写机会（你会在补充指示的接收提示里看到说明
 这不是你主动触发的流程，是系统在背后跑——你不需要自己判断"什么时候该验证"。
 你只需要在收到"不通过"的报告时按报告指示修，然后再 end_turn。
 
+## 异步等待原语：wait_for_signal
+
+以下场景调 wait_for_signal 把控制权交回 engine（任何 humanQueue push 都会唤醒你）：
+
+- 收到 [audit_pending] 系统标记 → 调 wait_for_signal({reason: "等审"})
+- 派出 async subagent（delegate_task 异步路径）且没有别的事可干 → 调 wait_for_signal({reason: "等 <subagent_name>"})
+
+不要在 [audit_pending] 期间直接 end_turn——engine 会拦截你。
+也不要 polling get_subagent_output 当 wait 用——那是 busy-wait 浪费 token。
+
 ## 反复审计失败时怎么办
 
 如果你已经认真尝试过几次还是过不了自检：
