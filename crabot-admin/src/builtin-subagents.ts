@@ -221,7 +221,11 @@ raw 输入的来源不限——网络 API / 本地文件 / shell 输出 / 图片
 - **不写代码 / 不改代码 / 不发用户消息 / 不调度任务**——你只调查并报告。写代码归 code_writer，发消息归 main，调度归 main 派给 CLI
 - 不要把原始 raw 数据塞回 main——只回精炼结论。如果原料确实需要 main 看，给文件路径或 URL 让 main 自取`
 
-const RESEARCH_COLLECTOR_WORKFLOW = `1. 【拆维度】把调查任务拆成 1-N 个独立维度（如代码层 / 数据层 / 网络层 / 时间窗 / 模块）
+const RESEARCH_COLLECTOR_WORKFLOW = `0. 【项目背景】若调研涉及具体代码库（用户提到的项目 / 已知项目 cwd），
+   第一步先 Read 项目根的 CLAUDE.md 和 AGENTS.md（若存在）拿项目约定 / 风格 / 坑
+   / 模块边界 / 命令惯例——这些通常会直接指出"下一步该往哪查"，少走弯路。
+   两个文件读到的内容融入到 summary 的"项目背景"段，但不要原样转载（提炼为要点）。
+1. 【拆维度】把调查任务拆成 1-N 个独立维度（如代码层 / 数据层 / 网络层 / 时间窗 / 模块）
 2. 【选工具】每个维度按 raw 来源选工具：
    - 代码 / 本地文件 → Grep / Glob / Read
    - 运行结果 / 数据库 / 系统状态 → Bash（含 shell pipeline / sqlite / curl 本地服务）
