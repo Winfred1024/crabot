@@ -550,8 +550,19 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
       await options.humanMessageQueue.waitBarrier(abortSignal)
     }
 
+    // 判定本 turn 是否含进了 outboundBuffer 的 send_message——若是，则跳过 drainPending，
+    // 防止 supplement 在 turn 边界打乱 info+end_turn 组合判定（spec 2026-06-07 §4.2）。
+    // barrier wait 仍然要做（ask_human 等设了 barrier 的工具不受影响）。
+    // 被跳过的 supplement 留在 humanQueue 里，等 audit gate 触发后由后续路径自然 drain。
+    const bufferedSendMessageInTurn = processed.toolUseBlocks.some((tu, i) => {
+      const bare = tu.name.replace(/^mcp__[^_]+__/, '')
+      if (bare !== 'send_message' && bare !== 'send_private_message') return false
+      const r = toolResults[i]
+      return typeof r?.content === 'string' && r.content.includes('"buffered":true')
+    })
+
     // Inject any pending human supplement messages
-    if (options.humanMessageQueue) {
+    if (options.humanMessageQueue && !bufferedSendMessageInTurn) {
       const supplements = options.humanMessageQueue.drainPending()
       for (const content of supplements) {
         messages.push(createUserMessage(content))
