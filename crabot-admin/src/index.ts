@@ -2135,7 +2135,17 @@ export class AdminModule extends ModuleBase {
           '.woff': 'font/woff',
           '.woff2': 'font/woff2',
         }
-        res.writeHead(200, { 'Content-Type': contentTypes[ext] || 'application/octet-stream' })
+        // SPA cache 策略：hashed assets（/assets/*-<hash>.*）immutable 长 cache；
+        // 其他（含 index.html）no-cache 强制 revalidate，避免浏览器 heuristic cache
+        // 卡住旧 index.html → 引用旧 hash 资源 → 用户看不到新版。
+        const isHashedAsset = /^\/assets\/.+-[A-Za-z0-9_-]{8,}\.[a-z0-9]+$/.test(pathname)
+        const cacheControl = isHashedAsset
+          ? 'public, max-age=31536000, immutable'
+          : 'no-cache, must-revalidate'
+        res.writeHead(200, {
+          'Content-Type': contentTypes[ext] || 'application/octet-stream',
+          'Cache-Control': cacheControl,
+        })
         res.end(content)
         return
       }
@@ -2147,7 +2157,10 @@ export class AdminModule extends ModuleBase {
     try {
       const indexPath = path.join(webDir, 'index.html')
       const content = await fs.readFile(indexPath)
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-cache, must-revalidate',
+      })
       res.end(content)
     } catch {
       res.writeHead(404)
