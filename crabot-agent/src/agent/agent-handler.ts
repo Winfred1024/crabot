@@ -1399,6 +1399,15 @@ export class AgentHandler {
           clearActiveAuditId: () => {
             taskState.activeAuditId = undefined
           },
+          // Task 13 兜底：audit 跑中 LLM 直接 end_turn 时 engine 判定是否仍有活跃 audit。
+          // taskState.activeAuditId 非空表示 audit 子进程还没完成。
+          // spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.6
+          hasActiveAudit: () => taskState.activeAuditId !== undefined,
+          // Task 13 兜底拦截耗尽 3 次后，engine 调此 abort 当前 audit。
+          // 复用 set_task_goal 路径相同的 abortAudit closure——
+          // controller.abort + push audit_aborted marker + 清 outboundBuffer + activeAuditId。
+          // spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.6 / §4.7
+          abortActiveAudit: (reason: string) => abortAudit(reason),
           endTurnGate: this.buildAsyncAuditEndTurnGate({
             goalModeEnabled,
             goalSetCacheGetter: () => goalSetCache,
