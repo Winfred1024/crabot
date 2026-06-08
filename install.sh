@@ -142,7 +142,7 @@ ensure_system_uv() {
   if ! sudo -u nobody bash -c 'command -v uv && uv --version' &>/dev/null; then
     error "system-level uv not found (probe user 'nobody' cannot run \`uv --version\`)."
     error "install uv system-wide first, e.g.:"
-    error "  curl -LsSf https://astral.sh/uv/install.sh | sudo env UV_INSTALL_DIR=/usr/local sh -s -- --no-modify-path"
+    error "  curl -LsSf https://astral.sh/uv/install.sh | sudo env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh"
     exit 1
   fi
   info "system uv found"
