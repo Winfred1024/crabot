@@ -114,8 +114,16 @@ crabot start
 
 ```bash
 # 1. 装系统依赖（Node 22+ 和 uv 必须系统级可达，不要装在 root 的 ~/）
+
+# 1a. Ubuntu/Debian：先卸掉发行版自带的 node 12（否则与 nodesource 22 的 /usr/include/node/common.gypi 冲突装不上）
+sudo apt-get purge -y nodejs libnode-dev libnode72 2>/dev/null || true
+sudo apt-get autoremove -y
+
+# 1b. 加 nodesource 22 源并安装
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -
-sudo apt install -y nodejs
+sudo apt-get install -y nodejs
+
+# 1c. 装 uv
 curl -LsSf https://astral.sh/uv/install.sh | sudo sh -s -- --install-dir /usr/local
 
 # 2. 装 Crabot（system mode）

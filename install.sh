@@ -10,6 +10,9 @@ CRABOT_VERSION="${CRABOT_VERSION:-latest}"
 INSTALL_DIR="${CRABOT_INSTALL_DIR:-$HOME/.crabot}"
 REQUIRED_NODE_VERSION="22.14.0"
 FROM_SOURCE=false
+# 标记 ensure_node 是否通过 nvm 切换了 node；末尾给用户提示当前 shell 仍是旧 node
+NODE_SWITCHED_BY_NVM=false
+NODE_PREV_VERSION=""
 
 # 解析参数
 SYSTEM_MODE=false
@@ -83,7 +86,9 @@ ensure_node() {
       info "Node.js $current found (>= $REQUIRED_NODE_VERSION)"
       return
     fi
+    NODE_PREV_VERSION="$current"
     warn "Node.js $current found, but >= $REQUIRED_NODE_VERSION required; switching via nvm"
+    warn "注意：nvm 切换只在本脚本进程内生效，您当前 shell 的 node 仍是 $current"
   fi
 
   section "Installing Node.js (via nvm)"
@@ -102,22 +107,31 @@ ensure_node() {
   nvm use 22
   nvm alias default 22
 
-  info "Node.js $(node -v) installed via nvm"
+  NODE_SWITCHED_BY_NVM=true
+  info "Node.js $(node -v) installed via nvm (本进程内)"
 }
 
 # --- system-level Node 探测（--system 模式，要求 nobody 可达）---
 ensure_system_node() {
   if ! sudo -u nobody bash -c 'command -v node && node --version' &>/dev/null; then
     error "system-level Node not found (probe user 'nobody' cannot run \`node --version\`)."
-    error "install Node 22+ system-wide first, e.g.:"
+    error "install Node 22+ system-wide first, e.g. on Ubuntu/Debian:"
+    error "  # 1) 先卸掉发行版自带的 node 12（否则 nodesource 22 会因 /usr/include/node/common.gypi 冲突装不上）"
+    error "  sudo apt-get purge -y nodejs libnode-dev libnode72"
+    error "  sudo apt-get autoremove -y"
+    error "  # 2) 加 nodesource 22 源并安装"
     error "  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -"
-    error "  sudo apt install -y nodejs"
+    error "  sudo apt-get install -y nodejs"
     exit 1
   fi
   local v
   v=$(sudo -u nobody node --version | tr -d 'v')
   if ! version_ge "$v" "$REQUIRED_NODE_VERSION"; then
     error "system Node $v < required $REQUIRED_NODE_VERSION"
+    error "如果是 Ubuntu/Debian 自带的旧 node，先 purge 再装 nodesource 22："
+    error "  sudo apt-get purge -y nodejs libnode-dev libnode72 && sudo apt-get autoremove -y"
+    error "  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -"
+    error "  sudo apt-get install -y nodejs"
     exit 1
   fi
   info "system Node $v found"
@@ -357,8 +371,21 @@ LR
     info "  4. 通知员工：crabot start 即可"
   else
     section "Done!"
-    info "Run 'crabot start' to start Crabot (will prompt for admin password on first run)."
-    info "Run 'crabot --help' for all commands."
+    if [ "$NODE_SWITCHED_BY_NVM" = "true" ]; then
+      echo
+      warn "==========================================================="
+      warn " 重要：您当前 shell 的 Node 仍是 v${NODE_PREV_VERSION}（脚本只在自己进程切到 v22）"
+      warn " 直接运行 'crabot start' 会触发 ERR_REQUIRE_ESM 报错"
+      warn ""
+      warn " 请任选其一后再运行 crabot start："
+      warn "   1) nvm use default              # 当前 shell 切到 nvm 默认（已设为 22）"
+      warn "   2) 新开一个 terminal             # 让 shell rc 重新加载 nvm 默认"
+      warn "==========================================================="
+      echo
+    else
+      info "Run 'crabot start' to start Crabot (will prompt for admin password on first run)."
+      info "Run 'crabot --help' for all commands."
+    fi
   fi
 }
 
