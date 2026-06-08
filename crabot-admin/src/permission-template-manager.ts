@@ -207,22 +207,21 @@ export class PermissionTemplateManager {
       }
     }
 
-    const toolAccess: ToolAccessConfig = sessionConfig.tool_access
-      ? { ...template.tool_access, ...sessionConfig.tool_access }
-      : { ...template.tool_access }
-
-    const cliAccess: CliAccessConfig = sessionConfig.cli_access
-      ? { ...template.cli_access, ...sessionConfig.cli_access }
-      : { ...template.cli_access }
-
-    const storage: StoragePermission | null = sessionConfig.storage !== undefined
-      ? sessionConfig.storage
-      : (template.storage ? { ...template.storage } : null)
-
-    const memoryScopes = sessionConfig.memory_scopes !== undefined
-      ? [...sessionConfig.memory_scopes]
-      : [...template.memory_scopes]
-
-    return { tool_access: toolAccess, cli_access: cliAccess, storage, memory_scopes: memoryScopes }
+    // 快照式：sessionConfig 存在 = 已经被 admin web 整份保存过 = 完全脱离模板
+    // 缺失字段用模板兜底（迁移路径上的旧 sessionConfig；下次保存即落成完整快照）
+    return {
+      tool_access: sessionConfig.tool_access
+        ? { ...createToolAccessConfig(false), ...sessionConfig.tool_access }
+        : { ...template.tool_access },
+      cli_access: sessionConfig.cli_access
+        ? { ...sessionConfig.cli_access }
+        : { ...template.cli_access },
+      storage: sessionConfig.storage !== undefined
+        ? sessionConfig.storage
+        : (template.storage ? { ...template.storage } : null),
+      memory_scopes: sessionConfig.memory_scopes !== undefined
+        ? [...sessionConfig.memory_scopes]
+        : [...template.memory_scopes],
+    }
   }
 }

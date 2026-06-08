@@ -1240,10 +1240,10 @@ describe('Admin Web API', () => {
       expect(response.body.sources.fallback).toBeUndefined()
     })
 
-    it('群聊 无 friend，sessionConfig 缺 template_id 但带 tool_access 覆盖 → group_default 基底 ∪ session 覆盖', async () => {
+    it('群聊 无 friend，sessionConfig 缺 template_id 但带 tool_access 覆盖 → 快照式（脱离模板）', async () => {
       const token = await loginAndGetToken()
       const sessionId = 'group-legacy-session-no-template'
-      // 模拟旧数据：sessionConfig 没有 template_id 但有 tool_access 覆盖
+      // 快照式语义：sessionConfig.tool_access 存在即完全脱离模板，缺省字段默认 false
       admin['sessionConfigs'].set(sessionId, {
         tool_access: { shell: false } as Partial<{ shell: boolean }>,
         updated_at: '2026-04-21T00:00:00.000Z',
@@ -1257,9 +1257,9 @@ describe('Admin Web API', () => {
         token,
       )
       expect(response.statusCode).toBe(200)
-      expect(response.body.resolved.tool_access.shell).toBe(false)         // session 覆盖
-      expect(response.body.resolved.tool_access.messaging).toBe(true)      // group_default 基底
-      expect(response.body.resolved.tool_access.task).toBe(true)
+      expect(response.body.resolved.tool_access.shell).toBe(false)         // session 显式设置
+      expect(response.body.resolved.tool_access.messaging).toBe(false)     // 快照式：不从模板继承
+      expect(response.body.resolved.tool_access.task).toBe(false)          // 快照式：不从模板继承
       expect(response.body.resolved.tool_access.desktop).toBe(false)
       expect(response.body.sources.session_template_id).toBe('group_default')
     })

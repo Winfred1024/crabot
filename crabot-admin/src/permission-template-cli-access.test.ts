@@ -99,14 +99,28 @@ describe('PermissionTemplateManager.resolvePermissions cli_access 合并', () =>
     expect(r.cli_access.provider).toBe('write')
   })
 
-  it('sessionConfig.cli_access 部分覆盖：模板未指定的项保持模板值', () => {
+  it('resolvePermissions: sessionConfig 全字段时，完全脱离模板（快照式）', () => {
+    const sessionCli = createCliAccessConfig('none')
+    sessionCli.schedule = 'write'
     const r = mgr.resolvePermissions('group_default', {
-      cli_access: { schedule: 'write' },
       template_id: 'group_default',
-      updated_at: 'x',
+      cli_access: sessionCli,
+      tool_access: { messaging: true },  // 其他都 false
+      storage: null,
+      memory_scopes: ['custom-scope'],
+      updated_at: '2026-01-01T00:00:00Z',
     })
     expect(r.cli_access.schedule).toBe('write')
-    expect(r.cli_access.provider).toBe('none')  // 模板默认
+    expect(r.cli_access.provider).toBe('none')
+    expect(r.tool_access.messaging).toBe(true)
+    expect(r.tool_access.memory).toBe(false)
+    expect(r.memory_scopes).toEqual(['custom-scope'])
+  })
+
+  it('resolvePermissions: sessionConfig 为 null 时，纯模板', () => {
+    const r = mgr.resolvePermissions('group_default', null)
+    expect(r.cli_access.schedule).toBe('none')
+    expect(r.tool_access.memory).toBe(true)
   })
 })
 
