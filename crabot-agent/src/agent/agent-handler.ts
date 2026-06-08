@@ -958,6 +958,11 @@ export class AgentHandler {
           taskType: task.task_type,
           // 用 getter 形式封装本地 cache，worker 中途 set_task_goal 后下一轮工具调用立即生效。
           hasGoal: () => goalSetCache,
+          // Goal mode 缓冲：send_message handler 在工作态（无 activeAudit）把 info 消息推入 outboundBuffer；
+          // 等审态（hasActiveAudit=true）下立即 flush。引用 taskState 持久数组，跨 iteration 一致。
+          // spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 6
+          outboundBuffer: taskState.outboundBuffer,
+          hasActiveAudit: () => taskState.activeAuditId !== undefined,
           // 透传 sub-agent trace 上下文：让 audit gate 触发的 audit subagent
           // 产生的 sub_agent_call span 挂到主 worker trace 下，admin UI 能渲染。
           // spec: 2026-05-23-goal-mode-design.md §4.2

@@ -48,6 +48,31 @@ export interface TaskContext {
    *  此处用 getter 形式以便 worker 中途 set_task_goal 后下一次工具调用立即生效。
    *  spec: 2026-05-23-goal-mode-design.md §4.2 */
   hasGoal: () => boolean
+  /** Audit 等待态下被截留的 send_message intent='info' 缓冲区（同 WorkerTaskState.outboundBuffer 引用）。
+   *  goal mode + 工作态时 handler 把 info 消息推入此处不真发；engine 在 audit pass / tool_use 等时机 flush。
+   *  shape 与 WorkerTaskState.outboundBuffer 完全对齐（readonly fields）。
+   *  spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 6 */
+  outboundBuffer?: Array<{
+    readonly channel_id: string
+    readonly session_id: string
+    readonly content: string
+    readonly intent: 'info'
+    readonly content_type?: 'text' | 'image' | 'file'
+    readonly media_url?: string
+    readonly file_path?: string
+    readonly filename?: string
+    readonly mentions?: ReadonlyArray<{
+      readonly friend_id?: string
+      readonly platform_user_id?: string
+      readonly at_name?: string
+    }>
+    readonly quote_message_id?: string
+    readonly sent_at_attempt_ms: number
+  }>
+  /** 当前 task 是否处于"等审态"（activeAuditId 非空）。同步 getter，工具内每次调用现读。
+   *  工作态（false）= 缓冲；等审态（true）= 立即 flush 给用户（过程响应）。
+   *  spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 6 */
+  hasActiveAudit?: () => boolean
 }
 
 // ============================================================================
@@ -649,6 +674,41 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
               error: 'ask_human is not allowed in scheduled tasks. Scheduled tasks have no synchronous '
                 + "human responder. If you are blocked or have failed, send_message with intent='info' "
                 + 'to report status, then end_turn.',
+            })
+          }
+        }
+
+        // === Goal mode 缓冲分支：goal mode + 工作态（无 active audit）时 intent='info' 进 outboundBuffer 不真发 ===
+        // 等审态（audit 在跑）→ 立即 flush（过程响应/进度告知，不进新缓冲）
+        // ask_human → 走下面的 send + barrier 路径
+        // 非 goal mode → 立即发（现行行为）
+        // spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.1 + §4.6
+        if (intent !== 'ask_human') {
+          const taskCtx = deps.getTaskContext?.()
+          if (
+            taskCtx
+            && taskCtx.hasGoal()
+            && taskCtx.outboundBuffer
+            && taskCtx.hasActiveAudit
+            && !taskCtx.hasActiveAudit()
+          ) {
+            taskCtx.outboundBuffer.push({
+              channel_id,
+              session_id,
+              content,
+              intent: 'info',
+              ...(content_type !== undefined ? { content_type } : {}),
+              ...(media_url !== undefined ? { media_url } : {}),
+              ...(file_path !== undefined ? { file_path } : {}),
+              ...(filename !== undefined ? { filename } : {}),
+              ...(mentions !== undefined ? { mentions } : {}),
+              ...(quote_message_id !== undefined ? { quote_message_id } : {}),
+              sent_at_attempt_ms: Date.now(),
+            })
+            return wrapText({
+              buffered: true,
+              sent_at: null,
+              note: '消息已待发；将在 audit 通过后真正发给用户',
             })
           }
         }
