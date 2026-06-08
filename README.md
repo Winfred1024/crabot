@@ -129,11 +129,13 @@ sudo apt-get install -y nodejs
 #   - UV_NO_MODIFY_PATH=1 跳过改 shell rc（system mode 下没必要污染 root）
 curl -LsSf https://astral.sh/uv/install.sh | sudo env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
 
-# 2. 装 Crabot（system mode）
+# 2. 装 Crabot（system mode），二选一：
+#    A. release 模式（推荐，稳定）
 curl -fsSL https://raw.githubusercontent.com/smilefufu/crabot/main/install.sh | sudo bash -s -- --system
+#    B. 源码模式（小补丁可直接 git pull + rebuild，免发版）—— 见下方"源码模式管理员视角"
 
 # 装完后：
-#   - 代码在 /opt/crabot
+#   - 代码在 /opt/crabot（release）或你 clone 的目录（源码）
 #   - /etc/crabot/ 骨架已创建（defaults/ + registry/ + cluster.version）
 #   - crabot group 已创建
 #   - /etc/logrotate.d/crabot 已铺
@@ -148,9 +150,47 @@ sudo usermod -a -G crabot bob
 sudo vi /etc/crabot/defaults/provider.yaml
 sudo bash -c 'echo $(($(cat /etc/crabot/cluster.version)+1)) > /etc/crabot/cluster.version'
 
-# 5. 后续升级（普通用户的 crabot start 会自动跑 migration）
-sudo crabot upgrade
+# 5. 后续升级
+#    release 模式：sudo crabot upgrade（下载新 release 包并解压到 /opt/crabot）
+#    源码模式：cd /opt/crabot && sudo git pull + 增量 rebuild（见下方）
 ```
+
+### 源码模式管理员视角（适合需要打小补丁、不想等 release 的场景）
+
+```bash
+# 1. 选一个员工可读的目录 clone（不要放 /root/——700 权限员工读不到）
+sudo mkdir -p /opt && cd /opt
+sudo git clone https://github.com/smilefufu/crabot.git
+cd crabot
+
+# 2. 装（--system --from-source 组合）。会在当前 git 目录直接 pnpm install + build，
+#    /usr/local/bin/crabot 软链直接指向 $(pwd)/cli.mjs，不会把源码拷到 /opt/crabot
+sudo ./install.sh --system --from-source
+
+# 3. 同 release 模式：加员工到 crabot group、铺默认 LLM Provider、递增 cluster.version
+#    （见上方第 3、4 步，命令一字不差）
+
+# 4. 后续升级（这是源码模式相对 release 的核心收益：小补丁 1~2 分钟搞定）
+cd /opt/crabot
+sudo git pull
+
+# 全量 rebuild（保险起见；只动了某模块也可只跑那一个目录的 build）
+sudo corepack pnpm install
+sudo corepack pnpm -r run build
+sudo corepack pnpm run build:cli                                      # 改了 cli.mjs / scripts/ 才需要
+(cd crabot-admin/web && sudo corepack pnpm install && sudo corepack pnpm run build)   # 改了前端才需要
+(cd crabot-memory && sudo uv sync)                                    # 改了 Python 依赖才需要
+
+# 员工无感升级——下次 `crabot start` 直接用新代码（cli.mjs 是软链，自动跟最新）
+```
+
+#### 源码模式的几个坑
+
+- **clone 位置**：必须放员工 uid 可读处。`/opt/` 默认 0755 OK；`/root/`（0700）不行
+- **代码归属 root**：员工进程能读不能写，符合预期。不要 `sudo chown crabot:` 之类乱改
+- **管理员不要在源码目录跑 `crabot start`**：员工实例 data 走 `~/.crabot/data-<OFFSET>/`，跟源码无关；但 root `cd /opt/crabot && crabot start` 测试会污染 `/root/.crabot/`
+- **`crabot upgrade` 在源码模式下不适用**：它会去 GitHub releases 下载 tar 包覆盖。源码模式只用 `git pull + rebuild`
+- **代码改动不需要递增 `cluster.version`**：那个版本号只控制员工是否被提示 sync `/etc/crabot/defaults/` 下的默认配置；二进制升级跟它无关
 
 ### 员工视角
 
