@@ -103,6 +103,8 @@ export const ManualCleanupDialog: React.FC<{
   )
 }
 
+type CleanupMode = 'days' | 'count'
+
 export const AutoCleanupSettingsDialog: React.FC<{
   open: boolean
   onClose: () => void
@@ -110,7 +112,9 @@ export const AutoCleanupSettingsDialog: React.FC<{
   const toast = useToast()
   const titleId = useId()
   const [enabled, setEnabled] = useState(false)
+  const [mode, setMode] = useState<CleanupMode>('days')
   const [days, setDays] = useState(30)
+  const [count, setCount] = useState(1000)
   const [loaded, setLoaded] = useState(false)
   const [busy, setBusy] = useState(false)
 
@@ -118,9 +122,21 @@ export const AutoCleanupSettingsDialog: React.FC<{
     if (!open) return
     setLoaded(false)
     void providerService.getGlobalConfig().then((s) => {
-      const r = s.trace_retention_days
-      setEnabled(r !== null && r !== undefined && r > 0)
-      if (r != null && r > 0) setDays(r)
+      const d = s.trace_retention_days
+      const c = s.trace_retention_count
+      // days 优先（cron 端同语义）；都没配 → 默认 days 模式但未启用
+      if (d != null && d > 0) {
+        setMode('days')
+        setDays(d)
+        setEnabled(true)
+      } else if (c != null && c > 0) {
+        setMode('count')
+        setCount(c)
+        setEnabled(true)
+      } else {
+        setMode('days')
+        setEnabled(false)
+      }
       setLoaded(true)
     }).catch(() => setLoaded(true))
   }, [open])
@@ -137,8 +153,13 @@ export const AutoCleanupSettingsDialog: React.FC<{
   const save = async () => {
     setBusy(true)
     try {
-      const next = enabled ? days : null
-      await providerService.updateGlobalConfig({ trace_retention_days: next })
+      // 二选一：写入选中字段，另一字段置 null 避免历史值悬挂
+      const payload = enabled
+        ? mode === 'days'
+          ? { trace_retention_days: days, trace_retention_count: null }
+          : { trace_retention_days: null, trace_retention_count: count }
+        : { trace_retention_days: null, trace_retention_count: null }
+      await providerService.updateGlobalConfig(payload)
       toast.success('自动清理设置已保存')
       onClose()
     } catch (err) {
@@ -171,21 +192,54 @@ export const AutoCleanupSettingsDialog: React.FC<{
                 />
                 <span>启用自动清理</span>
               </label>
-              <label style={{ display: 'block' }}>
-                保留最近
-                <input
-                  aria-label="保留最近"
-                  type="number"
-                  value={days}
-                  onChange={(e) => setDays(Number(e.target.value) || 0)}
-                  min={1}
-                  disabled={!enabled}
-                  style={{ width: 80, padding: '4px 8px', margin: '0 4px' }}
-                />
-                天的 trace
-              </label>
-              <div style={{ color: '#888', fontSize: 12, marginTop: 4 }}>
-                超过此期限的 trace 每日自动删除
+              <div role="radiogroup" aria-label="清理策略" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <input
+                    type="radio"
+                    name="cleanup-mode"
+                    aria-label="按天清理"
+                    checked={mode === 'days'}
+                    onChange={() => setMode('days')}
+                    disabled={!enabled}
+                  />
+                  <span>保留最近</span>
+                  <input
+                    aria-label="保留最近天数"
+                    type="number"
+                    value={days}
+                    onChange={(e) => setDays(Number(e.target.value) || 0)}
+                    min={1}
+                    disabled={!enabled || mode !== 'days'}
+                    style={{ width: 80, padding: '4px 8px' }}
+                  />
+                  <span>天的 trace</span>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <input
+                    type="radio"
+                    name="cleanup-mode"
+                    aria-label="按条清理"
+                    checked={mode === 'count'}
+                    onChange={() => setMode('count')}
+                    disabled={!enabled}
+                  />
+                  <span>保留最近</span>
+                  <input
+                    aria-label="保留最近条数"
+                    type="number"
+                    value={count}
+                    onChange={(e) => setCount(Number(e.target.value) || 0)}
+                    min={1}
+                    disabled={!enabled || mode !== 'count'}
+                    style={{ width: 100, padding: '4px 8px' }}
+                  />
+                  <span>条 trace</span>
+                </label>
+              </div>
+              <div style={{ color: '#888', fontSize: 12, marginTop: 8 }}>
+                {mode === 'days'
+                  ? '超过此期限的 trace 每日自动删除'
+                  : '按天文件粒度删除多余 trace；实际保留条数可能略大于设定值'}
               </div>
             </>
           )}

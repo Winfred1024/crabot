@@ -16,6 +16,7 @@ export function parseCleanupParams(url: URL): { days: number; dryRun: boolean } 
 export interface TraceCleanupCronDeps {
   getGlobalConfig: () => GlobalModelConfig
   callCleanup: (days: number) => Promise<{ affected_count: number; affected_bytes: number }>
+  callCleanupByCount: (maxCount: number) => Promise<{ affected_count: number; affected_bytes: number }>
   /** 测试用：立刻触发一次 */
   runImmediately?: boolean
   /** 测试用：注入定时器 */
@@ -35,10 +36,20 @@ export function startTraceCleanupCron(deps: TraceCleanupCronDeps): () => void {
   const tick = async (): Promise<void> => {
     try {
       const cfg = deps.getGlobalConfig()
-      const retention = cfg.trace_retention_days
-      if (retention == null || retention <= 0) return
-      const result = await deps.callCleanup(retention)
-      console.log(`[admin] trace cleanup: removed ${result.affected_count} traces (${result.affected_bytes} bytes)`)
+      // 按天和按条互斥；同时存在时 days 优先（保持向后兼容）
+      const days = cfg.trace_retention_days
+      const count = cfg.trace_retention_count
+      if (days != null && days > 0) {
+        const result = await deps.callCleanup(days)
+        console.log(`[admin] trace cleanup (days=${days}): removed ${result.affected_count} traces (${result.affected_bytes} bytes)`)
+        return
+      }
+      if (count != null && count > 0) {
+        const result = await deps.callCleanupByCount(count)
+        console.log(`[admin] trace cleanup (count=${count}): removed ${result.affected_count} traces (${result.affected_bytes} bytes)`)
+        return
+      }
+      // 都没配 → 不清理
     } catch (err) {
       console.error('[admin] trace cleanup failed:', err instanceof Error ? err.message : err)
     }

@@ -555,6 +555,115 @@ describe('TraceStore.cleanupOldTraces', () => {
   })
 })
 
+describe('TraceStore.cleanupOldTracesByCount', () => {
+  // 给 traces-* 文件准备指定 trace_id 列表的 helper
+  const writeTracesFile = (dir: string, dateStr: string, traceIds: string[]) => {
+    const fname = `traces-${dateStr}.jsonl`
+    const lines = traceIds.map(id => JSON.stringify({
+      trace_id: id, module_id: 'a', started_at: `${dateStr}T00:00:00.000Z`,
+      status: 'completed', trigger: { type: 'message', summary: id }, spans: [],
+    }))
+    fs.writeFileSync(path.join(dir, fname), lines.join('\n') + '\n')
+    return fname
+  }
+
+  it('returns zero when total <= maxCount', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-clean-count-le-'))
+    try {
+      writeTracesFile(dir, '2026-06-01', ['a', 'b'])
+      const store = new TraceStore(10, dir)
+      const result = store.cleanupOldTracesByCount(5, false)
+      expect(result.affected_count).toBe(0)
+      expect(result.deleted_trace_ids).toEqual([])
+    } finally {
+      fs.rmSync(dir, { recursive: true })
+    }
+  })
+
+  it('deletes whole older files when total > maxCount', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-clean-count-trim-'))
+    try {
+      writeTracesFile(dir, '2026-05-01', ['old1', 'old2'])
+      writeTracesFile(dir, '2026-05-15', ['mid1'])
+      writeTracesFile(dir, '2026-06-01', ['new1', 'new2'])
+
+      const store = new TraceStore(10, dir)
+      // total=5，保留最近 3 条：边界条在 2026-05-15（按 started_at 倒序第 3 条）
+      // 比 2026-05-15 老的整文件删 → 删 2026-05-01（含 old1/old2）
+      const result = store.cleanupOldTracesByCount(3, false)
+      expect(result.affected_count).toBe(2)
+      expect(result.deleted_trace_ids.sort()).toEqual(['old1', 'old2'])
+      expect(fs.existsSync(path.join(dir, 'traces-2026-05-01.jsonl'))).toBe(false)
+      expect(fs.existsSync(path.join(dir, 'traces-2026-05-15.jsonl'))).toBe(true)
+      expect(fs.existsSync(path.join(dir, 'traces-2026-06-01.jsonl'))).toBe(true)
+    } finally {
+      fs.rmSync(dir, { recursive: true })
+    }
+  })
+
+  it('dryRun=true returns stats without deleting', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-clean-count-dry-'))
+    try {
+      writeTracesFile(dir, '2026-05-01', ['old1'])
+      writeTracesFile(dir, '2026-06-01', ['new1', 'new2'])
+
+      const store = new TraceStore(10, dir)
+      const result = store.cleanupOldTracesByCount(2, true)
+      expect(result.affected_count).toBe(1)
+      expect(result.deleted_trace_ids).toEqual([])
+      expect(fs.existsSync(path.join(dir, 'traces-2026-05-01.jsonl'))).toBe(true)
+    } finally {
+      fs.rmSync(dir, { recursive: true })
+    }
+  })
+
+  it('also deletes matching prompts-*.jsonl', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-clean-count-prompts-'))
+    try {
+      writeTracesFile(dir, '2026-05-01', ['old1'])
+      writeTracesFile(dir, '2026-06-01', ['new1'])
+      fs.writeFileSync(path.join(dir, 'prompts-2026-05-01.jsonl'), 'x\n')
+      fs.writeFileSync(path.join(dir, 'prompts-2026-06-01.jsonl'), 'y\n')
+
+      const store = new TraceStore(10, dir)
+      const result = store.cleanupOldTracesByCount(1, false)
+      expect(result.affected_count).toBe(1)
+      expect(result.deleted_trace_ids).toEqual(['old1'])
+      expect(fs.existsSync(path.join(dir, 'prompts-2026-05-01.jsonl'))).toBe(false)
+      expect(fs.existsSync(path.join(dir, 'prompts-2026-06-01.jsonl'))).toBe(true)
+    } finally {
+      fs.rmSync(dir, { recursive: true })
+    }
+  })
+
+  it('returns zero when maxCount <= 0', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-clean-count-zero-'))
+    try {
+      writeTracesFile(dir, '2026-05-01', ['old1'])
+      const store = new TraceStore(10, dir)
+      const result = store.cleanupOldTracesByCount(0, false)
+      expect(result.affected_count).toBe(0)
+      expect(fs.existsSync(path.join(dir, 'traces-2026-05-01.jsonl'))).toBe(true)
+    } finally {
+      fs.rmSync(dir, { recursive: true })
+    }
+  })
+
+  it('does not split same-day file (over-retention is OK)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-clean-count-sameday-'))
+    try {
+      // 一天 5 条；maxCount=2 不能切割文件，整天保留
+      writeTracesFile(dir, '2026-06-01', ['a', 'b', 'c', 'd', 'e'])
+      const store = new TraceStore(10, dir)
+      const result = store.cleanupOldTracesByCount(2, false)
+      expect(result.affected_count).toBe(0)
+      expect(fs.existsSync(path.join(dir, 'traces-2026-06-01.jsonl'))).toBe(true)
+    } finally {
+      fs.rmSync(dir, { recursive: true })
+    }
+  })
+})
+
 describe('TraceStore.appendPromptDump', () => {
   it('appends to prompts-YYYY-MM-DD.jsonl in persistDir', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-prompt-append-'))

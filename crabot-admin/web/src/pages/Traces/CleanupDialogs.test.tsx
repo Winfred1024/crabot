@@ -45,32 +45,72 @@ describe('ManualCleanupDialog', () => {
 describe('AutoCleanupSettingsDialog', () => {
   beforeEach(() => { vi.resetAllMocks() })
 
-  it('toggle off 时保存 trace_retention_days: null', async () => {
+  it('toggle off 时保存 days/count 都为 null', async () => {
     ;(providerService.getGlobalConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ trace_retention_days: 30 })
     ;(providerService.updateGlobalConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
     render(<ToastProvider><AutoCleanupSettingsDialog open onClose={vi.fn()} /></ToastProvider>)
-    await waitFor(() => screen.getByLabelText(/启用自动清理/))
-    fireEvent.click(screen.getByLabelText(/启用自动清理/))  // 关
+    await waitFor(() => screen.getByLabelText('启用自动清理'))
+    fireEvent.click(screen.getByLabelText('启用自动清理'))  // 关
     fireEvent.click(screen.getByText('保存'))
     await waitFor(() => {
-      expect(providerService.updateGlobalConfig).toHaveBeenCalledWith(
-        expect.objectContaining({ trace_retention_days: null })
-      )
+      expect(providerService.updateGlobalConfig).toHaveBeenCalledWith({
+        trace_retention_days: null,
+        trace_retention_count: null,
+      })
     })
   })
 
-  it('toggle on + 输入 retention 7 → 保存', async () => {
-    ;(providerService.getGlobalConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ trace_retention_days: null })
+  it('启用 + days 模式（默认）+ 输入 7 → 保存 days=7 / count=null', async () => {
+    ;(providerService.getGlobalConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ trace_retention_days: null, trace_retention_count: null })
     ;(providerService.updateGlobalConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
     render(<ToastProvider><AutoCleanupSettingsDialog open onClose={vi.fn()} /></ToastProvider>)
-    await waitFor(() => screen.getByLabelText(/启用自动清理/))
-    fireEvent.click(screen.getByLabelText(/启用自动清理/))
-    fireEvent.change(screen.getByLabelText(/保留最近/), { target: { value: '7' } })
+    await waitFor(() => screen.getByLabelText('启用自动清理'))
+    fireEvent.click(screen.getByLabelText('启用自动清理'))
+    fireEvent.change(screen.getByLabelText('保留最近天数'), { target: { value: '7' } })
     fireEvent.click(screen.getByText('保存'))
     await waitFor(() => {
-      expect(providerService.updateGlobalConfig).toHaveBeenCalledWith(
-        expect.objectContaining({ trace_retention_days: 7 })
-      )
+      expect(providerService.updateGlobalConfig).toHaveBeenCalledWith({
+        trace_retention_days: 7,
+        trace_retention_count: null,
+      })
     })
+  })
+
+  it('启用 + 切到 count 模式 + 输入 200 → 保存 count=200 / days=null', async () => {
+    ;(providerService.getGlobalConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ trace_retention_days: null, trace_retention_count: null })
+    ;(providerService.updateGlobalConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
+    render(<ToastProvider><AutoCleanupSettingsDialog open onClose={vi.fn()} /></ToastProvider>)
+    await waitFor(() => screen.getByLabelText('启用自动清理'))
+    fireEvent.click(screen.getByLabelText('启用自动清理'))
+    fireEvent.click(screen.getByLabelText('按条清理'))
+    fireEvent.change(screen.getByLabelText('保留最近条数'), { target: { value: '200' } })
+    fireEvent.click(screen.getByText('保存'))
+    await waitFor(() => {
+      expect(providerService.updateGlobalConfig).toHaveBeenCalledWith({
+        trace_retention_days: null,
+        trace_retention_count: 200,
+      })
+    })
+  })
+
+  it('加载已存的 count → 默认选中 count 模式', async () => {
+    ;(providerService.getGlobalConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ trace_retention_days: null, trace_retention_count: 500 })
+    ;(providerService.updateGlobalConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
+    render(<ToastProvider><AutoCleanupSettingsDialog open onClose={vi.fn()} /></ToastProvider>)
+    await waitFor(() => screen.getByLabelText('按条清理'))
+    const countRadio = screen.getByLabelText('按条清理') as HTMLInputElement
+    const daysRadio = screen.getByLabelText('按天清理') as HTMLInputElement
+    expect(countRadio.checked).toBe(true)
+    expect(daysRadio.checked).toBe(false)
+    expect((screen.getByLabelText('保留最近条数') as HTMLInputElement).value).toBe('500')
+  })
+
+  it('同时存在 days/count 时 days 优先', async () => {
+    ;(providerService.getGlobalConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ trace_retention_days: 10, trace_retention_count: 500 })
+    ;(providerService.updateGlobalConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
+    render(<ToastProvider><AutoCleanupSettingsDialog open onClose={vi.fn()} /></ToastProvider>)
+    await waitFor(() => screen.getByLabelText('按天清理'))
+    expect((screen.getByLabelText('按天清理') as HTMLInputElement).checked).toBe(true)
+    expect((screen.getByLabelText('保留最近天数') as HTMLInputElement).value).toBe('10')
   })
 })

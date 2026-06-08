@@ -735,6 +735,12 @@ export class AdminModule extends ModuleBase {
           { affected_count: number; affected_bytes: number; deleted_trace_ids: string[] }
         >('cleanup_old_traces', { days, dry_run: false })
       },
+      callCleanupByCount: async (maxCount: number) => {
+        return this.callAgentRpc<
+          { max_count: number; dry_run: boolean },
+          { affected_count: number; affected_bytes: number; deleted_trace_ids: string[] }
+        >('cleanup_old_traces_by_count', { max_count: maxCount, dry_run: false })
+      },
     })
     console.log('[Admin] Trace cleanup cron started')
   }

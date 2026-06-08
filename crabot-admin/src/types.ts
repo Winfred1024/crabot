@@ -1136,8 +1136,16 @@ export interface GlobalModelConfig {
   default_llm_provider_id?: string
   default_llm_model_id?: string
   proxy?: ProxyConfig
-  /** 自动清理 trace 的保留天数；null/undefined = 不自动清理。配置存 admin 全局，cron 每日检查 */
+  /**
+   * 自动清理 trace 的保留天数；null/undefined = 不按天清理。
+   * trace_retention_days 和 trace_retention_count 互斥：同时存在时 days 优先；都为空 = 不自动清理。
+   */
   trace_retention_days?: number | null
+  /**
+   * 自动清理 trace 的保留条数；null/undefined = 不按条清理。
+   * 按文件粒度近似：找出第 N 条对应日期，比该日期老的整个 traces-*.jsonl 文件删除，实际保留条数 ≥ N。
+   */
+  trace_retention_count?: number | null
 }
 
 /**

@@ -663,7 +663,57 @@ export class TraceStore {
     const cutoff = new Date()
     cutoff.setDate(cutoff.getDate() - retentionDays)
     const cutoffStr = cutoff.toISOString().slice(0, 10)
+    return this.cleanupTracesBeforeDate(cutoffStr, dryRun)
+  }
 
+  /**
+   * 按条数清理：保留最近 maxCount 条 trace，多余的按文件粒度近似删除。
+   *
+   * 由于持久化以 traces-YYYY-MM-DD.jsonl 按天切片，无法精确删除"超出 N 条的尾巴"，
+   * 这里按 traceIndex 时间倒序找第 N 条对应的日期，严格更老的整文件删。
+   * 同一天文件不切割：实际保留条数 ≥ maxCount。
+   */
+  cleanupOldTracesByCount(maxCount: number, dryRun: boolean): {
+    affected_count: number
+    affected_bytes: number
+    deleted_trace_ids: string[]
+  } {
+    if (!this.persistDir || !Number.isFinite(maxCount) || maxCount < 1 || !fs.existsSync(this.persistDir)) {
+      return { affected_count: 0, affected_bytes: 0, deleted_trace_ids: [] }
+    }
+    if (this.traceIndex.length <= maxCount) {
+      return { affected_count: 0, affected_bytes: 0, deleted_trace_ids: [] }
+    }
+    // 时间倒序：第 maxCount 条（1-indexed）是要保留的最后一条；它所在日期及更新的整体保留
+    const sortedDesc = [...this.traceIndex].sort(
+      (a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime()
+    )
+    const boundary = sortedDesc[maxCount - 1]
+    const keepDateStr = this.extractDateFromFile(boundary.file)
+    if (!keepDateStr) {
+      return { affected_count: 0, affected_bytes: 0, deleted_trace_ids: [] }
+    }
+    return this.cleanupTracesBeforeDate(keepDateStr, dryRun)
+  }
+
+  private extractDateFromFile(file: string): string | null {
+    const prefix = file.startsWith('traces-') ? 'traces-' : file.startsWith('prompts-') ? 'prompts-' : null
+    if (!prefix) return null
+    const dateStr = file.slice(prefix.length, prefix.length + 10)
+    return /^\d{4}-\d{2}-\d{2}$/.test(dateStr) ? dateStr : null
+  }
+
+  /**
+   * 删除 dateStr 严格小于 cutoffStr 的 traces-*.jsonl 和 prompts-*.jsonl 文件。
+   */
+  private cleanupTracesBeforeDate(cutoffStr: string, dryRun: boolean): {
+    affected_count: number
+    affected_bytes: number
+    deleted_trace_ids: string[]
+  } {
+    if (!this.persistDir) {
+      return { affected_count: 0, affected_bytes: 0, deleted_trace_ids: [] }
+    }
     let affectedTraces = 0
     let affectedBytes = 0
     const deletedIds: string[] = []
@@ -708,7 +758,7 @@ export class TraceStore {
             fs.unlinkSync(path.join(this.persistDir, file))
             this.traceIndex = this.traceIndex.filter(e => e.file !== file)
           } catch (err) {
-            console.warn(`[TraceStore] cleanupOldTraces delete failed for ${file}:`, err instanceof Error ? err.message : err)
+            console.warn(`[TraceStore] cleanupTracesBeforeDate delete failed for ${file}:`, err instanceof Error ? err.message : err)
           }
         }
         if (toDelete.length > 0) {
@@ -716,7 +766,7 @@ export class TraceStore {
         }
       }
     } catch (err) {
-      console.warn('[TraceStore] cleanupOldTraces failed:', err instanceof Error ? err.message : err)
+      console.warn('[TraceStore] cleanupTracesBeforeDate failed:', err instanceof Error ? err.message : err)
     }
 
     return {

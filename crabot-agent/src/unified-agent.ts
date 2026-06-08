@@ -457,6 +457,7 @@ export class UnifiedAgent extends ModuleBase {
     this.registerMethod('get_trace_tree', this.handleGetTraceTree.bind(this))
     this.registerMethod('get_trace_disk_usage', this.handleGetTraceDiskUsage.bind(this))
     this.registerMethod('cleanup_old_traces', this.handleCleanupOldTraces.bind(this))
+    this.registerMethod('cleanup_old_traces_by_count', this.handleCleanupOldTracesByCount.bind(this))
 
     // Bg-entity admin 接口（Plan 3 Task 1）
     this.registerMethod('list_bg_entities', this.handleListBgEntities.bind(this))
@@ -2509,6 +2510,14 @@ export class UnifiedAgent extends ModuleBase {
     deleted_trace_ids: string[]
   } {
     return this.traceStore.cleanupOldTraces(params.days, params.dry_run)
+  }
+
+  private handleCleanupOldTracesByCount(params: { max_count: number; dry_run: boolean }): {
+    affected_count: number
+    affected_bytes: number
+    deleted_trace_ids: string[]
+  } {
+    return this.traceStore.cleanupOldTracesByCount(params.max_count, params.dry_run)
   }
 
   // ============================================================================
