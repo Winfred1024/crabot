@@ -29,17 +29,24 @@ export class PtyManager {
   constructor(
     private readonly jwtSecret: string,
     private readonly mmPort: number,
-    private readonly verifyJwt: (token: string, secret: string) => unknown
+    private readonly verifyJwt: (token: string, secret: string, dataDir: string) => Promise<unknown>,
+    private readonly dataDir: string,
   ) {
     this.wss.on('connection', (ws: WebSocket, _req: IncomingMessage, sessionId: string) => {
       this.attachWebSocket(ws, sessionId)
     })
   }
 
-  handleUpgrade(req: IncomingMessage, socket: Socket, head: Buffer): void {
+  async handleUpgrade(req: IncomingMessage, socket: Socket, head: Buffer): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://localhost')
     const token = url.searchParams.get('token')
-    if (!token || !this.verifyJwt(token, this.jwtSecret)) {
+    let tokenValid = false
+    try {
+      tokenValid = !!(token && (await this.verifyJwt(token, this.jwtSecret, this.dataDir)))
+    } catch {
+      tokenValid = false
+    }
+    if (!tokenValid) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
       socket.destroy()
       return

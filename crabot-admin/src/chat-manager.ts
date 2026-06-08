@@ -27,7 +27,8 @@ export class ChatManager {
     private readonly dataDir: string,
     private readonly rpcClient: RpcClient,
     private readonly resolveAgentPort: () => Promise<number>,
-    private readonly jwtSecret: string
+    private readonly jwtSecret: string,
+    private readonly verifyJwt: (token: string, secret: string, dataDir: string) => Promise<unknown>,
   ) {
     this.messagesFilePath = path.join(dataDir, 'chat_messages.json')
   }
@@ -70,7 +71,7 @@ export class ChatManager {
   // WebSocket 管理
   // ==========================================================================
 
-  handleUpgrade(req: IncomingMessage, socket: Socket, head: Buffer): void {
+  async handleUpgrade(req: IncomingMessage, socket: Socket, head: Buffer): Promise<void> {
     const url = new URL(req.url ?? '/', `http://${req.headers.host}`)
 
     if (url.pathname !== '/ws/chat') {
@@ -81,7 +82,13 @@ export class ChatManager {
 
     // JWT 认证
     const token = url.searchParams.get('token')
-    if (!token || !this.verifyJwt(token)) {
+    let tokenValid = false
+    try {
+      tokenValid = !!(token && (await this.verifyJwt(token, this.jwtSecret, this.dataDir)))
+    } catch {
+      tokenValid = false
+    }
+    if (!tokenValid) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
       socket.destroy()
       return
@@ -272,35 +279,6 @@ export class ChatManager {
   async clearMessages(): Promise<void> {
     this.messages.clear()
     await this.saveData()
-  }
-
-  // ==========================================================================
-  // JWT 验证
-  // ==========================================================================
-
-  private verifyJwt(token: string): boolean {
-    const parts = token.split('.')
-    if (parts.length !== 3) return false
-
-    const [headerB64, payloadB64, signatureB64] = parts
-    const crypto = require('node:crypto')
-    const expectedSignature = crypto
-      .createHmac('sha256', this.jwtSecret)
-      .update(`${headerB64}.${payloadB64}`)
-      .digest('base64')
-      .replace(/=/g, '')
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_')
-
-    if (signatureB64 !== expectedSignature) return false
-
-    try {
-      const payload = JSON.parse(Buffer.from(payloadB64, 'base64').toString())
-      if (payload.exp < Math.floor(Date.now() / 1000)) return false
-      return true
-    } catch {
-      return false
-    }
   }
 
   // ==========================================================================

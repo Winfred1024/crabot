@@ -712,12 +712,18 @@ export class AdminModule extends ModuleBase {
       this.adminConfig.data_dir,
       this.rpcClient,
       () => this.ensureAgentPort(),
-      this.jwtSecret
+      this.jwtSecret,
+      verifyJwtWithEpoch,
     )
     await this.chatManager.loadData()
 
     // 初始化 PTY 管理器（Web CLI 终端）
-    this.ptyManager = new PtyManager(this.jwtSecret, parseInt(process.env.CRABOT_MM_PORT || '19000', 10), verifyJwt)
+    this.ptyManager = new PtyManager(
+      this.jwtSecret,
+      parseInt(process.env.CRABOT_MM_PORT || '19000', 10),
+      verifyJwtWithEpoch,
+      this.adminConfig.data_dir,
+    )
 
     // Agent 端口由 module_started 事件驱动写入（见 onEvent），
     // 若 Admin 单独重启错过事件，由 ensureAgentPort() 惰性兜底。
@@ -876,14 +882,20 @@ export class AdminModule extends ModuleBase {
     // WebSocket upgrade 处理
     this.webServer.on('upgrade', (req, socket, head) => {
       const url = new URL(req.url ?? '/', 'http://localhost')
-      if (url.pathname.startsWith('/ws/pty/') && this.ptyManager) {
-        this.ptyManager.handleUpgrade(req, socket as Socket, head)
-      } else if (this.chatManager) {
-        this.chatManager.handleUpgrade(req, socket as Socket, head)
-      } else {
-        socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n')
-        socket.destroy()
+      const handleAsync = async (): Promise<void> => {
+        if (url.pathname.startsWith('/ws/pty/') && this.ptyManager) {
+          await this.ptyManager.handleUpgrade(req, socket as Socket, head)
+        } else if (this.chatManager) {
+          await this.chatManager.handleUpgrade(req, socket as Socket, head)
+        } else {
+          socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n')
+          socket.destroy()
+        }
       }
+      handleAsync().catch(() => {
+        socket.write('HTTP/1.1 500 Internal Server Error\r\n\r\n')
+        socket.destroy()
+      })
     })
 
     return new Promise((resolve, reject) => {
