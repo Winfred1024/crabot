@@ -177,6 +177,13 @@ export class UnifiedAgent extends ModuleBase {
 
   /** Crabot 群昵称缓存: channel_id → display_name */
   private crabDisplayNames: Map<ModuleId, string> = new Map()
+  /**
+   * Crabot 在各渠道里 @ 自己的稳定标识缓存: channel_id → "@handle"。
+   * 与 crabDisplayNames 平行，但口径不同：display_name 是给人看的昵称，
+   * self_handle 是消息正文里 @ 自己的字面形式（telegram username / feishu open_id 等）。
+   * 用于 dispatcher / worker prompt 区分多 bot 群里"哪个 @ 是我"。
+   */
+  private crabSelfHandles: Map<ModuleId, string> = new Map()
 
   // Trace 存储
   private traceStore: TraceStore
@@ -467,7 +474,7 @@ export class UnifiedAgent extends ModuleBase {
   protected override async onEvent(event: Event): Promise<void> {
     switch (event.type) {
       case 'channel.message_authorized':
-        await this.handleMessageReceived(event.payload as { message: ChannelMessage; friend: Friend; crab_display_name?: string })
+        await this.handleMessageReceived(event.payload as { message: ChannelMessage; friend: Friend; crab_display_name?: string; crab_self_handle?: string })
         break
 
       case 'admin.task_status_changed':
@@ -494,13 +501,17 @@ export class UnifiedAgent extends ModuleBase {
    * 群聊消息走注意力调度，其余直接处理。
    * @see protocol-agent-v2.md §5.1 SwitchMap, §5.2 Attention Scheduler
    */
-  private async handleMessageReceived(payload: { message: ChannelMessage; friend: Friend; crab_display_name?: string }): Promise<void> {
-    const { message, friend, crab_display_name } = payload
+  private async handleMessageReceived(payload: { message: ChannelMessage; friend: Friend; crab_display_name?: string; crab_self_handle?: string }): Promise<void> {
+    const { message, friend, crab_display_name, crab_self_handle } = payload
     const { session } = message
 
     // 缓存 Crabot 群昵称（来自 Channel 事件）
     if (crab_display_name && session.channel_id) {
       this.crabDisplayNames.set(session.channel_id, crab_display_name)
+    }
+    // 缓存 Crabot 在该渠道里 @ 自己的稳定标识（多 bot 群必需，用于 prompt 区分）
+    if (crab_self_handle && session.channel_id) {
+      this.crabSelfHandles.set(session.channel_id, crab_self_handle)
     }
 
     // 0. 检查是否已配置
@@ -588,6 +599,7 @@ export class UnifiedAgent extends ModuleBase {
           message: messages.map(m => m.content.text ?? '').filter(Boolean).join('\n'),
           friend_id: friend.id,
           session_type: 'private',
+          crab_self_handle: this.crabSelfHandles.get(session.channel_id),
         },
         friend,
         memPerms,
@@ -609,6 +621,7 @@ export class UnifiedAgent extends ModuleBase {
         sessionId: session.session_id,
         senderFriend: friend,
         ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
+        ...(frontContext.crab_self_handle ? { crabSelfHandle: frontContext.crab_self_handle } : {}),
         traceId: trace.trace_id,
       }
 
@@ -806,6 +819,7 @@ export class UnifiedAgent extends ModuleBase {
           friend_id: lastMsg.sender.friend_id,
           session_type: 'group',
           crab_display_name: this.crabDisplayNames.get(session.channel_id),
+          crab_self_handle: this.crabSelfHandles.get(session.channel_id),
         },
         lastEntry.friend,
         memPerms,
@@ -827,6 +841,7 @@ export class UnifiedAgent extends ModuleBase {
         sessionId,
         senderFriend: lastEntry.friend,
         ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
+        ...(frontContext.crab_self_handle ? { crabSelfHandle: frontContext.crab_self_handle } : {}),
         traceId: trace.trace_id,
       }
 
@@ -1291,6 +1306,8 @@ export class UnifiedAgent extends ModuleBase {
           message: message.content.text ?? '',
           friend_id: message.sender.friend_id,
           session_type: message.session.type,
+          crab_display_name: this.crabDisplayNames.get(message.session.channel_id),
+          crab_self_handle: this.crabSelfHandles.get(message.session.channel_id),
         },
         undefined,
         channelMemPerms

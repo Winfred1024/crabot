@@ -303,7 +303,14 @@ export class FeishuChannel extends ModuleBase {
       id: generateId(),
       type: 'channel.message_received',
       source: this.config.moduleId,
-      payload: { channel_id: this.config.moduleId, message: channelMessage },
+      payload: {
+        channel_id: this.config.moduleId,
+        message: channelMessage,
+        ...(this.botName ? { crab_display_name: this.botName } : {}),
+        // 飞书消息正文里 mention 的字面通常是占位符或昵称，但 mentions 元数据
+        // 用 open_id 标识——多机器人群里 dispatcher / worker 用此值判断哪条 mention 是自己。
+        ...(this.botOpenId ? { crab_self_handle: `@${this.botOpenId}` } : {}),
+      },
       timestamp: generateTimestamp(),
     }
     await this.rpcClient.publishEvent(event, this.config.moduleId)

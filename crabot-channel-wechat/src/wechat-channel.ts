@@ -289,6 +289,10 @@ export class WechatChannel extends ModuleBase {
         channel_id: this.config.moduleId,
         message: channelMessage,
         ...(crabDisplayName !== undefined ? { crab_display_name: crabDisplayName } : {}),
+        // 群里多机器人共存时，dispatcher / worker 用它区分"哪个 @ 是发给我的"。
+        // 微信消息正文 @ 通常是 @昵称，但 puppet.wxid 是稳定标识，至少让 LLM 拥有
+        // 一个可对照的 self 锚点。
+        ...(event.puppet?.wxid ? { crab_self_handle: `@${event.puppet.wxid}` } : {}),
       },
       timestamp: generateTimestamp(),
     }

@@ -1970,6 +1970,11 @@ export class AgentHandler {
     if (frontContext.crab_display_name) {
       parts.push(`- 你在该渠道的昵称: ${frontContext.crab_display_name}`)
     }
+    if (frontContext.crab_self_handle) {
+      // 群里可能挂多个 crabot 实例：消息正文同时 @ 多个 bot 时，只有显式给出
+      // 自身 handle，LLM 才能判断"哪个 @ 是发给我的"，否则就只能瞎猜。
+      parts.push(`- 你在该渠道的 @handle: ${frontContext.crab_self_handle}（消息正文里出现这个字符串才是 @ 你；其它 @xxx 是发给别人的）`)
+    }
 
     // ── 活跃任务（三分类）+ SELF marker + 历史查询提示
     // 渲染逻辑全部抽到 renderActiveTasksSection，便于单测；保持 active_tasks 为空时

@@ -41,6 +41,7 @@ interface AssembleParams {
   friend_id?: string
   session_type?: 'private' | 'group'
   crab_display_name?: string
+  crab_self_handle?: string
 }
 
 interface MemoryFetchParams {
@@ -204,6 +205,7 @@ export class ContextAssembler {
       short_term_memories: [],
       active_tasks: activeTasks,
       crab_display_name: params.crab_display_name,
+      crab_self_handle: params.crab_self_handle,
       available_tools: [],
       ...(sceneProfile ? { scene_profile: sceneProfile } : {}),
       time_windows: {

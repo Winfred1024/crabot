@@ -25,6 +25,10 @@ export function assembleDispatcherPrompt(ctx: DispatchContext): string {
   parts.push('')
   parts.push(buildDispatchRules(ctx.sessionType, hasActiveTasks))
   parts.push('')
+  if (ctx.crabSelfHandle) {
+    parts.push(buildSelfIdentitySection(ctx.crabSelfHandle))
+    parts.push('')
+  }
   if (ctx.sceneProfile) {
     parts.push(`## 场景画像\n${formatSceneProfile(ctx.sceneProfile)}`)
     parts.push('')
@@ -184,6 +188,17 @@ ${lines.join('\n')}
 \`\`\`
 
 actions 数组长度 1-${MAX_ACTIONS_PER_DISPATCH}。每个 action 的 kind 必须是上面定义的 ${allowedKinds.length} 种之一：${allowedKinds.map(k => `\`${k}\``).join(' / ')}。`
+}
+
+/**
+ * 渲染"你在本渠道的身份标识"段。
+ *
+ * 同一群里可能挂着多个 crabot 实例（如 @fufu_ai_001_bot 和 @fufu_ai_002_bot），
+ * 消息正文若同时 @ 多个 bot，仅靠 `mention="@you"` 这种布尔信号 LLM 无法判断
+ * "哪个 @ 是发给我的"。注入自身 handle 后 LLM 即可对齐消息正文里的字面 @。
+ */
+function buildSelfIdentitySection(selfHandle: string): string {
+  return `## 你在本渠道的身份\n- 你的 @handle: ${selfHandle}\n\n群聊里消息正文出现 \`${selfHandle}\` 即表示在 @ 你；同一条消息里出现其它 @xxx 是发给别人的，不要错把发给别人的内容当成发给自己的指令。`
 }
 
 function formatSceneProfile(sp: RuntimeSceneProfile): string {

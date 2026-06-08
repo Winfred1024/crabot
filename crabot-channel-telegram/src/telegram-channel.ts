@@ -322,6 +322,9 @@ export class TelegramChannel extends ModuleBase {
         channel_id: this.config.moduleId,
         message: channelMessage,
         ...(this.botUser ? { crab_display_name: formatTgUserName(this.botUser) } : {}),
+        // 多 bot 群里 dispatcher / worker 用它区分"消息正文里哪个 @ 是发给我的"。
+        // telegram 正文 @ 形式就是 `@<username>`，与此值字面对齐。
+        ...(this.botUser?.username ? { crab_self_handle: `@${this.botUser.username}` } : {}),
       },
       timestamp: generateTimestamp(),
     }

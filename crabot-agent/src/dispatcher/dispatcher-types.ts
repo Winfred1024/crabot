@@ -63,6 +63,12 @@ export interface DispatchContext {
   readonly sessionId: string
   readonly senderFriend: Friend
   readonly sceneProfile?: RuntimeSceneProfile
+  /**
+   * Crabot 在该渠道里 @ 自己时的稳定标识（含 `@` 前缀，如 `@fufu_ai_001_bot`）。
+   * dispatcher 用它判断多 @ 消息里哪一段是发给自己的；缺省时 LLM 只能靠
+   * `is_mention_crab` 这种布尔信号瞎猜（多 bot 群里会猜错，已踩过坑）。
+   */
+  readonly crabSelfHandle?: string
   /** trace 关联：dispatcher 在此 trace 下挂 dispatch_call + dispatch_action span */
   readonly traceId: string
   readonly parentSpanId?: string

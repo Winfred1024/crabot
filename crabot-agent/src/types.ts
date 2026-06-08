@@ -486,6 +486,15 @@ export interface FrontAgentContext {
   scene_profile?: RuntimeSceneProfile
   /** Crabot's display name on the current channel (e.g. group nickname) */
   crab_display_name?: string
+  /**
+   * Crabot 在该渠道里 @ 自己时的稳定标识（含 `@` 前缀）。
+   * 用于让 dispatcher / worker 在消息正文出现多个 @bot 时区分哪一个是自己。
+   * - telegram: `@<username>`
+   * - feishu: `@<bot_open_id>`
+   * - wechat: `@<puppet_wxid>`
+   * - channel-host: 来自 channel config 的 `crab_platform_user_id`，加 `@` 前缀
+   */
+  crab_self_handle?: string
   /** 用于 prompt 渲染时显示窗口边界 */
   time_windows: ContextTimeWindows
 }

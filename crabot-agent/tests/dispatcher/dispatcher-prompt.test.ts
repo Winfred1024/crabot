@@ -86,6 +86,26 @@ describe('assembleDispatcherPrompt', () => {
     expect(p).not.toMatch(/target_task_id 硬约束/)
   })
 
+  // ============================================================================
+  // Regression: 多 bot 群里 prompt 必须显式注入自身 @handle
+  // 触发场景：telegram 群里同时挂 @fufu_ai_001_bot / @fufu_ai_002_bot 两个 crabot
+  // 实例，master 一条消息分别给两个 bot 各派一个角色——dispatcher prompt 缺自身
+  // handle 时 LLM 只能瞎猜，结果把发给对方 bot 的指令当成自己的并写进 scene_profile。
+  // ============================================================================
+
+  it('注入 crabSelfHandle 时 prompt 含自身 @handle 段', () => {
+    const p = assembleDispatcherPrompt(ctx({ crabSelfHandle: '@fufu_ai_001_bot' }))
+    expect(p).toContain('## 你在本渠道的身份')
+    expect(p).toContain('@fufu_ai_001_bot')
+    // 必须明确告诉 LLM：消息正文里别的 @xxx 是发给别人的
+    expect(p).toMatch(/出现.*@fufu_ai_001_bot.*才是.*@.*你|@fufu_ai_001_bot.*表示在 @ 你/)
+  })
+
+  it('未注入 crabSelfHandle 时不渲染身份段（保持向后兼容）', () => {
+    const p = assembleDispatcherPrompt(ctx())
+    expect(p).not.toContain('## 你在本渠道的身份')
+  })
+
   it('包含 SLASH_AWARENESS_GUIDANCE 段', () => {
     const p = assembleDispatcherPrompt(ctx())
     expect(p).toContain('## 系统 slash 指令认知')

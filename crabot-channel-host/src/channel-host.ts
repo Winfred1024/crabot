@@ -471,15 +471,33 @@ export class ChannelHost extends ModuleBase {
    * 发布 channel.message_received 事件（无条件，所有消息均发布）
    */
   private async publishMessageReceivedEvent(message: ChannelMessage): Promise<void> {
+    const selfHandle = this.getCrabSelfHandle()
     const event: Event = {
       id: generateId(),
       type: 'channel.message_received',
       source: this.config.moduleId,
-      payload: { channel_id: this.config.moduleId, message },
+      payload: {
+        channel_id: this.config.moduleId,
+        message,
+        ...(selfHandle ? { crab_self_handle: selfHandle } : {}),
+      },
       timestamp: generateTimestamp(),
     }
 
     await this.rpcClient.publishEvent(event, this.config.moduleId)
+  }
+
+  /**
+   * 从 plugin_config 里读 `crab_platform_user_id`（OpenClaw 兼容字段）做成自身 handle。
+   * 多机器人群里 dispatcher / worker 用它区分"哪个 @ 是发给我的"。
+   * 字段未配置时返回 undefined，agent 端 prompt 这段就不渲染。
+   */
+  private getCrabSelfHandle(): string | undefined {
+    const cfg = this.hostConfig.plugin_config
+    if (!cfg || typeof cfg !== 'object') return undefined
+    const id = (cfg as { crab_platform_user_id?: unknown }).crab_platform_user_id
+    if (typeof id !== 'string' || id.length === 0) return undefined
+    return `@${id}`
   }
 
   // ============================================================================
