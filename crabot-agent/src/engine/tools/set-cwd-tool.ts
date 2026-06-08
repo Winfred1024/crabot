@@ -15,18 +15,15 @@ export function createSetCwdTool(ctx: SetCwdContext): ToolDefinition {
     name: 'set_cwd',
     category: 'file_io',
     description:
-      '**作用**：把当前 task 的工作目录（cwd）改成 path。' +
-      '调用后，本 task 后续的 Bash / Read / Grep / Glob / Write / Edit 工具，' +
-      '以及通过 delegate_task 派出的所有 subagent，都自动用 path 作为工作目录' +
-      '——你不需要在每次工具调用里写绝对路径。\n' +
-      '未调用时 cwd 默认是 agent 进程启动目录（通常是 home），不一定是用户期望的项目根。\n\n' +
-      '**何时调**：任务关联一个具体代码项目时调。' +
-      '典型流程：search_memory 查到项目目录 → set_cwd(/path)。' +
+      '**作用**：把当前 task 的工作根目录锚定到 path。' +
+      '调用后，本 task 后续所有工具调用（Bash / Read / Grep / Glob / Write / Edit）' +
+      '以及通过 delegate_task 派出的 subagent 都自动以 path 为根' +
+      '——不必每次写绝对路径。\n' +
+      '未调用时默认是 agent 进程启动目录（通常是 home），不一定是用户期望的项目根。\n\n' +
+      '**何时调**：任务关联一个具体代码项目时。' +
+      '典型流程：search_memory 找到项目目录 → set_cwd。' +
       '本 task 内一次就够，不需要反复切。\n\n' +
-      '**何时不调**：任务跟具体项目无关（讨论 / 闲聊 / 通用问答 / 纯配置问题）。\n\n' +
-      '**不做的事**：本工具不读 CLAUDE.md / AGENTS.md，' +
-      '也不改变你的工作流节奏。项目背景文档由调查方（research_collector）' +
-      '/ 规划方（code_planner）在自己流程里按需 Read。',
+      '**何时不调**：任务跟具体项目无关（讨论 / 闲聊 / 通用问答 / 纯配置问题）。',
     inputSchema: {
       type: 'object',
       properties: {
