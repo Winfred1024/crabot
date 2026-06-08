@@ -110,6 +110,7 @@ import {
 import { createSubmitAuditResultTool } from './goal-auditor-tools.js'
 import { createWaitForSignalTool, type WaitForSignalDeps } from '../mcp/wait-for-signal.js'
 import { createAsyncAuditEndTurnGate } from './end-turn-gate.js'
+import { buildAuditAbortedMarker } from './audit-result-marker.js'
 
 import { reflectStructuredOutcome } from '../orchestration/structured-outcome-reflector.js'
 
@@ -835,6 +836,36 @@ export class AgentHandler {
     const humanQueue = opts?.providedHumanQueue ?? new HumanMessageQueue()
     this.humanQueues.set(task.task_id, humanQueue)
 
+    // abortAudit helper：worker 通过 set_task_goal 改 goal 成功后调用，把当前 audit 标废。
+    // 步骤（spec 2026-06-07-goal-audit-async-buffered-info-design.md §4.7）：
+    //   1. abort audit subagent 进程（agentAbortControllers.get(id)?.abort()）
+    //   2. 立即清 outboundBuffer + activeAuditId（不等 drain 路径，避免 spawn 阶段 marker 尚未 push 时漏清）
+    //   3. push <audit_aborted> marker 到 humanQueue —— 唤醒等审中的 main loop（wait_for_signal）+
+    //      让 Task 11 drain 路径走 aborted 分支注入"audit 已废"提示
+    //
+    // idempotent：clearActiveAuditId 与本处都置 undefined，drain 路径与 abort 路径任意先后均无害。
+    // fail-soft：controller 缺失 / marker push 失败都不抛，仅 console.warn。
+    const abortAudit = (reason: string): void => {
+      const id = taskState.activeAuditId
+      if (!id) return  // 无 active audit，no-op
+      // 1. abort audit subagent process（可能已 finally 清掉了 controller，no-op 即可）
+      const controller = this.agentAbortControllers.get(id)
+      if (controller) {
+        try { controller.abort() } catch (err) {
+          console.warn('[abortAudit] controller.abort failed:', err instanceof Error ? err.message : String(err))
+        }
+      }
+      // 2. 立即清状态（drain 路径再清也无害）
+      taskState.outboundBuffer.length = 0
+      taskState.activeAuditId = undefined
+      // 3. push audit_aborted marker —— 唤醒 wait_for_signal + 走 drain 注入提示
+      try {
+        humanQueue.push(buildAuditAbortedMarker({ auditId: id, reason }))
+      } catch (err) {
+        console.warn('[abortAudit] push marker failed:', err instanceof Error ? err.message : String(err))
+      }
+    }
+
     let digest: ProgressDigest | undefined
     let loopSpanId: string | undefined
 
@@ -1110,6 +1141,10 @@ export class AgentHandler {
             hasExistingGoal: () => goalSetCache,
             hasRevisionToken: () => taskState.goalRevisionUnlocked === true,
             consumeRevisionToken: () => { taskState.goalRevisionUnlocked = false },
+            // 改 goal 成功后 abort 当前 audit（针对旧 goal 跑的）+ 清 outboundBuffer + 推 aborted marker。
+            // 首次设 goal 时也调，因 activeAuditId 为 undefined 故 no-op。
+            // spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.7
+            abortAudit,
           }))
         }
 
