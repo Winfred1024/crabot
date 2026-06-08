@@ -199,7 +199,7 @@ import {
   formatGoalListResponse,
   formatMissingIdResponse,
 } from './goal-slash.js'
-import { readCredentials } from './credentials.js'
+import { readCredentials, verifyPassword } from './credentials.js'
 
 // ============================================================================
 // JWT 工具函数
@@ -346,7 +346,6 @@ export class AdminModule extends ModuleBase {
   private readonly adminConfig: AdminConfig
   private webServer: http.Server | null = null
   private jwtSecret: string = ''
-  private password: string = ''
 
   // 数据存储
   private friends: Map<FriendId, Friend> = new Map()
@@ -602,12 +601,9 @@ export class AdminModule extends ModuleBase {
 
   protected override async onStart(): Promise<void> {
     // 从环境变量读取配置
-    this.password = process.env[this.adminConfig.password_env] ?? ''
     this.jwtSecret = process.env[this.adminConfig.jwt_secret_env] ?? ''
+    // 密码不再缓存：每次 login 实时读 credentials.json
 
-    if (!this.password) {
-      console.warn('[Admin] Warning: No admin password configured')
-    }
     if (!this.jwtSecret) {
       // 如果没有配置 JWT secret，生成一个随机的
       this.jwtSecret = crypto.randomBytes(32).toString('hex')
@@ -2239,7 +2235,18 @@ export class AdminModule extends ModuleBase {
   private async handleLogin(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const body = await this.readJsonBody<LoginRequest>(req)
 
-    if (body.password !== this.password) {
+    const cred = await readCredentials(this.adminConfig.data_dir)
+    if (!cred) {
+      res.writeHead(503)
+      res.end(JSON.stringify({
+        error: AdminErrorCode.SERVER_NOT_INITIALIZED,
+        message: 'Admin password not configured. Run `crabot start` once on the terminal.',
+      }))
+      return
+    }
+
+    const ok = await verifyPassword(body.password, cred)
+    if (!ok) {
       res.writeHead(401)
       res.end(JSON.stringify({
         error: AdminErrorCode.INVALID_PASSWORD,
@@ -2253,15 +2260,15 @@ export class AdminModule extends ModuleBase {
       sub: 'admin',
       iat: now,
       exp: now + this.adminConfig.token_ttl,
+      e: cred.token_epoch,
     }
-
     const token = signJwt(payload, this.jwtSecret)
+
     const response: LoginResponse = {
       token,
       expires_at: new Date(payload.exp * 1000).toISOString(),
-      is_temp: false,
+      is_temp: cred.is_temp,
     }
-
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify(response))
   }

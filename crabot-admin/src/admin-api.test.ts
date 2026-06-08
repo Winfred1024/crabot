@@ -7,6 +7,8 @@ import http from 'node:http'
 import fs from 'node:fs/promises'
 import AdminModule from './index.js'
 import type { ModelProvider, AgentImplementation, AgentInstance } from './types.js'
+import { AdminErrorCode } from './types.js'
+import { newCredentialsFromPassword, writeCredentials } from './credentials.js'
 
 // 测试配置
 const TEST_PROTOCOL_PORT = 19806
@@ -27,6 +29,12 @@ describe('AdminModule - Model Provider & Agent', () => {
       // ignore
     }
 
+    // 密码从 .env 迁到 credentials.json
+    process.env.TEST_JWT_SECRET_PROVIDER = 'test_jwt_secret_at_least_32_chars'
+    await fs.mkdir(TEST_DATA_DIR, { recursive: true })
+    const cred = await newCredentialsFromPassword('test_password_123', { is_temp: false, changed_via: 'start' })
+    await writeCredentials(TEST_DATA_DIR, cred)
+
     admin = new AdminModule(
       {
         moduleId: 'admin-provider-test',
@@ -44,10 +52,6 @@ describe('AdminModule - Model Provider & Agent', () => {
         token_ttl: 3600,
       }
     )
-
-    // 设置测试环境变量
-    process.env.TEST_ADMIN_PASSWORD_PROVIDER = 'test_password_123'
-    process.env.TEST_JWT_SECRET_PROVIDER = 'test_jwt_secret_at_least_32_chars'
 
     await admin.start()
 
@@ -371,6 +375,147 @@ describe('AdminModule - Model Provider & Agent', () => {
       // Settings are managed through Admin config
       expect(true).toBe(true)
     })
+  })
+})
+
+// ============================================================================
+// Auth 专项测试
+// ============================================================================
+
+const AUTH_TEST_PROTOCOL_PORT = 19812
+const AUTH_TEST_WEB_PORT = 13012
+const AUTH_TEST_DATA_DIR = './test-data/admin-auth-test'
+
+describe('AdminModule - Auth', () => {
+  let admin: AdminModule
+
+  beforeAll(async () => {
+    try {
+      await fs.rm(AUTH_TEST_DATA_DIR, { recursive: true, force: true })
+    } catch {
+      // ignore
+    }
+
+    process.env.TEST_JWT_SECRET_AUTH = 'test_jwt_secret_auth_at_least_32_chars'
+    await fs.mkdir(AUTH_TEST_DATA_DIR, { recursive: true })
+    const cred = await newCredentialsFromPassword('temp_pass', { is_temp: true, changed_via: 'start' })
+    await writeCredentials(AUTH_TEST_DATA_DIR, cred)
+
+    admin = new AdminModule(
+      {
+        moduleId: 'admin-auth-test',
+        moduleType: 'admin',
+        version: '0.1.0',
+        protocolVersion: '0.1.0',
+        port: AUTH_TEST_PROTOCOL_PORT,
+        subscriptions: [],
+      },
+      {
+        web_port: AUTH_TEST_WEB_PORT,
+        data_dir: AUTH_TEST_DATA_DIR,
+        password_env: 'TEST_ADMIN_PASSWORD_AUTH',
+        jwt_secret_env: 'TEST_JWT_SECRET_AUTH',
+        token_ttl: 3600,
+      }
+    )
+
+    await admin.start()
+  })
+
+  afterAll(async () => {
+    await admin.stop()
+    try {
+      await fs.rm(AUTH_TEST_DATA_DIR, { recursive: true, force: true })
+    } catch {
+      // ignore
+    }
+  })
+
+  it('login 成功返回 is_temp 字段', async () => {
+    const response = await makeWebRequestRaw(
+      AUTH_TEST_WEB_PORT,
+      'POST',
+      '/api/auth/login',
+      { password: 'temp_pass' },
+      false
+    )
+
+    expect(response.status).toBe(200)
+    const body = JSON.parse(response.body) as { token: string; expires_at: string; is_temp: boolean }
+    expect(body.is_temp).toBe(true)
+    expect(typeof body.token).toBe('string')
+    expect(typeof body.expires_at).toBe('string')
+  })
+
+  it('login 时密码错误返回 ADMIN_INVALID_PASSWORD', async () => {
+    const response = await makeWebRequestRaw(
+      AUTH_TEST_WEB_PORT,
+      'POST',
+      '/api/auth/login',
+      { password: 'wrong_password' },
+      false
+    )
+
+    expect(response.status).toBe(401)
+    const body = JSON.parse(response.body) as { error: string }
+    expect(body.error).toBe(AdminErrorCode.INVALID_PASSWORD)
+  })
+
+  it('credentials.json 不存在时 login 返回 503 SERVER_NOT_INITIALIZED', async () => {
+    // 启动一个没有 credentials.json 的 admin 实例
+    const noCredPort = 13013
+    const noCredProtoPort = 19813
+    const noCredDataDir = './test-data/admin-nocred-test'
+
+    try {
+      await fs.rm(noCredDataDir, { recursive: true, force: true })
+    } catch {
+      // ignore
+    }
+    await fs.mkdir(noCredDataDir, { recursive: true })
+    // 不写 credentials.json
+
+    process.env.TEST_JWT_SECRET_NOCRED = 'test_jwt_secret_nocred_at_least_32_chars'
+    const noCredAdmin = new AdminModule(
+      {
+        moduleId: 'admin-nocred-test',
+        moduleType: 'admin',
+        version: '0.1.0',
+        protocolVersion: '0.1.0',
+        port: noCredProtoPort,
+        subscriptions: [],
+      },
+      {
+        web_port: noCredPort,
+        data_dir: noCredDataDir,
+        password_env: 'TEST_ADMIN_PASSWORD_NOCRED',
+        jwt_secret_env: 'TEST_JWT_SECRET_NOCRED',
+        token_ttl: 3600,
+      }
+    )
+
+    await noCredAdmin.start()
+
+    try {
+      const response = await makeWebRequestRaw(
+        noCredPort,
+        'POST',
+        '/api/auth/login',
+        { password: 'anything' },
+        false
+      )
+
+      expect(response.status).toBe(503)
+      const body = JSON.parse(response.body) as { error: string }
+      expect(body.error).toBe(AdminErrorCode.SERVER_NOT_INITIALIZED)
+    } finally {
+      await noCredAdmin.stop()
+      try {
+        await fs.rm(noCredDataDir, { recursive: true, force: true })
+      } catch {
+        // ignore
+      }
+    }
   })
 })
 

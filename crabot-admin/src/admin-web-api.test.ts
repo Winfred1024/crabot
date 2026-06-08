@@ -8,6 +8,7 @@ import fs from 'node:fs/promises'
 import AdminModule from './index.js'
 import type { ChannelMessageRef, DialogObjectApplication, Friend, FriendPermissionConfig, LoginResponse } from './types.js'
 import { AdminErrorCode, createCliAccessConfig } from './types.js'
+import { newCredentialsFromPassword, writeCredentials } from './credentials.js'
 
 const TEST_PROTOCOL_PORT = 19807
 const TEST_WEB_PORT = 13007
@@ -28,6 +29,12 @@ describe('Admin Web API', () => {
       // ignore
     }
 
+    // 密码从 .env 迁到 credentials.json
+    process.env.TEST_JWT_SECRET_WEB = 'test_jwt_secret_at_least_32_chars'
+    await fs.mkdir(TEST_DATA_DIR, { recursive: true })
+    const cred = await newCredentialsFromPassword('test_password_123', { is_temp: false, changed_via: 'start' })
+    await writeCredentials(TEST_DATA_DIR, cred)
+
     admin = new AdminModule(
       {
         moduleId: 'admin-web-test',
@@ -46,9 +53,6 @@ describe('Admin Web API', () => {
       }
     )
 
-    // 设置测试环境变量
-    process.env.TEST_ADMIN_WEB_PASSWORD = 'test_password_123'
-    process.env.TEST_JWT_SECRET_WEB = 'test_jwt_secret_at_least_32_chars'
     await admin.start()
   })
 

@@ -6,9 +6,11 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import http from 'node:http'
+import * as fs from 'node:fs/promises'
 import { WebSocket } from 'ws'
 import { AdminModule } from '../src/index.js'
 import type { ModuleConfig } from '../src/core/module-base.js'
+import { newCredentialsFromPassword, writeCredentials } from '../src/credentials.js'
 
 describe('Admin Master Chat 集成测试', () => {
   let adminModule: AdminModule
@@ -16,9 +18,17 @@ describe('Admin Master Chat 集成测试', () => {
   let jwtToken: string
 
   beforeAll(async () => {
-    // 设置环境变量
-    process.env.CRABOT_ADMIN_PASSWORD = 'test123'
+    // 密码从 .env 迁到 credentials.json
     process.env.CRABOT_JWT_SECRET = 'test-jwt-secret-at-least-32-chars-long'
+
+    const dataDir = '/tmp/crabot-test-admin-chat'
+    await fs.mkdir(dataDir, { recursive: true })
+    // 清理上一轮残留
+    await fs.rm(`${dataDir}/credentials.json`, { force: true })
+    await fs.rm(`${dataDir}/.env`, { force: true })
+
+    const cred = await newCredentialsFromPassword('test123', { is_temp: false, changed_via: 'start' })
+    await writeCredentials(dataDir, cred)
 
     // 创建 Admin 模块实例
     const moduleConfig: ModuleConfig = {

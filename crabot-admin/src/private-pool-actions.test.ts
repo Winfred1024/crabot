@@ -3,6 +3,7 @@ import http from 'node:http'
 import fs from 'node:fs/promises'
 import AdminModule from './index.js'
 import type { ChannelMessageRef, Friend, LoginResponse, PendingMessage } from './types.js'
+import { newCredentialsFromPassword, writeCredentials } from './credentials.js'
 
 const TEST_PROTOCOL_PORT = 19808
 const TEST_WEB_PORT = 13008
@@ -41,8 +42,11 @@ describe('Private Pool Actions And Group Gating', () => {
       // ignore
     }
 
-    process.env.TEST_ADMIN_PRIVATE_POOL_PASSWORD = 'test_password_123'
+    // 密码从 .env 迁到 credentials.json
     process.env.TEST_JWT_SECRET_PRIVATE_POOL = 'test_jwt_secret_private_pool_at_least_32_chars'
+    await fs.mkdir(TEST_DATA_DIR, { recursive: true })
+    const cred = await newCredentialsFromPassword('test_password_123', { is_temp: false, changed_via: 'start' })
+    await writeCredentials(TEST_DATA_DIR, cred)
 
     admin = new AdminModule(
       {

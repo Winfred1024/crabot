@@ -7,6 +7,7 @@ import http from 'node:http'
 import fs from 'node:fs/promises'
 import AdminModule from './index.js'
 import type { Task, Schedule, Friend } from './types.js'
+import { newCredentialsFromPassword, writeCredentials } from './credentials.js'
 
 // 测试配置
 const TEST_PROTOCOL_PORT = 19804
@@ -46,9 +47,11 @@ describe('AdminModule - Task & Schedule', () => {
       }
     )
 
-    // 设置测试环境变量
-    process.env.TEST_ADMIN_PASSWORD_TASK = 'test_password_123'
+    // 密码从 .env 迁到 credentials.json
     process.env.TEST_JWT_SECRET_TASK = 'test_jwt_secret_at_least_32_chars'
+    await fs.mkdir(TEST_DATA_DIR, { recursive: true })
+    const cred = await newCredentialsFromPassword('test_password_123', { is_temp: false, changed_via: 'start' })
+    await writeCredentials(TEST_DATA_DIR, cred)
 
     await admin.start()
 
