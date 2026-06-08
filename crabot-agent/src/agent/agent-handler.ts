@@ -912,6 +912,12 @@ export class AgentHandler {
       // 抽出 agent_id 加入 Set；判断"是否还有 active subagent"时跟全局 agentAbortControllers
       // 取交集——后者在 subagent 退出（completed/failed/killed）时 finally 清理，是可信的 active 标志。
       // spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 3
+      //
+      // TODO(Task 5): 这个 Set 是 closure-scoped，每次 runWorkerLoop 调用都会 new 一个新的。
+      // 如果 task 进 waiting 状态后 resume（executeTask 重新调 runWorkerLoop），新 Set 是空的，
+      // hasActiveAsyncSubagent 会错报 false，wait_for_signal 在这种 case 会误拒 worker 的合理等待。
+      // 修法：Task 5 加 taskState.outboundBuffer 字段时，一并把 activeAsyncSubagentIds 移到 taskState
+      // 上以跨 loop iteration 持久。当前依赖 outer waiting loop（用 bgRegistry）兜底——不是 hard blocker。
       const activeAsyncSubagentIds = new Set<string>()
 
       // 工具列表构造改为 callback 形式：每轮 LLM 调用前由 query-loop 重新 resolve，

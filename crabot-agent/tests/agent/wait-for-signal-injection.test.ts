@@ -97,5 +97,7 @@ describe('maybeCreateWaitForSignalTool', () => {
     // 触发 tool.call —— 应该看到 hasActiveAsyncSubagent 被调用
     await tool!.call({ reason: 'test' }, {} as never)
     expect(callCount).toBeGreaterThan(0)
+    // 清理 barrier（hasActiveAsyncSubagent=true 时 tool.call 会 setBarrier(24h)，否则会泄露 setTimeout）
+    stubDeps.humanQueue.clearBarrier()
   })
 })
