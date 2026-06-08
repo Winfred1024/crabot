@@ -1,0 +1,279 @@
+/**
+ * Outbound dispatch helper（send_message handler immediate-send 路径与 goal-mode flush 路径共享逻辑）
+ *
+ * spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.5
+ *
+ * 背景：Task 8 加 outboundBuffer flush 钩子时把实现 inline 在 agent-handler.ts，但缺少 sandbox path
+ * mapping 和 admin RPC 通路，导致 flush 出去的 entry 会 silent drop file_path 和 friend_id-only mentions。
+ * 这违反 audit gate 核心语义——"未审消息不到达用户"——会让 agent 自以为已发的文件实际丢失。
+ *
+ * 解法：把 send 核心逻辑（path mapping + mention resolve + channel sendMessage）抽到此处，
+ * 让 immediate-send / flush 两条路径调同一个 dispatchOutboundMessage helper，行为完全一致。
+ */
+
+import * as path from 'path'
+import type { RpcClient } from 'crabot-shared'
+import type { Friend } from '../types.js'
+
+// ============================================================================
+// PathMapping（Worker 沙盒路径 ↔ 主机路径映射）
+// ============================================================================
+
+/**
+ * 沙盒路径 ↔ 主机路径映射。Worker 执行时 unified-agent 在 sandboxPathMappingsRef 上设置。
+ * file_path 类型消息需要先转主机路径再交给 channel 真正读文件。
+ *
+ * 此前定义在 crab-messaging.ts，因 flush 路径也需要而抽到此处，crab-messaging.ts 重导出。
+ */
+export interface PathMapping {
+  sandbox_path: string
+  host_path: string
+  read_only: boolean
+}
+
+// ============================================================================
+// 共享类型
+// ============================================================================
+
+/**
+ * outboundBuffer 单条 entry shape，与 WorkerTaskState.outboundBuffer / TaskContext.outboundBuffer
+ * 严格对齐。所有字段 readonly——entry 进 buffer 后任何路径都不应改 shape，splice 出来直接 dispatch。
+ */
+export interface OutboundBufferEntry {
+  readonly channel_id: string
+  readonly session_id: string
+  readonly content: string
+  readonly intent: 'info'
+  readonly content_type?: 'text' | 'image' | 'file'
+  readonly media_url?: string
+  readonly file_path?: string
+  readonly filename?: string
+  readonly mentions?: ReadonlyArray<{
+    readonly friend_id?: string
+    readonly platform_user_id?: string
+    readonly at_name?: string
+  }>
+  readonly quote_message_id?: string
+  readonly sent_at_attempt_ms: number
+}
+
+/**
+ * dispatchOutboundMessage 所需依赖。
+ *
+ * - rpcClient + moduleId: 调 channel sendMessage / admin get_friend
+ * - resolveChannelPort: channelId → 端口
+ * - getAdminPort: 解析 friend_id 时调 admin
+ * - sandboxPathMappingsRef: file_path → host_path 转换；本地 unified agent 路径下 mappings 可能为空，
+ *   此时 dispatchOutboundMessage 会按"无映射且 file_path 是绝对路径"直接放行（与 immediate-send 一致）。
+ *
+ * sendResult 返回与 channel 'send_message' RPC 返回一致；调用方按需消费。
+ */
+export interface OutboundDispatchDeps {
+  readonly rpcClient: RpcClient
+  readonly moduleId: string
+  readonly resolveChannelPort: (channelId: string) => Promise<number>
+  readonly getAdminPort: () => Promise<number>
+  readonly sandboxPathMappingsRef?: { current: PathMapping[] }
+}
+
+export interface OutboundSendResult {
+  readonly platform_message_id: string
+  readonly sent_at: string
+}
+
+// ============================================================================
+// 内部 helpers
+// ============================================================================
+
+/** 沙盒路径 → 主机路径（normalize + 二次验证防止穿越）。与 crab-messaging.ts 内私有实现等价。 */
+function mapSandboxPathToHost(sandboxPath: string, mappings: ReadonlyArray<PathMapping>): string {
+  const normalizedPath = path.normalize(sandboxPath)
+  for (const mapping of mappings) {
+    const normalizedSandbox = path.normalize(mapping.sandbox_path)
+    if (normalizedPath.startsWith(normalizedSandbox)) {
+      const relativePart = normalizedPath.slice(normalizedSandbox.length)
+      const hostPath = path.join(mapping.host_path, relativePart)
+      const normalizedHost = path.normalize(hostPath)
+      if (!normalizedHost.startsWith(path.normalize(mapping.host_path))) {
+        throw new Error('Resolved path escapes allowed directory')
+      }
+      return normalizedHost
+    }
+  }
+  throw new Error(`Path ${sandboxPath} is not accessible from sandbox`)
+}
+
+type MessageContent = {
+  type: string
+  text?: string
+  media_url?: string
+  file_path?: string
+  filename?: string
+}
+
+type PlatformMention = {
+  platform_user_id: string
+  at_name?: string
+}
+
+/** 按优先级（media_url > file_path > text）构造 channel 期望的 content payload */
+function buildMessageContent(
+  entry: OutboundBufferEntry,
+  sandboxMappings: ReadonlyArray<PathMapping>,
+): MessageContent {
+  if (entry.media_url) {
+    return {
+      type: entry.content_type ?? 'image',
+      media_url: entry.media_url,
+      ...(entry.filename !== undefined ? { filename: entry.filename } : {}),
+    }
+  }
+  if (entry.file_path) {
+    let hostPath: string
+    if (sandboxMappings.length > 0) {
+      // 远程 worker：沙盒路径 → 主机路径（mapSandboxPathToHost 内含二次验证防穿越）
+      hostPath = mapSandboxPathToHost(entry.file_path, sandboxMappings)
+    } else if (path.isAbsolute(entry.file_path)) {
+      // 本地 unified agent：绝对路径直接用
+      hostPath = entry.file_path
+    } else {
+      throw new Error('相对路径需要路径映射配置，请使用绝对路径')
+    }
+    return {
+      type: entry.content_type ?? 'file',
+      file_path: hostPath,
+      filename: entry.filename ?? path.basename(entry.file_path),
+    }
+  }
+  return {
+    type: 'text',
+    text: entry.content,
+  }
+}
+
+/**
+ * 把 entry.mentions（friend_id 或 platform_user_id 形态）解析成 channel 期望的 platform_user_id 列表。
+ * - 直传 platform_user_id：原样保留
+ * - 仅 friend_id：调 admin get_friend 反查；找不到当前 channel 的 identity 时丢弃该 mention
+ *
+ * 返回 undefined 表示无 mentions（避免在 features 里塞空数组）。
+ */
+async function resolvePlatformMentions(
+  entry: OutboundBufferEntry,
+  deps: OutboundDispatchDeps,
+): Promise<PlatformMention[] | undefined> {
+  if (!entry.mentions || entry.mentions.length === 0) return undefined
+  const adminPort = await deps.getAdminPort()
+  const resolved = await Promise.all(
+    entry.mentions.map(async ({ friend_id, platform_user_id, at_name }) => {
+      if (platform_user_id) {
+        return { platform_user_id, ...(at_name !== undefined ? { at_name } : {}) }
+      }
+      if (!friend_id) return null
+      try {
+        const fResult = await deps.rpcClient.call<
+          { friend_id: string },
+          { friend: Friend }
+        >(adminPort, 'get_friend', { friend_id }, deps.moduleId)
+        const identity = fResult.friend.channel_identities.find(
+          (ci) => ci.channel_id === entry.channel_id,
+        )
+        if (!identity) return null
+        return {
+          platform_user_id: identity.platform_user_id,
+          ...(at_name !== undefined ? { at_name } : {}),
+        }
+      } catch {
+        return null
+      }
+    }),
+  )
+  const filtered = resolved.filter((m): m is PlatformMention => m !== null)
+  return filtered.length > 0 ? filtered : undefined
+}
+
+// ============================================================================
+// 公开 API
+// ============================================================================
+
+/**
+ * 把一条 outboundBuffer entry 真正派发到 channel——含 sandbox path mapping + friend_id resolve。
+ * 跟 send_message handler immediate-send 路径功能等价（同样的 path mapping + mention resolve + features 结构）。
+ *
+ * 失败抛 throw（不在此处吞错；flush 路径调用方在 createOutboundFlush 内做 continue-on-error，
+ * 立即发路径让 send_message handler 自己 catch 转用户可见 error）。
+ *
+ * spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.5
+ */
+export async function dispatchOutboundMessage(
+  entry: OutboundBufferEntry,
+  deps: OutboundDispatchDeps,
+): Promise<OutboundSendResult> {
+  const channelPort = await deps.resolveChannelPort(entry.channel_id)
+  if (!channelPort) {
+    throw new Error(`Channel ${entry.channel_id} 不可用`)
+  }
+
+  const sandboxMappings = deps.sandboxPathMappingsRef?.current ?? []
+  const messageContent = buildMessageContent(entry, sandboxMappings)
+  const platformMentions = await resolvePlatformMentions(entry, deps)
+
+  const hasFeatures =
+    (platformMentions !== undefined && platformMentions.length > 0)
+    || entry.quote_message_id !== undefined
+
+  return await deps.rpcClient.call<
+    {
+      session_id: string
+      content: MessageContent
+      features?: {
+        mentions?: PlatformMention[]
+        quote_message_id?: string
+      }
+    },
+    OutboundSendResult
+  >(channelPort, 'send_message', {
+    session_id: entry.session_id,
+    content: messageContent,
+    ...(hasFeatures
+      ? {
+        features: {
+          ...(platformMentions !== undefined && platformMentions.length > 0
+            ? { mentions: platformMentions }
+            : {}),
+          ...(entry.quote_message_id !== undefined
+            ? { quote_message_id: entry.quote_message_id }
+            : {}),
+        },
+      }
+      : {}),
+  }, deps.moduleId)
+}
+
+/**
+ * 工厂返回 flush 函数：splice buffer + 逐 entry dispatch + continue on error。
+ *
+ * - splice(0) 一次性取出所有缓冲项，失败的不放回；buffer 永远不被反复 flush
+ * - 单条 entry dispatch 抛异常时仅 warn log，不阻塞后续 entry（spec §4.5 显式取舍）
+ *
+ * spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 8
+ */
+export function createOutboundFlush(
+  outboundBuffer: Array<OutboundBufferEntry>,
+  deps: OutboundDispatchDeps,
+): () => Promise<void> {
+  return async () => {
+    if (outboundBuffer.length === 0) return
+    const entries = outboundBuffer.splice(0)
+    for (const entry of entries) {
+      try {
+        await dispatchOutboundMessage(entry, deps)
+      } catch (err) {
+        console.warn(
+          '[outbound flush] entry failed:',
+          err instanceof Error ? err.message : String(err),
+        )
+      }
+    }
+  }
+}

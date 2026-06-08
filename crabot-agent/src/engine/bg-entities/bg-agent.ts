@@ -41,6 +41,11 @@ export interface SpawnPersistentAgentOpts {
   /**
    * Async exit hook —— sub-agent loop 自然结束 / 失败时调用（killed 由 Kill 工具发出，不走这里）。
    * 用于 worker 推 push notification。抛错只 log。
+   *
+   * `outcome` / `exitToolCall` / `finalText` 透传 runEngine 的结构化 result，给
+   * audit subagent 这类 caller（onExit 需要解析 verdict）用，免得再去读 result_file
+   * 反序列化裸文本（result_file 当前只存 finalText）。runEngine 走 catch 路径时
+   * 这些字段不填——caller 用 status='failed' 走 sentinel。
    */
   readonly onExit?: (info: {
     entity_id: string
@@ -50,6 +55,9 @@ export interface SpawnPersistentAgentOpts {
     runtime_ms: number
     spawned_at: string
     result_file: string | null
+    outcome?: 'completed' | 'failed' | 'max_turns' | 'aborted'
+    exitToolCall?: { readonly name: string; readonly input: Record<string, unknown> }
+    finalText?: string
   }) => void
 }
 
@@ -160,6 +168,9 @@ export async function spawnPersistentAgent(opts: SpawnPersistentAgentOpts): Prom
             runtime_ms: runtimeMs,
             spawned_at: now,
             result_file: resultFile,
+            outcome: result.outcome,
+            ...(result.exitToolCall ? { exitToolCall: result.exitToolCall } : {}),
+            finalText: result.finalText ?? '',
           })
         } catch (err) {
           console.error(`[bg-agent] onExit callback failed for ${entity_id}:`, err)

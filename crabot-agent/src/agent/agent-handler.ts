@@ -24,6 +24,7 @@ import type { BgEntityOwner, BgEntityRecord, BgEntityStatus, BgEntityType } from
 import type { BashBgContext } from '../engine/tools/index.js'
 import type { BgToolDeps } from '../engine/tools/index.js'
 import type { TaskContext } from '../mcp/crab-messaging.js'
+import { createOutboundFlush, type PathMapping, type OutboundDispatchDeps } from './outbound-flush.js'
 import type { BgEntityTraceContext } from '../engine/bg-entities/trace.js'
 import type {
   ToolDefinition,
@@ -101,7 +102,6 @@ import {
   buildAuditVerdictSummary,
   buildHumanQueueReport,
   buildBlockedGuidance,
-  decideEndTurnGate,
   resolveAuditJudgment,
   type AuditResult,
   type ConversationEntry,
@@ -109,6 +109,9 @@ import {
   type GoalStatus,
 } from './goal-audit.js'
 import { createSubmitAuditResultTool } from './goal-auditor-tools.js'
+import { createWaitForSignalTool, type WaitForSignalDeps } from '../mcp/wait-for-signal.js'
+import { createAsyncAuditEndTurnGate } from './end-turn-gate.js'
+import { buildAuditAbortedMarker } from './audit-result-marker.js'
 
 import { reflectStructuredOutcome } from '../orchestration/structured-outcome-reflector.js'
 
@@ -135,6 +138,50 @@ export function extractChildTraceIdFromOutput(output: string | undefined): strin
     // 非 JSON output（如普通文本工具返回），忽略
   }
   return undefined
+}
+
+/**
+ * 从 delegate_task 异步路径的 JSON output 提取 `agent_id`。
+ * 异步派出的 subagent 工具立即返回 `{agent_id, status:'launched', output_file: null}`，
+ * caller 用 agent_id 追踪在跑的 async subagent（喂给 wait_for_signal 的 hasActiveAsyncSubagent 判断）。
+ * 非 JSON / 非 launched 状态 / 无字段 → 返回 undefined。
+ * @internal exported for testing
+ */
+export function extractLaunchedSubagentId(output: string | undefined): string | undefined {
+  if (!output) return undefined
+  try {
+    const parsed = JSON.parse(output) as { agent_id?: unknown; status?: unknown }
+    if (
+      parsed.status === 'launched'
+      && typeof parsed.agent_id === 'string'
+      && parsed.agent_id.length > 0
+    ) {
+      return parsed.agent_id
+    }
+  } catch {
+    // 非 JSON / 非 async-launched 结果（sync 路径直接返回文字），忽略
+  }
+  return undefined
+}
+
+/**
+ * 按 goal mode / async 注入条件决定是否构造 wait_for_signal 工具。
+ * 见 `crabot-docs/superpowers/specs/2026-06-07-goal-audit-async-buffered-info-design.md` Task 3。
+ *
+ * 注入条件：`goalModeEnabled || asyncEnabled`
+ *   - goal mode 下 audit 异步跑，worker 无事可干时要能挂起；
+ *   - async path 下 subagent 异步跑，worker 等通知也要能挂起。
+ *
+ * 两者都关时不注入，避免普通对话流误调。
+ *
+ * @internal exported for testing
+ */
+export function maybeCreateWaitForSignalTool(
+  opts: { readonly goalModeEnabled: boolean; readonly asyncEnabled: boolean },
+  deps: WaitForSignalDeps,
+): ReturnType<typeof createWaitForSignalTool> | undefined {
+  if (!opts.goalModeEnabled && !opts.asyncEnabled) return undefined
+  return createWaitForSignalTool(deps)
 }
 
 type ProgressReportMode = 'silent' | 'text_forward' | 'digest'
@@ -221,6 +268,13 @@ export interface AgentHandlerDeps {
   ) => ToolPermissionConfig
   /** 反思补轮注入接口（测试用）。生产路径走默认 reflectStructuredOutcome。 */
   reflectFn?: typeof reflectStructuredOutcome
+  /**
+   * 沙盒路径 ↔ 主机路径映射引用。由 unified-agent 在 executeTask 时设置 current，
+   * 让 outbound flush 路径能跟 send_message handler 一样把 file_path 转主机路径再发。
+   * 不传时 flush 路径假设运行在本地 unified agent，按 file_path 是否绝对路径降级处理。
+   * spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.5
+   */
+  sandboxPathMappingsRef?: { current: PathMapping[] }
 }
 
 import type { LLMFormat } from '../engine/llm-adapter'
@@ -763,6 +817,9 @@ export class AgentHandler {
         pendingHumanMessages: [],
         taskOrigin: context.task_origin,
         todoStore: new TodoStore(),
+        outboundBuffer: [],
+        activeAuditId: undefined,
+        activeAsyncSubagentIds: new Set<string>(),
       }
       this.activeTasks.set(task.task_id, taskState)
     }
@@ -779,6 +836,36 @@ export class AgentHandler {
     // Create human message queue for this task（waiting 续跑时复用已有 queue）
     const humanQueue = opts?.providedHumanQueue ?? new HumanMessageQueue()
     this.humanQueues.set(task.task_id, humanQueue)
+
+    // abortAudit helper：worker 通过 set_task_goal 改 goal 成功后调用，把当前 audit 标废。
+    // 步骤（spec 2026-06-07-goal-audit-async-buffered-info-design.md §4.7）：
+    //   1. abort audit subagent 进程（agentAbortControllers.get(id)?.abort()）
+    //   2. 立即清 outboundBuffer + activeAuditId（不等 drain 路径，避免 spawn 阶段 marker 尚未 push 时漏清）
+    //   3. push <audit_aborted> marker 到 humanQueue —— 唤醒等审中的 main loop（wait_for_signal）+
+    //      让 Task 11 drain 路径走 aborted 分支注入"audit 已废"提示
+    //
+    // idempotent：clearActiveAuditId 与本处都置 undefined，drain 路径与 abort 路径任意先后均无害。
+    // fail-soft：controller 缺失 / marker push 失败都不抛，仅 console.warn。
+    const abortAudit = (reason: string): void => {
+      const id = taskState.activeAuditId
+      if (!id) return  // 无 active audit，no-op
+      // 1. abort audit subagent process（可能已 finally 清掉了 controller，no-op 即可）
+      const controller = this.agentAbortControllers.get(id)
+      if (controller) {
+        try { controller.abort() } catch (err) {
+          console.warn('[abortAudit] controller.abort failed:', err instanceof Error ? err.message : String(err))
+        }
+      }
+      // 2. 立即清状态（drain 路径再清也无害）
+      taskState.outboundBuffer.length = 0
+      taskState.activeAuditId = undefined
+      // 3. push audit_aborted marker —— 唤醒 wait_for_signal + 走 drain 注入提示
+      try {
+        humanQueue.push(buildAuditAbortedMarker({ auditId: id, reason }))
+      } catch (err) {
+        console.warn('[abortAudit] push marker failed:', err instanceof Error ? err.message : String(err))
+      }
+    }
 
     let digest: ProgressDigest | undefined
     let loopSpanId: string | undefined
@@ -818,9 +905,6 @@ export class AgentHandler {
       const conversationLog: ConversationEntry[] = []
       // sentInfoMessage：send_message(intent='info') 成功至少一次；forced_summary 判断依据
       let sentInfoMessage = false
-      // blockedNoticeShown：goal 进入 blocked 后只注入一次"换方向"提示，之后放行 end_turn，
-      // 避免无限重放 forced_summary（P0 兜底）。
-      let blockedNoticeShown = false
       // 任务触发类型：scheduled 任务始终抑制 forced_summary
       const workerTriggerType: 'scheduled' | 'message' =
         task.source?.trigger_type === 'scheduled' ? 'scheduled' : 'message'
@@ -861,7 +945,15 @@ export class AgentHandler {
       // permissionConfig（auditor 调 dangerous 工具如 Bash 时 runtime permission check 才能放行）。
       // spec: 2026-05-23-goal-mode-design.md §6 / §7.2（auditor 工具来源）
       let auditBaseTools: ReadonlyArray<ToolDefinition> = []
-      let auditPermissionCfg: ToolPermissionConfig | undefined
+
+      // wait_for_signal 用：跟踪本任务派出的 async subagent entity_ids。
+      // delegate_task 异步路径返回 `{agent_id, status:'launched'}`，我们在 wrapper 里
+      // 抽出 agent_id 加入 taskState.activeAsyncSubagentIds；判断"是否还有 active subagent"时
+      // 跟全局 agentAbortControllers 取交集——后者在 subagent 退出（completed/failed/killed）时
+      // finally 清理，是可信的 active 标志。
+      // spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 3 / Task 5
+      // 注：Set 现挂在 taskState 上（Task 5 reviewer follow-up），runWorkerLoop 跨 iteration 持久——
+      // task 进 waiting 状态后 resume（executeTask 重新调 runWorkerLoop）时仍能复用同一 task 的 Set。
 
       // 工具列表构造改为 callback 形式：每轮 LLM 调用前由 query-loop 重新 resolve，
       // 让 admin push config（updateSkills / updateSystemPrompt）能在同一 task 内热生效。
@@ -902,6 +994,11 @@ export class AgentHandler {
           taskType: task.task_type,
           // 用 getter 形式封装本地 cache，worker 中途 set_task_goal 后下一轮工具调用立即生效。
           hasGoal: () => goalSetCache,
+          // Goal mode 缓冲：send_message handler 在工作态（无 activeAudit）把 info 消息推入 outboundBuffer；
+          // 等审态（hasActiveAudit=true）下立即 flush。引用 taskState 持久数组，跨 iteration 一致。
+          // spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 6
+          outboundBuffer: taskState.outboundBuffer,
+          hasActiveAudit: () => taskState.activeAuditId !== undefined,
           // 透传 sub-agent trace 上下文：让 audit gate 触发的 audit subagent
           // 产生的 sub_agent_call span 挂到主 worker trace 下，admin UI 能渲染。
           // spec: 2026-05-23-goal-mode-design.md §4.2
@@ -984,30 +1081,40 @@ export class AgentHandler {
         // baseTools 构造后立刻把 outer auditBaseTools 接上，给 audit gate 的 getter 用。
         // 见 mcpConfigFactory 上方的 outer let 声明。
         const baseTools = filterToolsByPermission(baseToolsRaw, baseToolsPermissionConfig)
-        // 把 baseTools / baseToolsPermissionConfig 接到 outer，audit gate getter 用。
+        // 把 baseTools 接到 outer，audit gate getter 用。
         auditBaseTools = baseTools
-        auditPermissionCfg = baseToolsPermissionConfig
 
         if (subAgentsSnapshot.length > 0) {
+          const baseRunSubAgent = this.makeRunSubAgent({
+            parentTools: baseTools,
+            parentTaskId: task.task_id,
+            callerLabel: 'main worker',
+            humanQueue,
+            permissionConfig: baseToolsPermissionConfig,
+            traceConfig: subAgentTraceConfig,
+            asyncEnabled: isMasterPrivate,
+            asyncCtx: {
+              owner: {
+                friend_id: context.sender_friend?.id ?? `__system_${context.task_origin?.session_id ?? 'unknown'}`,
+                session_id: context.task_origin?.session_id,
+                channel_id: context.task_origin?.channel_id,
+              },
+              adapter,
+            },
+          })
+          // wrap：异步路径返回 `{agent_id, status:'launched'}` → 抓出来加入 taskState.activeAsyncSubagentIds，
+          // 供 wait_for_signal.hasActiveAsyncSubagent 判断。同步路径不带 launched 状态，不影响。
+          const trackingRunSubAgent: typeof baseRunSubAgent = async (subagent, input, ctx) => {
+            const result = await baseRunSubAgent(subagent, input, ctx)
+            if (!result.isError && typeof result.output === 'string') {
+              const agentId = extractLaunchedSubagentId(result.output)
+              if (agentId) taskState.activeAsyncSubagentIds.add(agentId)
+            }
+            return result
+          }
           tools.push(createDelegateTaskTool({
             subAgents: subAgentsSnapshot,
-            runSubAgent: this.makeRunSubAgent({
-              parentTools: baseTools,
-              parentTaskId: task.task_id,
-              callerLabel: 'main worker',
-              humanQueue,
-              permissionConfig: baseToolsPermissionConfig,
-              traceConfig: subAgentTraceConfig,
-              asyncEnabled: isMasterPrivate,
-              asyncCtx: {
-                owner: {
-                  friend_id: context.sender_friend?.id ?? `__system_${context.task_origin?.session_id ?? 'unknown'}`,
-                  session_id: context.task_origin?.session_id,
-                  channel_id: context.task_origin?.channel_id,
-                },
-                adapter,
-              },
-            }),
+            runSubAgent: trackingRunSubAgent,
           }))
         }
 
@@ -1047,6 +1154,10 @@ export class AgentHandler {
             hasExistingGoal: () => goalSetCache,
             hasRevisionToken: () => taskState.goalRevisionUnlocked === true,
             consumeRevisionToken: () => { taskState.goalRevisionUnlocked = false },
+            // 改 goal 成功后 abort 当前 audit（针对旧 goal 跑的）+ 清 outboundBuffer + 推 aborted marker。
+            // 首次设 goal 时也调，因 activeAuditId 为 undefined 故 no-op。
+            // spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.7
+            abortAudit,
           }))
         }
 
@@ -1059,6 +1170,28 @@ export class AgentHandler {
             killBgEntity: (entity_id) => this.killBgEntity(entity_id),
           }))
         }
+
+        // 3k2. wait_for_signal — 通用挂起原语
+        // 注入条件：goalModeEnabled（audit 异步跑时需要挂起等结果）
+        // 或 asyncEnabled（master 私聊 + async subagent 派出后等通知）。
+        // hasActiveAudit：taskState.activeAuditId 非空表示 task 处于"等审态"。
+        // hasActiveAsyncSubagent：跟全局 agentAbortControllers 取交集——bg-agent.ts 在 finally 清理 controller，
+        // 所以 "id 还在 Map 里" 等价于 "subagent 还没退出"。
+        // spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 3 / Task 5
+        const waitForSignalTool = maybeCreateWaitForSignalTool(
+          { goalModeEnabled, asyncEnabled: isMasterPrivate },
+          {
+            humanQueue,
+            hasActiveAudit: () => taskState.activeAuditId !== undefined,
+            hasActiveAsyncSubagent: () => {
+              for (const id of taskState.activeAsyncSubagentIds) {
+                if (this.agentAbortControllers.has(id)) return true
+              }
+              return false
+            },
+          },
+        )
+        if (waitForSignalTool) tools.push(waitForSignalTool)
 
         // 3l. Extra tools from opts (e.g., exit tools for trigger flow)
         if (opts?.extraTools) {
@@ -1245,33 +1378,68 @@ export class AgentHandler {
           ...(context.resolved_permissions ? { resolvedPermissions: context.resolved_permissions } : {}),
           contentReviewer: this.buildContentReviewer(),
           suppressForcedSummary: () => workerTriggerType === 'scheduled' || goalSetCache || sentInfoMessage,
-          endTurnGate: goalModeEnabled
-            ? async () => {
-                if (!goalSetCache) return null
-                try {
-                  const audit = await this.runGoalAudit({
-                    taskId: task.task_id,
-                    conversationLog: [...conversationLog],
-                    abortSignal: taskState.abortController.signal as AbortSignal,
-                    ...(subAgentTraceConfig ? { traceConfig: subAgentTraceConfig } : {}),
-                    parentTools: [...auditBaseTools],
-                    ...(auditPermissionCfg ? { permissionConfig: auditPermissionCfg } : {}),
-                  })
-                  // blocked（连续 N 次同 fail）→ 注入一次性"换方向"提示 + 发改目标券 + 放行，
-                  // 不再无限重放 forced_summary。普通 fail → 注入 detailedReport 拦截续作。
-                  const decision = decideEndTurnGate({ audit, blockedAlreadyNotified: blockedNoticeShown })
-                  if (decision.grantRevisionToken) taskState.goalRevisionUnlocked = true
-                  if (decision.markBlockedNotified) blockedNoticeShown = true
-                  return decision.inject
-                } catch (err) {
-                  console.warn(
-                    '[endTurnGate] goal audit failed open:',
-                    err instanceof Error ? err.message : String(err),
-                  )
-                  return null
-                }
-              }
-            : undefined,
+          // Goal mode 缓冲消息 flush 钩子：engine 在 stop_reason='tool_use' 续 turn 之前
+          // 和 endTurnGate 返回 null 后调用。把 taskState.outboundBuffer 里截留的 info
+          // 消息真正发到 channel 并清空 buffer。失败 entry 不阻塞后续 entry（continue on error）。
+          //
+          // 通过 createOutboundFlush + dispatchOutboundMessage 跟 send_message handler immediate-send
+          // 路径共用同一份 dispatch 逻辑——支持 file_path + sandbox path mapping、friend_id-only mention
+          // 反查 admin get_friend、features 组装，行为完全等价。
+          //
+          // spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 8 + §4.5
+          flushOutboundBuffer: (() => {
+            if (!this.deps?.rpcClient || !this.deps?.resolveChannelPort) return undefined
+            const adminPortGetter = this.deps.getAdminPort
+            if (!adminPortGetter) return undefined
+            const dispatchDeps: OutboundDispatchDeps = {
+              rpcClient: this.deps.rpcClient,
+              moduleId: this.deps.moduleId,
+              resolveChannelPort: this.deps.resolveChannelPort,
+              getAdminPort: adminPortGetter,
+              ...(this.deps.sandboxPathMappingsRef
+                ? { sandboxPathMappingsRef: this.deps.sandboxPathMappingsRef }
+                : {}),
+            }
+            return createOutboundFlush(taskState.outboundBuffer, dispatchDeps)
+          })(),
+          // engine drain 路径识别到 audit_result.pass=false / audit_aborted 时调，丢弃缓冲的"完工汇报"。
+          // spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.5 / §4.7
+          dropOutboundBuffer: () => {
+            taskState.outboundBuffer.length = 0
+          },
+          // engine drain 路径处理完 audit_result / audit_aborted marker 之后调，让 task 回到"无活跃 audit"态。
+          // spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.5 / §4.7
+          clearActiveAuditId: () => {
+            taskState.activeAuditId = undefined
+          },
+          // Task 13 兜底：audit 跑中 LLM 直接 end_turn 时 engine 判定是否仍有活跃 audit。
+          // taskState.activeAuditId 非空表示 audit 子进程还没完成。
+          // spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.6
+          hasActiveAudit: () => taskState.activeAuditId !== undefined,
+          // Task 13 兜底拦截耗尽 3 次后，engine 调此 abort 当前 audit。
+          // 复用 set_task_goal 路径相同的 abortAudit closure——
+          // controller.abort + push audit_aborted marker + 清 outboundBuffer + activeAuditId。
+          // spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.6 / §4.7
+          abortActiveAudit: (reason: string) => abortAudit(reason),
+          endTurnGate: this.buildAsyncAuditEndTurnGate({
+            goalModeEnabled,
+            goalSetCacheGetter: () => goalSetCache,
+            taskId: task.task_id,
+            taskState,
+            subAgents: subAgentsSnapshot,
+            // 闭包延迟读 auditBaseTools —— 由 buildToolsDynamic 写入，engine 第一次跑前
+            // 已被 callback 调用过；endTurnGate 触发时一定有值。
+            getAuditBaseTools: () => auditBaseTools,
+            ...(subAgentTraceConfig ? { traceConfig: subAgentTraceConfig } : {}),
+            humanQueue,
+            cwd: getWorkspaceDir(),
+            owner: {
+              friend_id: context.sender_friend?.id ?? `__system_${context.task_origin?.session_id ?? 'unknown'}`,
+              session_id: context.task_origin?.session_id,
+              channel_id: context.task_origin?.channel_id,
+            },
+            getConversationLog: () => [...conversationLog],
+          }),
           ...(traceContext ? {
             onPromptDump: (event) => {
               traceContext.traceStore.appendPromptDump({
@@ -1629,6 +1797,9 @@ export class AgentHandler {
       pendingHumanMessages: [],
       taskOrigin,
       todoStore: new TodoStore(),
+      outboundBuffer: [],
+      activeAuditId: undefined,
+      activeAsyncSubagentIds: new Set<string>(),
     })
 
     return { taskId: syntheticTaskId, registered, task, context, taskTitle }
@@ -2689,6 +2860,80 @@ export class AgentHandler {
         ? { blockedGuidance: buildBlockedGuidance(goal, parsed.failedCriteria) }
         : {}),
     }
+  }
+
+  /**
+   * 构造 engine endTurnGate 闭包（异步派 audit 路径）。
+   *
+   * goalModeEnabled=false → 不注入 endTurnGate（透明 end_turn）。
+   * goalModeEnabled=true 时返回的闭包行为：
+   *  - goalSetCache=false（worker 尚未 set_task_goal）→ null（透明放行）
+   *  - outboundBuffer 空 → null（无 final 待审）
+   *  - 否则 spawnAuditSubagent → 设 activeAuditId → 返回 [audit_pending] marker
+   *
+   * runGoalAudit（同步阻塞版本）保留不动，作为未来 sync fallback 可选路径。
+   *
+   * spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 10
+   */
+  private buildAsyncAuditEndTurnGate(opts: {
+    readonly goalModeEnabled: boolean
+    readonly goalSetCacheGetter: () => boolean
+    readonly taskId: string
+    readonly taskState: WorkerTaskState
+    readonly subAgents: ReadonlyArray<SubAgentConfig>
+    readonly getAuditBaseTools: () => ReadonlyArray<ToolDefinition>
+    readonly traceConfig?: SubAgentTraceConfig
+    readonly humanQueue: HumanMessageQueue
+    readonly cwd: string
+    readonly owner: BgEntityOwner
+    readonly getConversationLog: () => ReadonlyArray<ConversationEntry>
+  }): (() => Promise<string | null>) | undefined {
+    if (!opts.goalModeEnabled) return undefined
+    if (!this.deps?.rpcClient || !this.deps.getAdminPort) {
+      // 没 admin 通信能力 → audit gate 无法解析 goal，透明放行。
+      return undefined
+    }
+    const adminDeps = this.deps
+    const adminGetPort = this.deps.getAdminPort
+    const handler = this
+    return createAsyncAuditEndTurnGate({
+      taskId: opts.taskId,
+      taskState: opts.taskState,
+      goalSetCacheGetter: opts.goalSetCacheGetter,
+      rpcClient: adminDeps.rpcClient,
+      moduleId: adminDeps.moduleId,
+      getAdminPort: adminGetPort,
+      buildSpawnDeps: (goal) => {
+        // auditor 配置不存在 → spawn 抛错 → caller fail-open（console.warn）。
+        // 用 throw 把"找不到 auditor"统一走 spawn 异常分支，避免在多处分散判断。
+        const auditor = opts.subAgents.find((s) => s.id === 'builtin-goal-auditor')
+        if (!auditor) {
+          throw new Error('builtin-goal-auditor subagent not configured')
+        }
+        const auditAdapter = createAdapter({
+          endpoint: auditor.model.endpoint,
+          apikey: auditor.model.apikey,
+          format: auditor.model.format,
+          ...(auditor.model.account_id ? { accountId: auditor.model.account_id } : {}),
+        })
+        return {
+          goal,
+          conversationLog: opts.getConversationLog(),
+          cwd: opts.cwd,
+          parentTaskId: opts.taskId,
+          auditor,
+          parentTools: opts.getAuditBaseTools(),
+          adapter: auditAdapter,
+          owner: opts.owner,
+          registry: handler.bgRegistry,
+          abortControllers: handler.agentAbortControllers,
+          ...(opts.traceConfig
+            ? { traceContext: { traceStore: opts.traceConfig.traceStore, traceId: opts.traceConfig.parentTraceId } }
+            : {}),
+          humanQueue: opts.humanQueue,
+        }
+      },
+    })
   }
 
   /**

@@ -767,6 +767,24 @@ export interface WorkerTaskState {
    * set_task_goal 重设已有 goal 时消费它——没券不许 worker 自改目标（反 specification-gaming）。
    */
   goalRevisionUnlocked?: boolean
+  /**
+   * Audit 等待态下被截留的 send_message intent='info' 调用缓冲。
+   * handler 在 audit 跑中把对外 info 消息推到这里，engine 在 audit pass / stop_reason='tool_use' /
+   * endTurnGate 返回 null 时 splice 出来一次性 flush；audit fail / set_task_goal 改目标时清空丢弃。
+   *
+   * Entry shape 用 OutboundBufferEntry（与 TaskContext.outboundBuffer / 测试 mock 共享同一类型，
+   * 由 ./agent/outbound-flush 导出）。
+   * spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 5
+   */
+  readonly outboundBuffer: Array<import('./agent/outbound-flush.js').OutboundBufferEntry>
+  /** Active audit subagent id；设置后表示 task 处于"等审态"。undefined = 工作态。 */
+  activeAuditId?: string
+  /**
+   * 当前 task 的 async subagent ids。runWorkerLoop 跨 iteration 持久（Task 3 reviewer follow-up）。
+   * delegate_task 异步路径返回 launched 时加入；wait_for_signal 跟全局 agentAbortControllers 取交集
+   * 判断是否还有 active subagent。spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 5
+   */
+  readonly activeAsyncSubagentIds: Set<string>
 }
 
 export interface SupplementTaskDecision {

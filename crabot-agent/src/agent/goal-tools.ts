@@ -24,6 +24,12 @@ export interface SetTaskGoalDeps {
   readonly hasRevisionToken?: () => boolean
   /** 消费一张"改目标券"。仅在重设成功后调用。 */
   readonly consumeRevisionToken?: () => void
+  /**
+   * 重设 goal 成功后调用：abort 当前 audit subagent + 清 outboundBuffer + 推 audit_aborted marker。
+   * 缺省 → 不门控（向后兼容 / 无 audit 上下文的测试）。
+   * spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.7
+   */
+  readonly abortAudit?: (reason: string) => void
 }
 
 const TOOL_DESCRIPTION = `在动手前写下本任务的完成承诺。**复杂任务（≥2 个独立动作 / 跨多 turn / 用户明确说"确保 X""完成 Y 后通知我"）必须先调本工具。**
@@ -114,6 +120,14 @@ export function createSetTaskGoalTool(deps: SetTaskGoalDeps): ToolDefinition {
         })
         // 重设成功才消费券（admin RPC 抛错则券留待重试）。
         if (isReset) deps.consumeRevisionToken?.()
+        // 改 goal 成功 → abort 当前 audit（针对的是旧 goal，已无意义）+ 清 outboundBuffer。
+        // 首次设 goal 时也调，no-op（无 activeAuditId）。abort 失败不阻塞工具返回。
+        // spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.7
+        try {
+          deps.abortAudit?.('goal_revised')
+        } catch (err) {
+          console.warn('[set_task_goal] abortAudit failed:', err instanceof Error ? err.message : String(err))
+        }
         return {
           output: 'set_task_goal: ok。你的承诺已写入 task.goal。现在可以调 todo 拆步骤或直接干活。',
           isError: false,
