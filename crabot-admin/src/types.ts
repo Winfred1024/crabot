@@ -357,6 +357,10 @@ export interface AdminConfig {
   /** Web 服务监听端口 */
   web_port: number
   /** 认证密码环境变量名 */
+  /**
+   * @deprecated 自 2026-06-08 起密码迁出 .env，改存 credentials.json。
+   * 字段保留一个发布周期以防外部模块读取。
+   */
   password_env: string
   /** JWT secret 环境变量名 */
   jwt_secret_env: string
@@ -454,6 +458,16 @@ export interface LoginRequest {
 export interface LoginResponse {
   token: string
   expires_at: string
+  is_temp: boolean
+}
+
+export interface ChangePasswordRequest {
+  old_password?: string
+  new_password: string
+}
+
+export interface MeResponse {
+  is_temp: boolean
 }
 
 // PermissionTemplate 管理
@@ -530,6 +544,11 @@ export const AdminErrorCode = {
   SCHEDULE_NOT_FOUND: 'ADMIN_SCHEDULE_NOT_FOUND',
   INVALID_CRON_EXPRESSION: 'ADMIN_INVALID_CRON_EXPRESSION',
   SCHEDULE_ALREADY_EXISTS: 'ADMIN_SCHEDULE_ALREADY_EXISTS',
+  // Password 相关错误码
+  INVALID_OLD_PASSWORD: 'ADMIN_INVALID_OLD_PASSWORD',
+  OLD_PASSWORD_REQUIRED: 'ADMIN_OLD_PASSWORD_REQUIRED',
+  SERVER_NOT_INITIALIZED: 'ADMIN_SERVER_NOT_INITIALIZED',
+  TOKEN_REVOKED: 'ADMIN_TOKEN_REVOKED',
 } as const
 
 // ============================================================================

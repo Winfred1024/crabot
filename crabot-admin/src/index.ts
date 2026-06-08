@@ -2242,6 +2242,7 @@ export class AdminModule extends ModuleBase {
     const response: LoginResponse = {
       token,
       expires_at: new Date(payload.exp * 1000).toISOString(),
+      is_temp: false,
     }
 
     res.writeHead(200, { 'Content-Type': 'application/json' })
