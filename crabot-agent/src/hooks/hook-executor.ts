@@ -32,6 +32,7 @@ async function executeSingleHook(
         senderIsMaster: context.senderIsMaster,
         resolvedPermissions: context.resolvedPermissions,
         contentReviewer: context.contentReviewer,
+        sessionType: context.sessionType,
       })
     }
 

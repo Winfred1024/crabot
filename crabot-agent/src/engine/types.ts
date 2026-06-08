@@ -264,6 +264,8 @@ export interface EngineOptions {
   readonly resolvedPermissions?: import('../types.js').ResolvedPermissions
   /** 内容审核器——CLI permission gate 在 schedule add 时调用 */
   readonly contentReviewer?: import('../hooks/types.js').ContentReviewer
+  /** 当前会话场景，用于拒绝指引文案区分群/私聊 */
+  readonly sessionType?: 'private' | 'group'
   /**
    * 在 context-manager compaction 完成后回调，返回最终注入到 messages 的数组。
    * 用于在 compaction 边界注入 per-task 状态（如 worker 的 todo active list），

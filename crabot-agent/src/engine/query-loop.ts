@@ -248,6 +248,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
       senderIsMaster: options.senderIsMaster,
       resolvedPermissions: options.resolvedPermissions,
       contentReviewer: options.contentReviewer,
+      sessionType: options.sessionType,
     },
   } : undefined
 

@@ -1377,6 +1377,7 @@ export class AgentHandler {
           senderIsMaster,
           ...(context.resolved_permissions ? { resolvedPermissions: context.resolved_permissions } : {}),
           contentReviewer: this.buildContentReviewer(),
+          sessionType: context.task_origin?.session_type ?? 'private',
           suppressForcedSummary: () => workerTriggerType === 'scheduled' || goalSetCache || sentInfoMessage,
           // Goal mode 缓冲消息 flush 钩子：engine 在 stop_reason='tool_use' 续 turn 之前
           // 和 endTurnGate 返回 null 后调用。把 taskState.outboundBuffer 里截留的 info

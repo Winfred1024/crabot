@@ -57,6 +57,8 @@ export interface InternalHandlerContext {
   readonly resolvedPermissions?: ResolvedPermissions
   /** 内容审核器（schedule add 等需要审核的命令使用） */
   readonly contentReviewer?: ContentReviewer
+  /** 当前会话场景，用于拒绝指引文案区分群/私聊 */
+  readonly sessionType?: 'private' | 'group'
 }
 
 export type InternalHandler = (
@@ -73,4 +75,6 @@ export interface HookExecutorContext {
   readonly senderIsMaster?: boolean
   readonly resolvedPermissions?: ResolvedPermissions
   readonly contentReviewer?: ContentReviewer
+  /** 当前会话场景，用于拒绝指引文案区分群/私聊 */
+  readonly sessionType?: 'private' | 'group'
 }
