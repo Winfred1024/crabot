@@ -101,7 +101,6 @@ import {
   buildAuditVerdictSummary,
   buildHumanQueueReport,
   buildBlockedGuidance,
-  decideEndTurnGate,
   resolveAuditJudgment,
   type AuditResult,
   type ConversationEntry,
@@ -110,6 +109,7 @@ import {
 } from './goal-audit.js'
 import { createSubmitAuditResultTool } from './goal-auditor-tools.js'
 import { createWaitForSignalTool, type WaitForSignalDeps } from '../mcp/wait-for-signal.js'
+import { createAsyncAuditEndTurnGate } from './end-turn-gate.js'
 
 import { reflectStructuredOutcome } from '../orchestration/structured-outcome-reflector.js'
 
@@ -873,9 +873,6 @@ export class AgentHandler {
       const conversationLog: ConversationEntry[] = []
       // sentInfoMessage：send_message(intent='info') 成功至少一次；forced_summary 判断依据
       let sentInfoMessage = false
-      // blockedNoticeShown：goal 进入 blocked 后只注入一次"换方向"提示，之后放行 end_turn，
-      // 避免无限重放 forced_summary（P0 兜底）。
-      let blockedNoticeShown = false
       // 任务触发类型：scheduled 任务始终抑制 forced_summary
       const workerTriggerType: 'scheduled' | 'message' =
         task.source?.trigger_type === 'scheduled' ? 'scheduled' : 'message'
@@ -1359,33 +1356,25 @@ export class AgentHandler {
             }
             return createOutboundFlush(taskState.outboundBuffer, dispatchDeps)
           })(),
-          endTurnGate: goalModeEnabled
-            ? async () => {
-                if (!goalSetCache) return null
-                try {
-                  const audit = await this.runGoalAudit({
-                    taskId: task.task_id,
-                    conversationLog: [...conversationLog],
-                    abortSignal: taskState.abortController.signal as AbortSignal,
-                    ...(subAgentTraceConfig ? { traceConfig: subAgentTraceConfig } : {}),
-                    parentTools: [...auditBaseTools],
-                    ...(auditPermissionCfg ? { permissionConfig: auditPermissionCfg } : {}),
-                  })
-                  // blocked（连续 N 次同 fail）→ 注入一次性"换方向"提示 + 发改目标券 + 放行，
-                  // 不再无限重放 forced_summary。普通 fail → 注入 detailedReport 拦截续作。
-                  const decision = decideEndTurnGate({ audit, blockedAlreadyNotified: blockedNoticeShown })
-                  if (decision.grantRevisionToken) taskState.goalRevisionUnlocked = true
-                  if (decision.markBlockedNotified) blockedNoticeShown = true
-                  return decision.inject
-                } catch (err) {
-                  console.warn(
-                    '[endTurnGate] goal audit failed open:',
-                    err instanceof Error ? err.message : String(err),
-                  )
-                  return null
-                }
-              }
-            : undefined,
+          endTurnGate: this.buildAsyncAuditEndTurnGate({
+            goalModeEnabled,
+            goalSetCacheGetter: () => goalSetCache,
+            taskId: task.task_id,
+            taskState,
+            subAgents: subAgentsSnapshot,
+            // 闭包延迟读 auditBaseTools —— 由 buildToolsDynamic 写入，engine 第一次跑前
+            // 已被 callback 调用过；endTurnGate 触发时一定有值。
+            getAuditBaseTools: () => auditBaseTools,
+            ...(subAgentTraceConfig ? { traceConfig: subAgentTraceConfig } : {}),
+            humanQueue,
+            cwd: getWorkspaceDir(),
+            owner: {
+              friend_id: context.sender_friend?.id ?? `__system_${context.task_origin?.session_id ?? 'unknown'}`,
+              session_id: context.task_origin?.session_id,
+              channel_id: context.task_origin?.channel_id,
+            },
+            getConversationLog: () => [...conversationLog],
+          }),
           ...(traceContext ? {
             onPromptDump: (event) => {
               traceContext.traceStore.appendPromptDump({
@@ -2806,6 +2795,80 @@ export class AgentHandler {
         ? { blockedGuidance: buildBlockedGuidance(goal, parsed.failedCriteria) }
         : {}),
     }
+  }
+
+  /**
+   * 构造 engine endTurnGate 闭包（异步派 audit 路径）。
+   *
+   * goalModeEnabled=false → 不注入 endTurnGate（透明 end_turn）。
+   * goalModeEnabled=true 时返回的闭包行为：
+   *  - goalSetCache=false（worker 尚未 set_task_goal）→ null（透明放行）
+   *  - outboundBuffer 空 → null（无 final 待审）
+   *  - 否则 spawnAuditSubagent → 设 activeAuditId → 返回 [audit_pending] marker
+   *
+   * runGoalAudit（同步阻塞版本）保留不动，作为未来 sync fallback 可选路径。
+   *
+   * spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 10
+   */
+  private buildAsyncAuditEndTurnGate(opts: {
+    readonly goalModeEnabled: boolean
+    readonly goalSetCacheGetter: () => boolean
+    readonly taskId: string
+    readonly taskState: WorkerTaskState
+    readonly subAgents: ReadonlyArray<SubAgentConfig>
+    readonly getAuditBaseTools: () => ReadonlyArray<ToolDefinition>
+    readonly traceConfig?: SubAgentTraceConfig
+    readonly humanQueue: HumanMessageQueue
+    readonly cwd: string
+    readonly owner: BgEntityOwner
+    readonly getConversationLog: () => ReadonlyArray<ConversationEntry>
+  }): (() => Promise<string | null>) | undefined {
+    if (!opts.goalModeEnabled) return undefined
+    if (!this.deps?.rpcClient || !this.deps.getAdminPort) {
+      // 没 admin 通信能力 → audit gate 无法解析 goal，透明放行。
+      return undefined
+    }
+    const adminDeps = this.deps
+    const adminGetPort = this.deps.getAdminPort
+    const handler = this
+    return createAsyncAuditEndTurnGate({
+      taskId: opts.taskId,
+      taskState: opts.taskState,
+      goalSetCacheGetter: opts.goalSetCacheGetter,
+      rpcClient: adminDeps.rpcClient,
+      moduleId: adminDeps.moduleId,
+      getAdminPort: adminGetPort,
+      buildSpawnDeps: (goal) => {
+        // auditor 配置不存在 → spawn 抛错 → caller fail-open（console.warn）。
+        // 用 throw 把"找不到 auditor"统一走 spawn 异常分支，避免在多处分散判断。
+        const auditor = opts.subAgents.find((s) => s.id === 'builtin-goal-auditor')
+        if (!auditor) {
+          throw new Error('builtin-goal-auditor subagent not configured')
+        }
+        const auditAdapter = createAdapter({
+          endpoint: auditor.model.endpoint,
+          apikey: auditor.model.apikey,
+          format: auditor.model.format,
+          ...(auditor.model.account_id ? { accountId: auditor.model.account_id } : {}),
+        })
+        return {
+          goal,
+          conversationLog: opts.getConversationLog(),
+          cwd: opts.cwd,
+          parentTaskId: opts.taskId,
+          auditor,
+          parentTools: opts.getAuditBaseTools(),
+          adapter: auditAdapter,
+          owner: opts.owner,
+          registry: handler.bgRegistry,
+          abortControllers: handler.agentAbortControllers,
+          ...(opts.traceConfig
+            ? { traceContext: { traceStore: opts.traceConfig.traceStore, traceId: opts.traceConfig.parentTraceId } }
+            : {}),
+          humanQueue: opts.humanQueue,
+        }
+      },
+    })
   }
 
   /**
