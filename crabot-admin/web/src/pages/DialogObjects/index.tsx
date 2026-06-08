@@ -11,9 +11,11 @@ import { friendService } from '../../services/friend'
 import { permissionTemplateService } from '../../services/permission-template'
 import { sessionService } from '../../services/session'
 import { ApplicationQueueModal } from './components/ApplicationQueueModal'
+import { CliAccessEditor } from './components/CliAccessEditor'
 import { DialogDomain, DomainNav } from './components/DomainNav'
 import { FriendWorkbench } from './components/FriendWorkbench'
 import { GroupWorkbench } from './components/GroupWorkbench'
+import { TemplateInitButton } from './components/TemplateInitButton'
 import {
   buildExplicitFriendPermissionConfig,
   parseMemoryScopes,
@@ -60,28 +62,34 @@ function buildToolAccess(defaultValue: boolean): ToolAccessConfig {
 
 function resolveGroupPermissions(
   sessionId: string,
-  template: PermissionTemplate,
+  template: PermissionTemplate | null,
   config: {
     tool_access?: Partial<ToolAccessConfig>
+    cli_access?: CliAccessConfig
     storage?: StoragePermission | null
     memory_scopes?: string[]
   } | null
 ): {
   tool_access: ToolAccessConfig
+  cli_access: CliAccessConfig
   storage: StoragePermission | null
   memory_scopes: string[]
 } {
   const tool_access = {
-    ...template.tool_access,
+    ...(template ? template.tool_access : buildToolAccess(false)),
     ...(config?.tool_access ?? {}),
   }
-  const storage = config?.storage !== undefined ? config.storage : template.storage
+  const cli_access: CliAccessConfig = config?.cli_access
+    ? { ...config.cli_access }
+    : (template ? { ...template.cli_access } : createCliAccessConfig('none'))
+  const storage = config?.storage !== undefined ? config.storage : (template ? template.storage : null)
   const memory_scopes = config?.memory_scopes !== undefined
     ? config.memory_scopes
-    : template.memory_scopes
+    : (template ? template.memory_scopes : [])
 
   return {
     tool_access,
+    cli_access,
     storage,
     memory_scopes: memory_scopes.length > 0 ? memory_scopes : [sessionId],
   }
@@ -169,6 +177,7 @@ export const DialogObjectsPage: React.FC = () => {
   const [groupConfigLoading, setGroupConfigLoading] = useState(false)
   const [groupSaving, setGroupSaving] = useState(false)
   const [groupToolAccess, setGroupToolAccess] = useState<ToolAccessConfig>(() => buildToolAccess(false))
+  const [groupCliAccess, setGroupCliAccess] = useState<CliAccessConfig>(() => createCliAccessConfig('none'))
   const [groupStorageEnabled, setGroupStorageEnabled] = useState(false)
   const [groupStoragePath, setGroupStoragePath] = useState('')
   const [groupStorageAccess, setGroupStorageAccess] = useState<'read' | 'readwrite'>('read')
@@ -186,6 +195,23 @@ export const DialogObjectsPage: React.FC = () => {
     setFriendStorageAccess('read')
     setFriendMemoryMode('empty')
     setFriendMemoryScopesInput('')
+  }, [])
+
+  const handleInitializeGroupFromTemplate = useCallback((tpl: PermissionTemplate) => {
+    setGroupToolAccess({ ...tpl.tool_access })
+    setGroupCliAccess({ ...tpl.cli_access })
+    setGroupStorageEnabled(!!tpl.storage)
+    if (tpl.storage) {
+      setGroupStoragePath(tpl.storage.workspace_path)
+      setGroupStorageAccess(tpl.storage.access)
+    }
+    if (tpl.memory_scopes.length === 0) {
+      setGroupMemoryMode('session')
+      setGroupMemoryScopesInput('')
+    } else {
+      setGroupMemoryMode('custom')
+      setGroupMemoryScopesInput(tpl.memory_scopes.join(', '))
+    }
   }, [])
 
   const handleInitializeFriendFromTemplate = useCallback((tpl: PermissionTemplate) => {
@@ -620,6 +646,7 @@ export const DialogObjectsPage: React.FC = () => {
 
   const resetGroupConfigForm = useCallback(() => {
     setGroupToolAccess(buildToolAccess(false))
+    setGroupCliAccess(createCliAccessConfig('none'))
     setGroupStorageEnabled(false)
     setGroupStoragePath('')
     setGroupStorageAccess('read')
@@ -643,6 +670,7 @@ export const DialogObjectsPage: React.FC = () => {
       const resolved = resolveGroupPermissions(group.id, templateResult.template, configResult.config)
 
       setGroupToolAccess(resolved.tool_access)
+      setGroupCliAccess(resolved.cli_access ?? createCliAccessConfig('none'))
       setGroupStorageEnabled(resolved.storage !== null)
       setGroupStoragePath(resolved.storage?.workspace_path ?? DEFAULT_STORAGE_PATH)
       setGroupStorageAccess(resolved.storage?.access ?? 'read')
@@ -693,6 +721,7 @@ export const DialogObjectsPage: React.FC = () => {
 
       const config = {
         tool_access: groupToolAccess,
+        cli_access: groupCliAccess,
         storage,
         memory_scopes: memoryScopes,
       }
@@ -985,6 +1014,13 @@ export const DialogObjectsPage: React.FC = () => {
             ) : (
               <>
                 <div style={{ display: 'grid', gap: '0.75rem' }}>
+                  <TemplateInitButton
+                    templates={permissionTemplates}
+                    onInitialize={handleInitializeGroupFromTemplate}
+                  />
+                </div>
+
+                <div style={{ display: 'grid', gap: '0.75rem' }}>
                   <div style={{ fontWeight: 600 }}>工具权限</div>
                   <div className="session-permission-switch-list">
                     {TOOL_CATEGORIES.map((category) => (
@@ -999,6 +1035,14 @@ export const DialogObjectsPage: React.FC = () => {
                       />
                     ))}
                   </div>
+                </div>
+
+                <div style={{ display: 'grid', gap: '0.75rem' }}>
+                  <div style={{ fontWeight: 600 }}>CLI 权限</div>
+                  <CliAccessEditor
+                    value={groupCliAccess}
+                    onChange={setGroupCliAccess}
+                  />
                 </div>
 
                 <div style={{ display: 'grid', gap: '0.75rem' }}>
