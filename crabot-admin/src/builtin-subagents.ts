@@ -471,8 +471,8 @@ export function getBuiltinSubAgents(): SubAgentRegistryEntry[] {
       builtin_capabilities: { file_system: true, shell: true, task_intel: true, crab_memory: true, crab_messaging: false },
       allowed_mcp_server_ids: [],
       allowed_skill_ids: [BUILTIN_SKILL_IDS.writingPlans],
-      // 规划阶段需读多文件 + 调研 + 写 plan；30 偏紧，上调避免触顶截断。
-      max_turns: 60,
+      // 全局对齐 300：避免触顶 fail loud；任务过载靠 BLOCKED + TASK_TOO_LARGE 信号上报由 main 拆细。
+      max_turns: 300,
       enabled: true,
       is_builtin: true,
       created_at: SEED_TIMESTAMP,
@@ -522,8 +522,8 @@ export function getBuiltinSubAgents(): SubAgentRegistryEntry[] {
       },
       allowed_mcp_server_ids: [],
       allowed_skill_ids: [],
-      // 调查员要消化 web/本地/shell/图片多源信息再凝练 ≤2K tokens；30 偏紧。
-      max_turns: 60,
+      // 全局对齐 300：避免触顶 fail loud；任务过载靠 BLOCKED + TASK_TOO_LARGE 信号上报由 main 拆细。
+      max_turns: 300,
       enabled: true,
       is_builtin: true,
       created_at: SEED_TIMESTAMP,
@@ -550,9 +550,8 @@ export function getBuiltinSubAgents(): SubAgentRegistryEntry[] {
       },
       allowed_mcp_server_ids: [],
       allowed_skill_ids: [BUILTIN_SKILL_IDS.verificationBeforeCompletion],
-      // 逐条验证 acceptance criteria 可能要 Bash 跑命令 + Read 验文件 + ssh 远程查；
-      // criterion 多时（trace bbcbe0fc 8 条）50 turn 仍偏紧，上调到 80。
-      max_turns: 80,
+      // 全局对齐 300：避免触顶 fail loud；任务过载靠 BLOCKED + TASK_TOO_LARGE 信号上报由 main 拆细。
+      max_turns: 300,
       enabled: true,
       is_builtin: true,
       system_only: true,
@@ -580,8 +579,8 @@ export function getBuiltinSubAgents(): SubAgentRegistryEntry[] {
       },
       allowed_mcp_server_ids: [],
       allowed_skill_ids: [],
-      // 审查 1 task 改动：读 spec + 读改动文件 + 跑 verification，15 turn 充裕
-      max_turns: 15,
+      // 全局对齐 300：避免触顶 fail loud；任务过载靠 BLOCKED + TASK_TOO_LARGE 信号上报由 main 拆细。
+      max_turns: 300,
       enabled: true,
       is_builtin: true,
       created_at: '2026-06-07T00:00:00.000Z',
@@ -608,8 +607,8 @@ export function getBuiltinSubAgents(): SubAgentRegistryEntry[] {
       },
       allowed_mcp_server_ids: [],
       allowed_skill_ids: [],
-      // 审查改动文件代码质量，15 turn 充裕；final review 跨多 task 时也可同 budget 内完成
-      max_turns: 15,
+      // 全局对齐 300：避免触顶 fail loud；任务过载靠 BLOCKED + TASK_TOO_LARGE 信号上报由 main 拆细。
+      max_turns: 300,
       enabled: true,
       is_builtin: true,
       created_at: '2026-06-07T00:00:00.000Z',
