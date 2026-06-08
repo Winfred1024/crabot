@@ -62,3 +62,45 @@ describe('credentials read/write', () => {
     await expect(readCredentials(dir)).rejects.toThrow()
   })
 })
+
+describe('credentials .env migration', () => {
+  it('credentials.json 不存在但 .env 含密码 → 迁移 + 删 .env + is_temp=true', async () => {
+    const dir = await makeTmpDir()
+    await fs.writeFile(path.join(dir, '.env'), 'CRABOT_ADMIN_PASSWORD=plain-old\n', 'utf-8')
+
+    const cred = await readCredentials(dir)
+    expect(cred).not.toBeNull()
+    expect(cred!.is_temp).toBe(true)
+    expect(cred!.changed_via).toBe('start')
+    expect(await verifyPassword('plain-old', cred!)).toBe(true)
+
+    // .env 被删
+    await expect(fs.access(path.join(dir, '.env'))).rejects.toThrow()
+  })
+
+  it('.env 含其他 keys 时只迁移密码 + 抛错让用户处理', async () => {
+    const dir = await makeTmpDir()
+    await fs.writeFile(
+      path.join(dir, '.env'),
+      'CRABOT_ADMIN_PASSWORD=p\nOTHER=keep-me\n',
+      'utf-8',
+    )
+    await expect(readCredentials(dir)).rejects.toThrow(/other keys/i)
+  })
+
+  it('.env 不含密码键 → 返回 null，不动文件', async () => {
+    const dir = await makeTmpDir()
+    await fs.writeFile(path.join(dir, '.env'), 'OTHER=x\n', 'utf-8')
+    expect(await readCredentials(dir)).toBeNull()
+    const raw = await fs.readFile(path.join(dir, '.env'), 'utf-8')
+    expect(raw).toContain('OTHER=x')
+  })
+
+  it('迁移幂等：第二次调用直接读到迁移结果', async () => {
+    const dir = await makeTmpDir()
+    await fs.writeFile(path.join(dir, '.env'), 'CRABOT_ADMIN_PASSWORD=x\n', 'utf-8')
+    const a = await readCredentials(dir)
+    const b = await readCredentials(dir)
+    expect(b).toEqual(a)
+  })
+})

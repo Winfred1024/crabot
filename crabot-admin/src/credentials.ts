@@ -65,15 +65,77 @@ export async function verifyPassword(
 
 const FILE_NAME = 'credentials.json'
 
+export async function newCredentialsFromPassword(
+  password: string,
+  opts: { is_temp: boolean; changed_via: Credentials['changed_via'] },
+): Promise<Credentials> {
+  const { salt, hash, params } = await hashPassword(password)
+  const now = new Date().toISOString()
+  return {
+    algo: 'scrypt',
+    salt,
+    hash,
+    params,
+    is_temp: opts.is_temp,
+    token_epoch: 0,
+    created_at: now,
+    last_changed_at: now,
+    changed_via: opts.changed_via,
+  }
+}
+
+function parseEnvFile(raw: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const line of raw.split('\n')) {
+    const trimmed = line.replace(/#.*$/, '').trim()
+    if (!trimmed || !trimmed.includes('=')) continue
+    const idx = trimmed.indexOf('=')
+    out[trimmed.slice(0, idx)] = trimmed.slice(idx + 1)
+  }
+  return out
+}
+
 export async function readCredentials(dataDir: string): Promise<Credentials | null> {
   const target = path.join(dataDir, FILE_NAME)
   try {
     const raw = await fs.readFile(target, 'utf-8')
     return JSON.parse(raw) as Credentials
   } catch (e: any) {
+    if (e?.code !== 'ENOENT') throw e
+  }
+
+  // 兜底迁移：.env 含 CRABOT_ADMIN_PASSWORD
+  const envPath = path.join(dataDir, '.env')
+  let envRaw: string
+  try {
+    envRaw = await fs.readFile(envPath, 'utf-8')
+  } catch (e: any) {
     if (e?.code === 'ENOENT') return null
     throw e
   }
+
+  const env = parseEnvFile(envRaw)
+  const password = env['CRABOT_ADMIN_PASSWORD']
+  if (!password) return null
+
+  const cred = await newCredentialsFromPassword(password, {
+    is_temp: true,
+    changed_via: 'start',
+  })
+  await writeCredentials(dataDir, cred)
+
+  delete env['CRABOT_ADMIN_PASSWORD']
+  const remainingKeys = Object.keys(env)
+  if (remainingKeys.length === 0) {
+    await fs.unlink(envPath)
+    console.log(`[crabot] migrated CRABOT_ADMIN_PASSWORD to ${FILE_NAME}; .env removed`)
+  } else {
+    throw new Error(
+      `CRABOT_ADMIN_PASSWORD migrated to ${FILE_NAME}, but .env still contains other keys (${remainingKeys.join(', ')}). Please review and remove the password line yourself.`,
+    )
+  }
+
+  return cred
 }
 
 export async function writeCredentials(dataDir: string, c: Credentials): Promise<void> {
