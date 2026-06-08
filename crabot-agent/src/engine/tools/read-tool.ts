@@ -50,7 +50,7 @@ function isSensitivePath(filePath: string): boolean {
   return SENSITIVE_PATH_PATTERNS.some(p => p.test(filePath))
 }
 
-export function createReadTool(cwd: string): ToolDefinition {
+export function createReadTool(getCwd: () => string): ToolDefinition {
   return defineTool({
     name: 'Read',
     category: 'file_io',
@@ -81,7 +81,7 @@ export function createReadTool(cwd: string): ToolDefinition {
     async call(input) {
       const filePath = path.isAbsolute(input.file_path as string)
         ? (input.file_path as string)
-        : path.resolve(cwd, input.file_path as string)
+        : path.resolve(getCwd(), input.file_path as string)
 
       // 敏感路徑守衛：禁止直接讀取渠道憑證文件
       if (isSensitivePath(filePath)) {

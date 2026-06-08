@@ -142,7 +142,7 @@ function execCommand(
   })
 }
 
-async function runBg(command: string, bgCtx: BashBgContext): Promise<ToolCallResult> {
+async function runBg(command: string, bgCtx: BashBgContext, cwd: string): Promise<ToolCallResult> {
   const persistent = isPersistentMode(bgCtx.workerContext)
 
   // 资源上限检查（仅持久路径，临时路径生命周期受 task 约束不会堆）
@@ -163,6 +163,7 @@ async function runBg(command: string, bgCtx: BashBgContext): Promise<ToolCallRes
       spawned_by_task_id: bgCtx.taskId,
       registry: bgCtx.registry,
       traceContext: bgCtx.traceContext,
+      cwd,
       onExit: bgCtx.onShellExit
         ? (info) => bgCtx.onShellExit!({ ...info, mode: 'persistent' })
         : undefined,
@@ -177,6 +178,7 @@ async function runBg(command: string, bgCtx: BashBgContext): Promise<ToolCallRes
       owner: bgCtx.owner,
       spawned_by_task_id: bgCtx.taskId,
       traceContext: bgCtx.traceContext,
+      cwd,
       onExit: bgCtx.onShellExit
         ? (info) => bgCtx.onShellExit!({ ...info, mode: 'transient' })
         : undefined,
@@ -194,7 +196,7 @@ function containsSensitivePath(command: string): boolean {
   return SENSITIVE_CMD_RE.test(command)
 }
 
-export function createBashTool(cwd: string, defaultTimeout?: number, bgCtx?: BashBgContext): ToolDefinition {
+export function createBashTool(getCwd: () => string, defaultTimeout?: number, bgCtx?: BashBgContext): ToolDefinition {
   const effectiveDefault = defaultTimeout ?? DEFAULT_TIMEOUT_MS
   return defineTool({
     name: 'Bash',
@@ -239,7 +241,7 @@ export function createBashTool(cwd: string, defaultTimeout?: number, bgCtx?: Bas
             isError: true,
           }
         }
-        return runBg(command, bgCtx)
+        return runBg(command, bgCtx, getCwd())
       }
 
       // 自动转 bg：显式 timeout > 60s 且 bgCtx 可用 → 改写为 background 调用
@@ -252,7 +254,7 @@ export function createBashTool(cwd: string, defaultTimeout?: number, bgCtx?: Bas
         explicitTimeout > AUTO_BG_TIMEOUT_THRESHOLD_MS &&
         bgCtx !== undefined
       ) {
-        const bgResult = await runBg(command, bgCtx)
+        const bgResult = await runBg(command, bgCtx, getCwd())
         if (bgResult.isError) {
           return bgResult
         }
@@ -282,7 +284,7 @@ export function createBashTool(cwd: string, defaultTimeout?: number, bgCtx?: Bas
       // 前台路径：cap timeout（静默，不报错）
       const requested = explicitTimeout ?? effectiveDefault
       const timeoutMs = Math.min(requested, MAX_FOREGROUND_TIMEOUT_MS)
-      return execCommand(command, cwd, timeoutMs, context.abortSignal)
+      return execCommand(command, getCwd(), timeoutMs, context.abortSignal)
     },
   })
 }

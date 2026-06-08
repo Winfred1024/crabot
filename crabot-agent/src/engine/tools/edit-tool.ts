@@ -15,7 +15,7 @@ function findOccurrenceLines(content: string, search: string): ReadonlyArray<num
   return collect(0, [])
 }
 
-export function createEditTool(cwd: string): ToolDefinition {
+export function createEditTool(getCwd: () => string): ToolDefinition {
   return defineTool({
     name: 'Edit',
     category: 'file_io',
@@ -43,7 +43,7 @@ export function createEditTool(cwd: string): ToolDefinition {
         return { output: 'old_string must differ from new_string', isError: true }
       }
 
-      const filePath = isAbsolute(rawPath) ? rawPath : resolve(cwd, rawPath)
+      const filePath = isAbsolute(rawPath) ? rawPath : resolve(getCwd(), rawPath)
 
       let content: string
       try {

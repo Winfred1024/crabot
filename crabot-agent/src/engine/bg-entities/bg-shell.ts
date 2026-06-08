@@ -49,6 +49,8 @@ export interface SpawnPersistentShellOpts {
   readonly spawned_by_task_id: string
   readonly registry: BgEntityRegistry
   readonly traceContext?: BgEntityTraceContext
+  /** 子进程工作目录。subprocess 启动后锁死；调用方需 snapshot 当前 cwd 传入。 */
+  readonly cwd: string
   /**
    * Async exit hook — 进程 exit 后、registry update 完成后调用。
    * 用于推送 push notification（worker 把它接到 enqueueBgNotification）。
@@ -90,6 +92,7 @@ export async function spawnPersistentShell(opts: SpawnPersistentShellOpts): Prom
 
   const child = spawnBash(opts.command, {
     stdio: ['ignore', logFd.fd, logFd.fd],
+    cwd: opts.cwd,
   })
 
   // CRITICAL: 'error' listener MUST attach BEFORE any await. Node emits spawn
@@ -225,6 +228,8 @@ export interface SpawnTransientShellOpts {
   readonly owner: BgEntityOwner
   readonly spawned_by_task_id: string
   readonly traceContext?: BgEntityTraceContext
+  /** 子进程工作目录。subprocess 启动后锁死；调用方需 snapshot 当前 cwd 传入。 */
+  readonly cwd: string
   /**
    * Async exit hook，与 SpawnPersistentShellOpts.onExit 同款；
    * 用于 worker 推 push notification（transient 在 task 内 exit 的场景）。
@@ -249,7 +254,7 @@ export class TransientShellRegistry {
     const spawnedAtMs = Date.now()
     const now = new Date(spawnedAtMs).toISOString()
 
-    const child = spawnBash(opts.command)
+    const child = spawnBash(opts.command, { cwd: opts.cwd })
 
     const state: TransientShellState = {
       entity_id,
