@@ -1849,6 +1849,89 @@ code, pre, .mono {
   line-height: 1.4;
 }
 
+/* 推荐厂商徽章：金色渐变底 + 光泽扫过 + 轻微脉冲 */
+.provider-recommended-badge {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: -0.25rem 0 0.75rem;
+  padding: 0.35rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #2a1c00;
+  background: linear-gradient(135deg, #ffe28a 0%, #f5b400 50%, #ffd766 100%);
+  background-size: 200% 200%;
+  border: 1px solid rgba(245, 180, 0, 0.6);
+  box-shadow: 0 0 0 0 rgba(245, 180, 0, 0.55);
+  overflow: hidden;
+  animation: provider-recommended-pulse 2.4s ease-in-out infinite,
+             provider-recommended-shift 6s ease-in-out infinite;
+}
+
+.provider-recommended-badge::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -60%;
+  width: 50%;
+  height: 100%;
+  background: linear-gradient(
+    100deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.65) 50%,
+    transparent 100%
+  );
+  transform: skewX(-20deg);
+  animation: provider-recommended-shimmer 2.8s ease-in-out infinite;
+}
+
+.provider-recommended-badge-star {
+  display: inline-block;
+  color: #b35900;
+  text-shadow: 0 0 6px rgba(255, 200, 80, 0.9);
+  animation: provider-recommended-spin 4s linear infinite;
+}
+
+.provider-recommended-badge-text {
+  position: relative;
+  z-index: 1;
+}
+
+@keyframes provider-recommended-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(245, 180, 0, 0.55);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(245, 180, 0, 0);
+  }
+}
+
+@keyframes provider-recommended-shift {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+@keyframes provider-recommended-shimmer {
+  0% { left: -60%; }
+  60%, 100% { left: 120%; }
+}
+
+@keyframes provider-recommended-spin {
+  0% { transform: rotate(0deg) scale(1); }
+  50% { transform: rotate(180deg) scale(1.15); }
+  100% { transform: rotate(360deg) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .provider-recommended-badge,
+  .provider-recommended-badge::before,
+  .provider-recommended-badge-star {
+    animation: none;
+  }
+}
+
 /* 抽屉内模型表格 */
 
 .model-table {

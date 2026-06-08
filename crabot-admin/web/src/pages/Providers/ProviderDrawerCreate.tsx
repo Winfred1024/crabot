@@ -314,7 +314,12 @@ export const ProviderDrawerCreate: React.FC<ProviderDrawerCreateProps> = ({
             label="选择厂商"
             options={[
               { value: '', label: '请选择...' },
-              ...vendors.map(v => ({ value: v.id, label: v.name })),
+              ...[...vendors]
+                .sort((a, b) => Number(!!b.recommended) - Number(!!a.recommended))
+                .map(v => ({
+                  value: v.id,
+                  label: v.recommended ? `⭐ ${v.name}` : v.name,
+                })),
             ]}
             value={selectedVendor}
             onChange={e => {
@@ -324,6 +329,13 @@ export const ProviderDrawerCreate: React.FC<ProviderDrawerCreateProps> = ({
               setCustomEndpoint(v?.endpoint ?? '')
             }}
           />
+
+          {currentVendor?.recommended && (
+            <div className="provider-recommended-badge" role="note">
+              <span className="provider-recommended-badge-star">★</span>
+              <span className="provider-recommended-badge-text">推荐厂商 · 模型覆盖广、稳定可用</span>
+            </div>
+          )}
 
           {selectedVendor && (() => {
             const vendor = vendors.find(v => v.id === selectedVendor)

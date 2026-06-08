@@ -168,24 +168,25 @@ export const PRESET_VENDORS: readonly PresetVendor[] = [
     docs_url: 'https://openrouter.ai/docs',
     api_key_help_url: 'https://openrouter.ai/keys',
   },
-  // 新数：同一服务同时暴露 OpenAI 和 Anthropic 两种协议，但同一把 key 在后台
+  // xinshu：同一服务同时暴露 OpenAI 和 Anthropic 两种协议，但同一把 key 在后台
   // 只绑一种协议；用户根据自己 key 的协议类型选其一即可。两个 vendor 共用 /v1/models
   // 拉取（统一 OpenAI 风格响应），所以填一个 key 就能自动导入模型列表。
   //
-  // vision_id_prefixes：/v1/models 响应不带 vision 字段，但新数主要承载 claude-* 与
-  // gpt-* 系列（这些族当前均支持视觉），导入后默认标 VLM；用户仍可在 provider 抽屉
+  // vision_id_prefixes：/v1/models 响应不带 vision 字段，但 xinshu 主要承载 claude-*
+  // 与 gpt-* 系列（这些族当前均支持视觉），导入后默认标 VLM；用户仍可在 provider 抽屉
   // 手动调整某个模型。
   {
     id: 'xinshu-openai',
-    name: '新数 (OpenAI 格式)',
+    name: 'xinshu (OpenAI 格式)',
     format: 'openai',
     endpoint: 'https://mirror.xinshu.ai/v1',
     models_api: '/models',
     vision_id_prefixes: ['claude-', 'gpt-'],
+    recommended: true,
   },
   {
     id: 'xinshu-anthropic',
-    name: '新数 (Anthropic 格式)',
+    name: 'xinshu (Anthropic 格式)',
     format: 'anthropic',
     // endpoint 是裸 host：Anthropic SDK 会自动拼 /v1/messages
     endpoint: 'https://mirror.xinshu.ai',
@@ -193,6 +194,7 @@ export const PRESET_VENDORS: readonly PresetVendor[] = [
     // 所以 models_api 自带 /v1 前缀，拼出来仍是 https://mirror.xinshu.ai/v1/models
     models_api: '/v1/models',
     vision_id_prefixes: ['claude-', 'gpt-'],
+    recommended: true,
   },
 ]
 

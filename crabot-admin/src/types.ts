@@ -1114,6 +1114,8 @@ export interface PresetVendor {
    * 必然支持视觉的场景，避免用户进 detail 抽屉手动开 VLM。
    */
   vision_id_prefixes?: string[]
+  /** 标记为推荐厂商，前端会在下拉里排到最前、加视觉强调 */
+  recommended?: boolean
 }
 
 /**

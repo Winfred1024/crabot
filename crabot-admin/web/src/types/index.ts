@@ -52,6 +52,8 @@ export interface PresetVendor {
   allows_custom_endpoint?: boolean
   /** 认证方式 */
   auth_type?: 'apikey' | 'oauth'
+  /** 标记为推荐厂商，前端会在下拉里排到最前、加视觉强调 */
+  recommended?: boolean
 }
 
 export interface GlobalModelConfig {
