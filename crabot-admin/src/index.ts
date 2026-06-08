@@ -924,10 +924,20 @@ export class AdminModule extends ModuleBase {
         return
       }
 
-      const payload = verifyJwt(token, this.jwtSecret)
+      const payload = await verifyJwtWithEpoch(token, this.jwtSecret, this.adminConfig.data_dir)
       if (!payload) {
-        res.writeHead(401)
-        res.end(JSON.stringify({ error: 'Invalid or expired token' }))
+        // 区分 token 不合法 vs epoch 失效
+        const basicValid = verifyJwt(token, this.jwtSecret)
+        if (basicValid && basicValid.sub !== 'internal') {
+          res.writeHead(401)
+          res.end(JSON.stringify({
+            error: AdminErrorCode.TOKEN_REVOKED,
+            message: 'Token revoked (password changed)',
+          }))
+        } else {
+          res.writeHead(401)
+          res.end(JSON.stringify({ error: 'Invalid or expired token' }))
+        }
         return
       }
     }
