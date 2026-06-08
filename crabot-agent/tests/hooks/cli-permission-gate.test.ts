@@ -208,3 +208,50 @@ describe('cli-permission-gate hook', () => {
     expect(r.action).toBe('block')
   })
 })
+
+describe('cli-permission-gate 拒绝指引', () => {
+  const handler = getInternalHandler('cli-permission-gate')!
+
+  const scheduleInput = { event: 'PreToolUse' as const, toolInput: { command: 'crabot schedule add --interval-seconds 3600 --task "watch dhl"' } }
+
+  const baseContext: InternalHandlerContext = {
+    workingDirectory: '/tmp',
+    senderIsMaster: false,
+    resolvedPermissions: {
+      tool_access: {
+        memory: false, messaging: false, task: false,
+        mcp_skill: false, file_io: false, browser: false,
+        shell: false, remote_exec: false, desktop: false,
+      },
+      cli_access: {
+        provider: 'none', agent: 'none', mcp: 'none',
+        skill: 'none', schedule: 'none', channel: 'none',
+        friend: 'none', permission: 'none', config: 'none', undo: 'none',
+      },
+      storage: null,
+      memory_scopes: [],
+    },
+  }
+
+  it('群聊场景：拒绝文案点名「群聊」+ 指引去 Admin Web', async () => {
+    const result = await handler(scheduleInput, { ...baseContext, sessionType: 'group' })
+    expect(result.action).toBe('block')
+    expect(result.message).toContain('cli_access.schedule=none')
+    expect(result.message).toContain('群聊')
+    expect(result.message).toContain('Admin Web')
+    expect(result.message).toContain('对话对象')
+    expect(result.message).toContain('group_scheduler')
+  })
+
+  it('私聊场景：拒绝文案点名「好友」', async () => {
+    const result = await handler(scheduleInput, { ...baseContext, sessionType: 'private' })
+    expect(result.action).toBe('block')
+    expect(result.message).toContain('好友')
+  })
+
+  it('sessionType 缺失：fallback 通用文案「会话对象」', async () => {
+    const result = await handler(scheduleInput, baseContext)
+    expect(result.action).toBe('block')
+    expect(result.message).toContain('会话对象')
+  })
+})

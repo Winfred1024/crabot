@@ -122,9 +122,18 @@ registerInternalHandler('cli-permission-gate', async (input, context) => {
     (cls.kind === 'read' && (allowed === 'read' || allowed === 'write')) ||
     (cls.kind === 'write' && allowed === 'write')
   if (!passes) {
+    const sceneLabel = context.sessionType === 'group'
+      ? '群聊'
+      : context.sessionType === 'private'
+        ? '好友'
+        : '会话对象'
     return {
       action: 'block',
-      message: `PERMISSION_DENIED: cli_access.${cls.domain}=${allowed}，无法执行 ${cls.kind} 命令 \`${parsed.subcommand}\`。`,
+      message:
+        `PERMISSION_DENIED: cli_access.${cls.domain}=${allowed}，无法执行 ${cls.kind} 命令 \`${parsed.subcommand}\`。\n` +
+        `如需开通：master 可在 Admin Web 「对话对象」里选中当前${sceneLabel}，` +
+        `在权限编辑里把 \`cli_access.${cls.domain}\` 调成 \`${cls.kind === 'write' ? 'write' : 'read'}\`，` +
+        `或用「用模板初始化」选 \`group_scheduler\` 等含此权限的模板。`,
     }
   }
 
