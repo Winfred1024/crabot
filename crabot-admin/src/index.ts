@@ -199,6 +199,7 @@ import {
   formatGoalListResponse,
   formatMissingIdResponse,
 } from './goal-slash.js'
+import { readCredentials } from './credentials.js'
 
 // ============================================================================
 // JWT 工具函数
@@ -208,6 +209,7 @@ interface JwtPayload {
   sub: string
   iat: number
   exp: number
+  e?: number          // token_epoch；internal-token 无此字段
 }
 
 function base64UrlEncode(data: string): string {
@@ -254,6 +256,21 @@ function verifyJwt(token: string, secret: string): JwtPayload | null {
   } catch {
     return null
   }
+}
+
+async function verifyJwtWithEpoch(
+  token: string,
+  secret: string,
+  dataDir: string,
+): Promise<JwtPayload | null> {
+  const payload = verifyJwt(token, secret)
+  if (!payload) return null
+  if (payload.sub === 'internal') return payload   // 豁免
+
+  const cred = await readCredentials(dataDir)
+  if (!cred) return null
+  if (payload.e !== cred.token_epoch) return null
+  return payload
 }
 
 // ============================================================================
