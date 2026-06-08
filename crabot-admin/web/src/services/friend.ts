@@ -10,10 +10,12 @@ import type {
   FriendPermission,
   StoragePermission,
   ToolAccessConfig,
+  CliAccessConfig,
 } from '../types'
 
 export interface FriendPermissionConfig {
   tool_access: ToolAccessConfig
+  cli_access: CliAccessConfig
   storage: StoragePermission | null
   memory_scopes: string[]
   updated_at: string
@@ -21,6 +23,7 @@ export interface FriendPermissionConfig {
 
 export interface FriendPermissionResolved {
   tool_access: ToolAccessConfig
+  cli_access: CliAccessConfig
   storage: StoragePermission | null
   memory_scopes: string[]
 }

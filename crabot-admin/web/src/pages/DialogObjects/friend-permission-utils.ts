@@ -1,4 +1,4 @@
-import type { StoragePermission, ToolAccessConfig } from '../../types'
+import type { CliAccessConfig, StoragePermission, ToolAccessConfig } from '../../types'
 import type { FriendPermissionConfig } from '../../services/friend'
 
 function cloneStorage(storage: StoragePermission | null): StoragePermission | null {
@@ -7,6 +7,10 @@ function cloneStorage(storage: StoragePermission | null): StoragePermission | nu
 
 function cloneToolAccess(toolAccess: ToolAccessConfig): ToolAccessConfig {
   return { ...toolAccess }
+}
+
+function cloneCliAccess(cliAccess: CliAccessConfig): CliAccessConfig {
+  return { ...cliAccess }
 }
 
 export function summarizeFriendStorage(storage: StoragePermission | null): string {
@@ -29,7 +33,7 @@ export function parseMemoryScopes(value: string): string[] {
 
 export type FriendPermissionEffectiveConfig = Pick<
   FriendPermissionConfig,
-  'tool_access' | 'storage' | 'memory_scopes'
+  'tool_access' | 'cli_access' | 'storage' | 'memory_scopes'
 >
 
 export function buildExplicitFriendPermissionConfig(
@@ -37,6 +41,7 @@ export function buildExplicitFriendPermissionConfig(
 ): FriendPermissionEffectiveConfig {
   return {
     tool_access: cloneToolAccess(config.tool_access),
+    cli_access: cloneCliAccess(config.cli_access),
     storage: cloneStorage(config.storage),
     memory_scopes: [...config.memory_scopes],
   }
