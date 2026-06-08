@@ -1,6 +1,7 @@
-import { describe, it, expect, vi } from 'vitest'
-import { createWaitForSignalTool, WAIT_FOR_SIGNAL_TIMEOUT_MS } from '../../src/mcp/wait-for-signal.js'
+import { describe, it, expect } from 'vitest'
+import { createWaitForSignalTool } from '../../src/mcp/wait-for-signal.js'
 import { HumanMessageQueue } from '../../src/engine/human-message-queue.js'
+import type { ToolCallContext } from '../../src/engine/types.js'
 
 describe('wait_for_signal', () => {
   it('returns error when no pending event exists', async () => {
@@ -10,49 +11,48 @@ describe('wait_for_signal', () => {
       hasActiveAudit: () => false,
       hasActiveAsyncSubagent: () => false,
     })
-    const result = await tool.call({ reason: 'test' }, {})
+    const result = await tool.call({ reason: 'test' }, {} as ToolCallContext)
     expect(result.isError).toBe(true)
     expect(result.output).toContain('无 pending')
+    // assert observable: barrier NOT set
+    expect(humanQueue.hasBarrier).toBe(false)
   })
 
   it('sets barrier when audit is active', async () => {
     const humanQueue = new HumanMessageQueue()
-    const setBarrier = vi.spyOn(humanQueue, 'setBarrier')
     const tool = createWaitForSignalTool({
       humanQueue,
       hasActiveAudit: () => true,
       hasActiveAsyncSubagent: () => false,
     })
-    const result = await tool.call({ reason: 'await audit' }, {})
+    const result = await tool.call({ reason: 'await audit' }, {} as ToolCallContext)
     expect(result.isError).toBe(false)
-    expect(setBarrier).toHaveBeenCalledWith(WAIT_FOR_SIGNAL_TIMEOUT_MS)
+    expect(humanQueue.hasBarrier).toBe(true)
     humanQueue.clearBarrier()
   })
 
   it('sets barrier when async subagent is active', async () => {
     const humanQueue = new HumanMessageQueue()
-    const setBarrier = vi.spyOn(humanQueue, 'setBarrier')
     const tool = createWaitForSignalTool({
       humanQueue,
       hasActiveAudit: () => false,
       hasActiveAsyncSubagent: () => true,
     })
-    await tool.call({ reason: 'await subagent' }, {})
-    expect(setBarrier).toHaveBeenCalled()
+    await tool.call({ reason: 'await subagent' }, {} as ToolCallContext)
+    expect(humanQueue.hasBarrier).toBe(true)
     humanQueue.clearBarrier()
   })
 
   it('sets barrier when humanQueue has pending push', async () => {
     const humanQueue = new HumanMessageQueue()
     humanQueue.push('pending message')
-    const setBarrier = vi.spyOn(humanQueue, 'setBarrier')
     const tool = createWaitForSignalTool({
       humanQueue,
       hasActiveAudit: () => false,
       hasActiveAsyncSubagent: () => false,
     })
-    await tool.call({ reason: 'await pending' }, {})
-    expect(setBarrier).toHaveBeenCalled()
+    await tool.call({ reason: 'await pending' }, {} as ToolCallContext)
+    expect(humanQueue.hasBarrier).toBe(true)
     humanQueue.clearBarrier()
   })
 })

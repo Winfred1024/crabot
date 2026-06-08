@@ -14,7 +14,7 @@
 
 import { z } from 'zod'
 import type { HumanMessageQueue } from '../engine/human-message-queue.js'
-import type { ToolDefinition, ToolCallResult } from '../engine/types.js'
+import type { ToolCallContext, ToolDefinition, ToolCallResult } from '../engine/types.js'
 
 /**
  * 兜底超时：跟 ASK_HUMAN_BARRIER_TIMEOUT_MS 一致（24 小时）。
@@ -53,7 +53,7 @@ export function createWaitForSignalTool(deps: WaitForSignalDeps): ToolDefinition
       required: ['reason'],
       additionalProperties: false,
     },
-    call: async (rawInput: Record<string, unknown>): Promise<ToolCallResult> => {
+    call: async (rawInput: Record<string, unknown>, _context: ToolCallContext): Promise<ToolCallResult> => {
       const parseResult = inputSchema.safeParse(rawInput)
       if (!parseResult.success) {
         return { isError: true, output: `invalid input: ${parseResult.error.message}` }
