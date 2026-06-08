@@ -43,6 +43,8 @@ import {
   type PendingMessage,
   type LoginRequest,
   type LoginResponse,
+  type MeResponse,
+  type ChangePasswordRequest,
   type CreateFriendParams,
   type UpdateFriendParams,
   type ResolveFriendParams,
@@ -199,7 +201,7 @@ import {
   formatGoalListResponse,
   formatMissingIdResponse,
 } from './goal-slash.js'
-import { readCredentials, verifyPassword } from './credentials.js'
+import { readCredentials, verifyPassword, rotateCredentials, writeCredentials } from './credentials.js'
 
 // ============================================================================
 // JWT 工具函数
@@ -946,6 +948,16 @@ export class AdminModule extends ModuleBase {
     try {
       if (pathname === '/api/auth/login' && req.method === 'POST') {
         await this.handleLogin(req, res)
+        return
+      }
+
+      if (pathname === '/api/auth/me' && req.method === 'GET') {
+        await this.handleGetMe(req, res)
+        return
+      }
+
+      if (pathname === '/api/auth/change-password' && req.method === 'POST') {
+        await this.handleChangePassword(req, res)
         return
       }
 
@@ -2281,6 +2293,81 @@ export class AdminModule extends ModuleBase {
     }
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify(response))
+  }
+
+  private async handleGetMe(_req: IncomingMessage, res: ServerResponse): Promise<void> {
+    // 鉴权已在 dispatcher 拦截（API 前置）；此处只读 credentials.json
+    const cred = await readCredentials(this.adminConfig.data_dir)
+    if (!cred) {
+      res.writeHead(503)
+      res.end(JSON.stringify({ error: AdminErrorCode.SERVER_NOT_INITIALIZED }))
+      return
+    }
+    const body: MeResponse = { is_temp: cred.is_temp }
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(body))
+  }
+
+  private async handleChangePassword(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    // 拦截器已校验 JWT；这里再读一次 payload 以判断 sub
+    const authHeader = req.headers.authorization
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null
+    if (!token) {
+      res.writeHead(401)
+      res.end(JSON.stringify({ error: 'Unauthorized' }))
+      return
+    }
+    const payload = await verifyJwtWithEpoch(token, this.jwtSecret, this.adminConfig.data_dir)
+    if (!payload || payload.sub === 'internal') {
+      res.writeHead(403)
+      res.end(JSON.stringify({ error: 'Forbidden', message: 'internal-token cannot change human password' }))
+      return
+    }
+
+    const body = await this.readJsonBody<ChangePasswordRequest>(req)
+    if (typeof body.new_password !== 'string' || body.new_password.length < 4) {
+      res.writeHead(400)
+      res.end(JSON.stringify({
+        error: AdminErrorCode.INVALID_PASSWORD,
+        message: 'New password must be at least 4 characters.',
+      }))
+      return
+    }
+
+    const cred = await readCredentials(this.adminConfig.data_dir)
+    if (!cred) {
+      res.writeHead(503)
+      res.end(JSON.stringify({ error: AdminErrorCode.SERVER_NOT_INITIALIZED }))
+      return
+    }
+
+    if (cred.is_temp) {
+      if (body.old_password !== undefined) {
+        const ok = await verifyPassword(body.old_password, cred)
+        if (!ok) {
+          res.writeHead(401)
+          res.end(JSON.stringify({ error: AdminErrorCode.INVALID_OLD_PASSWORD }))
+          return
+        }
+      }
+    } else {
+      if (typeof body.old_password !== 'string') {
+        res.writeHead(400)
+        res.end(JSON.stringify({ error: AdminErrorCode.OLD_PASSWORD_REQUIRED }))
+        return
+      }
+      const ok = await verifyPassword(body.old_password, cred)
+      if (!ok) {
+        res.writeHead(401)
+        res.end(JSON.stringify({ error: AdminErrorCode.INVALID_OLD_PASSWORD }))
+        return
+      }
+    }
+
+    const newCred = await rotateCredentials(cred, body.new_password, 'ui')
+    await writeCredentials(this.adminConfig.data_dir, newCred)
+    res.writeHead(200)
+    res.end(JSON.stringify({}))
   }
 
   // ============================================================================

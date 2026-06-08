@@ -463,8 +463,8 @@ describe('AdminModule - Auth', () => {
 
   it('credentials.json 不存在时 login 返回 503 SERVER_NOT_INITIALIZED', async () => {
     // 启动一个没有 credentials.json 的 admin 实例
-    const noCredPort = 13013
-    const noCredProtoPort = 19813
+    const noCredPort = 13014
+    const noCredProtoPort = 19814
     const noCredDataDir = './test-data/admin-nocred-test'
 
     try {
@@ -520,6 +520,202 @@ describe('AdminModule - Auth', () => {
 })
 
 // ============================================================================
+// Change Password + Me 专项测试
+// ============================================================================
+
+const CHPWD_TEST_PROTOCOL_PORT = 19815
+const CHPWD_TEST_WEB_PORT = 13015
+const CHPWD_TEST_DATA_DIR = './test-data/admin-chpwd-test'
+
+describe('POST /api/auth/change-password', () => {
+  let admin: AdminModule
+
+  beforeAll(async () => {
+    try {
+      await fs.rm(CHPWD_TEST_DATA_DIR, { recursive: true, force: true })
+    } catch {
+      // ignore
+    }
+
+    process.env.TEST_JWT_SECRET_CHPWD = 'test_jwt_secret_chpwd_at_least_32_chars'
+    await fs.mkdir(CHPWD_TEST_DATA_DIR, { recursive: true })
+    const cred = await newCredentialsFromPassword('temp_pass_123', { is_temp: true, changed_via: 'start' })
+    await writeCredentials(CHPWD_TEST_DATA_DIR, cred)
+
+    admin = new AdminModule(
+      {
+        moduleId: 'admin-chpwd-test',
+        moduleType: 'admin',
+        version: '0.1.0',
+        protocolVersion: '0.1.0',
+        port: CHPWD_TEST_PROTOCOL_PORT,
+        subscriptions: [],
+      },
+      {
+        web_port: CHPWD_TEST_WEB_PORT,
+        data_dir: CHPWD_TEST_DATA_DIR,
+        password_env: 'TEST_ADMIN_PASSWORD_CHPWD',
+        jwt_secret_env: 'TEST_JWT_SECRET_CHPWD',
+        token_ttl: 3600,
+      }
+    )
+
+    await admin.start()
+  })
+
+  afterAll(async () => {
+    await admin.stop()
+    try {
+      await fs.rm(CHPWD_TEST_DATA_DIR, { recursive: true, force: true })
+    } catch {
+      // ignore
+    }
+  })
+
+  it('is_temp=true 时免 old_password 改密成功 + token_epoch++', async () => {
+    // 登录拿 token
+    const loginRes = await makeWebRequestWithToken(CHPWD_TEST_WEB_PORT, 'POST', '/api/auth/login', { password: 'temp_pass_123' }, null)
+    expect(loginRes.status).toBe(200)
+    const { token } = JSON.parse(loginRes.body) as { token: string }
+
+    // 读取改密前的 epoch
+    const credBefore = await import('node:fs/promises').then(fsp =>
+      fsp.readFile(`${CHPWD_TEST_DATA_DIR}/credentials.json`, 'utf-8').then(raw => JSON.parse(raw) as { token_epoch: number; is_temp: boolean })
+    )
+    const epochBefore = credBefore.token_epoch
+
+    // 改密（is_temp=true，不提供 old_password）
+    const res = await makeWebRequestWithToken(CHPWD_TEST_WEB_PORT, 'POST', '/api/auth/change-password', { new_password: 'new-secret-123' }, token)
+    expect(res.status).toBe(200)
+
+    // 验证 credentials.json 更新
+    const credAfter = await import('node:fs/promises').then(fsp =>
+      fsp.readFile(`${CHPWD_TEST_DATA_DIR}/credentials.json`, 'utf-8').then(raw => JSON.parse(raw) as { token_epoch: number; is_temp: boolean })
+    )
+    expect(credAfter.token_epoch).toBe(epochBefore + 1)
+    expect(credAfter.is_temp).toBe(false)
+
+    // 可以用新密码登录
+    const loginRes2 = await makeWebRequestWithToken(CHPWD_TEST_WEB_PORT, 'POST', '/api/auth/login', { password: 'new-secret-123' }, null)
+    expect(loginRes2.status).toBe(200)
+  })
+
+  it('is_temp=false 时缺 old_password → 400 OLD_PASSWORD_REQUIRED', async () => {
+    // 此时 is_temp=false（上面的测试改过了）
+    const loginRes = await makeWebRequestWithToken(CHPWD_TEST_WEB_PORT, 'POST', '/api/auth/login', { password: 'new-secret-123' }, null)
+    const { token } = JSON.parse(loginRes.body) as { token: string }
+
+    const res = await makeWebRequestWithToken(CHPWD_TEST_WEB_PORT, 'POST', '/api/auth/change-password', { new_password: 'another-pass-456' }, token)
+    expect(res.status).toBe(400)
+    const body = JSON.parse(res.body) as { error: string }
+    expect(body.error).toBe(AdminErrorCode.OLD_PASSWORD_REQUIRED)
+  })
+
+  it('is_temp=false 时 old_password 错 → 401 INVALID_OLD_PASSWORD', async () => {
+    const loginRes = await makeWebRequestWithToken(CHPWD_TEST_WEB_PORT, 'POST', '/api/auth/login', { password: 'new-secret-123' }, null)
+    const { token } = JSON.parse(loginRes.body) as { token: string }
+
+    const res = await makeWebRequestWithToken(CHPWD_TEST_WEB_PORT, 'POST', '/api/auth/change-password', { old_password: 'wrong-old', new_password: 'another-pass-456' }, token)
+    expect(res.status).toBe(401)
+    const body = JSON.parse(res.body) as { error: string }
+    expect(body.error).toBe(AdminErrorCode.INVALID_OLD_PASSWORD)
+  })
+
+  it('new_password 短于 4 字符 → 400 INVALID_PASSWORD', async () => {
+    const loginRes = await makeWebRequestWithToken(CHPWD_TEST_WEB_PORT, 'POST', '/api/auth/login', { password: 'new-secret-123' }, null)
+    const { token } = JSON.parse(loginRes.body) as { token: string }
+
+    const res = await makeWebRequestWithToken(CHPWD_TEST_WEB_PORT, 'POST', '/api/auth/change-password', { old_password: 'new-secret-123', new_password: 'abc' }, token)
+    expect(res.status).toBe(400)
+    const body = JSON.parse(res.body) as { error: string }
+    expect(body.error).toBe(AdminErrorCode.INVALID_PASSWORD)
+  })
+
+  it('改密后老 token 再调任意 /api → 401 TOKEN_REVOKED', async () => {
+    // 登录拿旧 token
+    const loginRes = await makeWebRequestWithToken(CHPWD_TEST_WEB_PORT, 'POST', '/api/auth/login', { password: 'new-secret-123' }, null)
+    const { token: oldToken } = JSON.parse(loginRes.body) as { token: string }
+
+    // 改密（提供正确 old_password）
+    const changeRes = await makeWebRequestWithToken(CHPWD_TEST_WEB_PORT, 'POST', '/api/auth/change-password', { old_password: 'new-secret-123', new_password: 'final-pass-789' }, oldToken)
+    expect(changeRes.status).toBe(200)
+
+    // 用老 token 访问受保护端点
+    const meRes = await makeWebRequestWithToken(CHPWD_TEST_WEB_PORT, 'GET', '/api/auth/me', null, oldToken)
+    expect(meRes.status).toBe(401)
+    const body = JSON.parse(meRes.body) as { error: string }
+    expect(body.error).toBe(AdminErrorCode.TOKEN_REVOKED)
+  })
+})
+
+const ME_TEST_PROTOCOL_PORT = 19816
+const ME_TEST_WEB_PORT = 13016
+const ME_TEST_DATA_DIR = './test-data/admin-me-test'
+
+describe('GET /api/auth/me', () => {
+  let admin: AdminModule
+  let meToken: string
+
+  beforeAll(async () => {
+    try {
+      await fs.rm(ME_TEST_DATA_DIR, { recursive: true, force: true })
+    } catch {
+      // ignore
+    }
+
+    process.env.TEST_JWT_SECRET_ME = 'test_jwt_secret_me_at_least_32_chars_xx'
+    await fs.mkdir(ME_TEST_DATA_DIR, { recursive: true })
+    const cred = await newCredentialsFromPassword('me_test_pass', { is_temp: true, changed_via: 'start' })
+    await writeCredentials(ME_TEST_DATA_DIR, cred)
+
+    admin = new AdminModule(
+      {
+        moduleId: 'admin-me-test',
+        moduleType: 'admin',
+        version: '0.1.0',
+        protocolVersion: '0.1.0',
+        port: ME_TEST_PROTOCOL_PORT,
+        subscriptions: [],
+      },
+      {
+        web_port: ME_TEST_WEB_PORT,
+        data_dir: ME_TEST_DATA_DIR,
+        password_env: 'TEST_ADMIN_PASSWORD_ME',
+        jwt_secret_env: 'TEST_JWT_SECRET_ME',
+        token_ttl: 3600,
+      }
+    )
+
+    await admin.start()
+
+    const loginRes = await makeWebRequestWithToken(ME_TEST_WEB_PORT, 'POST', '/api/auth/login', { password: 'me_test_pass' }, null)
+    const parsed = JSON.parse(loginRes.body) as { token: string }
+    meToken = parsed.token
+  })
+
+  afterAll(async () => {
+    await admin.stop()
+    try {
+      await fs.rm(ME_TEST_DATA_DIR, { recursive: true, force: true })
+    } catch {
+      // ignore
+    }
+  })
+
+  it('返回当前 is_temp', async () => {
+    const res = await makeWebRequestWithToken(ME_TEST_WEB_PORT, 'GET', '/api/auth/me', null, meToken)
+    expect(res.status).toBe(200)
+    const body = JSON.parse(res.body) as { is_temp: boolean }
+    expect(body.is_temp).toBe(true)
+  })
+
+  it('无 token → 401', async () => {
+    const res = await makeWebRequestWithToken(ME_TEST_WEB_PORT, 'GET', '/api/auth/me', null, null)
+    expect(res.status).toBe(401)
+  })
+})
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 
@@ -555,6 +751,55 @@ function makeWebRequestRaw(
 
     if (auth && jwtToken) {
       headers['Authorization'] = `Bearer ${jwtToken}`
+    }
+
+    const req = http.request(
+      {
+        hostname: 'localhost',
+        port,
+        method,
+        path,
+        headers: {
+          ...headers,
+          ...(bodyStr ? { 'Content-Length': Buffer.byteLength(bodyStr) } : {}),
+        },
+      },
+      (res) => {
+        let data = ''
+        res.on('data', (chunk) => {
+          data += chunk
+        })
+        res.on('end', () => {
+          resolve({ status: res.statusCode ?? 0, body: data })
+        })
+      }
+    )
+
+    req.on('error', reject)
+    if (bodyStr) {
+      req.write(bodyStr)
+    }
+    req.end()
+  })
+}
+
+/** 与 makeWebRequestRaw 相同，但接受显式 token（不依赖全局 jwtToken） */
+function makeWebRequestWithToken(
+  port: number,
+  method: string,
+  path: string,
+  body: unknown | null,
+  token: string | null
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const bodyStr = body ? JSON.stringify(body) : ''
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    }
+
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`
     }
 
     const req = http.request(
