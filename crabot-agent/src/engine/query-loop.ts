@@ -21,6 +21,7 @@ import { compressToolResultImages, pruneOldImages } from './image-utils'
 import { formatError } from './error-utils'
 import type { HookInput } from '../hooks/types'
 import { executeHooks } from '../hooks/hook-executor'
+import { parseSystemMarker, type AuditResultMarker } from '../agent/audit-result-marker.js'
 import * as fs from 'fs'
 import { getWorkspaceDir } from '../core/data-paths.js'
 
@@ -52,6 +53,134 @@ const MAX_MAX_TOKENS_COMPACT_RETRIES = 2
 const FORCED_SUMMARY_PROMPT =
   '你刚才以 end_turn 结束但还没有向人类发送任何内容。\n' +
   '如果本次任务有需要告知的结果或进度，请调用 send_message 工具发出后再 end_turn。'
+
+// drain 路径分流结果：caller 决定是否 early-return buildResult('completed')。
+// spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.5
+interface DrainDispatchResult {
+  /** 经 marker 分流后剩下的 user message 内容（非 marker 部分），由 caller 注入到 messages */
+  readonly remainingTexts: ReadonlyArray<string | ContentBlock[]>
+  /** true 时 caller 应 buildResult('completed') 直接退出（audit pass + 无后续 pending） */
+  readonly shouldExitCompleted: boolean
+}
+
+/**
+ * 把 humanQueue.drainPending 的内容按 system marker 分流：
+ *   - audit_result.pass=true  → 调 flushOutboundBuffer + clearActiveAuditId；无后续 pending 时 shouldExitCompleted=true
+ *   - audit_result.pass=false → 调 dropOutboundBuffer + clearActiveAuditId；注入 detailedReport 让 agent 续作
+ *   - audit_aborted          → 调 clearActiveAuditId；注入"原 audit 已废"提示
+ *   - audit_pending          → 防御性当 user message 转发（理论上不会通过 drain 出现，它是 endTurnGate 注入路径）
+ *   - 其他文本 / ContentBlock[] → 透传到 remainingTexts
+ *
+ * 副作用：直接对 messages 数组 push（marker fail/aborted 的注入消息）；marker 处理后调对应 EngineOptions 钩子。
+ * remainingTexts 由 caller 负责注入——helper 不直接 push 普通 supplement 以保留 caller 的 trace 注入逻辑。
+ */
+async function drainAndDispatchMarkers(
+  drained: ReadonlyArray<string | ContentBlock[]>,
+  options: EngineOptions,
+  messages: EngineMessage[],
+  totalTurns: number,
+): Promise<DrainDispatchResult> {
+  const remainingTexts: Array<string | ContentBlock[]> = []
+  const auditResults: AuditResultMarker[] = []
+  let hasAborted = false
+  const abortedTexts: string[] = []
+
+  for (const content of drained) {
+    if (typeof content !== 'string') {
+      remainingTexts.push(content)
+      continue
+    }
+    const marker = parseSystemMarker(content)
+    if (marker === null) {
+      remainingTexts.push(content)
+      continue
+    }
+    if (marker.type === 'audit_result') {
+      auditResults.push(marker)
+    } else if (marker.type === 'audit_aborted') {
+      hasAborted = true
+      abortedTexts.push(
+        `[系统] 你之前的 audit (${marker.auditId}) 已被取消（${marker.reason || '原因未提供'}）。请按当前 task.goal 继续行动。`,
+      )
+    } else {
+      // audit_pending：理论上不会从 drainPending 出来（它由 endTurnGate 直接 return 注入），
+      // 防御性当作 user message 透传给 agent。
+      remainingTexts.push(content)
+    }
+  }
+
+  // 处理 audit_aborted（在 audit_result 之前清掉 activeAuditId，再注入提示）
+  if (hasAborted) {
+    options.clearActiveAuditId?.()
+    for (const text of abortedTexts) {
+      messages.push(createUserMessage(text))
+      options.onSystemInjection?.({
+        type: 'supplement',
+        text,
+        turnNumber: totalTurns,
+        injectedAtMs: Date.now(),
+      })
+    }
+  }
+
+  // 处理 audit_result：通常一条；若多条按顺序处理（最后一条决定 final 行为）。
+  let lastPass: boolean | null = null
+  for (const result of auditResults) {
+    options.clearActiveAuditId?.()
+    if (result.pass) {
+      // pass：engine 内部 flush buffer，不作为 user message 注入
+      if (options.flushOutboundBuffer) {
+        await options.flushOutboundBuffer()
+      }
+      lastPass = true
+    } else {
+      // fail：丢弃 buffer + 注入 detailedReport 让 worker 续作
+      options.dropOutboundBuffer?.()
+      const failReport = formatAuditFailReport(result)
+      messages.push(createUserMessage(failReport))
+      options.onSystemInjection?.({
+        type: 'supplement',
+        text: failReport,
+        turnNumber: totalTurns,
+        injectedAtMs: Date.now(),
+      })
+      lastPass = false
+    }
+  }
+
+  // shouldExitCompleted：最后一条 audit_result.pass=true，且没有任何后续要 agent 响应的内容
+  //（无剩余 user message、无 aborted 提示、humanQueue 也没新 pending）。
+  // hasPending 此刻已被 drain 清空（drainPending 是消费性），但 drain-and-process 期间可能
+  // 又被 push 进新 supplement，所以再 check 一次 hasPending。
+  const stillHasPending = options.humanMessageQueue?.hasPending === true
+  const shouldExitCompleted =
+    lastPass === true &&
+    remainingTexts.length === 0 &&
+    !hasAborted &&
+    !stillHasPending
+
+  return { remainingTexts, shouldExitCompleted }
+}
+
+/** 构造 audit fail 时注入给 worker 的 user message 文案 */
+function formatAuditFailReport(result: AuditResultMarker): string {
+  const lines: string[] = [
+    '[crabot 内部 / 仅你可见] 自检发现交付与你的承诺有差距——这是你和系统之间的事，人类看不见，不要把这段内容转给人类。',
+    '',
+  ]
+  if (result.failedCriteria.length > 0) {
+    lines.push('## 还没满足的承诺项')
+    for (const c of result.failedCriteria) {
+      lines.push(`- ${c}`)
+    }
+    lines.push('')
+  }
+  if (result.detailedReport) {
+    lines.push('## 详细报告')
+    lines.push(result.detailedReport)
+  }
+  return lines.join('\n')
+}
 
 // --- Core Loop ---
 
@@ -218,9 +347,19 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
       // end_turn 收口前最后一次 supplement check：防止 LLM end_turn 与 finalize 落盘之间
       // 的微秒级窗口窃听不到 supplement。supplement 自然取代 forced summary——LLM 看到
       // 用户消息会响应，不必再走 silent retry 路径。
+      //
+      // 同时识别 audit_result / audit_aborted system marker：
+      //   - audit_result.pass=true + 无后续 pending → flush buffer + buildResult('completed')
+      //   - audit_result.pass=false → 丢 buffer + 注入 detailedReport 续 loop
+      //   - audit_aborted → 注入"原 audit 已废"提示续 loop
+      // spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.5
       if (options.humanMessageQueue?.hasPending) {
         const supplements = options.humanMessageQueue.drainPending()
-        for (const content of supplements) {
+        const dispatch = await drainAndDispatchMarkers(supplements, options, messages, totalTurns)
+        if (dispatch.shouldExitCompleted) {
+          return buildResult('completed', finalText, totalTurns, contextManager, messages, exitToolCall, toolCallCount, wroteMemoryOrScene)
+        }
+        for (const content of dispatch.remainingTexts) {
           messages.push(createUserMessage(content))
           options.onSystemInjection?.({
             type: 'supplement',
@@ -359,8 +498,33 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
         }))
         messages.push(createBatchToolResultMessage(cancelledResults))
 
+        // 防御性 marker 分流：理论上 pre-tool barrier 唤醒不会拿到 audit_result（audit 在
+        // wait_for_signal 之后唤醒，走 post-tool 路径），但为防 marker 从此路径漏过去，统一走分流。
+        // 这里如果拿到 audit_result.pass=true 且无剩余内容，仍按"已完成"退出。
         const supplements = options.humanMessageQueue.drainPending()
-        for (const content of supplements) {
+        const dispatch = await drainAndDispatchMarkers(supplements, options, messages, totalTurns)
+        if (dispatch.shouldExitCompleted) {
+          // 工具被 cancelled 但已 push 了 cancelled tool_result，messages 上的状态是完整的——
+          // 直接以 completed 退出。
+          fireOnTurn({
+            turnNumber: totalTurns,
+            assistantText: processed.text,
+            toolCalls: processed.toolUseBlocks.map(b => ({
+              id: b.id,
+              name: b.name,
+              input: b.input,
+              output: '[cancelled by supplement]',
+              isError: false,
+            })),
+            stopReason,
+            llmCallMs,
+            llmStartedAtMs,
+            ...(forcedSummaryAttempt !== undefined ? { forcedSummaryAttempt } : {}),
+            ...(response.usage ? { usage: response.usage } : {}),
+          })
+          return buildResult('completed', finalText, totalTurns, contextManager, messages, exitToolCall, toolCallCount, wroteMemoryOrScene)
+        }
+        for (const content of dispatch.remainingTexts) {
           messages.push(createUserMessage(content))
           options.onSystemInjection?.({
             type: 'supplement',
@@ -571,10 +735,20 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
       return typeof r?.content === 'string' && r.content.includes('"buffered":true')
     })
 
-    // Inject any pending human supplement messages
+    // Inject any pending human supplement messages.
+    // 同时分流 audit_result / audit_aborted system marker（spec §4.5）：
+    //   - audit_result.pass=true + 无剩余 pending → flush buffer + 直接 buildResult('completed')
+    //   - audit_result.pass=false → 丢 buffer + 注入 detailedReport 续 loop
+    //   - audit_aborted → 注入"原 audit 已废"提示续 loop
+    // 这是 audit_result marker 的主要进入路径（wait_for_signal setBarrier → audit 完成 push 唤醒 → 此处 drain）。
     if (options.humanMessageQueue && !bufferedSendMessageInTurn) {
       const supplements = options.humanMessageQueue.drainPending()
-      for (const content of supplements) {
+      const dispatch = await drainAndDispatchMarkers(supplements, options, messages, totalTurns)
+      if (dispatch.shouldExitCompleted) {
+        // audit pass + 无后续 pending：直接以 completed 退出 agent 实例。spec §4.5
+        return buildResult('completed', finalText, totalTurns, contextManager, messages, exitToolCall, toolCallCount, wroteMemoryOrScene)
+      }
+      for (const content of dispatch.remainingTexts) {
         messages.push(createUserMessage(content))
         options.onSystemInjection?.({
           type: 'supplement',

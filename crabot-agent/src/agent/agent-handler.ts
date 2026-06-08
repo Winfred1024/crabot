@@ -1354,6 +1354,16 @@ export class AgentHandler {
             }
             return createOutboundFlush(taskState.outboundBuffer, dispatchDeps)
           })(),
+          // engine drain 路径识别到 audit_result.pass=false / audit_aborted 时调，丢弃缓冲的"完工汇报"。
+          // spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.5 / §4.7
+          dropOutboundBuffer: () => {
+            taskState.outboundBuffer.length = 0
+          },
+          // engine drain 路径处理完 audit_result / audit_aborted marker 之后调，让 task 回到"无活跃 audit"态。
+          // spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.5 / §4.7
+          clearActiveAuditId: () => {
+            taskState.activeAuditId = undefined
+          },
           endTurnGate: this.buildAsyncAuditEndTurnGate({
             goalModeEnabled,
             goalSetCacheGetter: () => goalSetCache,
