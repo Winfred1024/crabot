@@ -26,6 +26,9 @@ export type SystemMarker = AuditPendingMarker | AuditResultMarker | AuditAborted
  * 一致，避免给 humanMessageQueue 加结构化 push API。
  */
 export function buildAuditPendingMarker(params: { auditId: string }): string {
+  if (params.auditId.includes('</audit_id>') || params.auditId.includes('</audit_pending>')) {
+    throw new Error('buildAuditPendingMarker: auditId contains forbidden literal')
+  }
   return [
     '<audit_pending>',
     `<audit_id>${params.auditId}</audit_id>`,
@@ -43,6 +46,20 @@ export function buildAuditResultMarker(params: {
   failedCriteria: ReadonlyArray<string>
   detailedReport: string
 }): string {
+  const FORBIDDEN_IN_REPORT = ['</audit_result>', '</detailed_report>']
+  for (const forbidden of FORBIDDEN_IN_REPORT) {
+    if (params.detailedReport.includes(forbidden)) {
+      throw new Error(
+        `buildAuditResultMarker: detailedReport contains forbidden literal "${forbidden}". ` +
+        `Sanitize upstream before building marker.`,
+      )
+    }
+  }
+  for (const c of params.failedCriteria) {
+    if (FORBIDDEN_IN_REPORT.some(f => c.includes(f))) {
+      throw new Error(`buildAuditResultMarker: failed_criteria entry contains forbidden tag literal: ${c}`)
+    }
+  }
   const payload = JSON.stringify({
     audit_id: params.auditId,
     pass: params.pass,
@@ -57,6 +74,14 @@ export function buildAuditResultMarker(params: {
 }
 
 export function buildAuditAbortedMarker(params: { auditId: string; reason: string }): string {
+  const FORBIDDEN_IN_ABORTED = ['</audit_aborted>', '</reason>', '</audit_id>']
+  for (const forbidden of FORBIDDEN_IN_ABORTED) {
+    if (params.reason.includes(forbidden) || params.auditId.includes(forbidden)) {
+      throw new Error(
+        `buildAuditAbortedMarker: reason or auditId contains forbidden literal "${forbidden}".`,
+      )
+    }
+  }
   return [
     '<audit_aborted>',
     `<audit_id>${params.auditId}</audit_id>`,

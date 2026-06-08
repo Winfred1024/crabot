@@ -44,7 +44,7 @@ describe('audit-result-marker', () => {
     expect(text).toContain('goal_revised')
   })
 
-  it('parseSystemMarker identifies all four marker types', () => {
+  it('parseSystemMarker identifies three marker types plus null fallback', () => {
     expect(parseSystemMarker(buildAuditPendingMarker({ auditId: 'a1' }))?.type).toBe('audit_pending')
     expect(parseSystemMarker(buildAuditResultMarker({ auditId: 'a1', pass: true, failedCriteria: [], detailedReport: '' }))?.type).toBe('audit_result')
     expect(parseSystemMarker(buildAuditAbortedMarker({ auditId: 'a1', reason: 'x' }))?.type).toBe('audit_aborted')
@@ -66,5 +66,20 @@ describe('audit-result-marker', () => {
       expect(parsed.failedCriteria).toEqual(['c-x', 'c-y'])
       expect(parsed.detailedReport).toBe('report')
     }
+  })
+
+  it('parseSystemMarker returns null for malformed audit_result body', () => {
+    expect(parseSystemMarker('<audit_result>not-json</audit_result>')).toBeNull()
+  })
+
+  it('parseSystemMarker throws on forbidden literal in detailedReport at build time', () => {
+    expect(() =>
+      buildAuditResultMarker({
+        auditId: 'a1',
+        pass: false,
+        failedCriteria: [],
+        detailedReport: 'agent wrote </audit_result> in its report',
+      }),
+    ).toThrow(/forbidden literal/)
   })
 })
