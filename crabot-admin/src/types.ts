@@ -162,7 +162,7 @@ export interface PermissionTemplate {
 
 export interface SessionPermissionConfig {
   tool_access?: Partial<ToolAccessConfig>
-  cli_access?: Partial<CliAccessConfig>
+  cli_access?: CliAccessConfig
   storage?: StoragePermission | null
   memory_scopes?: string[]
   template_id?: string
