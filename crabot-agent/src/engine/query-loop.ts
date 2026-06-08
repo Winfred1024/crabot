@@ -471,8 +471,10 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
           }
         }
         // endTurnGate 返回 null（audit pass / 无 gate）→ flush 缓冲后正常退出。
-        // spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 8
-        if (options.flushOutboundBuffer) {
+        // 防御性 guard：理论上 endTurnGate null 意味着无 audit 或 audit 已 pass；
+        // 万一 gate 实现 bug 返回 null 但 audit 仍在跑，此 guard 防止 pre-audit 内容 leak。
+        // spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 8 + §4.1
+        if (options.flushOutboundBuffer && options.hasActiveAudit?.() !== true) {
           await options.flushOutboundBuffer()
         }
         return buildResult('completed', finalText, totalTurns, contextManager, messages, exitToolCall, toolCallCount, wroteMemoryOrScene)
@@ -512,8 +514,10 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
         }
       }
       // endTurnGate 返回 null（audit pass / 无 gate）→ flush 缓冲后正常退出。
-      // spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 8
-      if (options.flushOutboundBuffer) {
+      // 防御性 guard：理论上 endTurnGate null 意味着无 audit 或 audit 已 pass；
+      // 万一 gate 实现 bug 返回 null 但 audit 仍在跑，此 guard 防止 pre-audit 内容 leak。
+      // spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 8 + §4.1
+      if (options.flushOutboundBuffer && options.hasActiveAudit?.() !== true) {
         await options.flushOutboundBuffer()
       }
       return buildResult('completed', finalText, totalTurns, contextManager, messages, exitToolCall, toolCallCount, wroteMemoryOrScene)
@@ -802,8 +806,13 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
     // 之前缓冲的 send_message(intent='info') 是"过程信息"不是"最终交付"，
     // 应当在下一轮 LLM 调用前真正发给用户，否则会被卡到 audit pass 才能见。
     // 非 goal mode / 空 buffer 场景，flushOutboundBuffer 内部为 no-op。
-    // spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 8
-    if (options.flushOutboundBuffer) {
+    //
+    // 等审态下不能 flush——pre-audit 的 final 候选必须等 audit verdict
+    // 才决定 flush(pass) / drop(fail) / abort(改 goal)。
+    // 等审态新发的 send_message(info) 已经被 Task 6 的 immediate-send 路径绕开 buffer，
+    // 所以此处只可能是 pre-audit 内容，绝不能在此 flush（spec §4.1 "未审消息不到达用户"）。
+    // spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 8 + §4.1
+    if (options.flushOutboundBuffer && options.hasActiveAudit?.() !== true) {
       await options.flushOutboundBuffer()
     }
 

@@ -384,8 +384,14 @@ describe('E2E: goal-audit async flow', () => {
       },
     })
 
+    // 跟踪 abortAudit 被调时 buffer 是否真有内容——验证 abort drop 不是空操作。
+    let bufferLenAtAbort = -1
+    const trackingAbortAudit = wiring.makeAbortAudit(queue)
     const setGoalTool = makeSetTaskGoalTool({
-      abortAudit: wiring.makeAbortAudit(queue),
+      abortAudit: (reason: string) => {
+        bufferLenAtAbort = wiring.outboundBuffer.length
+        trackingAbortAudit(reason)
+      },
     })
 
     // worker flow:
@@ -423,22 +429,104 @@ describe('E2E: goal-audit async flow', () => {
     expect(result.outcome).toBe('completed')
     // 核心断言 1: audit subagent abortController 被调用（set_task_goal 触发 abortAudit）
     expect(auditAbortSpy).toHaveBeenCalledTimes(1)
-    // 核心断言 2: outboundBuffer 在 abortAudit 之后为空（被 wait_for_signal 续 turn flush
-    //   或 abortAudit drop 任一路径清空——两条路径 idempotent，最终结果一致）
+    // 核心断言 2: outboundBuffer 在 abortAudit 之后为空（abortAudit 内的 drop 实际清掉了内容）
     expect(wiring.outboundBuffer.length).toBe(0)
-    // 核心断言 3: audit_aborted marker 走 drain → 注入"已被取消"提示
+    // 核心断言 3: pre-audit buffered 消息绝不到 channel——
+    // 等审态下 tool_use 续 turn 不得 flush（spec §4.1 "未审消息不到达用户"）
+    expect(wiring.channelSendSpy).not.toHaveBeenCalled()
+    // 核心断言 4: abortAudit 触发时 buffer 非空——证明 abort drop 不是空操作，
+    // 真的丢弃了 pre-audit 候选交付（"我搞定了原目标"）
+    expect(bufferLenAtAbort).toBeGreaterThan(0)
+    // 核心断言 5: audit_aborted marker 走 drain → 注入"已被取消"提示
     const abortNotice = injections.find((e) =>
       e.text.includes(auditId) && e.text.includes('已被取消'),
     )
     expect(abortNotice).toBeDefined()
     expect(abortNotice?.text).toContain('set_task_goal 改了目标')
-    // 核心断言 4: activeAuditId 已被清掉
+    // 核心断言 6: activeAuditId 已被清掉
     expect(wiring.getActiveAuditId()).toBeUndefined()
-    // 注：当前 query-loop Task 8 实现下，wait_for_signal 续 turn 也会触发 line 806 的 flush——
-    // 这意味着 supplement 到达前 buffer 已被作为"进度信息"发出。abortAudit 后再 drop 也已无内容可丢。
-    // 这与 spec §4.7 的"abort 时丢弃缓冲"语义形式上一致（最终 buffer 空），但实际语义不同——
-    // 这是 Task 8 与 §4.7 之间已知的边界 case，由 implementation-as-of-2026-06-08 决定，
-    // 不在本 task 整改范围。
+  })
+
+  // -------------------------------------------------------------------------
+  // Case E: 等审态 + tool_use 续 turn 不 flush buffer
+  // -------------------------------------------------------------------------
+  it('Case E: hasActiveAudit=true 时 tool_use 续 turn 不 flush + end_turn 3 次后 abort', async () => {
+    // 这个 case 直接验证 query-loop line 806 / 516 的等审态 guard:
+    // - hasActiveAudit 永远为 true（audit 不完成）
+    // - outboundBuffer 含 1 个 pre-audit final 候选
+    // - turn 1: Bash tool_use → 续 turn 时 line 806 guard 应拦截 flush
+    // - turn 2-4: end_turn → audit_pending_intercept 3 次注入
+    // - turn 5: end_turn → 配额耗尽 → abortActiveAudit('end_turn_retries_exhausted')
+    // 关键断言：channelSendSpy 全程 NOT called（pre-audit 内容绝不到 channel）
+    const wiring = makeWiring()
+    const queue = new HumanMessageQueue()
+    const injections: Array<{ type: string; text: string }> = []
+    const abortReasons: string[] = []
+
+    wiring.outboundBuffer.push(makeBufferEntry('pre-audit 候选交付'))
+
+    // hasActiveAudit 永远 true——模拟 audit subagent 卡住不完成
+    const alwaysActiveAudit = (): boolean => true
+
+    // abortActiveAudit 只记录调用，不真改 state（让我们能验证它被调用且 buffer 仍非空——
+    // 这样可以单独验证 guard 行为，不被 abort 副作用混淆）
+    const abortActiveAuditSpy = vi.fn((reason: string) => {
+      abortReasons.push(reason)
+    })
+
+    // 简单的 Bash 工具——立即返回，不设 barrier
+    const bashTool: ToolDefinition = {
+      name: 'Bash',
+      description: 'run shell command',
+      inputSchema: { type: 'object' as const, properties: {} },
+      isReadOnly: true,
+      call: async () => ({ output: 'ok', isError: false }),
+    }
+
+    // adapter:
+    //  turn 1: Bash tool_use → 续 turn 前 line 806 flush 被 guard 拦截
+    //  turn 2-4: end_turn → audit_pending_intercept 3 次
+    //  turn 5: end_turn → 配额耗尽 → abort 调用 + fall through 到 line 520 flush
+    //          line 520 flush 也被 guard 拦截（hasActiveAudit 仍为 true）→ 退出 completed
+    const adapter = makeAdapter([
+      { kind: 'tool', toolId: 't1', toolName: 'Bash' },
+      { kind: 'end_turn', text: '完毕' },
+      { kind: 'end_turn', text: '完毕' },
+      { kind: 'end_turn', text: '完毕' },
+      { kind: 'end_turn', text: '完毕' },
+    ])
+
+    const result = await runEngine({
+      prompt: 'go',
+      adapter,
+      options: {
+        humanMessageQueue: queue,
+        tools: [bashTool],
+        systemPrompt: '',
+        model: 'test-model',
+        // 不传 endTurnGate——确保 end_turn 路径直接走到 flush
+        flushOutboundBuffer: wiring.flushOutboundBuffer,
+        dropOutboundBuffer: wiring.dropOutboundBuffer,
+        clearActiveAuditId: wiring.clearActiveAuditId,
+        hasActiveAudit: alwaysActiveAudit,
+        abortActiveAudit: abortActiveAuditSpy,
+        onSystemInjection: (e) =>
+          injections.push({ type: e.type, text: e.text }),
+      },
+    })
+
+    expect(result.outcome).toBe('completed')
+    // 核心断言 1: channel 全程未被调用——pre-audit 候选交付绝不到达用户
+    expect(wiring.channelSendSpy).not.toHaveBeenCalled()
+    // 核心断言 2: outboundBuffer 仍含 pre-audit 内容（guard 拦截两个 flush 点）
+    expect(wiring.outboundBuffer.length).toBe(1)
+    expect(wiring.outboundBuffer[0].content).toBe('pre-audit 候选交付')
+    // 核心断言 3: audit_pending_intercept 注入了 3 次（MAX_AUDIT_PENDING_END_TURN_RETRIES）
+    const intercepts = injections.filter((e) => e.type === 'audit_pending_intercept')
+    expect(intercepts.length).toBe(3)
+    // 核心断言 4: 配额耗尽时 abortActiveAudit 被调用 with 正确 reason
+    expect(abortActiveAuditSpy).toHaveBeenCalledTimes(1)
+    expect(abortReasons[0]).toBe('end_turn_retries_exhausted')
   })
 
   // -------------------------------------------------------------------------
