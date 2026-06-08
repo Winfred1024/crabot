@@ -123,8 +123,8 @@ sudo apt-get autoremove -y
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -
 sudo apt-get install -y nodejs
 
-# 1c. 装 uv
-curl -LsSf https://astral.sh/uv/install.sh | sudo sh -s -- --install-dir /usr/local
+# 1c. 装 uv（UV_INSTALL_DIR 必须经 `sudo env` 传递，sudo 默认清环境变量）
+curl -LsSf https://astral.sh/uv/install.sh | sudo env UV_INSTALL_DIR=/usr/local sh -s -- --no-modify-path
 
 # 2. 装 Crabot（system mode）
 curl -fsSL https://raw.githubusercontent.com/smilefufu/crabot/main/install.sh | sudo bash -s -- --system
