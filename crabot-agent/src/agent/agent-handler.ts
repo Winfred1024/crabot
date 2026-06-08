@@ -108,6 +108,7 @@ import {
   type GoalStatus,
 } from './goal-audit.js'
 import { createSubmitAuditResultTool } from './goal-auditor-tools.js'
+import { createWaitForSignalTool, type WaitForSignalDeps } from '../mcp/wait-for-signal.js'
 
 import { reflectStructuredOutcome } from '../orchestration/structured-outcome-reflector.js'
 
@@ -134,6 +135,50 @@ export function extractChildTraceIdFromOutput(output: string | undefined): strin
     // 非 JSON output（如普通文本工具返回），忽略
   }
   return undefined
+}
+
+/**
+ * 从 delegate_task 异步路径的 JSON output 提取 `agent_id`。
+ * 异步派出的 subagent 工具立即返回 `{agent_id, status:'launched', output_file: null}`，
+ * caller 用 agent_id 追踪在跑的 async subagent（喂给 wait_for_signal 的 hasActiveAsyncSubagent 判断）。
+ * 非 JSON / 非 launched 状态 / 无字段 → 返回 undefined。
+ * @internal exported for testing
+ */
+export function extractLaunchedSubagentId(output: string | undefined): string | undefined {
+  if (!output) return undefined
+  try {
+    const parsed = JSON.parse(output) as { agent_id?: unknown; status?: unknown }
+    if (
+      parsed.status === 'launched'
+      && typeof parsed.agent_id === 'string'
+      && parsed.agent_id.length > 0
+    ) {
+      return parsed.agent_id
+    }
+  } catch {
+    // 非 JSON / 非 async-launched 结果（sync 路径直接返回文字），忽略
+  }
+  return undefined
+}
+
+/**
+ * 按 goal mode / async 注入条件决定是否构造 wait_for_signal 工具。
+ * 见 `crabot-docs/superpowers/specs/2026-06-07-goal-audit-async-buffered-info-design.md` Task 3。
+ *
+ * 注入条件：`goalModeEnabled || asyncEnabled`
+ *   - goal mode 下 audit 异步跑，worker 无事可干时要能挂起；
+ *   - async path 下 subagent 异步跑，worker 等通知也要能挂起。
+ *
+ * 两者都关时不注入，避免普通对话流误调。
+ *
+ * @internal exported for testing
+ */
+export function maybeCreateWaitForSignalTool(
+  opts: { readonly goalModeEnabled: boolean; readonly asyncEnabled: boolean },
+  deps: WaitForSignalDeps,
+): ReturnType<typeof createWaitForSignalTool> | undefined {
+  if (!opts.goalModeEnabled && !opts.asyncEnabled) return undefined
+  return createWaitForSignalTool(deps)
 }
 
 type ProgressReportMode = 'silent' | 'text_forward' | 'digest'
@@ -862,6 +907,13 @@ export class AgentHandler {
       let auditBaseTools: ReadonlyArray<ToolDefinition> = []
       let auditPermissionCfg: ToolPermissionConfig | undefined
 
+      // wait_for_signal 用：跟踪本任务派出的 async subagent entity_ids。
+      // delegate_task 异步路径返回 `{agent_id, status:'launched'}`，我们在 wrapper 里
+      // 抽出 agent_id 加入 Set；判断"是否还有 active subagent"时跟全局 agentAbortControllers
+      // 取交集——后者在 subagent 退出（completed/failed/killed）时 finally 清理，是可信的 active 标志。
+      // spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 3
+      const activeAsyncSubagentIds = new Set<string>()
+
       // 工具列表构造改为 callback 形式：每轮 LLM 调用前由 query-loop 重新 resolve，
       // 让 admin push config（updateSkills / updateSystemPrompt）能在同一 task 内热生效。
       // 注意：lambda 内捕获 taskState / context / humanQueue 等闭包变量，
@@ -976,25 +1028,36 @@ export class AgentHandler {
         auditPermissionCfg = baseToolsPermissionConfig
 
         if (subAgentsSnapshot.length > 0) {
+          const baseRunSubAgent = this.makeRunSubAgent({
+            parentTools: baseTools,
+            parentTaskId: task.task_id,
+            callerLabel: 'main worker',
+            humanQueue,
+            permissionConfig: baseToolsPermissionConfig,
+            traceConfig: subAgentTraceConfig,
+            asyncEnabled: isMasterPrivate,
+            asyncCtx: {
+              owner: {
+                friend_id: context.sender_friend?.id ?? `__system_${context.task_origin?.session_id ?? 'unknown'}`,
+                session_id: context.task_origin?.session_id,
+                channel_id: context.task_origin?.channel_id,
+              },
+              adapter,
+            },
+          })
+          // wrap：异步路径返回 `{agent_id, status:'launched'}` → 抓出来加入 activeAsyncSubagentIds，
+          // 供 wait_for_signal.hasActiveAsyncSubagent 判断。同步路径不带 launched 状态，不影响。
+          const trackingRunSubAgent: typeof baseRunSubAgent = async (subagent, input, ctx) => {
+            const result = await baseRunSubAgent(subagent, input, ctx)
+            if (!result.isError && typeof result.output === 'string') {
+              const agentId = extractLaunchedSubagentId(result.output)
+              if (agentId) activeAsyncSubagentIds.add(agentId)
+            }
+            return result
+          }
           tools.push(createDelegateTaskTool({
             subAgents: subAgentsSnapshot,
-            runSubAgent: this.makeRunSubAgent({
-              parentTools: baseTools,
-              parentTaskId: task.task_id,
-              callerLabel: 'main worker',
-              humanQueue,
-              permissionConfig: baseToolsPermissionConfig,
-              traceConfig: subAgentTraceConfig,
-              asyncEnabled: isMasterPrivate,
-              asyncCtx: {
-                owner: {
-                  friend_id: context.sender_friend?.id ?? `__system_${context.task_origin?.session_id ?? 'unknown'}`,
-                  session_id: context.task_origin?.session_id,
-                  channel_id: context.task_origin?.channel_id,
-                },
-                adapter,
-              },
-            }),
+            runSubAgent: trackingRunSubAgent,
           }))
         }
 
@@ -1046,6 +1109,28 @@ export class AgentHandler {
             killBgEntity: (entity_id) => this.killBgEntity(entity_id),
           }))
         }
+
+        // 3k2. wait_for_signal — 通用挂起原语
+        // 注入条件：goalModeEnabled（audit 异步跑时需要挂起等结果）
+        // 或 asyncEnabled（master 私聊 + async subagent 派出后等通知）。
+        // hasActiveAudit：Task 5 之前先用 () => false 占位，Task 5 加 taskState.activeAuditId 后回来接。
+        // hasActiveAsyncSubagent：跟全局 agentAbortControllers 取交集——bg-agent.ts 在 finally 清理 controller，
+        // 所以 "id 还在 Map 里" 等价于 "subagent 还没退出"。
+        // spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 3
+        const waitForSignalTool = maybeCreateWaitForSignalTool(
+          { goalModeEnabled, asyncEnabled: isMasterPrivate },
+          {
+            humanQueue,
+            hasActiveAudit: () => false,
+            hasActiveAsyncSubagent: () => {
+              for (const id of activeAsyncSubagentIds) {
+                if (this.agentAbortControllers.has(id)) return true
+              }
+              return false
+            },
+          },
+        )
+        if (waitForSignalTool) tools.push(waitForSignalTool)
 
         // 3l. Extra tools from opts (e.g., exit tools for trigger flow)
         if (opts?.extraTools) {
