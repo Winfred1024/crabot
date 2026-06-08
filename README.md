@@ -150,9 +150,9 @@ sudo usermod -a -G crabot bob
 sudo vi /etc/crabot/defaults/provider.yaml
 sudo bash -c 'echo $(($(cat /etc/crabot/cluster.version)+1)) > /etc/crabot/cluster.version'
 
-# 5. 后续升级
+# 5. 后续升级（crabot upgrade 检测 .git 自动选模式，两种模式命令一致）
 #    release 模式：sudo crabot upgrade（下载新 release 包并解压到 /opt/crabot）
-#    源码模式：cd /opt/crabot && sudo git pull + 增量 rebuild（见下方）
+#    源码模式：cd /opt/crabot && sudo git pull && sudo crabot upgrade
 ```
 
 ### 源码模式管理员视角（适合需要打小补丁、不想等 release 的场景）
@@ -170,17 +170,12 @@ sudo ./install.sh --system --from-source
 # 3. 同 release 模式：加员工到 crabot group、铺默认 LLM Provider、递增 cluster.version
 #    （见上方第 3、4 步，命令一字不差）
 
-# 4. 后续升级（这是源码模式相对 release 的核心收益：小补丁 1~2 分钟搞定）
+# 4. 后续升级（源码模式相对 release 的核心收益：小补丁两条命令搞定）
 cd /opt/crabot
 sudo git pull
-
-# 全量 rebuild（保险起见；只动了某模块也可只跑那一个目录的 build）
-sudo corepack pnpm install
-sudo corepack pnpm -r run build
-sudo corepack pnpm run build:cli                                      # 改了 cli.mjs / scripts/ 才需要
-(cd crabot-admin/web && sudo corepack pnpm install && sudo corepack pnpm run build)   # 改了前端才需要
-(cd crabot-memory && sudo uv sync)                                    # 改了 Python 依赖才需要
-
+sudo crabot upgrade
+# crabot upgrade 检测到 .git 自动走源码分支：依次跑 root install / shared /
+# 各模块 install+build / 前端 / build:cli / scripts/lib / uv sync / data migration
 # 员工无感升级——下次 `crabot start` 直接用新代码（cli.mjs 是软链，自动跟最新）
 ```
 
@@ -189,7 +184,8 @@ sudo corepack pnpm run build:cli                                      # 改了 c
 - **clone 位置**：必须放员工 uid 可读处。`/opt/` 默认 0755 OK；`/root/`（0700）不行
 - **代码归属 root**：员工进程能读不能写，符合预期。不要 `sudo chown crabot:` 之类乱改
 - **管理员不要在源码目录跑 `crabot start`**：员工实例 data 走 `~/.crabot/data-<OFFSET>/`，跟源码无关；但 root `cd /opt/crabot && crabot start` 测试会污染 `/root/.crabot/`
-- **`crabot upgrade` 在源码模式下不适用**：它会去 GitHub releases 下载 tar 包覆盖。源码模式只用 `git pull + rebuild`
+- **`crabot upgrade` 前要先 `git pull`**：它不会自动 fetch，只负责检测到 `.git` 后跑完整 rebuild + migration
+- **升级前最好让员工先 `crabot stop`**：upgrade 只检查 root 自己 DATA_DIR 的 mm pid，不会拦员工跑着的实例；员工进程读旧文件后 require cache 还在，新代码要等下次重启才生效
 - **代码改动不需要递增 `cluster.version`**：那个版本号只控制员工是否被提示 sync `/etc/crabot/defaults/` 下的默认配置；二进制升级跟它无关
 
 ### 员工视角
