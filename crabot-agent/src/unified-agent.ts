@@ -389,6 +389,10 @@ export class UnifiedAgent extends ModuleBase {
         getMemoryPort: () => this.getMemoryPort(),
         getAdminPort: () => this.getAdminPort(),
         getPermissionConfig: (tools, resolvedPerms) => this.getToolPermissionConfig(tools, resolvedPerms),
+        // 透传沙盒路径映射给 outbound flush 路径，让 buffered info 携带 file_path 时
+        // 能跟 immediate-send 一样做沙盒→主机路径转换，不再 silent drop。
+        // spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.5
+        sandboxPathMappingsRef: this.sandboxPathMappingsRef,
       },
       builtinToolConfig,
       mcpConnector: this.mcpConnector,

@@ -23,6 +23,7 @@ import type { BgEntityOwner, BgEntityRecord, BgEntityStatus, BgEntityType } from
 import type { BashBgContext } from '../engine/tools/index.js'
 import type { BgToolDeps } from '../engine/tools/index.js'
 import type { TaskContext } from '../mcp/crab-messaging.js'
+import { createOutboundFlush, type PathMapping, type OutboundDispatchDeps } from './outbound-flush.js'
 import type { BgEntityTraceContext } from '../engine/bg-entities/trace.js'
 import type {
   ToolDefinition,
@@ -265,6 +266,13 @@ export interface AgentHandlerDeps {
   ) => ToolPermissionConfig
   /** 反思补轮注入接口（测试用）。生产路径走默认 reflectStructuredOutcome。 */
   reflectFn?: typeof reflectStructuredOutcome
+  /**
+   * 沙盒路径 ↔ 主机路径映射引用。由 unified-agent 在 executeTask 时设置 current，
+   * 让 outbound flush 路径能跟 send_message handler 一样把 file_path 转主机路径再发。
+   * 不传时 flush 路径假设运行在本地 unified agent，按 file_path 是否绝对路径降级处理。
+   * spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.5
+   */
+  sandboxPathMappingsRef?: { current: PathMapping[] }
 }
 
 import type { LLMFormat } from '../engine/llm-adapter'
@@ -1330,90 +1338,27 @@ export class AgentHandler {
           // Goal mode 缓冲消息 flush 钩子：engine 在 stop_reason='tool_use' 续 turn 之前
           // 和 endTurnGate 返回 null 后调用。把 taskState.outboundBuffer 里截留的 info
           // 消息真正发到 channel 并清空 buffer。失败 entry 不阻塞后续 entry（continue on error）。
-          // 当前只处理 text / media_url 两种 content shape；file_path 会被跳过并打 warn——
-          // 实际 buffered info 99% 是文本回复，file_path 暂未支持是已知约束。
-          // mentions 仅支持 platform_user_id 直传；friend_id-only 的 mention 在此降级丢弃。
-          // spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 8
-          flushOutboundBuffer: async () => {
-            if (taskState.outboundBuffer.length === 0) return
-            if (!this.deps?.rpcClient || !this.deps?.resolveChannelPort) return
-            const rpcClient = this.deps.rpcClient
-            const resolveChannelPort = this.deps.resolveChannelPort
-            const moduleId = this.deps.moduleId
-            // splice 一次性取出所有缓冲项；失败的不放回，buffer 永远不被反复 flush。
-            const entries = taskState.outboundBuffer.splice(0)
-            for (const entry of entries) {
-              try {
-                const channelPort = await resolveChannelPort(entry.channel_id)
-                if (!channelPort) {
-                  console.warn(
-                    `[outbound flush] channel ${entry.channel_id} 不可用，丢弃 entry`,
-                  )
-                  continue
-                }
-                type MessageContent = {
-                  type: string
-                  text?: string
-                  media_url?: string
-                  file_path?: string
-                  filename?: string
-                }
-                let messageContent: MessageContent
-                if (entry.media_url) {
-                  messageContent = {
-                    type: entry.content_type ?? 'image',
-                    media_url: entry.media_url,
-                    ...(entry.filename !== undefined ? { filename: entry.filename } : {}),
-                  }
-                } else if (entry.file_path) {
-                  // file_path 暂不支持——缺 sandboxPathMappingsRef 通路（仅 mcpConfigFactory 注入）。
-                  console.warn(
-                    `[outbound flush] file_path 暂未支持，丢弃 entry channel=${entry.channel_id} session=${entry.session_id}`,
-                  )
-                  continue
-                } else {
-                  messageContent = { type: 'text', text: entry.content }
-                }
-                // mentions：仅取 platform_user_id 直传形态。friend_id-only 形态需要 admin RPC
-                // 反查 platform_user_id，flush 路径降级丢弃。
-                const platformMentions = entry.mentions
-                  ?.filter(m => !!m.platform_user_id)
-                  .map(m => ({
-                    platform_user_id: m.platform_user_id as string,
-                    ...(m.at_name !== undefined ? { at_name: m.at_name } : {}),
-                  }))
-                const hasFeatures =
-                  (platformMentions && platformMentions.length > 0)
-                  || entry.quote_message_id !== undefined
-                await rpcClient.call<
-                  {
-                    session_id: string
-                    content: MessageContent
-                    features?: {
-                      mentions?: Array<{ platform_user_id: string; at_name?: string }>
-                      quote_message_id?: string
-                    }
-                  },
-                  { platform_message_id: string; sent_at: string }
-                >(channelPort, 'send_message', {
-                  session_id: entry.session_id,
-                  content: messageContent,
-                  ...(hasFeatures ? {
-                    features: {
-                      ...(platformMentions && platformMentions.length > 0 ? { mentions: platformMentions } : {}),
-                      ...(entry.quote_message_id ? { quote_message_id: entry.quote_message_id } : {}),
-                    },
-                  } : {}),
-                }, moduleId)
-              } catch (err) {
-                console.warn(
-                  '[outbound flush] entry failed:',
-                  err instanceof Error ? err.message : String(err),
-                )
-                // 不抛——继续 flush 后续 entry。失败的消息丢失是已知取舍。
-              }
+          //
+          // 通过 createOutboundFlush + dispatchOutboundMessage 跟 send_message handler immediate-send
+          // 路径共用同一份 dispatch 逻辑——支持 file_path + sandbox path mapping、friend_id-only mention
+          // 反查 admin get_friend、features 组装，行为完全等价。
+          //
+          // spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 8 + §4.5
+          flushOutboundBuffer: (() => {
+            if (!this.deps?.rpcClient || !this.deps?.resolveChannelPort) return undefined
+            const adminPortGetter = this.deps.getAdminPort
+            if (!adminPortGetter) return undefined
+            const dispatchDeps: OutboundDispatchDeps = {
+              rpcClient: this.deps.rpcClient,
+              moduleId: this.deps.moduleId,
+              resolveChannelPort: this.deps.resolveChannelPort,
+              getAdminPort: adminPortGetter,
+              ...(this.deps.sandboxPathMappingsRef
+                ? { sandboxPathMappingsRef: this.deps.sandboxPathMappingsRef }
+                : {}),
             }
-          },
+            return createOutboundFlush(taskState.outboundBuffer, dispatchDeps)
+          })(),
           endTurnGate: goalModeEnabled
             ? async () => {
                 if (!goalSetCache) return null

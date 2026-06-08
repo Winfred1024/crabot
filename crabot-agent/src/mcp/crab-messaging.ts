@@ -11,9 +11,17 @@ import { createMcpServer, type McpServer } from './mcp-helpers.js'
 import { z } from 'zod/v4'
 import { SYSTEM_CHANNEL_ID, SYSTEM_SESSION_ID, type RpcClient } from 'crabot-shared'
 import type { Friend } from '../types.js'
-import * as path from 'path'
 import { annotatePagination } from './pagination-annotator.js'
 import { translateChannelError } from './error-translator.js'
+import {
+  dispatchOutboundMessage,
+  type OutboundBufferEntry,
+  type OutboundDispatchDeps,
+  type PathMapping,
+} from '../agent/outbound-flush.js'
+
+// 历史兼容重导出：外部仍按 './mcp/crab-messaging' 导入 PathMapping / OutboundBufferEntry
+export type { OutboundBufferEntry, PathMapping }
 // ============================================================================
 // 依赖注入接口
 // ============================================================================
@@ -50,25 +58,9 @@ export interface TaskContext {
   hasGoal: () => boolean
   /** Audit 等待态下被截留的 send_message intent='info' 缓冲区（同 WorkerTaskState.outboundBuffer 引用）。
    *  goal mode + 工作态时 handler 把 info 消息推入此处不真发；engine 在 audit pass / tool_use 等时机 flush。
-   *  shape 与 WorkerTaskState.outboundBuffer 完全对齐（readonly fields）。
+   *  shape 与 WorkerTaskState.outboundBuffer 完全对齐（同一 OutboundBufferEntry 类型）。
    *  spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 6 */
-  outboundBuffer?: Array<{
-    readonly channel_id: string
-    readonly session_id: string
-    readonly content: string
-    readonly intent: 'info'
-    readonly content_type?: 'text' | 'image' | 'file'
-    readonly media_url?: string
-    readonly file_path?: string
-    readonly filename?: string
-    readonly mentions?: ReadonlyArray<{
-      readonly friend_id?: string
-      readonly platform_user_id?: string
-      readonly at_name?: string
-    }>
-    readonly quote_message_id?: string
-    readonly sent_at_attempt_ms: number
-  }>
+  outboundBuffer?: Array<OutboundBufferEntry>
   /** 当前 task 是否处于"等审态"（activeAuditId 非空）。同步 getter，工具内每次调用现读。
    *  工作态（false）= 缓冲；等审态（true）= 立即 flush 给用户（过程响应）。
    *  spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 6 */
@@ -76,42 +68,8 @@ export interface TaskContext {
 }
 
 // ============================================================================
-// 路径映射（Worker 执行时动态设置）
+// 路径映射类型（实现已抽到 ../agent/outbound-flush.ts 与 flush 路径共享，本文件仅重导出）
 // ============================================================================
-
-export interface PathMapping {
-  sandbox_path: string
-  host_path: string
-  read_only: boolean
-}
-
-// ============================================================================
-// 路径转换
-// ============================================================================
-
-/**
- * 安全的沙盒路径→主机路径转换
- * 对齐 protocol-crab-messaging.md：normalize 防止路径穿越，替换后二次验证
- */
-function mapSandboxPathToHost(sandboxPath: string, mappings: PathMapping[]): string {
-  const normalizedPath = path.normalize(sandboxPath)
-
-  for (const mapping of mappings) {
-    const normalizedSandbox = path.normalize(mapping.sandbox_path)
-    if (normalizedPath.startsWith(normalizedSandbox)) {
-      const relativePart = normalizedPath.slice(normalizedSandbox.length)
-      const hostPath = path.join(mapping.host_path, relativePart)
-      const normalizedHost = path.normalize(hostPath)
-      // 二次验证：确保结果路径仍在映射的 host_path 目录内
-      if (!normalizedHost.startsWith(path.normalize(mapping.host_path))) {
-        throw new Error('Resolved path escapes allowed directory')
-      }
-      return normalizedHost
-    }
-  }
-
-  throw new Error(`Path ${sandboxPath} is not accessible from sandbox`)
-}
 
 // ============================================================================
 // 重试逻辑
@@ -714,113 +672,32 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
         }
 
         // === Step 1: 先 send（高失败率操作先做；失败 → state 完全不变）===
+        // 路径选择 + mention 解析 + channel sendMessage 共用 dispatchOutboundMessage，保证 immediate-send
+        // 与 flush 路径（createOutboundFlush）功能等价（同样的 path mapping + friend_id resolve）。
+        const dispatchDeps: OutboundDispatchDeps = {
+          rpcClient,
+          moduleId,
+          resolveChannelPort,
+          getAdminPort,
+          ...(sandboxPathMappingsRef ? { sandboxPathMappingsRef } : {}),
+        }
+        const dispatchEntry: OutboundBufferEntry = {
+          channel_id,
+          session_id,
+          content,
+          intent: 'info', // 占位：仅 buffer entry 类型语义需要，dispatch 内不消费此字段
+          ...(content_type !== undefined ? { content_type } : {}),
+          ...(media_url !== undefined ? { media_url } : {}),
+          ...(file_path !== undefined ? { file_path } : {}),
+          ...(filename !== undefined ? { filename } : {}),
+          ...(mentions !== undefined ? { mentions } : {}),
+          ...(quote_message_id !== undefined ? { quote_message_id } : {}),
+          sent_at_attempt_ms: Date.now(),
+        }
         let sendResult: { platform_message_id: string; sent_at: string }
         try {
-          const channelPort = await resolveChannelPort(channel_id)
-          if (!channelPort) {
-            return wrapText({ error: `Channel ${channel_id} 不可用` })
-          }
-
-          // 按优先级构造 MessageContent
-          type MessageContent = {
-            type: string
-            text?: string
-            media_url?: string
-            file_path?: string
-            filename?: string
-          }
-          let messageContent: MessageContent
-
-          if (media_url) {
-            messageContent = {
-              type: content_type ?? 'image',
-              media_url: media_url,
-              filename: filename,
-            }
-          } else if (file_path) {
-            const mappings = sandboxPathMappingsRef?.current ?? []
-            let hostPath: string
-
-            if (mappings.length > 0) {
-              // 有路径映射（远程 Worker）：沙盒路径 → 主机路径
-              try {
-                hostPath = mapSandboxPathToHost(file_path, mappings)
-              } catch (pathErr) {
-                return wrapText({ error: pathErr instanceof Error ? pathErr.message : String(pathErr) })
-              }
-            } else if (path.isAbsolute(file_path)) {
-              // 无路径映射（本地 unified agent）：绝对路径直接使用
-              hostPath = file_path
-            } else {
-              return wrapText({ error: '相对路径需要路径映射配置，请使用绝对路径' })
-            }
-
-            messageContent = {
-              type: content_type ?? 'file',
-              file_path: hostPath,
-              filename: filename ?? path.basename(file_path),
-            }
-          } else {
-            messageContent = {
-              type: 'text',
-              text: content,
-            }
-          }
-
-          // 转换 mentions → { platform_user_id, at_name }[]
-          // 两种路径：直传 platform_user_id（非熟人群成员）或通过 friend_id 查找
-          type PlatformMention = { platform_user_id: string; at_name?: string }
-          let platformMentions: PlatformMention[] | undefined
-          if (mentions && mentions.length > 0) {
-            const adminPort = await getAdminPort()
-            const resolved = await Promise.all(
-              mentions.map(async ({ friend_id, platform_user_id, at_name }) => {
-                if (platform_user_id) {
-                  return { platform_user_id, at_name }
-                }
-                if (!friend_id) return null
-                const fid: string = friend_id
-                try {
-                  const fResult = await rpcClient.call<
-                    { friend_id: string },
-                    { friend: Friend }
-                  >(adminPort, 'get_friend', { friend_id: fid }, moduleId)
-                  const identity = fResult.friend.channel_identities.find(
-                    ci => ci.channel_id === channel_id,
-                  )
-                  if (!identity) return null
-                  return { platform_user_id: identity.platform_user_id, at_name }
-                } catch {
-                  return null
-                }
-              }),
-            )
-            platformMentions = resolved.filter((m): m is NonNullable<typeof m> => m !== null)
-          }
-
-          // 带重试发送消息
-          sendResult = await withRetry(async () => {
-            return rpcClient.call<
-              {
-                session_id: string
-                content: MessageContent
-                features?: {
-                  mentions?: PlatformMention[]
-                  quote_message_id?: string
-                }
-              },
-              { platform_message_id: string; sent_at: string }
-            >(channelPort, 'send_message', {
-              session_id: session_id,
-              content: messageContent,
-              ...(platformMentions || quote_message_id ? {
-                features: {
-                  ...(platformMentions ? { mentions: platformMentions } : {}),
-                  ...(quote_message_id ? { quote_message_id: quote_message_id } : {}),
-                },
-              } : {}),
-            }, moduleId)
-          })
+          // 重试包一层；dispatch 内部已含 path mapping + mention resolve + features 组装
+          sendResult = await withRetry(() => dispatchOutboundMessage(dispatchEntry, dispatchDeps))
         } catch (err) {
           // send 失败 → state 完全不变（task 仍 executing，无 barrier）
           const msg = err instanceof Error ? err.message : String(err)

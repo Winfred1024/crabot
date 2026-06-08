@@ -771,25 +771,12 @@ export interface WorkerTaskState {
    * Audit 等待态下被截留的 send_message intent='info' 调用缓冲。
    * handler 在 audit 跑中把对外 info 消息推到这里，engine 在 audit pass / stop_reason='tool_use' /
    * endTurnGate 返回 null 时 splice 出来一次性 flush；audit fail / set_task_goal 改目标时清空丢弃。
+   *
+   * Entry shape 用 OutboundBufferEntry（与 TaskContext.outboundBuffer / 测试 mock 共享同一类型，
+   * 由 ./agent/outbound-flush 导出）。
    * spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 5
    */
-  readonly outboundBuffer: Array<{
-    readonly channel_id: string
-    readonly session_id: string
-    readonly content: string
-    readonly intent: 'info'
-    readonly content_type?: 'text' | 'image' | 'file'
-    readonly media_url?: string
-    readonly file_path?: string
-    readonly filename?: string
-    readonly mentions?: ReadonlyArray<{
-      readonly friend_id?: string
-      readonly platform_user_id?: string
-      readonly at_name?: string
-    }>
-    readonly quote_message_id?: string
-    readonly sent_at_attempt_ms: number
-  }>
+  readonly outboundBuffer: Array<import('./agent/outbound-flush.js').OutboundBufferEntry>
   /** Active audit subagent id；设置后表示 task 处于"等审态"。undefined = 工作态。 */
   activeAuditId?: string
   /**

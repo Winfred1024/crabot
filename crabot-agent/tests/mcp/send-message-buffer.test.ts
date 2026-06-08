@@ -13,6 +13,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { buildMessagingTools } from '../../src/mcp/crab-messaging.js'
 import { HumanMessageQueue } from '../../src/engine/human-message-queue.js'
+import type { OutboundBufferEntry } from '../../src/agent/outbound-flush.js'
 
 function findTool(tools: ReturnType<typeof buildMessagingTools>, name: string) {
   const t = tools.find((x) => x.name === name)
@@ -20,23 +21,8 @@ function findTool(tools: ReturnType<typeof buildMessagingTools>, name: string) {
   return t
 }
 
-type BufferEntry = {
-  readonly channel_id: string
-  readonly session_id: string
-  readonly content: string
-  readonly intent: 'info'
-  readonly content_type?: 'text' | 'image' | 'file'
-  readonly media_url?: string
-  readonly file_path?: string
-  readonly filename?: string
-  readonly mentions?: ReadonlyArray<{
-    readonly friend_id?: string
-    readonly platform_user_id?: string
-    readonly at_name?: string
-  }>
-  readonly quote_message_id?: string
-  readonly sent_at_attempt_ms: number
-}
+// 复用 src 真实类型，避免三处重复定义漂移（reviewer Task 5 minor #1）
+type BufferEntry = OutboundBufferEntry
 
 describe('send_message buffering (goal mode)', () => {
   it('non-goal-mode task: 立即发到 channel（不进 buffer）', async () => {
