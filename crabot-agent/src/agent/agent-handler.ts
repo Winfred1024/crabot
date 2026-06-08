@@ -807,6 +807,9 @@ export class AgentHandler {
         pendingHumanMessages: [],
         taskOrigin: context.task_origin,
         todoStore: new TodoStore(),
+        outboundBuffer: [],
+        activeAuditId: undefined,
+        activeAsyncSubagentIds: new Set<string>(),
       }
       this.activeTasks.set(task.task_id, taskState)
     }
@@ -909,16 +912,12 @@ export class AgentHandler {
 
       // wait_for_signal 用：跟踪本任务派出的 async subagent entity_ids。
       // delegate_task 异步路径返回 `{agent_id, status:'launched'}`，我们在 wrapper 里
-      // 抽出 agent_id 加入 Set；判断"是否还有 active subagent"时跟全局 agentAbortControllers
-      // 取交集——后者在 subagent 退出（completed/failed/killed）时 finally 清理，是可信的 active 标志。
-      // spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 3
-      //
-      // TODO(Task 5): 这个 Set 是 closure-scoped，每次 runWorkerLoop 调用都会 new 一个新的。
-      // 如果 task 进 waiting 状态后 resume（executeTask 重新调 runWorkerLoop），新 Set 是空的，
-      // hasActiveAsyncSubagent 会错报 false，wait_for_signal 在这种 case 会误拒 worker 的合理等待。
-      // 修法：Task 5 加 taskState.outboundBuffer 字段时，一并把 activeAsyncSubagentIds 移到 taskState
-      // 上以跨 loop iteration 持久。当前依赖 outer waiting loop（用 bgRegistry）兜底——不是 hard blocker。
-      const activeAsyncSubagentIds = new Set<string>()
+      // 抽出 agent_id 加入 taskState.activeAsyncSubagentIds；判断"是否还有 active subagent"时
+      // 跟全局 agentAbortControllers 取交集——后者在 subagent 退出（completed/failed/killed）时
+      // finally 清理，是可信的 active 标志。
+      // spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 3 / Task 5
+      // 注：Set 现挂在 taskState 上（Task 5 reviewer follow-up），runWorkerLoop 跨 iteration 持久——
+      // task 进 waiting 状态后 resume（executeTask 重新调 runWorkerLoop）时仍能复用同一 task 的 Set。
 
       // 工具列表构造改为 callback 形式：每轮 LLM 调用前由 query-loop 重新 resolve，
       // 让 admin push config（updateSkills / updateSystemPrompt）能在同一 task 内热生效。
@@ -1051,13 +1050,13 @@ export class AgentHandler {
               adapter,
             },
           })
-          // wrap：异步路径返回 `{agent_id, status:'launched'}` → 抓出来加入 activeAsyncSubagentIds，
+          // wrap：异步路径返回 `{agent_id, status:'launched'}` → 抓出来加入 taskState.activeAsyncSubagentIds，
           // 供 wait_for_signal.hasActiveAsyncSubagent 判断。同步路径不带 launched 状态，不影响。
           const trackingRunSubAgent: typeof baseRunSubAgent = async (subagent, input, ctx) => {
             const result = await baseRunSubAgent(subagent, input, ctx)
             if (!result.isError && typeof result.output === 'string') {
               const agentId = extractLaunchedSubagentId(result.output)
-              if (agentId) activeAsyncSubagentIds.add(agentId)
+              if (agentId) taskState.activeAsyncSubagentIds.add(agentId)
             }
             return result
           }
@@ -1119,17 +1118,17 @@ export class AgentHandler {
         // 3k2. wait_for_signal — 通用挂起原语
         // 注入条件：goalModeEnabled（audit 异步跑时需要挂起等结果）
         // 或 asyncEnabled（master 私聊 + async subagent 派出后等通知）。
-        // hasActiveAudit：Task 5 之前先用 () => false 占位，Task 5 加 taskState.activeAuditId 后回来接。
+        // hasActiveAudit：taskState.activeAuditId 非空表示 task 处于"等审态"。
         // hasActiveAsyncSubagent：跟全局 agentAbortControllers 取交集——bg-agent.ts 在 finally 清理 controller，
         // 所以 "id 还在 Map 里" 等价于 "subagent 还没退出"。
-        // spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 3
+        // spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 3 / Task 5
         const waitForSignalTool = maybeCreateWaitForSignalTool(
           { goalModeEnabled, asyncEnabled: isMasterPrivate },
           {
             humanQueue,
-            hasActiveAudit: () => false,
+            hasActiveAudit: () => taskState.activeAuditId !== undefined,
             hasActiveAsyncSubagent: () => {
-              for (const id of activeAsyncSubagentIds) {
+              for (const id of taskState.activeAsyncSubagentIds) {
                 if (this.agentAbortControllers.has(id)) return true
               }
               return false
@@ -1707,6 +1706,9 @@ export class AgentHandler {
       pendingHumanMessages: [],
       taskOrigin,
       todoStore: new TodoStore(),
+      outboundBuffer: [],
+      activeAuditId: undefined,
+      activeAsyncSubagentIds: new Set<string>(),
     })
 
     return { taskId: syntheticTaskId, registered, task, context, taskTitle }
