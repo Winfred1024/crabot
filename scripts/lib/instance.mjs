@@ -20,3 +20,28 @@ export function readInstance(homeDir) {
 export function writeInstance(homeDir, manifest) {
   writeFileSync(join(homeDir, FILENAME), JSON.stringify(manifest, null, 2) + '\n')
 }
+
+/**
+ * 解析 OFFSET 的统一优先级：env > instance.json > 0
+ *
+ * 为什么：start/status/upgrade 都需要拿到正确 OFFSET 才能算 DATA_DIR 和端口。
+ * 之前各处只看 env CRABOT_PORT_OFFSET，shell rc 没 source 时（比如 sudo 跑或新会话）
+ * 就回退到 0，但 instance.json 里实际是 100 —— 内部状态分裂。
+ *
+ * 顺手把解析到的 OFFSET 写回 process.env（如果原本为空），让下游子进程也拿到。
+ */
+export function resolveOffset(homeDir, env = process.env) {
+  if (env.CRABOT_PORT_OFFSET) {
+    return parseInt(env.CRABOT_PORT_OFFSET, 10) || 0
+  }
+  if (hasInstance(homeDir)) {
+    try {
+      const inst = readInstance(homeDir)
+      if (inst.port_offset) {
+        env.CRABOT_PORT_OFFSET = String(inst.port_offset)
+        return parseInt(inst.port_offset, 10) || 0
+      }
+    } catch { /* corrupted instance.json — fall through to 0 */ }
+  }
+  return 0
+}

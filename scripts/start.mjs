@@ -17,34 +17,33 @@ import { resolveDataDir } from './lib/data-dir.mjs'
 import { writePid, clearPid, checkSingleInstance, isPidAlive } from './lib/pid.mjs'
 import { scanModules, applyMigration } from './upgrade-lib/migrate.mjs'
 import { runScript } from './upgrade-lib/runner.mjs'
-import { hasInstance, readInstance } from './lib/instance.mjs'
+import { hasInstance, readInstance, resolveOffset } from './lib/instance.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
+const HOME_CRABOT = resolve(homedir(), '.crabot')
 
 // auto-init：缺 instance.json → 同步调 crabot init（在 const OFFSET 读取前）
-{
-  const homeCrabot = resolve(homedir(), '.crabot')
-  if (!hasInstance(homeCrabot)) {
-    console.log('[crabot] first run, auto-running init...')
-    const initEntry = resolve(__dirname, 'init.mjs')
-    const r = spawnSync(process.execPath, [initEntry], { stdio: 'inherit', env: { ...process.env } })
-    if (r.status !== 0) {
-      console.error('[crabot] init failed; aborting start')
-      process.exit(1)
-    }
-    // init 跑完，从 instance.json 读 port_offset / data_dir，覆盖 process.env
-    const inst = readInstance(homeCrabot)
-    if (inst.port_offset && !process.env.CRABOT_PORT_OFFSET) {
-      process.env.CRABOT_PORT_OFFSET = String(inst.port_offset)
-    }
-    if (!process.env.DATA_DIR) {
-      process.env.DATA_DIR = inst.data_dir
-    }
+if (!hasInstance(HOME_CRABOT)) {
+  console.log('[crabot] first run, auto-running init...')
+  const initEntry = resolve(__dirname, 'init.mjs')
+  const r = spawnSync(process.execPath, [initEntry], { stdio: 'inherit', env: { ...process.env } })
+  if (r.status !== 0) {
+    console.error('[crabot] init failed; aborting start')
+    process.exit(1)
   }
 }
 
-const OFFSET = parseInt(process.env.CRABOT_PORT_OFFSET || '0', 10)
+// 从 instance.json 回填 env —— 首次启动 init 刚写完、二次启动文件早就在 —— 两种场景都要跑
+// 之前这段嵌在 if(!hasInstance) 块里只在首次执行，二次启动 shell rc 没 source 时 OFFSET 默默回退 0
+if (hasInstance(HOME_CRABOT)) {
+  const inst = readInstance(HOME_CRABOT)
+  if (inst.data_dir && !process.env.DATA_DIR) {
+    process.env.DATA_DIR = inst.data_dir
+  }
+}
+// resolveOffset 按 env > instance.json > 0 优先级解析，并把结果写回 env 供子进程继承
+const OFFSET = resolveOffset(HOME_CRABOT)
 const DAEMON_MODE = process.argv.includes('-d') || process.argv.includes('--daemon')
 
 // ── 环境变量 ──

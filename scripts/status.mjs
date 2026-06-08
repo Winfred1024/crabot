@@ -7,13 +7,15 @@ import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 import { resolveDataDir } from './lib/data-dir.mjs'
-import { hasInstance, readInstance } from './lib/instance.mjs'
+import { hasInstance, readInstance, resolveOffset } from './lib/instance.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
-const OFFSET = parseInt(process.env.CRABOT_PORT_OFFSET || '0', 10)
-const DATA_DIR = resolveDataDir({ envValue: process.env.DATA_DIR, offset: OFFSET })
 const HOME_DIR = resolve(homedir(), '.crabot')
+// OFFSET 优先级：env > instance.json > 0
+// 仅 env 会导致 shell rc 没 source 时回退到 0，进而 DATA_DIR/端口全错位
+const OFFSET = resolveOffset(HOME_DIR)
+const DATA_DIR = resolveDataDir({ envValue: process.env.DATA_DIR, offset: OFFSET })
 const ARGS = process.argv.slice(2)
 const JSON_OUT = ARGS.includes('--json')
 
@@ -24,16 +26,17 @@ const c = {
   dim:   (s) => `\x1b[2m${s}\x1b[0m`,
 }
 
-async function probeHealth(url) {
+// MM 的 RPC 路由是 POST /<method_name>（见 CLAUDE.md / protocol-module-manager.md）
+// list_modules 不要求 auth、稳定可用，是 admin UI 模块管理页同款数据源
+// 直接探它一举两得：mm 存活判定 + 模块列表
+async function fetchMmModules(mmPort) {
   try {
-    const r = await fetch(url, { signal: AbortSignal.timeout(2000) })
-    return r.ok
-  } catch { return false }
-}
-
-async function fetchModules(rpcPort) {
-  try {
-    const r = await fetch(`http://localhost:${rpcPort}/modules`, { signal: AbortSignal.timeout(2000) })
+    const r = await fetch(`http://localhost:${mmPort}/list_modules`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+      signal: AbortSignal.timeout(2000),
+    })
     if (!r.ok) return null
     const data = await r.json()
     return Array.isArray(data) ? data : data.modules || null
@@ -50,13 +53,17 @@ const ENDPOINTS = {
   admin_rpc: { url: `http://localhost:${19001 + OFFSET}`, label: 'Admin RPC' },
 }
 
-const health = {}
-for (const [k, v] of Object.entries(ENDPOINTS)) {
-  health[k] = await probeHealth(v.url + '/health')
-}
-const running = health.mm && health.admin_ui
+// 单点判定：MM 活 = 整个实例活；admin_ui/admin_rpc 的死活从 modules 里找 admin-web 推断
+const modules = await fetchMmModules(19000 + OFFSET)
+const running = modules !== null
+const adminModule = modules?.find((m) => (m.module_id ?? m.id) === 'admin-web')
+const adminAlive = adminModule?.status === 'running'
 
-const modules = running ? await fetchModules(19001 + OFFSET) : null
+const health = {
+  mm: running,
+  admin_ui: adminAlive,
+  admin_rpc: adminAlive, // admin-web 进程同时暴露 web (3000+OFF) 和 RPC (19001+OFF)
+}
 
 let clusterCurrent = null
 let clusterApplied = inst.applied_cluster_version ?? null
