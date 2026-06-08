@@ -5,12 +5,10 @@
 import type {
   PermissionTemplate,
   ToolAccessConfig,
-  StoragePermission,
   CreatePermissionTemplateParams,
   UpdatePermissionTemplateParams,
   ResolvedPermissions,
   SessionPermissionConfig,
-  CliAccessConfig,
 } from './types.js'
 import { createToolAccessConfig, createCliAccessConfig, CLI_DOMAINS } from './types.js'
 import { generateId, generateTimestamp } from 'crabot-shared'

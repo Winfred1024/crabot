@@ -1360,7 +1360,7 @@ function getFriendPermissions(token: string, friendId: string) {
       storage: FriendPermissionConfig['storage']
       memory_scopes: string[]
     } | null
-  }>(
+  } | { error: string }>(
     TEST_WEB_PORT,
     `/api/friends/${friendId}/permissions`,
     'GET',
@@ -1374,7 +1374,7 @@ function putFriendPermissions(
   friendId: string,
   config: Omit<FriendPermissionConfig, 'updated_at'>
 ) {
-  return makeWebRequest<{ config: FriendPermissionConfig }>(
+  return makeWebRequest<{ config: FriendPermissionConfig } | { error: string }>(
     TEST_WEB_PORT,
     `/api/friends/${friendId}/permissions`,
     'PUT',
