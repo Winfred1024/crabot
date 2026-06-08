@@ -185,6 +185,7 @@ import {
   repairTaskInvariants,
 } from './task-state-machine.js'
 import { getBuiltinSkills } from './builtin-skills.js'
+import { snapshotSessionConfig } from './session-config-snapshot-migration.js'
 import { getBuiltinSubAgents } from './builtin-subagents.js'
 import { parseCleanupParams } from './trace-cleanup-cron.js'
 import {
@@ -619,6 +620,9 @@ export class AdminModule extends ModuleBase {
 
     // 初始化系统权限模板
     await this.initSystemTemplates()
+
+    // 迁移旧 sessionConfig：补齐缺失的 cli_access 字段（幂等）
+    await this.runSessionConfigSnapshotMigration()
 
     // 加载模块 env 配置缓存
     await this.loadModuleEnvConfigCache()
@@ -3831,6 +3835,26 @@ export class AdminModule extends ModuleBase {
       console.log(
         `[Admin] Migrated ${migratedCount} schedule(s) to target_session field`,
       )
+    }
+  }
+
+  /**
+   * 迁移旧 sessionConfig：补齐缺失的 cli_access 字段（快照式，幂等）。
+   * 必须在 initSystemTemplates() 之后调用，确保模板已就绪。
+   */
+  private async runSessionConfigSnapshotMigration(): Promise<void> {
+    const total = this.sessionConfigs.size
+    let migratedCount = 0
+    for (const [sessionId, config] of Array.from(this.sessionConfigs.entries())) {
+      const upgraded = snapshotSessionConfig(config, this.permissionTemplateManager)
+      if (upgraded !== config) {
+        this.sessionConfigs.set(sessionId, upgraded)
+        migratedCount++
+      }
+    }
+    console.info(`[migration] snapshot-session-config: migrated ${migratedCount} of ${total} sessionConfigs`)
+    if (migratedCount > 0) {
+      await this.saveData()
     }
   }
 
