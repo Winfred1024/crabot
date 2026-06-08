@@ -7,6 +7,7 @@ import type {
   DialogObjectGroupEntry,
   DialogObjectPrivatePoolEntry,
 } from '../../../types'
+import { createCliAccessConfig } from '../../../types'
 import { ApplicationQueueModal } from './ApplicationQueueModal'
 import { DomainNav } from './DomainNav'
 import { FriendWorkbench } from './FriendWorkbench'
@@ -193,6 +194,7 @@ describe('DialogObjects components', () => {
           remote_exec: false,
           desktop: false,
         }}
+        friendCliAccess={createCliAccessConfig('none')}
         friendStorageEnabled
         friendStoragePath="/workspace/friends/alice"
         friendStorageAccess="read"
@@ -200,10 +202,12 @@ describe('DialogObjects components', () => {
         friendMemoryScopesInput="friend:friend-1"
         confirmUnlinkKey={null}
         unlinkingIdentity={false}
+        availableTemplates={[]}
         onEditNameChange={() => {}}
         onEditPermChange={() => {}}
         onSaveMetadata={() => {}}
         onFriendToolAccessChange={() => {}}
+        onFriendCliAccessChange={() => {}}
         onFriendStorageEnabledChange={() => {}}
         onFriendStoragePathChange={() => {}}
         onFriendStorageAccessChange={() => {}}
@@ -214,6 +218,7 @@ describe('DialogObjects components', () => {
         onRequestUnlink={() => {}}
         onCancelUnlink={() => {}}
         onConfirmUnlink={() => {}}
+        onInitializeFromTemplate={() => {}}
       />
     )
     expect(screen.getByRole('link', { name: '打开私聊场景画像' })).toHaveAttribute('href', '/memory/scenes/friend%3Afriend-1')

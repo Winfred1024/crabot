@@ -5,10 +5,14 @@ import { Input } from '../../../components/Common/Input'
 import { Loading } from '../../../components/Common/Loading'
 import { parseMemoryScopes, summarizeFriendMemoryScopes, summarizeFriendStorage } from '../friend-permission-utils'
 import { buildMemoryEntriesHref } from '../../Memory/memoryContextQuery'
+import { CliAccessEditor } from './CliAccessEditor'
+import { TemplateInitButton } from './TemplateInitButton'
 import type {
   ChannelIdentity,
+  CliAccessConfig,
   DialogObjectFriend,
   FriendPermission,
+  PermissionTemplate,
   ToolAccessConfig,
   ToolCategory,
 } from '../../../types'
@@ -40,6 +44,7 @@ interface FriendWorkbenchProps {
   friendPermissionUnavailableMessage: string | null
   savingPermissions: boolean
   friendToolAccess: ToolAccessConfig
+  friendCliAccess: CliAccessConfig
   friendStorageEnabled: boolean
   friendStoragePath: string
   friendStorageAccess: 'read' | 'readwrite'
@@ -47,10 +52,12 @@ interface FriendWorkbenchProps {
   friendMemoryScopesInput: string
   confirmUnlinkKey: string | null
   unlinkingIdentity: boolean
+  availableTemplates: readonly PermissionTemplate[]
   onEditNameChange: (value: string) => void
   onEditPermChange: (value: FriendPermission) => void
   onSaveMetadata: () => void
   onFriendToolAccessChange: (category: ToolCategory, checked: boolean) => void
+  onFriendCliAccessChange: (next: CliAccessConfig) => void
   onFriendStorageEnabledChange: (enabled: boolean) => void
   onFriendStoragePathChange: (value: string) => void
   onFriendStorageAccessChange: (value: 'read' | 'readwrite') => void
@@ -61,6 +68,7 @@ interface FriendWorkbenchProps {
   onRequestUnlink: (key: string) => void
   onCancelUnlink: () => void
   onConfirmUnlink: (identity: ChannelIdentity) => void
+  onInitializeFromTemplate: (tpl: PermissionTemplate) => void
 }
 
 const DEFAULT_STORAGE_PATH = '/workspace'
@@ -100,6 +108,7 @@ export const FriendWorkbench: React.FC<FriendWorkbenchProps> = ({
   friendPermissionUnavailableMessage,
   savingPermissions,
   friendToolAccess,
+  friendCliAccess,
   friendStorageEnabled,
   friendStoragePath,
   friendStorageAccess,
@@ -107,10 +116,12 @@ export const FriendWorkbench: React.FC<FriendWorkbenchProps> = ({
   friendMemoryScopesInput,
   confirmUnlinkKey,
   unlinkingIdentity,
+  availableTemplates,
   onEditNameChange,
   onEditPermChange,
   onSaveMetadata,
   onFriendToolAccessChange,
+  onFriendCliAccessChange,
   onFriendStorageEnabledChange,
   onFriendStoragePathChange,
   onFriendStorageAccessChange,
@@ -121,6 +132,7 @@ export const FriendWorkbench: React.FC<FriendWorkbenchProps> = ({
   onRequestUnlink,
   onCancelUnlink,
   onConfirmUnlink,
+  onInitializeFromTemplate,
 }) => {
   if (!friend) {
     return (
@@ -199,6 +211,13 @@ export const FriendWorkbench: React.FC<FriendWorkbenchProps> = ({
           ) : (
             <div style={{ display: 'grid', gap: '1rem' }}>
               <div className="session-modal-section">
+                <TemplateInitButton
+                  templates={availableTemplates}
+                  onInitialize={onInitializeFromTemplate}
+                />
+              </div>
+
+              <div className="session-modal-section">
                 <div style={{ fontWeight: 600 }}>工具权限</div>
                 <div className="session-permission-switch-list">
                   {TOOL_CATEGORIES.filter((category) => category !== 'desktop').map((category) => (
@@ -211,6 +230,14 @@ export const FriendWorkbench: React.FC<FriendWorkbenchProps> = ({
                     />
                   ))}
                 </div>
+              </div>
+
+              <div className="session-modal-section">
+                <div style={{ fontWeight: 600 }}>CLI 权限</div>
+                <CliAccessEditor
+                  value={friendCliAccess}
+                  onChange={onFriendCliAccessChange}
+                />
               </div>
 
               <div className="session-modal-section">

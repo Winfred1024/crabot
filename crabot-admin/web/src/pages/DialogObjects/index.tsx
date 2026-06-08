@@ -25,6 +25,7 @@ import { PrivatePoolWorkbench } from './components/PrivatePoolWorkbench'
 import type {
   DialogObjectApplication,
   ChannelIdentity,
+  CliAccessConfig,
   DialogObjectFriend,
   DialogObjectGroupEntry,
   DialogObjectPrivatePoolEntry,
@@ -35,7 +36,7 @@ import type {
   ToolAccessConfig,
   ToolCategory,
 } from '../../types'
-import { TOOL_CATEGORIES, TOOL_CATEGORY_LABELS } from '../../types'
+import { createCliAccessConfig, TOOL_CATEGORIES, TOOL_CATEGORY_LABELS } from '../../types'
 
 type QueueTarget = { id: string; channel_id: string; title: string }
 type QueueTargetKind = 'privatePool' | 'application'
@@ -151,6 +152,7 @@ export const DialogObjectsPage: React.FC = () => {
   const [friendPermissionUnavailableMessage, setFriendPermissionUnavailableMessage] = useState<string | null>(null)
   const [savingFriendPermissions, setSavingFriendPermissions] = useState(false)
   const [friendToolAccess, setFriendToolAccess] = useState<ToolAccessConfig>(() => buildToolAccess(false))
+  const [friendCliAccess, setFriendCliAccess] = useState<CliAccessConfig>(() => createCliAccessConfig('none'))
   const [friendStorageEnabled, setFriendStorageEnabled] = useState(false)
   const [friendStoragePath, setFriendStoragePath] = useState('')
   const [friendStorageAccess, setFriendStorageAccess] = useState<'read' | 'readwrite'>('read')
@@ -178,11 +180,23 @@ export const DialogObjectsPage: React.FC = () => {
     setFriendPermissionState('idle')
     setFriendPermissionUnavailableMessage(null)
     setFriendToolAccess(buildToolAccess(false))
+    setFriendCliAccess(createCliAccessConfig('none'))
     setFriendStorageEnabled(false)
     setFriendStoragePath('')
     setFriendStorageAccess('read')
     setFriendMemoryMode('empty')
     setFriendMemoryScopesInput('')
+  }, [])
+
+  const handleInitializeFriendFromTemplate = useCallback((tpl: PermissionTemplate) => {
+    setFriendToolAccess({ ...tpl.tool_access })
+    setFriendCliAccess({ ...tpl.cli_access })
+    setFriendStorageEnabled(!!tpl.storage)
+    if (tpl.storage) {
+      setFriendStoragePath(tpl.storage.workspace_path)
+      setFriendStorageAccess(tpl.storage.access)
+    }
+    setFriendMemoryScopesInput(tpl.memory_scopes.join(', '))
   }, [])
 
   const loadDialogObjects = useCallback(async (showLoading = false) => {
@@ -361,6 +375,7 @@ export const DialogObjectsPage: React.FC = () => {
         }
         const resolved = result.resolved
         setFriendToolAccess(resolved.tool_access)
+        setFriendCliAccess(resolved.cli_access ?? createCliAccessConfig('none'))
         setFriendStorageEnabled(resolved.storage !== null)
         setFriendStoragePath(resolved.storage?.workspace_path ?? DEFAULT_STORAGE_PATH)
         setFriendStorageAccess(resolved.storage?.access ?? 'read')
@@ -542,6 +557,7 @@ export const DialogObjectsPage: React.FC = () => {
 
       await friendService.updatePermissions(friend.id, buildExplicitFriendPermissionConfig({
         tool_access: friendToolAccess,
+        cli_access: friendCliAccess,
         storage: friendStorageEnabled
           ? {
               workspace_path: trimmedStoragePath,
@@ -769,6 +785,7 @@ export const DialogObjectsPage: React.FC = () => {
               friendPermissionUnavailableMessage={friendPermissionUnavailableMessage}
               savingPermissions={savingFriendPermissions}
               friendToolAccess={friendToolAccess}
+              friendCliAccess={friendCliAccess}
               friendStorageEnabled={friendStorageEnabled}
               friendStoragePath={friendStoragePath}
               friendStorageAccess={friendStorageAccess}
@@ -776,12 +793,14 @@ export const DialogObjectsPage: React.FC = () => {
               friendMemoryScopesInput={friendMemoryScopesInput}
               confirmUnlinkKey={confirmUnlinkKey}
               unlinkingIdentity={unlinkingIdentity}
+              availableTemplates={permissionTemplates}
               onEditNameChange={setEditName}
               onEditPermChange={setEditPerm}
               onSaveMetadata={handleSaveFriendMetadata}
               onFriendToolAccessChange={(category, checked) => {
                 setFriendToolAccess((prev) => ({ ...prev, [category]: checked }))
               }}
+              onFriendCliAccessChange={setFriendCliAccess}
               onFriendStorageEnabledChange={(enabled) => {
                 setFriendStorageEnabled(enabled)
                 if (enabled && !friendStoragePath.trim()) {
@@ -797,6 +816,7 @@ export const DialogObjectsPage: React.FC = () => {
               onRequestUnlink={setConfirmUnlinkKey}
               onCancelUnlink={() => setConfirmUnlinkKey(null)}
               onConfirmUnlink={handleUnlinkIdentity}
+              onInitializeFromTemplate={handleInitializeFriendFromTemplate}
             />
           ) : domain === 'privatePool' ? (
             <PrivatePoolWorkbench

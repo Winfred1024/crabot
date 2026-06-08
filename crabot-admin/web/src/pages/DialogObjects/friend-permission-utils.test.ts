@@ -6,6 +6,7 @@ import {
   summarizeFriendMemoryScopes,
   summarizeFriendStorage,
 } from './friend-permission-utils'
+import { createCliAccessConfig } from '../../types'
 
 describe('friend-permission-utils', () => {
   it('summarizes storage permissions', () => {
@@ -42,6 +43,7 @@ describe('friend-permission-utils', () => {
         remote_exec: false,
         desktop: false,
       },
+      cli_access: createCliAccessConfig('none'),
       storage: { workspace_path: '/workspace', access: 'read' },
       memory_scopes: ['scope-a'],
     }

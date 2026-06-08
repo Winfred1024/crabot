@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { api } from './api'
 import { friendService } from './friend'
 import type { FriendPermissionResponse, FriendPermissionConfig, FriendPermissionUpdateConfig } from './friend'
+import { createCliAccessConfig } from '../types'
 
 vi.mock('./api', () => ({
   api: {
@@ -34,6 +35,7 @@ describe('friendService permissions', () => {
           remote_exec: false,
           desktop: false,
         },
+        cli_access: createCliAccessConfig('none'),
         storage: { workspace_path: '/workspace', access: 'readwrite' },
         memory_scopes: ['session-1'],
         updated_at: '2026-04-21T00:00:00.000Z',
@@ -50,6 +52,7 @@ describe('friendService permissions', () => {
           remote_exec: true,
           desktop: true,
         },
+        cli_access: createCliAccessConfig('none'),
         storage: { workspace_path: '/', access: 'readwrite' },
         memory_scopes: [],
       },
@@ -73,6 +76,7 @@ describe('friendService permissions', () => {
         remote_exec: false,
         desktop: false,
       },
+      cli_access: createCliAccessConfig('none'),
       storage: null,
       memory_scopes: ['scope-a', 'scope-b'],
     }

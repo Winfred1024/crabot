@@ -2,6 +2,7 @@ import React from 'react'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DialogObjectsPage } from './index'
+import { createCliAccessConfig } from '../../types'
 
 const listFriends = vi.fn()
 const listPrivatePool = vi.fn()
@@ -447,6 +448,7 @@ describe('DialogObjectsPage', () => {
         tool_access: expect.objectContaining({
           messaging: false,
         }),
+        cli_access: createCliAccessConfig('none'),
         storage: {
           workspace_path: '/data/friend-1',
           access: 'read',
