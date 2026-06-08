@@ -325,12 +325,13 @@ const GOAL_AUDITOR_VERIFICATION = `调 submit_audit_result 之前自检：
 - 不要因为自己工具受限就给 worker 放水`
 
 const SPEC_REVIEWER_WHEN_TO_USE = `Use this subagent when:
-- 已有一份代码改动 + 一份 task 规范，需要独立验证「改动是否严格匹配规范」（不少做、不多做）
-- 实施方已报 STATUS=DONE 或 DONE_WITH_CONCERNS，有具体 FILES_CHANGED 列表可审
+- 单 task：已有一份代码改动 + 一份 task 规范，需要独立验证「改动是否严格匹配规范」（不少做、不多做）
+- 综合审：一组 task 完成后需要跨 task 综合合规审（如整 plan 跑完后验证 spec 全部需求是否兑现）
+- 实施方已报 STATUS=DONE 或 DONE_WITH_CONCERNS，有具体 FILES_CHANGED 列表（或累计改动）可审
 
 输入契约：task 参数必须包含两部分——
-- task 规范全文（含 Objective / Non-goals / Files / Steps / Verification）
-- 已改动的文件列表（FILES_CHANGED）
+- 规范文本：单 task 时是该 task 段全文；综合审时是多 task spec 合集 / 整 plan 关键需求清单
+- 文件列表：单 task 时是 FILES_CHANGED；综合审时是累计改动文件 + 可选 PLAN_PATH 帮助理解整体目标
 
 不要在以下情况使用：
 - 还没有可审的代码改动（实施还在进行中 / 报了 BLOCKED）
@@ -340,8 +341,15 @@ const SPEC_REVIEWER_WHEN_TO_USE = `Use this subagent when:
 <example>
 Context: code_writer 实施完 Task 3 backend moderation 改动，报 STATUS=DONE，FILES_CHANGED=src/handlers.py
 assistant: 调用 delegate_task(subagent_type="spec_reviewer", task="审查以下 task 的实施是否严格合规：\n\n<Task 3 完整段文本>\n\nFILES_CHANGED: src/handlers.py")
-<commentary>独立合规审，验证 writer 没漏做 spec 要求 / 没多做 spec 没要求的事。
+<commentary>单 task 合规审，验证 writer 没漏做 spec 要求 / 没多做 spec 没要求的事。
 NEEDS_FIX 时 main 回 writer 修；APPROVED 后进入 code_quality_reviewer 阶段。</commentary>
+</example>
+
+<example>
+Context: 整个 plan 的 Task 1-6 都已实施完成，需要综合审是否满足整体关键需求
+assistant: 调用 delegate_task(subagent_type="spec_reviewer", task="综合合规审：PLAN_PATH=/tmp/plan_xxx.md\n\n关键需求清单：\n- Backend: src/db.py 含 X / Y / Z 字段\n- API: /admin/user 接口正确实现\n- ...\n\n累计改动文件：src/db.py, src/handlers.py, web_admin/src/pages/Users.tsx")
+<commentary>跨 task 综合合规审。reviewer 自己读 plan + 改动文件 + 跑 verification 串验证关键需求；
+NEEDS_FIX 时按 MISSING 项回 writer 修对应 task；APPROVED 后整 plan 可进入 code_quality_reviewer 综合质量审。</commentary>
 </example>`
 
 const SPEC_REVIEWER_ROLE = `你是 spec 合规审查员。你收到两样东西：一份 task 规范（含 Objective / Non-goals / Files / Steps / Verification），和一份已经实施的代码改动（含改动文件列表）。
