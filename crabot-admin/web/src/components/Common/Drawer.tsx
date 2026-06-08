@@ -18,9 +18,11 @@ export const Drawer: React.FC<DrawerProps> = ({ open, onClose, width = 420, chil
     return () => document.removeEventListener('keydown', handleKeyDown)
   }, [open, onClose])
 
+  if (!open) return null
+
   return (
-    <div className={`drawer-container ${open ? 'drawer-open' : ''}`} style={{ width: open ? width : 0 }}>
-      <div className="drawer-panel" style={{ width }}>
+    <div className="drawer-overlay" onClick={onClose}>
+      <div className="drawer-panel" style={{ width }} onClick={(e) => e.stopPropagation()}>
         <button className="drawer-close" onClick={onClose} aria-label="关闭">×</button>
         <div className="drawer-content">
           {children}
