@@ -2,6 +2,8 @@
 
 // Crabot Stop — 跨平台优雅关闭所有服务（macOS / Linux / Windows）
 
+import './_preflight.mjs'
+
 import { readFileSync, existsSync, unlinkSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { homedir } from 'node:os'

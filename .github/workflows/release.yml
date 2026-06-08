@@ -96,6 +96,11 @@ jobs:
               pids+=($!)
             fi
           done
+          # scripts/lib 是独立 package（依赖 proper-lockfile 等），不属于 root workspace
+          if [ -d "scripts/lib" ]; then
+            (cd scripts/lib && rm -rf node_modules && pnpm install --prod --prefer-offline) &
+            pids+=($!)
+          fi
           for pid in "${pids[@]}"; do wait "$pid" || exit 1; done
 
       - name: Package (Unix)
@@ -137,9 +142,12 @@ jobs:
           # 根 node_modules（已 prune）
           rsync -aH "${COMMON_EXCLUDES[@]}" node_modules "/tmp/${DIRNAME}/"
 
-          # scripts/（含 upgrade-lib，运行时不需要 node_modules，但开发机可能装过测试用的 vitest）
+          # scripts/（含 lib/、upgrade-lib/）
+          # scripts/lib/ 是独立 package，运行时需要 proper-lockfile 等 prod deps，必须连 node_modules 一起打入
+          # scripts/lib/__tests__/、vitest.config 是 dev-only
           rsync -aH "${COMMON_EXCLUDES[@]}" \
-                --exclude='node_modules' --exclude='vitest.config.*' \
+                --exclude='lib/__tests__/' \
+                --exclude='vitest.config.*' \
                 scripts "/tmp/${DIRNAME}/"
 
           # TS 模块：src/ 是源码，构建产物在 dist/，可排除 src/
@@ -195,8 +203,8 @@ jobs:
 
           Copy-Item cli.mjs, crabot.cmd, package.json, install.sh, install.ps1 $TempDir
           Copy-Item -Recurse dist, scripts, node_modules $TempDir
-          # 清理 scripts 子项目内可能存在的 node_modules（开发机痕迹；CI fresh checkout 通常没有）
-          Get-ChildItem -Path "$TempDir\scripts" -Recurse -Directory -Filter 'node_modules' -ErrorAction SilentlyContinue |
+          # 清理 scripts/lib/__tests__ 等 dev-only 测试目录；scripts/lib/node_modules 是运行时依赖必须保留
+          Get-ChildItem -Path "$TempDir\scripts" -Recurse -Directory -Filter '__tests__' -ErrorAction SilentlyContinue |
             Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
           # TS 模块：src/ 是源码，构建产物在 dist/，可排除 src/

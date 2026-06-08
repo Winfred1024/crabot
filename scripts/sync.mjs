@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import './_preflight.mjs'
+
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve, dirname, join } from 'node:path'
 import { homedir } from 'node:os'

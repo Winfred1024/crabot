@@ -96,6 +96,13 @@ export async function runSourceUpgrade(crabotHome, logger) {
 
   await runCmd('corepack', ['pnpm', 'run', 'build:cli'], crabotHome, logger)
 
+  // scripts/lib 是独立 package（依赖 proper-lockfile 等），不属于 root workspace，要单独 install。
+  // 没有 build 步骤，只装 prod deps。
+  const scriptsLibDir = join(crabotHome, 'scripts', 'lib')
+  if (existsSync(join(scriptsLibDir, 'package.json'))) {
+    await runCmd('corepack', ['pnpm', 'install', '--prod', '--prefer-offline'], scriptsLibDir, logger)
+  }
+
   const memoryDir = join(crabotHome, PY_MODULE)
   if (existsSync(memoryDir)) {
     await runCmd(findUv(), ['sync'], memoryDir, logger)

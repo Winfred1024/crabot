@@ -3,6 +3,8 @@
 // Crabot Start — 生产模式启动
 // 加载环境变量 → 创建数据目录 → 密码检查 → 启动 Module Manager（前台）
 
+import './_preflight.mjs'
+
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { createInterface } from 'node:readline'

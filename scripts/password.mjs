@@ -2,6 +2,8 @@
 
 // Crabot Password — 修改管理员密码
 
+import './_preflight.mjs'
+
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { createInterface } from 'node:readline'

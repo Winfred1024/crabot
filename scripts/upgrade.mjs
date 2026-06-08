@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import './_preflight.mjs'
+
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'

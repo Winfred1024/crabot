@@ -202,6 +202,10 @@ main() {
     if [ -d "crabot-admin/web" ]; then
       (cd crabot-admin/web && corepack pnpm install && corepack pnpm run build)
     fi
+    # scripts/lib 是独立 package（依赖 proper-lockfile 等），不属于 root workspace，需单独装
+    if [ -d "scripts/lib" ]; then
+      (cd scripts/lib && corepack pnpm install --prod)
+    fi
     corepack pnpm run build:cli
     info "Setting up Python environment..."
     (cd crabot-memory && uv sync)
