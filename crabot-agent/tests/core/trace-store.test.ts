@@ -382,6 +382,31 @@ describe('TraceStore.getDiskUsage', () => {
       fs.rmSync(dir, { recursive: true })
     }
   })
+
+  // Regression：cleanupOldTraces 会同时清 traces-* 和 prompts-* 两类文件，但
+  // 早期 getDiskUsage 只统计 traces-*，导致 Admin Web /traces 页面"占用 154 MB"
+  // 看似很小，实际磁盘上 prompts-*.jsonl 累积了 2.9 GB，用户磁盘 100% 满才
+  // 发现。统计口径必须跟 cleanup 一致。
+  it('counts prompts-*.jsonl bytes (must align with cleanup scope)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-disk-prompts-'))
+    try {
+      const store = new TraceStore(10, dir)
+      // 一次 startTrace 产生一个 traces-YYYY-MM-DD.jsonl
+      const t = store.startTrace({ module_id: 'a', trigger: { type: 'message', summary: 'm' } })
+      store.endTrace(t.trace_id, 'completed')
+      const tracesOnly = store.getDiskUsage().total_bytes
+
+      // 放一个 prompts-*.jsonl 进同目录，模拟 dumpLLMPrompt 落盘的结果。
+      const today = new Date().toISOString().slice(0, 10)
+      const promptsContent = 'x'.repeat(5000)
+      fs.writeFileSync(path.join(dir, `prompts-${today}.jsonl`), promptsContent)
+
+      const withPrompts = store.getDiskUsage().total_bytes
+      expect(withPrompts).toBeGreaterThanOrEqual(tracesOnly + 5000)
+    } finally {
+      fs.rmSync(dir, { recursive: true })
+    }
+  })
 })
 
 describe('TraceStore.cleanupOldTraces', () => {

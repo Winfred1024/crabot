@@ -611,8 +611,12 @@ export class TraceStore {
     }
     let totalBytes = 0
     try {
+      // 统计口径必须跟 cleanupOldTraces 一致——它会同时清 traces-* 和 prompts-*，
+      // 这里也要把两类都算进去。只统计 traces-* 会让 Admin Web /traces 页面
+      // 显示的"占用"严重低估（prompts-*.jsonl 每天 100-700MB，几天就 GB 级），
+      // 用户磁盘满了才察觉。
       const files = fs.readdirSync(this.persistDir)
-        .filter(f => f.startsWith('traces-') && f.endsWith('.jsonl'))
+        .filter(f => (f.startsWith('traces-') || f.startsWith('prompts-')) && f.endsWith('.jsonl'))
       for (const file of files) {
         const stat = fs.statSync(path.join(this.persistDir, file))
         totalBytes += stat.size
