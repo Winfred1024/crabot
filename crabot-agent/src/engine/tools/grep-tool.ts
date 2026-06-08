@@ -56,7 +56,7 @@ function* splitLines(stdout: string): Generator<string> {
   if (start < stdout.length) yield stdout.slice(start)
 }
 
-export function createGrepTool(cwd: string): ToolDefinition {
+export function createGrepTool(getCwd: () => string): ToolDefinition {
   return defineTool({
     name: 'Grep',
     category: 'file_io',
@@ -96,7 +96,7 @@ export function createGrepTool(cwd: string): ToolDefinition {
     permissionLevel: 'safe',
     call: async (input) => {
       const pattern = input.pattern as string
-      const searchPath = (input.path as string | undefined) ?? cwd
+      const searchPath = (input.path as string | undefined) ?? getCwd()
       const glob = input.glob as string | undefined
       const outputMode = (input.output_mode as string | undefined) ?? 'files_with_matches'
       const contextLines = (input.context as number | undefined) ?? 0

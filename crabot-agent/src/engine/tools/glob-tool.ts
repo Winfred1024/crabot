@@ -12,7 +12,7 @@ const MAX_RESULTS = 200
  * 大仓里可能把几万个文件路径全拉进 JS 堆。rg --files 把扫描留在 rg 进程内部，
  * 流式吐出来 + 应用层 MAX_RESULTS 截断，agent 堆只承担最多 200 个路径字符串。
  */
-export function createGlobTool(cwd: string): ToolDefinition {
+export function createGlobTool(getCwd: () => string): ToolDefinition {
   return defineTool({
     name: 'glob',
     category: 'file_io',
@@ -32,8 +32,8 @@ export function createGlobTool(cwd: string): ToolDefinition {
       const pathInput = input.path as string | undefined
 
       const resolvedPath = pathInput
-        ? (isAbsolute(pathInput) ? pathInput : resolve(cwd, pathInput))
-        : cwd
+        ? (isAbsolute(pathInput) ? pathInput : resolve(getCwd(), pathInput))
+        : getCwd()
 
       const args: string[] = [
         '--no-config',

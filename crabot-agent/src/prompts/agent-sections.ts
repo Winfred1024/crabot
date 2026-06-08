@@ -105,6 +105,15 @@ const WORKFLOW_INFORMATION_COLLECTION = `[信息收集]
   收到 collector 的 SUMMARY 后整合到上下文，重新做 [阅读理解] 判断。
   如还不清晰，进 [意图澄清]。`
 
+const WORKFLOW_PROJECT_ANCHORING = `[项目锚定]
+  若识别到任务关联具体项目（用户提到的项目名 / 涉及代码库）：
+    1. search_memory 找该项目的目录路径（fact 形如"项目 X 代码在 /path"）
+    2. 找到 → set_cwd(/path)：锚定 cwd + 自动加载 CLAUDE.md / AGENTS.md
+    3. 找不到 → ask_human 问用户项目路径；拿到后 set_cwd + store_memory 记下这条 fact
+
+  锚定后，本 task 内所有 Bash / Read / Grep 以及派出的 subagent 都在该 cwd 跑。
+  若任务跟项目无关（讨论型 / 调度型 / 通用问答），跳过本段。`
+
 const WORKFLOW_INTENT_CLARIFICATION = `[意图澄清]
   收集完信息后仍无法明确用户真实意图，调
   send_message(intent='ask_human', content=...) 求证。content 必须结构化：
@@ -214,6 +223,7 @@ const WORKFLOW_WITH_GOAL = [
   '## 工作流',
   WORKFLOW_READING_COMPREHENSION,
   WORKFLOW_INFORMATION_COLLECTION,
+  WORKFLOW_PROJECT_ANCHORING,
   WORKFLOW_INTENT_CLARIFICATION,
   WORKFLOW_GOAL_COMMITMENT,
   WORKFLOW_PLANNING_AND_EXECUTION,
@@ -223,6 +233,7 @@ const WORKFLOW_WITHOUT_GOAL = [
   '## 工作流',
   WORKFLOW_READING_COMPREHENSION,
   WORKFLOW_INFORMATION_COLLECTION,
+  WORKFLOW_PROJECT_ANCHORING,
   WORKFLOW_INTENT_CLARIFICATION,
   WORKFLOW_PLANNING_AND_EXECUTION,
 ].join('\n\n')

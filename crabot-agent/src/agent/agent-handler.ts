@@ -17,6 +17,7 @@ import {
   ProgressDigest,
   filterToolsByPermission,
 } from '../engine/index.js'
+import { createSetCwdTool } from '../engine/tools/index.js'
 import { BgEntityRegistry } from '../engine/bg-entities/registry.js'
 import { TransientShellRegistry, killShellTree } from '../engine/bg-entities/bg-shell.js'
 import type { BgEntityOwner, BgEntityRecord, BgEntityStatus, BgEntityType } from '../engine/bg-entities/types.js'
@@ -915,6 +916,14 @@ export class AgentHandler {
           tools.push(...externalTools)
         }
 
+        // task-scoped cwd state（spec 2026-06-08-task-scoped-cwd-design §3.1）
+        // 默认 = WORKSPACE_DIR env 或 homedir；LLM 可通过 set_cwd 工具改。
+        // 子 subagent 通过 parentTools 继承 main 的工具列表（其工具内部 closure 在 getCwd 上），
+        // 自动继承当前 cwd；但 set_cwd 工具单独 push 在 baseToolsRaw capture 之后，所以子不含。
+        let currentCwd: string = getWorkspaceDir()
+        const getCwd = (): string => currentCwd
+        const setCwd = (newCwd: string): void => { currentCwd = newCwd }
+
         // 3e. Built-in file/shell tools (filtered by Admin config)
         const skillsSnapshot = this.skills
         const bgOwner: BgEntityOwner = {
@@ -953,12 +962,14 @@ export class AgentHandler {
           agentAbortControllers: this.agentAbortControllers,
         }
         tools.push(...getConfiguredBuiltinTools(
-          os.homedir(),
+          getCwd,
           this.builtinToolConfig,
           {
             skillsDir: skillsSnapshot.length > 0 ? getInstanceSkillsDir() : undefined,
             bgEntityCtx,
             bgToolDeps,
+            // 故意不传 setCwdCtx：set_cwd 在 baseToolsRaw capture 之后单独 push，
+            // 让 baseTools（子 subagent 用）不含 set_cwd。
           },
         ))
 
@@ -966,6 +977,8 @@ export class AgentHandler {
         // baseToolsPermissionConfig 仅基于 base 工具集，给 sub-agent 用：
         //   sub-agent 内部只能见 baseTools，所以它的 permissionConfig 也只需覆盖 base 工具命名。
         const baseToolsRaw = [...tools]
+        // set_cwd 工具单独 push（仅 main worker 用；子 subagent 严格继承 parent cwd 不允许改）
+        tools.push(createSetCwdTool({ getCwd, setCwd }))
         const baseToolsPermissionConfig: ToolPermissionConfig =
           this.deps?.getPermissionConfig?.(baseToolsRaw, context.resolved_permissions) ?? { mode: 'bypass' }
         // baseTools 构造后立刻把 outer auditBaseTools 接上，给 audit gate 的 getter 用。
