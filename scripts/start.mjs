@@ -13,11 +13,10 @@ import { fileURLToPath } from 'node:url'
 import { spawn, spawnSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import net from 'node:net'
-import { resolveDataDir } from './lib/data-dir.mjs'
 import { writePid, clearPid, checkSingleInstance, isPidAlive } from './lib/pid.mjs'
 import { scanModules, applyMigration } from './upgrade-lib/migrate.mjs'
 import { runScript } from './upgrade-lib/runner.mjs'
-import { hasInstance, readInstance, resolveOffset } from './lib/instance.mjs'
+import { hasInstance, readInstance, resolveCliDataDir } from './lib/instance.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
@@ -34,16 +33,10 @@ if (!hasInstance(HOME_CRABOT)) {
   }
 }
 
-// 从 instance.json 回填 env —— 首次启动 init 刚写完、二次启动文件早就在 —— 两种场景都要跑
-// 之前这段嵌在 if(!hasInstance) 块里只在首次执行，二次启动 shell rc 没 source 时 OFFSET 默默回退 0
-if (hasInstance(HOME_CRABOT)) {
-  const inst = readInstance(HOME_CRABOT)
-  if (inst.data_dir && !process.env.DATA_DIR) {
-    process.env.DATA_DIR = inst.data_dir
-  }
-}
-// resolveOffset 按 env > instance.json > 0 优先级解析，并把结果写回 env 供子进程继承
-const OFFSET = resolveOffset(HOME_CRABOT)
+// OFFSET 和 DATA_DIR 都收敛到 resolveCliDataDir：
+//   - OFFSET 仍走 env > instance.json > 0（resolveOffset 内部）
+//   - DATA_DIR 走 env > legacy source install > ~/.crabot/data{-OFFSET}（不读 instance.data_dir）
+// "不读 instance.data_dir" 的契约 + 历史教训见 lib/instance.mjs:resolveCliDataDir。
 const DAEMON_MODE = process.argv.includes('-d') || process.argv.includes('--daemon')
 
 // ── 环境变量 ──
@@ -63,12 +56,15 @@ function loadEnvFile(filePath) {
   }
 }
 
-const DATA_DIR = resolveDataDir({ envValue: process.env.DATA_DIR, offset: OFFSET, repoRoot: ROOT })
+// legacy source install 提示要在 process.env.DATA_DIR 被覆盖前判断
+const HAD_EXPLICIT_DATA_DIR = !!process.env.DATA_DIR
+const DATA_DIR = resolveCliDataDir({ homeDir: HOME_CRABOT, repoRoot: ROOT })
+const OFFSET = parseInt(process.env.CRABOT_PORT_OFFSET || '0', 10)
 process.env.DATA_DIR = DATA_DIR
 
 // 一次性提示：走了 legacy source install 兼容分支
-// 条件：未设 DATA_DIR + offset=0 + 落到了 $REPO/data 而不是 ~/.crabot/data
-if (!process.env.DATA_DIR_NOTICE_SHOWN && !process.env.DATA_DIR && OFFSET === 0) {
+// 条件：未显式设 DATA_DIR + offset=0 + 落到了 $REPO/data 而不是 ~/.crabot/data
+if (!process.env.DATA_DIR_NOTICE_SHOWN && !HAD_EXPLICIT_DATA_DIR && OFFSET === 0) {
   const repoData = resolve(ROOT, 'data')
   if (DATA_DIR === repoData) {
     console.warn(`[crabot] using legacy source install data at ${repoData}`)

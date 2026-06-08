@@ -6,16 +6,14 @@ import { existsSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
-import { resolveDataDir } from './lib/data-dir.mjs'
-import { hasInstance, readInstance, resolveOffset } from './lib/instance.mjs'
+import { hasInstance, readInstance, resolveCliDataDir } from './lib/instance.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
 const HOME_DIR = resolve(homedir(), '.crabot')
-// OFFSET 优先级：env > instance.json > 0
-// 仅 env 会导致 shell rc 没 source 时回退到 0，进而 DATA_DIR/端口全错位
-const OFFSET = resolveOffset(HOME_DIR)
-const DATA_DIR = resolveDataDir({ envValue: process.env.DATA_DIR, offset: OFFSET })
+// OFFSET 和 DATA_DIR 都走 resolveCliDataDir 入口，保证 status 显示与 start/stop 一致
+const DATA_DIR = resolveCliDataDir({ homeDir: HOME_DIR, repoRoot: ROOT })
+const OFFSET = parseInt(process.env.CRABOT_PORT_OFFSET || '0', 10)
 const ARGS = process.argv.slice(2)
 const JSON_OUT = ARGS.includes('--json')
 

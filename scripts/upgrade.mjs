@@ -18,9 +18,8 @@ import {
   writeVersionFile,
 } from './upgrade-lib/release.mjs'
 import { runSourceUpgrade, syncPythonDeps } from './upgrade-lib/source.mjs'
-import { resolveDataDir } from './lib/data-dir.mjs'
 import { detectMode as detectInstallScope } from './lib/mode.mjs'
-import { resolveOffset } from './lib/instance.mjs'
+import { resolveCliDataDir } from './lib/instance.mjs'
 import { homedir } from 'node:os'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -28,10 +27,9 @@ const CRABOT_HOME = resolve(__dirname, '..')
 const args = process.argv.slice(2)
 const ASSUME_YES = args.includes('-y') || args.includes('--yes')
 
-// 同 status.mjs / start.mjs：OFFSET 不能只看 env，shell rc 没 source 时会回退 0 → DATA_DIR 错位 →
-// isMmRunning() 检查不到员工实际 mm.pid 路径
-const OFFSET = resolveOffset(resolve(homedir(), '.crabot'))
-const DATA_DIR = resolveDataDir({ envValue: process.env.DATA_DIR, offset: OFFSET, repoRoot: CRABOT_HOME })
+// 同 status.mjs / start.mjs：DATA_DIR 走 env > legacy source install > 默认。
+// 契约说明见 lib/instance.mjs:resolveCliDataDir。
+const DATA_DIR = resolveCliDataDir({ homeDir: resolve(homedir(), '.crabot'), repoRoot: CRABOT_HOME })
 
 const logger = {
   info: (m) => console.log(m),
