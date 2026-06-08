@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { hashPassword, verifyPassword, readCredentials, writeCredentials, DEFAULT_SCRYPT_PARAMS, type Credentials } from './credentials'
+import { hashPassword, verifyPassword, readCredentials, writeCredentials, newCredentialsFromPassword, rotateCredentials, DEFAULT_SCRYPT_PARAMS, type Credentials } from './credentials'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import * as os from 'node:os'
@@ -102,5 +102,20 @@ describe('credentials .env migration', () => {
     const a = await readCredentials(dir)
     const b = await readCredentials(dir)
     expect(b).toEqual(a)
+  })
+})
+
+describe('rotateCredentials', () => {
+  it('epoch++、is_temp=false、changed_via=cli、新 hash 可验证', async () => {
+    const initial = await newCredentialsFromPassword('old', { is_temp: true, changed_via: 'start' })
+    const rotated = await rotateCredentials(initial, 'new-secret', 'cli')
+
+    expect(rotated.token_epoch).toBe(initial.token_epoch + 1)
+    expect(rotated.is_temp).toBe(false)
+    expect(rotated.changed_via).toBe('cli')
+    expect(rotated.created_at).toBe(initial.created_at)
+    expect(rotated.last_changed_at).not.toBe(initial.last_changed_at)
+    expect(await verifyPassword('new-secret', rotated)).toBe(true)
+    expect(await verifyPassword('old', rotated)).toBe(false)
   })
 })

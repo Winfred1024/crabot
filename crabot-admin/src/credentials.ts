@@ -84,6 +84,24 @@ export async function newCredentialsFromPassword(
   }
 }
 
+export async function rotateCredentials(
+  prev: Credentials,
+  newPassword: string,
+  changed_via: 'cli' | 'ui',
+): Promise<Credentials> {
+  const { salt, hash, params } = await hashPassword(newPassword)
+  return {
+    ...prev,
+    salt,
+    hash,
+    params,
+    is_temp: false,
+    token_epoch: prev.token_epoch + 1,
+    last_changed_at: new Date().toISOString(),
+    changed_via,
+  }
+}
+
 function parseEnvFile(raw: string): Record<string, string> {
   const out: Record<string, string> = {}
   for (const line of raw.split('\n')) {
