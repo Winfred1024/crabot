@@ -327,6 +327,15 @@ export interface EngineOptions {
    */
   readonly endTurnGate?: () => Promise<string | null>
   /**
+   * Goal mode 缓冲消息 flush 钩子。Engine 在以下时机调：
+   * - stop_reason='tool_use' 续 turn 之前（agent 还在干活，上一轮缓冲的 info 是"过程信息"）
+   * - endTurnGate 返回 null 后 buildResult 之前（audit pass / 无 audit / 同步路径完成）
+   * 实现：caller 遍历 taskState.outboundBuffer 调 channel.sendMessage，清空 buffer。
+   * 非 goal mode / 空 buffer 场景为 no-op；不传时 engine 跳过 flush。
+   * spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 8
+   */
+  readonly flushOutboundBuffer?: () => Promise<void>
+  /**
    * 上下文压缩开始时触发（trace 可见性钩子）。
    * compaction 内部跑一次 LLM call 做摘要，可能耗时几秒——不接 trace 就是黑洞。
    */

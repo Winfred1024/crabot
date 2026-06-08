@@ -292,6 +292,11 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
             continue
           }
         }
+        // endTurnGate 返回 null（audit pass / 无 gate）→ flush 缓冲后正常退出。
+        // spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 8
+        if (options.flushOutboundBuffer) {
+          await options.flushOutboundBuffer()
+        }
         return buildResult('completed', finalText, totalTurns, contextManager, messages, exitToolCall, toolCallCount, wroteMemoryOrScene)
       }
       if (isSilentText && silentEndTurnCount < MAX_SILENT_END_TURN_RETRIES) {
@@ -327,6 +332,11 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
           })
           continue
         }
+      }
+      // endTurnGate 返回 null（audit pass / 无 gate）→ flush 缓冲后正常退出。
+      // spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 8
+      if (options.flushOutboundBuffer) {
+        await options.flushOutboundBuffer()
       }
       return buildResult('completed', finalText, totalTurns, contextManager, messages, exitToolCall, toolCallCount, wroteMemoryOrScene)
     }
@@ -573,6 +583,15 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
           injectedAtMs: Date.now(),
         })
       }
+    }
+
+    // stop_reason='tool_use' 续 turn 之前 flush 缓冲——agent 还在干活，
+    // 之前缓冲的 send_message(intent='info') 是"过程信息"不是"最终交付"，
+    // 应当在下一轮 LLM 调用前真正发给用户，否则会被卡到 audit pass 才能见。
+    // 非 goal mode / 空 buffer 场景，flushOutboundBuffer 内部为 no-op。
+    // spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 8
+    if (options.flushOutboundBuffer) {
+      await options.flushOutboundBuffer()
     }
 
     // Prune old images — keep only the most recent N screenshots
