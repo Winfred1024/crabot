@@ -526,10 +526,16 @@ export class SkillManager {
     for (const [id, raw] of this.skills) {
       const entry = raw as SkillRegistryEntry & { content?: string }
 
-      // builtin 不迁移文件（registerBuiltins 会用磁盘 builtin 目录同步），只清 content 字段
+      // builtin 不迁移文件（registerBuiltins / seedBuiltinSkills 会用磁盘 builtin 目录同步）
       if (entry.is_builtin) {
         if (entry.content !== undefined) {
           delete (entry as { content?: string }).content
+          migrated++
+        }
+        // 旧 seed 写入的 entry 可能缺 skill_dir（Task 6 之前的形态）→ 删除让下游 seed 重建
+        if (!entry.skill_dir) {
+          this.skills.delete(id)
+          console.warn(`[SkillManager] builtin "${entry.name}" 缺 skill_dir，已删除待重 seed`)
           migrated++
         }
         continue
@@ -1036,6 +1042,7 @@ export class SkillManager {
 
   /** REST 兼容序列化：附加 content 字段（即时读 SKILL.md），让前端无需改动 */
   async toRestEntry(entry: SkillRegistryEntry): Promise<SkillRegistryEntry & { content: string }> {
+    if (!entry.skill_dir) return { ...entry, content: '' }
     const content = await fs.readFile(path.join(entry.skill_dir, 'SKILL.md'), 'utf-8').catch(() => '')
     return { ...entry, content }
   }
