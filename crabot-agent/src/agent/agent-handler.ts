@@ -24,7 +24,7 @@ import type { BgEntityOwner, BgEntityRecord, BgEntityStatus, BgEntityType } from
 import type { BashBgContext } from '../engine/tools/index.js'
 import type { BgToolDeps } from '../engine/tools/index.js'
 import type { TaskContext } from '../mcp/crab-messaging.js'
-import { createOutboundFlush, type PathMapping, type OutboundDispatchDeps } from './outbound-flush.js'
+import { createOutboundFlush, type PathMapping, type OutboundDispatchDeps, type OutboundBufferEntry } from './outbound-flush.js'
 import type { BgEntityTraceContext } from '../engine/bg-entities/trace.js'
 import type {
   ToolDefinition,
@@ -1002,10 +1002,12 @@ export class AgentHandler {
           outboundBuffer: taskState.outboundBuffer,
           hasActiveAudit: () => taskState.activeAuditId !== undefined,
           // Dispatch 钩子点（spec §4.13.6 Invariant #1+#2 / §4.13.7）。dispatchOutboundMessage success
-          // 路径触发；抛错路径不触发。PR-1 effect：置 everSentMessage=true（永不清零）。
-          // PR-2 落地时会在同 callback 函数体追加 task.messages.push(...)，conflict 范围限定本函数体内。
-          onDispatched: () => {
+          // 路径触发；抛错路径不触发。
+          // PR-1 effect：置 everSentMessage=true（永不清零）。
+          // PR-2 effect：追加 task.messages（role='agent'）—— spec 2026-06-09 §4.2 invariant #3 叠加。
+          onDispatched: (entry) => {
             taskState.everSentMessage = true
+            this.appendAgentMessageBestEffort(taskState.taskId, entry)
           },
           // 透传 sub-agent trace 上下文：让 audit gate 触发的 audit subagent
           // 产生的 sub_agent_call span 挂到主 worker trace 下，admin UI 能渲染。
@@ -1413,10 +1415,12 @@ export class AgentHandler {
                 ? { sandboxPathMappingsRef: this.deps.sandboxPathMappingsRef }
                 : {}),
               // spec §4.13.6 钩子点：同 mcpConfigFactory 注入 TaskContext 时一致的 effect。
-              // post-tool flushOutboundBuffer / audit pass flush 路径触发 → everSentMessage=true。
-              // PR-2 落地时在同 callback 函数体追加 task.messages.push(...)。
-              onDispatched: () => {
+              // post-tool flushOutboundBuffer / audit pass flush 路径触发。
+              // PR-1 effect：everSentMessage=true。
+              // PR-2 effect：append task.messages（role='agent'）— spec 2026-06-09 §4.2 invariant #3。
+              onDispatched: (entry) => {
                 taskState.everSentMessage = true
+                this.appendAgentMessageBestEffort(taskState.taskId, entry)
               },
             }
             return createOutboundFlush(taskState.outboundBuffer, dispatchDeps)
@@ -2352,6 +2356,40 @@ export class AgentHandler {
    */
   private isGoalModeEnabled(triggerType: string | undefined): boolean {
     return this.extra?.goal_mode_enabled !== false && triggerType !== 'scheduled'
+  }
+
+  /**
+   * spec 2026-06-09 §4.2 + spec A §4.13.6 invariant #3:
+   * onDispatched callback 叠加 effect — 把出站消息写入 admin task.messages（role='agent'）。
+   * fire-and-forget：失败只 log，不影响 dispatch 主路径。
+   *
+   * 跟 deliverHumanResponse 里的 supplement 写入对称：人类入站 role='human'，agent 出站 role='agent'。
+   */
+  private appendAgentMessageBestEffort(taskId: string, entry: OutboundBufferEntry): void {
+    if (!this.deps?.getAdminPort || !this.deps.rpcClient) return
+    const moduleId = this.deps.moduleId
+    const getAdminPortFn = this.deps.getAdminPort
+    const rpcClient = this.deps.rpcClient
+    void (async () => {
+      try {
+        const adminPort = await getAdminPortFn()
+        await rpcClient.call(adminPort, 'append_message', {
+          task_id: taskId,
+          role: 'agent',
+          content: entry.content,
+          source: {
+            channel_id: entry.channel_id,
+            session_id: entry.session_id,
+          },
+          // entry.intent 是 'info' literal（OutboundBufferEntry 占位）；'ask_human' 路径
+          // 走 immediate-send 也共享同钩子，但 entry.intent 拿不到真值——caller 可通过
+          // task.status='waiting_human' + task.pending_question 推断 ask_human 那一条。
+          agent_intent: 'info',
+        }, moduleId)
+      } catch (err) {
+        log(`[onDispatched] append_message admin RPC failed (non-fatal) task=${taskId}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    })()
   }
 
   deliverHumanResponse(taskId: TaskId, messages: ChannelMessage[]): void {
