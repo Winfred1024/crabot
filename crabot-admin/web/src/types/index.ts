@@ -254,6 +254,16 @@ export interface LoginRequest {
 export interface LoginResponse {
   token: string
   expires_at: string
+  is_temp: boolean
+}
+
+export interface ChangePasswordRequest {
+  old_password?: string
+  new_password: string
+}
+
+export interface MeResponse {
+  is_temp: boolean
 }
 
 // ============================================================================

@@ -4,7 +4,7 @@
 
 import { api } from './api'
 import { storage } from '../utils/storage'
-import type { LoginRequest, LoginResponse } from '../types'
+import type { LoginRequest, LoginResponse, ChangePasswordRequest, MeResponse } from '../types'
 
 export const authService = {
   async login(password: string): Promise<LoginResponse> {
@@ -15,6 +15,14 @@ export const authService = {
     storage.setToken(response.token, response.expires_at)
 
     return response
+  },
+
+  async getMe(): Promise<MeResponse> {
+    return api.get<MeResponse>('/auth/me')
+  },
+
+  async changePassword(req: ChangePasswordRequest): Promise<void> {
+    await api.post<void>('/auth/change-password', req)
   },
 
   logout(): void {
