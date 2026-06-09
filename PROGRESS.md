@@ -1,6 +1,63 @@
 # Crabot 项目进度
 
-> 最后更新：2026-06-09 — Admin 密码管理重构 (credentials.json + 首登强制改密 + JWT epoch)
+> 最后更新：2026-06-09 — Skill filesystem-native 改造 (对齐 Anthropic Agent Skills 业界标准)
+
+## 最新里程碑（2026-06-09 — Skill 改造 filesystem-native）
+
+按 [Anthropic Agent Skills 业界标准](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview) 重构 skill 存储模型：从"数据库 entry 嵌入 content 字段"改成"filesystem 目录是唯一真相源"。修了 zip 上传只取 SKILL.md 丢失 scripts/references/assets 的核心 bug。
+
+- 起因：用户问"上传 skill 存哪"时发现 `importFromZip` 只读 SKILL.md，整个 zip 里的 scripts/references/assets 静默丢弃；git 导入同样残缺；importFromLocalPath 直接 reference 用户原目录用户 rm 就崩。深查后发现这不是单个 bug，是整套实现违反业界标准——业界规范要求"Skills exist as directories on a virtual machine"，而我们把"目录"压成了 JSON 的单个字符串字段
+- 设计（spec：[`2026-06-09-skill-filesystem-native-design.md`](crabot-docs/superpowers/specs/2026-06-09-skill-filesystem-native-design.md)）：
+  - skill 以标准 Anthropic 目录形态存储在 `<data_dir>/admin/skills/<skill-id>/`
+  - 三条导入路径（zip / local / git）统一 unpack 到该目录
+  - `registry.json` 只存元数据，不存 content（前端通过 REST 兼容 wrapper 即时附加 content 字段 → 零前端改动）
+  - Agent 启动期只拿 Level 1 metadata（name + description）+ skill_dir 绝对路径；Skill 工具触发时才 fs.readFile（真正的 progressive disclosure）
+  - previous_snapshot 改成 `.snapshots/<id>-<ts>/` 文件夹 swap，不再嵌进 JSON
+  - 启动期自动迁移 legacy skills.json（含 .bak-<ts> 备份）
+- 重要决策：
+  - 前端零改动：REST `toRestEntry` wrapper 即时 readFile SKILL.md 拼回 content 字段
+  - agent 子进程同主机，admin 传 skill_dir 绝对路径让 agent 直接 fs.read，不再"复制一份到 instance 私有目录"
+  - 数据迁移幂等：legacy 字段已迁完的不重跑；scanned/builtin 不复制文件只清 content 字段
+  - update/restore 改文件夹 swap 后 atomicity 经过 2 轮 review 加固：copy→tmp→rename + 三段 swap catch 分支区分 step A/B 失败
+  - 三条导入路径全部走同一个 `installSkillFromDirectory(srcDir, sourceMeta, overwrite?)` 底层函数（DRY + 统一行为）
+
+改动覆盖（14 个 commits + 1 个 polish）：
+- `feat(admin/skills): 加 installSkillFromDirectory 底层函数（filesystem-native 三路径统一入口）`
+- `fix(admin/skills): installSkillFromDirectory 加 rename 回滚 + 测试严格化（review I1+I2+I3）`
+- `fix(admin/skills): importFromZip 完整 unpack zip 到磁盘（修 scripts/references/assets 丢失 bug）`
+- `polish(admin/skills): importFromZip 补绝对路径 zip-slip + .extract 清理测试 + hoist path.resolve（review minor）`
+- `fix(admin/skills): importFromLocalPath 改成复制到 data_dir（防用户原目录变动）`
+- `fix(admin/skills): importFromGit 下载完整 archive 而非只取 SKILL.md`
+- `refactor(admin/skills): 删除 handleDuplicateOnImport（已被 installSkillFromDirectory 取代）`
+- `refactor(admin/skills): SkillRegistryEntry 删 content + update/restore 改文件夹 swap (filesystem-native)`
+- `fix(admin/skills): update/restore atomicity 修复 + 测试守卫严格化（review I1+I2+I4+M3）`
+- `feat(admin/skills): REST 序列化即时附加 content 字段（前端兼容过渡）`
+- `feat(admin/skills): 加 GET /api/skills/:id/previous-content + diff modal 适配新接口`
+- `refactor(agent/skills): SkillConfig 删 content 加 skill_dir + 删 writeSkillsToInstancePath/.skill_dir marker`
+- `chore(agent/skills): 清理 Task 9-10 后的 unused imports`
+- `feat(admin/skills): 启动期自动迁移 legacy entry 到 filesystem-native 布局（含 .bak 备份）`
+- `docs(protocols): SkillConfig 协议改 filesystem-native（删 content 加 skill_dir）+ 加 previous-content endpoint 说明`（crabot-docs 子仓库）
+
+涉及 8 个核心文件：
+- `crabot-admin/src/mcp-skill-manager.ts` — SkillRegistryEntry / 三条导入路径 / update / restore / migrateLegacyEntries / toRestEntry / readPreviousContent
+- `crabot-admin/src/index.ts` — 8 个 REST handler 走 toRestEntry + 新 `/previous-content` endpoint
+- `crabot-admin/src/types.ts` — SkillConfig 删 content 加 skill_dir
+- `crabot-admin/src/builtin-skills.ts` — 改 skill_dir 引用 + 3 个 builtin SKILL.md git mv 到目录结构
+- `crabot-admin/web/src/pages/Skills/SkillDiffModal.tsx` — 改用 `/previous-content` endpoint + loading/error 状态
+- `crabot-agent/src/types.ts` — SkillConfig 删 content 加 skill_dir required
+- `crabot-agent/src/agent/agent-handler.ts` — 删 writeSkillsToInstancePath/getInstanceSkillsDir + computeSkillsHash 改 skill_dir
+- `crabot-agent/src/engine/tools/skill-tool.ts` — 整个重写，从 skillDirByName 直接 fs.read，删 `.skill_dir` marker 解析
+
+测试：13 个新测试 + 重写若干 + 删 3 个过时（覆盖 installSkillFromDirectory 4 用例 / importFromZip 5 用例 / importFromLocalPath 2 用例 / importFromGit 4 用例 / update+restore swap 5 用例 / toRestEntry 3 用例 / migrateLegacyEntries 5 用例 + agent-handler updateSkills 4 用例 + skill-tool 重写）。admin 全套 680/680 PASS，agent 端 skill-tool 12 PASS + agent-handler 46 PASS。
+
+spec：[`crabot-docs/superpowers/specs/2026-06-09-skill-filesystem-native-design.md`](crabot-docs/superpowers/specs/2026-06-09-skill-filesystem-native-design.md)
+plan：[`crabot-docs/superpowers/plans/2026-06-09-skill-filesystem-native.md`](crabot-docs/superpowers/plans/2026-06-09-skill-filesystem-native.md)
+
+剩余手测（建议 ship 前完成）：
+1. 准备一个标准 Anthropic skill（SKILL.md + scripts/ + references/）打成 zip → Web `/skills` 上传 → 检查 `data/admin/skills/<id>/` 含 scripts/references → 通过 agent 调 `Skill("xxx")` 验证 `<skill_resources>` 列出附属文件
+2. 编辑 SKILL.md → 检查 `.snapshots/<id>-<ts>/` 完整保留旧目录 → 点"应用上一版"验证 restore swap
+3. 启动 admin 让现网 10 个 legacy skill 走 migrate → 检查 `data/admin/skills.json.bak-<ts>` 备份 + `data/admin/skills/<id>/` 目录建立
+4. 从 anthropics/skills GitHub repo 子目录导入 → 验证完整 archive 下载（不再只有 SKILL.md）
 
 ## 最新里程碑（2026-06-09 — Admin 密码管理重构）
 
