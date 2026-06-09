@@ -9,7 +9,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { createInterface } from 'node:readline'
 import { resolve, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawn, spawnSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import net from 'node:net'
@@ -73,7 +73,7 @@ if (!process.env.DATA_DIR_NOTICE_SHOWN && !HAD_EXPLICIT_DATA_DIR && OFFSET === 0
   }
 }
 
-loadEnvFile(resolve(DATA_DIR, 'admin/.env'))
+// admin/.env 已废弃（密码改存 credentials.json）；保留 ROOT/.env 兜底
 loadEnvFile(resolve(ROOT, '.env'))
 
 if (!process.env.CRABOT_JWT_SECRET) {
@@ -116,21 +116,20 @@ for (const sub of ['admin', 'agent', 'memory']) {
 
 // ── 密码检查 ──
 
-const adminEnvPath = resolve(DATA_DIR, 'admin/.env')
+const credModUrl = pathToFileURL(
+  resolve(ROOT, 'crabot-admin/dist/credentials.js'),
+).href
+const { readCredentials, writeCredentials, newCredentialsFromPassword } =
+  await import(credModUrl)
 
-if (DAEMON_MODE && !process.env.CRABOT_ADMIN_PASSWORD) {
-  // 后台模式下不能交互；检查 admin/.env 是否已有密码
-  const envExists = existsSync(adminEnvPath)
-  const envHasPassword = envExists && /^CRABOT_ADMIN_PASSWORD=/m.test(
-    readFileSync(adminEnvPath, 'utf-8'),
-  )
-  if (!envHasPassword) {
+const existingCred = await readCredentials(resolve(DATA_DIR, 'admin'))
+  // 注意：readCredentials 会自动触发 .env 兜底迁移并删 .env
+
+if (!existingCred) {
+  if (DAEMON_MODE) {
     console.error('[crabot] No admin password set. Run `crabot start` (foreground) once to set it interactively.')
     process.exit(1)
   }
-}
-
-if (!process.env.CRABOT_ADMIN_PASSWORD) {
   const prompter = createPrompter()
   const password = await prompter.ask('Set admin password: ')
   if (!password || password.length < 4) {
@@ -143,10 +142,10 @@ if (!process.env.CRABOT_ADMIN_PASSWORD) {
     console.error('[crabot] Passwords do not match.')
     process.exit(1)
   }
-  const line = `CRABOT_ADMIN_PASSWORD=${password}\n`
-  writeFileSync(adminEnvPath, existsSync(adminEnvPath) ? readFileSync(adminEnvPath, 'utf-8') + line : line)
-  process.env.CRABOT_ADMIN_PASSWORD = password
+  const newCred = await newCredentialsFromPassword(password, { is_temp: true, changed_via: 'start' })
+  await writeCredentials(resolve(DATA_DIR, 'admin'), newCred)
   console.log('[crabot] Password saved.')
+  console.log('[crabot] \x1b[33mThis is a temporary password — you will be required to change it on first login.\x1b[0m')
 }
 
 // ── 启动 Module Manager ──
