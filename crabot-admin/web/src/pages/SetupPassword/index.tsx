@@ -1,11 +1,13 @@
 import React, { useState } from 'react'
 import { useAuth } from '../../contexts/AuthContext'
 import { authService } from '../../services/auth'
+import { useToast } from '../../contexts/ToastContext'
 import { Input } from '../../components/Common/Input'
 import { Button } from '../../components/Common/Button'
 
 export const SetupPassword: React.FC = () => {
   const { logout } = useAuth()
+  const toast = useToast()
   const [newPwd, setNewPwd] = useState('')
   const [confirmPwd, setConfirmPwd] = useState('')
   const [error, setError] = useState('')
@@ -28,7 +30,7 @@ export const SetupPassword: React.FC = () => {
     try {
       await authService.changePassword({ new_password: newPwd })
       // 成功后 token 已失效（epoch++），直接 logout 让用户重登
-      alert('密码修改成功，请用新密码重新登录')
+      toast.success('密码修改成功，请用新密码重新登录')
       logout()
     } catch (err) {
       const msg = err instanceof Error ? err.message : '修改失败'

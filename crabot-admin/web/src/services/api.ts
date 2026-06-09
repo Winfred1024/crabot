@@ -36,7 +36,8 @@ class ApiClient {
       let body: { error?: string } = {}
       try { body = await response.clone().json() } catch {}
       if (body.error === 'ADMIN_TOKEN_REVOKED') {
-        alert('密码已被修改，请重新登录')
+        // token 已失效会自动跳转到 /login，重定向本身作为用户反馈
+        console.warn('[auth] token revoked — admin password was changed elsewhere')
       }
       storage.clearToken()
       window.location.href = '/login'

@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { authService } from '../services/auth'
+import { useToast } from '../contexts/ToastContext'
 import { Button } from './Common/Button'
 import { Input } from './Common/Input'
 
@@ -10,6 +11,7 @@ interface Props {
 
 export const ChangePasswordDialog: React.FC<Props> = ({ onClose }) => {
   const { logout } = useAuth()
+  const toast = useToast()
   const [oldPwd, setOldPwd] = useState('')
   const [newPwd, setNewPwd] = useState('')
   const [confirmPwd, setConfirmPwd] = useState('')
@@ -25,7 +27,7 @@ export const ChangePasswordDialog: React.FC<Props> = ({ onClose }) => {
     setLoading(true)
     try {
       await authService.changePassword({ old_password: oldPwd, new_password: newPwd })
-      alert('密码已修改，请用新密码重新登录')
+      toast.success('密码已修改，请用新密码重新登录')
       logout()
     } catch (err) {
       const e = err as Error & { body?: { error?: string } }
