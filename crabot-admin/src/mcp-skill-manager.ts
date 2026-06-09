@@ -899,44 +899,62 @@ export class SkillManager {
     sourceGitUrl?: string,
     overwrite?: boolean,
   ): Promise<{ entry: SkillRegistryEntry; was_overwrite: boolean }> {
-    // 严格限制只允许 GitHub raw 内容 URL，防止 SSRF
     let parsedUrl: URL
-    try {
-      parsedUrl = new URL(skillMdUrl)
-    } catch {
-      throw new Error('无效的 URL 格式')
-    }
-    const allowedHosts = ['raw.githubusercontent.com']
-    if (!allowedHosts.includes(parsedUrl.hostname) || parsedUrl.protocol !== 'https:') {
+    try { parsedUrl = new URL(skillMdUrl) } catch { throw new Error('无效的 URL 格式') }
+    if (parsedUrl.hostname !== 'raw.githubusercontent.com' || parsedUrl.protocol !== 'https:') {
       throw new Error('只允许 raw.githubusercontent.com 的 HTTPS URL')
     }
-
-    const response = await fetch(skillMdUrl, {
-      headers: { 'User-Agent': 'Crabot/1.0' },
-      signal: AbortSignal.timeout(15000),
-    })
-    if (!response.ok) throw new Error(`无法获取 SKILL.md: ${response.statusText}`)
-    const content = await response.text()
-    const parsed = parseSkillMd(content)
-    if (!parsed.name) throw new Error('SKILL.md 缺少 name 字段')
-    const existing = this.findByName(parsed.name)
-    if (existing) {
-      return this.handleDuplicateOnImport(existing, {
-        name: parsed.name,
-        description: parsed.description,
-        version: parsed.version,
-        content,
-        source_package: sourceGitUrl,
-      }, overwrite)
+    // path: /<owner>/<repo>/<branch>/<sub...>/SKILL.md
+    const parts = parsedUrl.pathname.replace(/^\//, '').split('/')
+    if (parts.length < 4 || parts[parts.length - 1] !== 'SKILL.md') {
+      throw new Error(`URL 格式不符：${skillMdUrl}`)
     }
-    const entry = await this.create({
-      name: parsed.name,
-      description: parsed.description,
-      version: parsed.version,
-      content,
-      source_package: sourceGitUrl,
-    })
-    return { entry, was_overwrite: false }
+    const owner = parts[0]
+    const repo = parts[1]
+    const branch = parts[2]
+    const subPath = parts.slice(3, -1).join('/') // 去掉末尾 SKILL.md
+
+    // 下载 archive zip
+    const archiveUrl = `https://codeload.github.com/${owner}/${repo}/zip/refs/heads/${branch}`
+    const res = await fetch(archiveUrl, { headers: { 'User-Agent': 'Crabot/1.0' }, signal: AbortSignal.timeout(60_000) })
+    if (!res.ok) throw new Error(`无法下载 archive: ${res.statusText}`)
+    const buf = Buffer.from(await res.arrayBuffer())
+    const zip = new AdmZip(buf)
+
+    // GitHub archive zip 顶层目录是 <repo>-<branch>/，提取 <repo>-<branch>/<subPath>/ 整个子目录到 tmp
+    await fs.mkdir(this.skillsRoot, { recursive: true })
+    const tmpExtract = path.join(this.skillsRoot, `.extract.${process.pid}.${Date.now()}.${randomBytes(4).toString('hex')}`)
+    await fs.mkdir(tmpExtract, { recursive: true })
+    try {
+      const innerPrefix = `${repo}-${branch}/${subPath ? subPath + '/' : ''}`
+      const tmpExtractResolved = path.resolve(tmpExtract)
+      const tmpExtractPrefix = tmpExtractResolved + path.sep
+      let foundSkillMd = false
+      for (const e of zip.getEntries()) {
+        if (e.isDirectory) continue
+        if (e.entryName.includes('..')) throw new Error(`archive 包含非法路径 ${e.entryName}（path traversal）`)
+        if (!e.entryName.startsWith(innerPrefix)) continue
+        const rel = e.entryName.slice(innerPrefix.length)
+        if (!rel || rel.startsWith('.snapshots/')) continue
+        if (rel === 'SKILL.md') foundSkillMd = true
+        const dst = path.join(tmpExtract, rel)
+        const resolved = path.resolve(dst)
+        if (!resolved.startsWith(tmpExtractPrefix)) {
+          throw new Error(`archive 包含非法路径 ${e.entryName}（path traversal）`)
+        }
+        await fs.mkdir(path.dirname(dst), { recursive: true })
+        await fs.writeFile(dst, e.getData())
+      }
+      if (!foundSkillMd) throw new Error(`archive 中 ${innerPrefix}SKILL.md 不存在`)
+
+      return await this.installSkillFromDirectory(
+        tmpExtract,
+        { source_type: 'imported', source_package: sourceGitUrl, source_url: skillMdUrl },
+        overwrite,
+      )
+    } finally {
+      await fs.rm(tmpExtract, { recursive: true, force: true }).catch(() => {})
+    }
   }
 
   /**

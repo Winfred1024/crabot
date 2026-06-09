@@ -260,3 +260,71 @@ describe('importFromLocalPath 复制而非引用', () => {
     await expect(manager.importFromLocalPath('/etc/foo')).rejects.toThrow(/禁止访问/)
   })
 })
+
+describe('importFromGit 拉完整 archive', () => {
+  let tmpRoot: string
+  let dataDir: string
+  let manager: SkillManager
+
+  beforeEach(async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'skill-git-'))
+    dataDir = path.join(tmpRoot, 'data')
+    await fs.mkdir(dataDir, { recursive: true })
+    manager = new SkillManager(dataDir)
+    await manager.initialize()
+  })
+  afterEach(async () => {
+    await fs.rm(tmpRoot, { recursive: true, force: true })
+    vi.restoreAllMocks()
+  })
+
+  it('从 raw URL 反推 archive，下载后拿到完整目录', async () => {
+    // 构造 GitHub archive zip（顶层目录约定为 <repo>-<branch>/）
+    const zip = new AdmZip()
+    zip.addFile('myrepo-main/skills/foo/SKILL.md', Buffer.from('---\nname: git-skill\ndescription: d\nversion: 1.0.0\n---\nbody'))
+    zip.addFile('myrepo-main/skills/foo/scripts/foo.py', Buffer.from('git'))
+    zip.addFile('myrepo-main/skills/foo/references/api.md', Buffer.from('# api'))
+    // 仓库里其它无关文件（应该被 strip）
+    zip.addFile('myrepo-main/README.md', Buffer.from('readme'))
+    zip.addFile('myrepo-main/skills/bar/SKILL.md', Buffer.from('---\nname: bar\ndescription: d\nversion: 1.0.0\n---\n'))
+    const zipBuf = zip.toBuffer()
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      statusText: 'OK',
+      arrayBuffer: async () => zipBuf.buffer.slice(zipBuf.byteOffset, zipBuf.byteOffset + zipBuf.byteLength),
+    } as Response)
+
+    const skillMdUrl = 'https://raw.githubusercontent.com/me/myrepo/main/skills/foo/SKILL.md'
+    const { entry } = await manager.importFromGit(skillMdUrl, 'https://github.com/me/myrepo')
+
+    const skillDir = entry.skill_dir!
+    expect(await fs.readFile(path.join(skillDir, 'SKILL.md'), 'utf-8')).toContain('body')
+    expect(await fs.readFile(path.join(skillDir, 'scripts', 'foo.py'), 'utf-8')).toBe('git')
+    expect(await fs.readFile(path.join(skillDir, 'references', 'api.md'), 'utf-8')).toBe('# api')
+    // 仓库外的文件不应进入 skill 目录
+    expect(await fs.access(path.join(skillDir, '..', 'README.md')).then(() => true).catch(() => false)).toBe(false)
+  })
+
+  it('拒绝非 raw.githubusercontent.com URL', async () => {
+    await expect(manager.importFromGit('https://example.com/foo/SKILL.md')).rejects.toThrow(/raw\.githubusercontent\.com/)
+  })
+
+  it('URL 格式不符（不以 SKILL.md 结尾）拒绝', async () => {
+    await expect(manager.importFromGit('https://raw.githubusercontent.com/me/repo/main/skills/foo/README.md')).rejects.toThrow(/URL 格式不符/)
+  })
+
+  it('archive 中目标子目录的 SKILL.md 不存在 → 报错', async () => {
+    const zip = new AdmZip()
+    // archive 内根本没有 skills/foo/SKILL.md
+    zip.addFile('myrepo-main/README.md', Buffer.from('readme'))
+    const zipBuf = zip.toBuffer()
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      statusText: 'OK',
+      arrayBuffer: async () => zipBuf.buffer.slice(zipBuf.byteOffset, zipBuf.byteOffset + zipBuf.byteLength),
+    } as Response)
+    await expect(manager.importFromGit('https://raw.githubusercontent.com/me/myrepo/main/skills/foo/SKILL.md'))
+      .rejects.toThrow(/SKILL\.md 不存在/)
+  })
+})
