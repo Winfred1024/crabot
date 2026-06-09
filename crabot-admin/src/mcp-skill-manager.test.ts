@@ -223,3 +223,40 @@ describe('importFromZip 完整保留 scripts/references/assets', () => {
     expect(remaining.filter(n => n.startsWith('.extract.'))).toEqual([])
   })
 })
+
+describe('importFromLocalPath 复制而非引用', () => {
+  let tmpRoot: string
+  let dataDir: string
+  let manager: SkillManager
+  beforeEach(async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'skill-local-'))
+    dataDir = path.join(tmpRoot, 'data')
+    await fs.mkdir(dataDir, { recursive: true })
+    manager = new SkillManager(dataDir)
+    await manager.initialize()
+  })
+  afterEach(async () => { await fs.rm(tmpRoot, { recursive: true, force: true }) })
+
+  it('用户原目录被删除后 skill 仍可读', async () => {
+    const userDir = path.join(tmpRoot, 'user-skill')
+    await fs.mkdir(path.join(userDir, 'scripts'), { recursive: true })
+    await fs.writeFile(path.join(userDir, 'SKILL.md'), '---\nname: local-skill\ndescription: d\nversion: 1.0.0\n---\nbody')
+    await fs.writeFile(path.join(userDir, 'scripts', 'a.py'), 'a')
+
+    const { entry } = await manager.importFromLocalPath(userDir)
+    expect(entry.skill_dir).toBeDefined()
+    const skillDir = entry.skill_dir!
+    expect(skillDir).not.toBe(userDir)
+    expect(skillDir.startsWith(path.join(dataDir, 'skills'))).toBe(true)
+
+    // 删除用户原目录
+    await fs.rm(userDir, { recursive: true })
+    // skill 仍可读
+    expect(await fs.readFile(path.join(skillDir, 'scripts', 'a.py'), 'utf-8')).toBe('a')
+  })
+
+  it('禁止访问系统敏感目录', async () => {
+    await expect(manager.importFromLocalPath('/etc')).rejects.toThrow(/禁止访问/)
+    await expect(manager.importFromLocalPath('/etc/foo')).rejects.toThrow(/禁止访问/)
+  })
+})

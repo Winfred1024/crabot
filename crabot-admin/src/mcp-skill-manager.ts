@@ -948,42 +948,15 @@ export class SkillManager {
     overwrite?: boolean,
   ): Promise<{ entry: SkillRegistryEntry; was_overwrite: boolean }> {
     const resolved = path.resolve(dirPath)
-    // 禁止访问敏感系统路径
     const FORBIDDEN_PREFIXES = ['/etc', '/proc', '/sys', '/dev', '/var/run', '/root', '/boot']
     if (FORBIDDEN_PREFIXES.some(p => resolved === p || resolved.startsWith(p + '/'))) {
       throw new Error('禁止访问此目录')
     }
-    const skillMdPath = path.join(resolved, 'SKILL.md')
-    let content: string
-    try {
-      content = await fs.readFile(skillMdPath, 'utf-8')
-    } catch {
-      throw new Error(`无法读取 ${skillMdPath}，请确认路径正确且包含 SKILL.md 文件`)
-    }
-    const parsed = parseSkillMd(content)
-    if (!parsed.name) throw new Error('SKILL.md 缺少 name 字段')
-    const existing = this.findByName(parsed.name)
-    if (existing) {
-      return this.handleDuplicateOnImport(existing, {
-        name: parsed.name,
-        description: parsed.description,
-        version: parsed.version,
-        content,
-        source_package: resolved,
-        skill_dir: resolved,
-      }, overwrite)
-    }
-    const entry = await this.create({
-      name: parsed.name,
-      description: parsed.description,
-      version: parsed.version,
-      content,
-      source_package: resolved,
-    })
-    const updated: SkillRegistryEntry = { ...entry, skill_dir: resolved, updated_at: generateTimestamp() }
-    this.skills.set(entry.id, updated)
-    await this.save()
-    return { entry: updated, was_overwrite: false }
+    return await this.installSkillFromDirectory(
+      resolved,
+      { source_type: 'imported', source_package: resolved, source_url: `file://${resolved}` },
+      overwrite,
+    )
   }
 
   /**
