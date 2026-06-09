@@ -1555,12 +1555,10 @@ export interface SkillConfig {
   id: string
   /** 名称 */
   name: string
-  /** 内容（Task 9 之后会移除；当前过渡阶段保留为可选） */
-  content?: string
   /** 描述 */
-  description?: string
-  /** Skill 目录绝对路径（filesystem-native 真相源） */
-  skill_dir?: string
+  description: string
+  /** Skill 目录绝对路径（filesystem-native 真相源；agent 子进程同主机直接 fs.read） */
+  skill_dir: string
 }
 
 /** 模型 slot 引用（存储格式：只存 provider_id + model_id，运行时由 Admin 实时解析为连接信息） */

@@ -689,8 +689,8 @@ export interface SkillConfig {
   id: string
   name: string
   description?: string
-  content: string
-  skill_dir?: string
+  /** 绝对路径，agent 子进程同主机可直接 fs.read */
+  skill_dir: string
 }
 
 export interface AgentRole {

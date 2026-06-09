@@ -17,10 +17,6 @@ export function getAdminInternalTokenPath(): string {
   return path.join(getAdminDataDir(), 'internal-token')
 }
 
-export function getInstanceSkillsDir(): string {
-  return path.join(getAgentDataDir(), 'instance', 'skills')
-}
-
 export function getBgEntitiesDir(): string {
   return path.join(getAgentDataDir(), 'bg-entities')
 }

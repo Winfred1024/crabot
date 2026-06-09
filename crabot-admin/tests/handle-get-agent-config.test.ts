@@ -37,7 +37,8 @@ function buildAdmin(deps: {
     toAgentConfig: (s: { id: string; name: string }) => ({
       id: s.id,
       name: s.name,
-      content: 'body',
+      description: '',
+      skill_dir: `/tmp/skills/${s.id}`,
     }),
   }
   admin.browserManager = { cdpUrl: 'http://localhost:9222' }

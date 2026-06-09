@@ -92,7 +92,7 @@ import { resolveSenderIdentity } from '../utils/sender-identity.js'
 import { prefetchQuotedMessages } from './quoted-message-prefetcher.js'
 import { formatNow, formatChannelMessageTime, resolveTimezone, formatRuntimeMs } from '../utils/time.js'
 import { renderActiveTasksSection } from './active-tasks-section.js'
-import { getInstanceSkillsDir, getAgentDataDir, getWorkspaceDir } from '../core/data-paths.js'
+import { getAgentDataDir, getWorkspaceDir } from '../core/data-paths.js'
 import { llmUsageToTrace } from '../core/trace-usage.js'
 import { TodoStore } from './worker-todo-store.js'
 import { createTodoTool } from './worker-todo-tool.js'
@@ -117,7 +117,7 @@ import { reflectStructuredOutcome } from '../orchestration/structured-outcome-re
 
 import * as fs from 'fs'
 import * as path from 'path'
-import { createHash, randomBytes, randomUUID } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import * as os from 'os'
 
 /**
@@ -340,15 +340,19 @@ export function adapterFromSdkEnv(sdkEnv: SdkEnvConfig) {
   })
 }
 
-/** 给 skills 列表算一个内容 hash 用于 dedupe；name + content + skill_dir 三元组决定身份 */
+/**
+ * 给 skills 列表算一个身份 hash 用于热加载防抖去重。
+ *
+ * 新协议下 admin 传 `{name, skill_dir}` 引用、不传 content；agent 直接 fs.read skill_dir，
+ * 所以身份就是 (name, skill_dir) 对的集合。同 admin push 同样的列表 → 同 hash → updateSkills
+ * 早退；避免启动期 admin 多次 trigger 推同样配置时反复重建 tool。
+ */
 function computeSkillsHash(skills: ReadonlyArray<SkillConfig>): string {
   const h = createHash('sha256')
   for (const s of [...skills].sort((a, b) => a.name.localeCompare(b.name))) {
     h.update(s.name)
     h.update('\0')
-    h.update(s.content)
-    h.update('\0')
-    h.update(s.skill_dir ?? '')
+    h.update(s.skill_dir)
     h.update('\0')
   }
   return h.digest('hex')
@@ -463,8 +467,7 @@ export class AgentHandler {
   private readonly bgCursorMap = new Map<string, number>()
   /** AbortControllers for running bg sub-agents (key=entity_id); shared with BgToolDeps + SubAgentBgContext */
   private readonly agentAbortControllers = new Map<string, AbortController>()
-  /** Skills 写盘的串行化 + 内容指纹去重；防止 admin 启动期多个 trigger 并发推送时的写盘竞态 */
-  private skillsWritePromise: Promise<void> = Promise.resolve()
+  /** updateSkills 防抖去重 —— 同 admin 重复推同样的 skills 列表跳过赋值 */
   private lastSkillsHash: string = ''
   /**
    * Bg entity exit / 重要事件的待发通知队列。key 是 address——
@@ -495,11 +498,6 @@ export class AgentHandler {
     this.memoryWriter = options?.memoryWriter
     this.promptManager = options?.promptManager
     this.getTimezone = config.getTimezone ?? (() => resolveTimezone(undefined))
-
-    // 确保 instance skills 目录存在；实际内容靠 admin 的 update_config 推送
-    // （admin 在 module_started 事件后 1s 内必推一次），不在 ctor 里 fire-and-forget 写盘
-    // 避免与 admin push 撞 race（启动期 admin 多个 trigger 可能并发触发 updateSkills）
-    fs.mkdirSync(getInstanceSkillsDir(), { recursive: true })
 
     // Startup: recover persistent bg entities (mark dead shells as failed, stalled agents)
     void this.bgRegistry.recoverPersistent().catch((err) => {
@@ -556,51 +554,16 @@ export class AgentHandler {
   }
 
   /**
-   * 热加载：更新 skills 列表 + atomic write 到 instance 级目录。
-   * - 先同步更新 this.skills（保证后续 buildSystemPrompt / Skill 工具读到最新 list）
-   * - 串行化磁盘写：所有写盘排队执行，进入临界区时读最新 this.skills snapshot；
-   *   即使 admin 启动期多个 trigger 并发推送，最终落盘的也是最后一次的内容
-   * - 内容指纹去重：连续同样内容的 push 跳过 IO
+   * 热加载：更新 skills 列表。
+   *
+   * 新协议下 admin 传 `{name, skill_dir}` 引用，agent 直接 fs.read 绝对路径 —— 不再需要
+   * 复制 SKILL.md 到 instance 目录。lastSkillsHash 用作防抖（启动期 admin 多 trigger
+   * 推同样配置时，跳过重复赋值；下一轮 LLM 调用通过 buildToolsDynamic 重建 Skill 工具）。
    */
   updateSkills(newSkills: ReadonlyArray<SkillConfig>): void {
+    const hash = computeSkillsHash(newSkills)
+    if (hash === this.lastSkillsHash) return
     this.skills = newSkills
-    void this.scheduleSkillsDiskSync()
-  }
-
-  /** 把"写最新 this.skills 到 disk"排到串行队列尾部 */
-  private scheduleSkillsDiskSync(): void {
-    this.skillsWritePromise = this.skillsWritePromise
-      .then(() => this.writeSkillsToInstancePath())
-      .catch((err) => {
-        console.error('[AgentHandler] skills disk write failed:', err)
-      })
-  }
-
-  private async writeSkillsToInstancePath(): Promise<void> {
-    // 进入临界区时读最新 snapshot——保证最后排队的写赢，且内容是最新
-    const snapshot = this.skills
-    const hash = computeSkillsHash(snapshot)
-    if (hash === this.lastSkillsHash) {
-      // 内容未变化，跳过 IO（启动期 admin 多个 trigger 推同样 config 的常见场景）
-      return
-    }
-
-    const skillsRoot = getInstanceSkillsDir()
-    // tmpDir 加 8 字节随机后缀防同 ms 撞名（若 mutex 被绕过也安全）
-    const tmpDir = `${skillsRoot}.tmp.${process.pid}.${Date.now()}.${randomBytes(4).toString('hex')}`
-    await fs.promises.mkdir(tmpDir, { recursive: true })
-    for (const skill of snapshot) {
-      const skillDir = path.join(tmpDir, skill.name)
-      await fs.promises.mkdir(skillDir, { recursive: true })
-      await fs.promises.writeFile(path.join(skillDir, 'SKILL.md'), skill.content, 'utf-8')
-      if (skill.skill_dir) {
-        await fs.promises.writeFile(path.join(skillDir, '.skill_dir'), skill.skill_dir, 'utf-8')
-      }
-    }
-    // POSIX atomic swap：先删旧 + rename tmp → 目标
-    await fs.promises.rm(skillsRoot, { recursive: true, force: true })
-    await fs.promises.mkdir(path.dirname(skillsRoot), { recursive: true })
-    await fs.promises.rename(tmpDir, skillsRoot)
     this.lastSkillsHash = hash
   }
 
@@ -873,7 +836,7 @@ export class AgentHandler {
     let loopSpanId: string | undefined
 
     try {
-      // skillsDir 在 worker init / updateSkills 时已经写好（instance-level），这里不再 per-task 写盘
+      // Skill 工具直接读 admin 传来的 skill_dir 绝对路径；agent 不再复制 SKILL.md 到 instance 目录。
 
       // Snapshot subagents at loop start. updateSubagents（admin 改 subagents 或 model_config 触发）
       // 走 hot-update 改 this.subAgents，但 in-flight loop 必须用 snapshot：避免中途换 subagent
@@ -1082,7 +1045,8 @@ export class AgentHandler {
           getCwd,
           this.builtinToolConfig,
           {
-            skillsDir: skillsSnapshot.length > 0 ? getInstanceSkillsDir() : undefined,
+            // Skill 工具直接读 admin 传来的 skill_dir 绝对路径——无需复制 SKILL.md 到 instance 目录。
+            availableSkills: skillsSnapshot,
             bgEntityCtx,
             bgToolDeps,
             // 故意不传 setCwdCtx：set_cwd 在 baseToolsRaw capture 之后单独 push，

@@ -2,18 +2,7 @@ import { readdir, readFile } from 'fs/promises'
 import { join, relative } from 'path'
 import { defineTool } from '../tool-framework'
 import type { ToolDefinition } from '../types'
-
-async function listSkillNames(skillsDir: string): Promise<ReadonlyArray<string>> {
-  try {
-    const entries = await readdir(skillsDir, { withFileTypes: true })
-    return entries
-      .filter((e) => e.isDirectory())
-      .map((e) => e.name)
-      .sort()
-  } catch {
-    return []
-  }
-}
+import type { SkillConfig } from '../../types.js'
 
 const FRONTMATTER_RE = /^---\s*\n[\s\S]*?\n---\s*\n([\s\S]*)$/
 
@@ -47,7 +36,18 @@ async function enumerateResources(skillDir: string): Promise<ReadonlyArray<strin
   return resources.sort()
 }
 
-export function createSkillTool(skillsDir: string): ToolDefinition {
+export interface SkillToolOptions {
+  readonly availableSkills: ReadonlyArray<SkillConfig>
+}
+
+export function createSkillTool(options: SkillToolOptions): ToolDefinition {
+  // 把 name → skill_dir 映射拍快照，工具内只读这个 map，不再扫盘列目录。
+  // admin 在 updateSkills 时会重建 tool（同 task 内通过 buildToolsDynamic callback），
+  // 所以 map 不需要在工具内热刷新。
+  const skillDirByName = new Map<string, string>(
+    options.availableSkills.map((s) => [s.name, s.skill_dir]),
+  )
+
   return defineTool({
     name: 'Skill',
     category: 'mcp_skill',
@@ -70,8 +70,7 @@ export function createSkillTool(skillsDir: string): ToolDefinition {
     permissionLevel: 'safe',
     call: async (input) => {
       const skillInput = (input.skill as string).trim()
-
-      const names = await listSkillNames(skillsDir)
+      const names = [...skillDirByName.keys()].sort()
 
       if (skillInput === 'list' || skillInput === '') {
         if (names.length === 0) {
@@ -96,7 +95,8 @@ export function createSkillTool(skillsDir: string): ToolDefinition {
         }
       }
 
-      const skillDir = join(skillsDir, matchedName)
+      // admin 传来的 skill_dir 是绝对路径，agent 子进程同主机直接读
+      const skillDir = skillDirByName.get(matchedName)!
       const filePath = join(skillDir, 'SKILL.md')
 
       let content: string
@@ -106,20 +106,11 @@ export function createSkillTool(skillsDir: string): ToolDefinition {
         return { output: `Failed to read skill: ${matchedName}`, isError: true }
       }
 
-      // Resolve real skill directory (may point to original source via .skill_dir marker)
-      let resolvedDir = skillDir
-      try {
-        const markerContent = await readFile(join(skillDir, '.skill_dir'), 'utf-8')
-        resolvedDir = markerContent.trim()
-      } catch {
-        // No marker file, use local directory
-      }
-
       // Strip frontmatter — body only per Agent Skills standard
       const body = stripFrontmatter(content)
 
       // Enumerate bundled resources
-      const resources = await enumerateResources(resolvedDir)
+      const resources = await enumerateResources(skillDir)
       const resourcesXml = resources.length > 0
         ? `\n<skill_resources>\n${resources.map((r) => `  <file>${r}</file>`).join('\n')}\n</skill_resources>`
         : ''
@@ -127,7 +118,7 @@ export function createSkillTool(skillsDir: string): ToolDefinition {
       const output =
         `<skill_content name="${matchedName}">\n` +
         `${body}\n\n` +
-        `Skill directory: ${resolvedDir}\n` +
+        `Skill directory: ${skillDir}\n` +
         `Relative paths in this skill are relative to the skill directory.` +
         `${resourcesXml}\n` +
         `</skill_content>`
