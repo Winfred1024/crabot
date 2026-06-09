@@ -7762,7 +7762,8 @@ export class AdminModule extends ModuleBase {
       )
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e)
-      console.warn(`[Admin] Failed to push config to Agent:`, msg)
+      const stack = e instanceof Error && e.stack ? `\n${e.stack}` : ''
+      console.warn(`[Admin] Failed to push config to Agent:`, msg, stack)
     }
   }
 
