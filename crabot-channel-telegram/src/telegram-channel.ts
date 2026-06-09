@@ -439,7 +439,7 @@ export class TelegramChannel extends ModuleBase {
    * Spec: 2026-06-04-channel-task-pickup-reaction-design.md §3
    */
   private static readonly REACTION_EMOJI_BY_KIND: Record<string, string> = {
-    acknowledged: '🫡',
+    acknowledged: '✍',
   }
 
   private async handleAddReaction(params: {
