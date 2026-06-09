@@ -168,4 +168,92 @@ export const traceService = {
   async cleanupOld(days: number, dryRun: boolean): Promise<{ affected_count: number; affected_bytes: number; deleted_trace_ids: string[] }> {
     return api.delete(`/agent/traces/old?days=${days}&dry_run=${dryRun}`)
   },
+
+  /**
+   * spec 2026-06-09-task-trace-tool-unification.md §4.3: 按 task 维度合并列表（task + 孤儿 dispatcher）。
+   * 后端 union 分页，前端拿到统一 ConversationUnit[]。
+   */
+  async listConversationUnits(params: ListConversationUnitsParams): Promise<ListConversationUnitsResult> {
+    return api.post<ListConversationUnitsResult>(`/admin/conversation-units`, params)
+  },
+}
+
+// ============================================================================
+// spec 2026-06-09-task-trace-tool-unification.md §4.3 Conversation Units types
+// ============================================================================
+
+/** Admin 视角下的 trace 元数据子集（admin types.ts TraceSummary 镜像）。 */
+export interface TraceSummary {
+  trace_id: string
+  related_task_id?: string
+  trigger_type: string
+  trigger_summary: string
+  started_at: string
+  ended_at?: string
+  duration_ms?: number
+  status: 'running' | 'completed' | 'failed'
+  outcome_summary?: string
+}
+
+/** Admin task 元数据子集（前端列表用）。 */
+export interface ConvTaskBrief {
+  id: string
+  status: string
+  priority: string
+  title: string
+  source: {
+    origin?: string
+    channel_id?: string
+    session_id?: string
+    friend_id?: string
+    trigger_type: string
+  }
+  tags: string[]
+  created_at: string
+  updated_at: string
+  started_at?: string
+  completed_at?: string
+  pending_question?: string
+  messages: Array<{ id: string; role: string; content: string; timestamp: string }>
+  result?: {
+    outcome: string
+    outcome_brief?: string
+    finished_at: string
+  }
+  goal?: {
+    objective: string
+    status: string
+  }
+}
+
+export type ConversationUnit =
+  | {
+      kind: 'task'
+      task: ConvTaskBrief
+      trace_count: number
+      worker_trace_id: string | null
+    }
+  | {
+      kind: 'orphan_dispatcher'
+      trace: TraceSummary
+    }
+
+export interface ListConversationUnitsParams {
+  filter?: {
+    status?: string | string[]
+    source_channel_id?: string
+    source_session_id?: string
+    search?: string
+    created_after?: string
+    created_before?: string
+    trigger_type?: 'message' | 'task' | 'all'
+  }
+  sort?: { field: 'created_at' | 'updated_at'; order: 'asc' | 'desc' }
+  page: number
+  page_size: number
+}
+
+export interface ListConversationUnitsResult {
+  items: ConversationUnit[]
+  pagination: { page: number; page_size: number; total_items: number; total_pages: number }
 }

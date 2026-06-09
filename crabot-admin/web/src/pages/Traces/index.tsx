@@ -11,15 +11,17 @@ import {
   type AgentTrace,
   type TraceIndexEntry,
   type SearchTracesParams,
+  type ConversationUnit,
+  type ListConversationUnitsParams,
 } from '../../services/trace'
 import {
   PAGE_SIZE,
   LIST_REFRESH_MS,
   DETAIL_REFRESH_MS,
   rangeToISO,
-  groupEntries,
   formatDateTimeLocal,
   formatDuration,
+  formatTime,
   formatTokens,
   statusColor,
   DEFAULT_FILTER,
@@ -27,7 +29,7 @@ import {
 } from './utils'
 import { FilterBar } from './FilterBar'
 import { PaginationBar } from './PaginationBar'
-import { StatusDot, TriggerBadge, AuditBadge, TraceTableRow, GroupedTableRow, TraceChip, TraceLink } from './TraceTable'
+import { StatusDot, TriggerBadge, AuditBadge, TraceTableRow, TraceChip, TraceLink } from './TraceTable'
 import { SpanTree } from './SpanTree'
 import { StatusBar } from './StatusBar'
 import { ManualCleanupDialog, AutoCleanupSettingsDialog } from './CleanupDialogs'
@@ -36,7 +38,11 @@ import { ManualCleanupDialog, AutoCleanupSettingsDialog } from './CleanupDialogs
 // 本地 type（仅主组件用）
 // ============================================================================
 
-type ViewMode = 'flat' | 'grouped'
+/**
+ * spec 2026-06-09-task-trace-tool-unification.md §4.3:
+ * 主视图按 task 维度合并（含孤儿 dispatcher 时间序合并）；'flat' 保留作 power-user fallback 看 trace 散平视图。
+ */
+type ViewMode = 'tasks' | 'flat'
 
 interface TraceTreeData {
   fronts: TraceIndexEntry[]
@@ -381,6 +387,149 @@ function TraceDetailPanel({
 }
 
 // ============================================================================
+// 子组件：ConversationUnitRow — spec 2026-06-09 §4.3 异构行渲染
+// task 行 + orphan_dispatcher 行用同一组件按 kind 分支
+// ============================================================================
+
+function ConversationUnitRow({
+  unit,
+  selectedTraceId,
+  onSelectTask,
+  onSelectTrace,
+}: {
+  unit: ConversationUnit
+  selectedTraceId: string | null
+  /** 点击 task 行 → 自动 filter by task_id + 切 flat 视图看该 task 关联所有 trace */
+  onSelectTask: (taskId: string) => void
+  /** 点击孤儿 dispatcher 行 → 加载 trace detail */
+  onSelectTrace: (traceId: string) => void
+}) {
+  const cellStyle: React.CSSProperties = {
+    padding: '6px 10px',
+    borderBottom: '1px solid var(--border)',
+    verticalAlign: 'middle',
+    fontSize: 12,
+  }
+
+  if (unit.kind === 'task') {
+    const t = unit.task
+    const channelLabel = t.source.channel_id
+      ? `${t.source.channel_id.slice(0, 16)}${t.source.session_id ? ' / ' + t.source.session_id.slice(0, 8) : ''}`
+      : '-'
+    const isTerminal = t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled'
+    return (
+      <tr
+        style={{ cursor: 'pointer', background: 'transparent' }}
+        onClick={() => onSelectTask(t.id)}
+      >
+        <td style={cellStyle}>
+          <span
+            style={{
+              background: '#8b5cf6',
+              color: 'var(--text-on-primary)',
+              fontSize: 10,
+              padding: '1px 6px',
+              borderRadius: 3,
+              fontWeight: 500,
+            }}
+          >
+            Task
+          </span>
+        </td>
+        <td style={{ ...cellStyle, fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
+          {t.id.slice(0, 12)}
+        </td>
+        <td style={{ ...cellStyle, maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <Tooltip content={t.title}>
+            <span>{t.title}</span>
+          </Tooltip>
+        </td>
+        <td style={cellStyle}>
+          <span
+            style={{
+              background: isTerminal ? statusColor(t.status === 'completed' ? 'completed' : 'failed') : '#f59e0b',
+              color: 'var(--text-on-primary)',
+              fontSize: 10,
+              padding: '1px 6px',
+              borderRadius: 3,
+              fontWeight: 600,
+              textTransform: 'uppercase',
+            }}
+          >
+            {t.status}
+          </span>
+        </td>
+        <td style={{ ...cellStyle, fontSize: 11, color: 'var(--text-muted)' }}>{channelLabel}</td>
+        <td style={{ ...cellStyle, fontVariantNumeric: 'tabular-nums', fontSize: 11 }}>
+          {formatTime(t.created_at)}
+        </td>
+        <td style={{ ...cellStyle, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+          {t.messages?.length ?? 0}
+        </td>
+      </tr>
+    )
+  }
+
+  // orphan_dispatcher
+  const tr = unit.trace
+  const isSelected = selectedTraceId === tr.trace_id
+  return (
+    <tr
+      style={{
+        cursor: 'pointer',
+        background: isSelected ? 'var(--bg-highlight, rgba(59,130,246,0.08))' : 'transparent',
+      }}
+      onClick={() => onSelectTrace(tr.trace_id)}
+    >
+      <td style={cellStyle}>
+        <Tooltip content="孤儿 dispatcher trace — dispatcher 决策为 reply / silent / forward_to_existing 等不创建 task 的动作">
+          <span
+            style={{
+              background: '#6b7280',
+              color: 'var(--text-on-primary)',
+              fontSize: 10,
+              padding: '1px 6px',
+              borderRadius: 3,
+              fontWeight: 500,
+            }}
+          >
+            对话
+          </span>
+        </Tooltip>
+      </td>
+      <td style={{ ...cellStyle, fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
+        {tr.trace_id.slice(0, 6)}
+      </td>
+      <td style={{ ...cellStyle, maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <Tooltip content={tr.trigger_summary}>
+          <span>{tr.trigger_summary || '(空)'}</span>
+        </Tooltip>
+      </td>
+      <td style={cellStyle}>
+        <span
+          style={{
+            background: statusColor(tr.status),
+            color: 'var(--text-on-primary)',
+            fontSize: 10,
+            padding: '1px 6px',
+            borderRadius: 3,
+            fontWeight: 600,
+            textTransform: 'uppercase',
+          }}
+        >
+          {tr.status}
+        </span>
+      </td>
+      <td style={{ ...cellStyle, fontSize: 11, color: 'var(--text-muted)' }}>-</td>
+      <td style={{ ...cellStyle, fontVariantNumeric: 'tabular-nums', fontSize: 11 }}>
+        {formatTime(tr.started_at)}
+      </td>
+      <td style={{ ...cellStyle, textAlign: 'right', fontSize: 11, color: 'var(--text-muted)' }}>—</td>
+    </tr>
+  )
+}
+
+// ============================================================================
 // 主页面
 // ============================================================================
 
@@ -399,11 +548,18 @@ const thStyle: React.CSSProperties = {
 export const Traces: React.FC = () => {
   const toast = useToast()
 
-  const [viewMode, setViewMode] = useState<ViewMode>('grouped')
-  const [filter, setFilter] = useState<FilterState>(DEFAULT_FILTER)
+  // spec 2026-06-09 §4.3: 默认 'tasks' 视图（task 维度合并）；'flat' 保留作 trace 散平 fallback
+  const [viewMode, setViewMode] = useState<ViewMode>('tasks')
+  const [filter, setFilter] = useState<FilterState>(() => {
+    // URL ?task_id 支持：刷新页面时保留 task 过滤（人类从 agent log grep 出来的 task_id 直接粘贴 URL）
+    const url = new URL(window.location.href)
+    const urlTaskId = url.searchParams.get('task_id') ?? ''
+    return urlTaskId ? { ...DEFAULT_FILTER, taskId: urlTaskId } : DEFAULT_FILTER
+  })
   const [page, setPage] = useState(1)
 
-  const [entries, setEntries] = useState<TraceIndexEntry[]>([])
+  const [entries, setEntries] = useState<TraceIndexEntry[]>([])  // flat view 用
+  const [units, setUnits] = useState<ConversationUnit[]>([])      // tasks view 用
   const [total, setTotal] = useState(0)
   const [listLoading, setListLoading] = useState(false)
   const [serviceError, setServiceError] = useState('')
@@ -422,46 +578,63 @@ export const Traces: React.FC = () => {
   const isFiltered =
     filter.keyword !== '' || filter.status !== '' || filter.range !== 'all' || filter.taskId !== ''
 
-  // 自动刷新策略：聚合视图（无分页）/扁平视图第 1 页 + 都要求无筛选
-  const shouldAutoRefresh =
-    autoRefresh && !isFiltered && (viewMode === 'grouped' || page === 1)
-
-  // 聚合视图一次性拉更多 trace（分组后行数会少很多），扁平视图按页拉
-  const effectiveLimit = viewMode === 'grouped' ? 100 : PAGE_SIZE
-  const effectiveOffset = viewMode === 'grouped' ? 0 : (page - 1) * PAGE_SIZE
+  // 自动刷新策略：第 1 页 + 无筛选时才刷新（避免被翻页或正在查特定 task 时打扰）
+  const shouldAutoRefresh = autoRefresh && !isFiltered && page === 1
 
   const loadList = useCallback(async () => {
     setListLoading(true)
     try {
       const range = rangeToISO(filter.range, filter.customStart, filter.customEnd)
-      const params: SearchTracesParams = {
-        limit: effectiveLimit,
-        offset: effectiveOffset,
-        ...(filter.taskId ? { task_id: filter.taskId } : {}),
-        ...(filter.keyword ? { keyword: filter.keyword } : {}),
-        ...(filter.status ? { status: filter.status } : {}),
-        ...(range.start ? { start: range.start } : {}),
-        ...(range.end ? { end: range.end } : {}),
+      if (viewMode === 'tasks') {
+        // spec §4.3: 按 task 维度合并（task + 孤儿 dispatcher 按时间排序）
+        const params: ListConversationUnitsParams = {
+          page,
+          page_size: PAGE_SIZE,
+          ...(filter.status || filter.keyword || range.start || range.end || filter.taskId ? {
+            filter: {
+              ...(filter.status ? { status: filter.status } : {}),
+              ...(filter.keyword ? { search: filter.keyword } : {}),
+              ...(range.start ? { created_after: range.start } : {}),
+              ...(range.end ? { created_before: range.end } : {}),
+              // taskId 在 tasks 视图意味着"只看这一个 task"——通过 search 字段实现（含 task_id 的部分匹配）
+            },
+          } : {}),
+        }
+        const result = await traceService.listConversationUnits(params)
+        // 如果有 taskId filter，admin 侧没原生 task_id filter，前端二次过滤
+        const filteredItems = filter.taskId
+          ? result.items.filter((u) => u.kind === 'task' && u.task.id === filter.taskId)
+          : result.items
+        setUnits(filteredItems)
+        setTotal(filter.taskId ? filteredItems.length : result.pagination.total_items)
+        setEntries([])
+      } else {
+        // 'flat' 模式仍用旧 search_traces 拿 trace 散平视图（power-user fallback）
+        const params: SearchTracesParams = {
+          limit: PAGE_SIZE,
+          offset: (page - 1) * PAGE_SIZE,
+          ...(filter.taskId ? { task_id: filter.taskId } : {}),
+          ...(filter.keyword ? { keyword: filter.keyword } : {}),
+          ...(filter.status ? { status: filter.status } : {}),
+          ...(range.start ? { start: range.start } : {}),
+          ...(range.end ? { end: range.end } : {}),
+        }
+        const result = await traceService.searchTraces(params)
+        setEntries(result.traces)
+        setTotal(result.total)
+        setUnits([])
       }
-      const result = await traceService.searchTraces(params)
-      setEntries(result.traces)
-      setTotal(result.total)
       setServiceError('')
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      setServiceError(`Agent 未响应: ${msg}`)
+      setServiceError(`服务未响应: ${msg}`)
       setEntries([])
+      setUnits([])
       setTotal(0)
     } finally {
       setListLoading(false)
     }
-  }, [filter, effectiveLimit, effectiveOffset])
-
-  // 聚合视图下从 entries 派生组
-  const groups = useMemo(
-    () => (viewMode === 'grouped' ? groupEntries(entries) : []),
-    [viewMode, entries],
-  )
+  }, [filter, page, viewMode])
 
   const loadDetail = useCallback(async (traceId: string, silent = false) => {
     if (!silent) setDetailLoading(true)
@@ -507,6 +680,22 @@ export const Traces: React.FC = () => {
   const handleFilterByTask = useCallback((taskId: string) => {
     setFilter({ ...DEFAULT_FILTER, taskId })
     setPage(1)
+    // spec §4.3 ID 一致性补丁：URL 同步 ?task_id=...，方便用户从 agent log 复制粘贴 + 浏览器后退
+    const url = new URL(window.location.href)
+    if (taskId) url.searchParams.set('task_id', taskId)
+    else url.searchParams.delete('task_id')
+    window.history.replaceState({}, '', url.toString())
+  }, [])
+
+  // 点击 task 行专用：filter by task_id + 自动切到 flat 视图（看该 task 关联所有 trace）
+  // 用户体验：tasks 视图选 task → 自动跳 flat 看 trace 细节；想回去看其他 task 切回 tasks 即可
+  const handleSelectTask = useCallback((taskId: string) => {
+    setFilter({ ...DEFAULT_FILTER, taskId })
+    setViewMode('flat')
+    setPage(1)
+    const url = new URL(window.location.href)
+    url.searchParams.set('task_id', taskId)
+    window.history.replaceState({}, '', url.toString())
   }, [])
 
   const handleClear = useCallback(async () => {
@@ -534,15 +723,19 @@ export const Traces: React.FC = () => {
   const handleResetFilter = useCallback(() => {
     setFilter(DEFAULT_FILTER)
     setPage(1)
+    // 清 URL ?task_id
+    const url = new URL(window.location.href)
+    url.searchParams.delete('task_id')
+    window.history.replaceState({}, '', url.toString())
   }, [])
 
   // 自动刷新指示文案
   const refreshStatusText = useMemo(() => {
     if (!autoRefresh) return '已暂停自动刷新'
-    if (viewMode === 'flat' && page > 1) return `第 ${page} 页 · 已暂停（翻页时不刷新）`
+    if (page > 1) return `第 ${page} 页 · 已暂停（翻页时不刷新）`
     if (isFiltered) return '已筛选 · 已暂停（筛选时不刷新）'
     return `自动刷新中（${LIST_REFRESH_MS / 1000}s）`
-  }, [autoRefresh, page, isFiltered, viewMode])
+  }, [autoRefresh, page, isFiltered])
 
   return (
     <MainLayout>
@@ -623,18 +816,18 @@ export const Traces: React.FC = () => {
             }}
           >
             <button
-              onClick={() => { setViewMode('grouped'); setPage(1) }}
+              onClick={() => { setViewMode('tasks'); setPage(1) }}
               style={{
                 padding: '6px 12px',
-                background: viewMode === 'grouped' ? 'var(--primary)' : 'transparent',
-                color: viewMode === 'grouped' ? '#1a0d06' : 'var(--text-secondary)',
+                background: viewMode === 'tasks' ? 'var(--primary)' : 'transparent',
+                color: viewMode === 'tasks' ? '#1a0d06' : 'var(--text-secondary)',
                 border: 'none',
                 cursor: 'pointer',
-                fontWeight: viewMode === 'grouped' ? 600 : 400,
+                fontWeight: viewMode === 'tasks' ? 600 : 400,
               }}
             >
-              <Tooltip content="按 task_id 把 fronts/worker/sub-agents 折叠成树（最近 100 条 trace）">
-                <span>🌳 按任务聚合</span>
+              <Tooltip content="spec 2026-06-09 §4.3：按 task 维度合并（含孤儿 dispatcher 时间序合并）+ 原生分页">
+                <span>🗂 按任务</span>
               </Tooltip>
             </button>
             <button
@@ -706,27 +899,39 @@ export const Traces: React.FC = () => {
                         zIndex: 1,
                       }}
                     >
-                      <th style={thStyle}></th>
-                      <th style={thStyle}>类型</th>
-                      <th style={thStyle}>触发摘要</th>
-                      <th style={thStyle}>关联</th>
-                      <th style={thStyle}>开始时间</th>
-                      <th style={thStyle}>耗时</th>
-                      <th style={thStyle}>Tokens</th>
-                      <th style={{ ...thStyle, textAlign: 'right' }}>Spans</th>
+                      {viewMode === 'tasks' ? (
+                        <>
+                          <th style={thStyle}>类型</th>
+                          <th style={thStyle}>标识</th>
+                          <th style={thStyle}>标题 / 摘要</th>
+                          <th style={thStyle}>状态</th>
+                          <th style={thStyle}>渠道</th>
+                          <th style={thStyle}>时间</th>
+                          <th style={{ ...thStyle, textAlign: 'right' }}>消息</th>
+                        </>
+                      ) : (
+                        <>
+                          <th style={thStyle}></th>
+                          <th style={thStyle}>类型</th>
+                          <th style={thStyle}>触发摘要</th>
+                          <th style={thStyle}>关联</th>
+                          <th style={thStyle}>开始时间</th>
+                          <th style={thStyle}>耗时</th>
+                          <th style={thStyle}>Tokens</th>
+                          <th style={{ ...thStyle, textAlign: 'right' }}>Spans</th>
+                        </>
+                      )}
                     </tr>
                   </thead>
                   <tbody>
-                    {viewMode === 'grouped'
-                      ? groups.map((g) => (
-                          <GroupedTableRow
-                            key={g.taskId ?? `orphan-${g.primary.trace_id}`}
-                            group={g}
+                    {viewMode === 'tasks'
+                      ? units.map((u) => (
+                          <ConversationUnitRow
+                            key={u.kind === 'task' ? `t-${u.task.id}` : `o-${u.trace.trace_id}`}
+                            unit={u}
                             selectedTraceId={selectedTraceId}
+                            onSelectTask={handleSelectTask}
                             onSelectTrace={handleSelectTrace}
-                            onFilterByTask={handleFilterByTask}
-                            onJumpToTrace={handleNavigateTrace}
-                            defaultExpanded={!!filter.taskId}
                           />
                         ))
                       : entries.map((entry) => (
@@ -743,34 +948,24 @@ export const Traces: React.FC = () => {
                 </table>
               )}
             </div>
-            {viewMode === 'flat' ? (
-              <PaginationBar
-                page={page}
-                pageSize={PAGE_SIZE}
-                total={total}
-                onChange={setPage}
-              />
-            ) : (
+            <PaginationBar
+              page={page}
+              pageSize={PAGE_SIZE}
+              total={total}
+              onChange={setPage}
+            />
+            {viewMode === 'tasks' && (
               <div
                 style={{
-                  padding: '8px 12px',
+                  padding: '6px 12px',
                   borderTop: '1px solid var(--border)',
                   background: 'var(--bg-secondary)',
-                  fontSize: 12,
-                  color: 'var(--text-secondary)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
+                  fontSize: 11,
+                  color: 'var(--text-muted)',
                 }}
               >
-                <span>🌳 聚合视图：</span>
-                <span style={{ fontVariantNumeric: 'tabular-nums' }}>
-                  {groups.length} 组 / 最近 {entries.length} trace（共 {total} 条）
-                </span>
-                <span style={{ flex: 1 }} />
-                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                  想看更早的 → 切到「扁平 + 分页」
-                </span>
+                spec §4.3 task 维度：点击 task 行只看该 task 的所有 trace（URL ?task_id 同步）；
+                "类型 = 对话" 表示孤儿 dispatcher（dispatcher 决策 reply/silent 不创建 task）
               </div>
             )}
           </div>

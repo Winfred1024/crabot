@@ -1918,6 +1918,12 @@ export class AdminModule extends ModuleBase {
         return
       }
 
+      // spec 2026-06-09-task-trace-tool-unification.md §4.3: 按 task 维度合并列表
+      if (pathname === '/api/admin/conversation-units' && req.method === 'POST') {
+        await this.handleListConversationUnitsApi(req, res)
+        return
+      }
+
       const traceTreeMatch = pathname.match(/^\/api\/agent\/trace-tree\/([^/]+)$/)
       if (traceTreeMatch && req.method === 'GET') {
         await this.handleGetAgentTraceTreeApi(req, res, traceTreeMatch[1])
@@ -8562,6 +8568,32 @@ export class AdminModule extends ModuleBase {
         msg.includes('connect failed')
       res.writeHead(isUnreachable ? 503 : 500, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: isUnreachable ? 'Agent not available' : msg }))
+    }
+  }
+
+  /**
+   * REST API for list_conversation_units（spec 2026-06-09 §4.3）。
+   * POST body = ListConversationUnitsParams（JSON）。
+   */
+  private async handleListConversationUnitsApi(
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    try {
+      const bodyText = await new Promise<string>((resolve, reject) => {
+        let data = ''
+        req.on('data', (chunk) => { data += chunk })
+        req.on('end', () => resolve(data))
+        req.on('error', reject)
+      })
+      const params = bodyText ? (JSON.parse(bodyText) as ListConversationUnitsParams) : { page: 1, page_size: 20 }
+      const result = await this.handleListConversationUnits(params)
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(result))
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: msg }))
     }
   }
 
