@@ -918,13 +918,23 @@ export const Traces: React.FC = () => {
             }}
           >
             <div style={{ flex: 1, overflow: 'auto' }}>
-              {listLoading && entries.length === 0 ? (
-                <div style={{ padding: 24 }}><Loading /></div>
-              ) : entries.length === 0 ? (
-                <div style={{ padding: 32, color: 'var(--text-muted)', fontSize: 13, textAlign: 'center' }}>
-                  暂无 Trace 数据{isFiltered && '（清除筛选试试？）'}
-                </div>
-              ) : (
+              {/* spec 2026-06-09 §4.3: empty 状态判断按 viewMode（'tasks' 用 units / 'flat' 用 entries） */}
+              {(() => {
+                const isEmpty = viewMode === 'tasks' ? units.length === 0 : entries.length === 0
+                const emptyLabel = viewMode === 'tasks' ? '暂无任务' : '暂无 Trace 数据'
+                if (listLoading && isEmpty) {
+                  return <div style={{ padding: 24 }}><Loading /></div>
+                }
+                if (isEmpty) {
+                  return (
+                    <div style={{ padding: 32, color: 'var(--text-muted)', fontSize: 13, textAlign: 'center' }}>
+                      {emptyLabel}{isFiltered && '（清除筛选试试？）'}
+                    </div>
+                  )
+                }
+                return null
+              })()}
+              {(viewMode === 'tasks' ? units.length > 0 : entries.length > 0) && (
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                   <thead>
                     <tr
