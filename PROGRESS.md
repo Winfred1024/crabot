@@ -1,8 +1,73 @@
 # Crabot 项目进度
 
-> 最后更新：2026-06-07 — Skill 保留上一版 + Admin UI diff + 修 undo bug
+> 最后更新：2026-06-09 — Admin 密码管理重构 (credentials.json + 首登强制改密 + JWT epoch)
 
-## 最新里程碑（2026-06-07 — Skill 保留上一版 + Admin UI diff + 修 undo bug）
+## 最新里程碑（2026-06-09 — Admin 密码管理重构）
+
+把 admin 密码从 `data/admin/.env` 明文升级为 `data/admin/credentials.json`（scrypt hash），加首登强制改密 + JWT epoch 撤销老 token 机制 + Bash hook 拦截 agent 自改密码。
+
+- 起因：明文存 .env 无首登强制改密机制，无运行时改密 API，无吊销老 token 手段；agent 可能自行修改密码而绕过审计
+- 设计：
+  - `data/admin/credentials.json`：算法 scrypt + salt + hash + params + is_temp（初始化密码标记）+ token_epoch（JWT 吊销计数器）+ 时间戳 + changed_via（start | cli | web）
+  - readCredentials 内嵌 .env 兜底迁移（任何入口都走迁移逻辑；仅含密码键时自动删 .env，否则报错）
+  - rotateCredentials 改密专用包装（验证旧密码 → epoch++ → hash 新密码）
+  - JWT payload 增加 `e: token_epoch`；admin 改密后 epoch++，老 token 携带的 e 值不匹配，login 返回 TOKEN_REVOKED；internal-token（sub='internal'）豁免 epoch 检查
+  - REST /api/auth/change-password 端点 + /api/auth/me 获取 isTemp 状态
+  - chat-manager/pty-manager 同步切到 verifyJwtWithEpoch async 验证，避免 WebSocket 路径绕过 epoch 失效
+  - Web 首登 PrivateRoute 守卫 isTemp=true → 强制跳 /setup-password 页；顶栏「修改密码」Dialog（旧密码 → 新密码二次确认）
+  - Bash PreToolUse hook 拦截三类命令：`crabot password/reset-password` 子命令、`/api/auth/change-password` 端点、`data/admin/credentials.json` 直接文件修改
+- 重要决策：
+  - 临时密码沿用 crabot start 交互式输入（由用户决定初始密码），只多打一行日志 "This is a temporary password"
+  - scrypt 使用 Node.js 原生 crypto 模块，无新依赖
+  - admin 进程不缓存密码，每次 login 实时读 credentials.json，支持后台改密无需重启
+  - .env 迁移后若仅含密码键自动删除；若含其他配置则拒绝迁移（保护用户手动维护的其他变量）
+
+改动覆盖（17 个 commits）：
+- `feat(admin): credentials.ts 加 scrypt hashPassword/verifyPassword 纯函数`
+- `feat(admin): credentials.ts 加 read/write 原子落盘（0600）`
+- `feat(admin): credentials 自动迁移旧 data/admin/.env 的 CRABOT_ADMIN_PASSWORD`
+- `feat(admin): credentials.rotateCredentials 改密专用包装（epoch++/is_temp=false）`
+- `feat(admin): types 加 ChangePassword/Me + 4 个错误码 + LoginResponse.is_temp`
+- `feat(admin): verifyJwtWithEpoch async 包装（人类 token 受 epoch 失效，internal 豁免）`
+- `feat(admin): handleLogin 改用 credentials.json + 返回 is_temp + JWT 带 epoch`
+- `feat(admin): REST 拦截改用 verifyJwtWithEpoch async + 区分 TOKEN_REVOKED`
+- `feat(admin): /api/auth/change-password + /api/auth/me + 首登免旧密语义`
+- `feat(admin): chat-manager/pty-manager 切到 verifyJwtWithEpoch（改密同步失效 WS 老 token）`
+- `feat(cli): crabot password 走 credentials 存储（hash + epoch++ + 撤销老 session）`
+- `feat(cli): crabot start 切到 credentials.json（写 is_temp=true + 不再注入 env）`
+- `chore(cli): start.mjs 清理不再使用的 writeFileSync 导入`
+- `feat(admin-web): authService 加 getMe/changePassword + LoginResponse.is_temp`
+- `feat(admin-web): AuthContext 加 isTemp + refreshMe + markPasswordChanged`
+- `feat(admin-web): /setup-password 页 + PrivateRoute is_temp 路由守卫`
+- `feat(admin-web): 顶栏加「修改密码」按钮 + ChangePasswordDialog`
+- `feat(admin-web): 401 TOKEN_REVOKED 给出明确提示`
+
+E2E（自动化）：
+- ✅ start.mjs 新建 credentials.json is_temp=true
+- ✅ crabot password 改密 epoch++、is_temp=false、changed_via=cli
+- ✅ legacy .env 迁移 + 自动删 .env
+- ✅ Bash hook deny：三种命令模式全部拦截，不误伤 crabot start
+
+**待办（用户手动 e2e）**：
+1. 启动 admin Web 用临时密码登录 → 强制跳 /setup-password
+2. 新建密码 → logout 自动 → 用新密码重登成功
+3. 顶栏「修改密码」走完整 flow（旧密码错误提示 / 成功改密后 → logout → 老 token 401 TOKEN_REVOKED）
+4. CLI `crabot password` 改密时 admin 进程在跑 → UI 立即 401 → 用新密码重登
+5. **手动 sync worktree .claude/settings.local.json 的 hook entry 到 main repo**（.claude/ gitignored，无法 commit；包含 deny-password-mutations PreToolUse hook）
+
+**Follow-up（独立 spec / session）**：
+- alert() 换 toast 方案（内在网络发散，留整个 session 处理）
+- 登录失败 rate-limit（防暴力破解）
+- 密码强度策略（必须含数字+字母，长度 8+ 字符）
+- ChangePasswordDialog UI 接入项目通用 Modal 组件库
+- AdminConfig.password_env 字段下个发布周期清理（预期无调用方）
+
+spec: [crabot-docs/superpowers/specs/2026-06-08-admin-password-management-design.md](crabot-docs/superpowers/specs/2026-06-08-admin-password-management-design.md)
+plan: [crabot-docs/superpowers/plans/2026-06-08-admin-password-management.md](crabot-docs/superpowers/plans/2026-06-08-admin-password-management.md)
+
+---
+
+## 上一里程碑（2026-06-07 — Skill 保留上一版 + Admin UI diff + 修 undo bug）
 
 skill 加 N=1 上一版快照（嵌入式存进 skills.json），新增 restore swap 能力 + REST endpoint + CLI 命令；Admin Web 加角标 + diff modal + 应用上一版按钮；顺手修了 `crabot skill add --overwrite` 的 undo bug（旧 reverse 是 delete 等于删库）。
 
