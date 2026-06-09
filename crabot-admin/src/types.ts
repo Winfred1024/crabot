@@ -917,6 +917,76 @@ export interface ListTasksParams extends PaginationParams {
 
 export type ListTasksResult = PaginatedResult<Task>
 
+// ============================================================================
+// Conversation Units —— spec 2026-06-09-task-trace-tool-unification.md §4.3
+// ============================================================================
+// Admin UI 主列表的混合渲染单元：task 维度 + 孤儿 dispatcher trace 按时间合并。
+// 替代旧的 TraceTable grouped/flat 模式。后端原生分页（task.created_at / trace.started_at
+// 作为统一时间字段）。
+
+/** Admin 视角下的 trace 元数据子集（agent 模块 TraceIndexEntry 的简化版）。 */
+export interface TraceSummary {
+  trace_id: string
+  related_task_id?: string
+  trigger_type: string // 'message' | 'task' | 'sub_agent_call' | ...
+  trigger_summary: string
+  started_at: string
+  ended_at?: string
+  duration_ms?: number
+  status: 'running' | 'completed' | 'failed'
+  outcome_summary?: string
+}
+
+/**
+ * 对话单元 —— 主列表的一行 = 一个 task 或一条孤儿 dispatcher trace。
+ *
+ * 孤儿 dispatcher = trigger_type='message' 且 related_task_id 为空（即 dispatcher 决策为
+ * reply / silent / forward_to_existing 等不创建 task 的动作）。
+ */
+export type ConversationUnit =
+  | {
+      kind: 'task'
+      task: Task
+      /** 含 dispatcher + worker + subagents trace 总数（lazy load tree 时再拉完整） */
+      trace_count: number
+      /** 主 worker trace_id；无 worker 时为 null */
+      worker_trace_id: string | null
+    }
+  | {
+      kind: 'orphan_dispatcher'
+      trace: TraceSummary
+    }
+
+export interface ListConversationUnitsParams extends PaginationParams {
+  filter?: TaskFilter & {
+    /** 仅看 task / 仅看孤儿 dispatcher / 全部（默认 all） */
+    trigger_type?: 'message' | 'task' | 'all'
+  }
+  sort?: {
+    field: 'created_at' | 'updated_at'
+    order: 'asc' | 'desc'
+  }
+}
+
+export type ListConversationUnitsResult = PaginatedResult<ConversationUnit>
+
+// ============================================================================
+// Cleanup by task count（spec §4.4）
+// ============================================================================
+
+export interface CleanupOldTasksByCountParams {
+  /** 保留最近 N 个终态 task（status ∈ {completed, failed, cancelled}）。活跃 task 不计入配额 */
+  max_count: number
+  /** 默认 false 真删；true 试运行只统计 */
+  dry_run?: boolean
+}
+
+export interface CleanupOldTasksByCountResult {
+  affected_count: number
+  affected_bytes: number
+  deleted_trace_ids: string[]
+}
+
 // 更新任务状态
 export interface UpdateTaskStatusParams {
   task_id: TaskId
@@ -1184,18 +1254,21 @@ export interface GlobalModelConfig {
   default_llm_model_id?: string
   proxy?: ProxyConfig
   /**
-   * 自动清理 trace 的保留天数；null/undefined = 不按天清理。
-   * trace_retention_days 和 trace_retention_count 互斥：同时存在时 days 优先；都为空 = 不自动清理。
+   * 自动清理的保留天数；null/undefined = 不按天清理。
+   * trace_retention_days 和 task_retention_count 互斥：同时存在时 days 优先；都为空 = 不自动清理。
    */
   trace_retention_days?: number | null
   /**
-   * 自动清理 trace 的保留条数；null/undefined = 不按条清理。
-   * 按文件粒度近似：找出第 N 条对应日期，比该日期老的整个 traces-*.jsonl 文件删除，实际保留条数 ≥ N。
+   * 自动清理的保留 task 个数；null/undefined = 不按个数清理。
    *
-   * spec 2026-06-09-task-trace-tool-unification.md §4.4 计划改成 task_retention_count（按 task 个数计），
-   * 但 PR-2 Phase 3 才动；当前 Phase 1 保持旧字段名不变。
+   * 按 admin task.completed_at 倒序拉终态 task（status ∈ {completed, failed, cancelled}），
+   * 取第 N 个的 completed_at 所在日期 D，删除 D 之前的 traces-*.jsonl + prompts-*.jsonl + admin tasks。
+   * 文件粒度按天 → 实际保留 task 数 ≥ N。活跃 task 不计入配额（活跃不能清）。
+   *
+   * spec 2026-06-09-task-trace-tool-unification.md §4.4。旧字段 trace_retention_count 已删；
+   * model-provider-manager 加载配置时做 best-effort 转换（假设每 task 平均 3 条 trace，旧值 / 3）。
    */
-  trace_retention_count?: number | null
+  task_retention_count?: number | null
 }
 
 /**

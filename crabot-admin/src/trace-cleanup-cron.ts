@@ -16,7 +16,11 @@ export function parseCleanupParams(url: URL): { days: number; dryRun: boolean } 
 export interface TraceCleanupCronDeps {
   getGlobalConfig: () => GlobalModelConfig
   callCleanup: (days: number) => Promise<{ affected_count: number; affected_bytes: number }>
-  callCleanupByCount: (maxCount: number) => Promise<{ affected_count: number; affected_bytes: number }>
+  /**
+   * spec 2026-06-09 §4.4：按 task 个数清理（替代旧的按 trace 条数）。
+   * 实现层调 admin handleCleanupOldTasksByCount。
+   */
+  callCleanupByTaskCount: (maxCount: number) => Promise<{ affected_count: number; affected_bytes: number }>
   /** 测试用：立刻触发一次 */
   runImmediately?: boolean
   /** 测试用：注入定时器 */
@@ -36,22 +40,22 @@ export function startTraceCleanupCron(deps: TraceCleanupCronDeps): () => void {
   const tick = async (): Promise<void> => {
     try {
       const cfg = deps.getGlobalConfig()
-      // 按天和按条互斥；同时存在时 days 优先（保持向后兼容）
+      // spec 2026-06-09 §4.4: 按天和按 task 个数互斥；同时存在时 days 优先（保持向后兼容）
       const days = cfg.trace_retention_days
-      const count = cfg.trace_retention_count
+      const taskCount = cfg.task_retention_count
       if (days != null && days > 0) {
         const result = await deps.callCleanup(days)
-        console.log(`[admin] trace cleanup (days=${days}): removed ${result.affected_count} traces (${result.affected_bytes} bytes)`)
+        console.log(`[admin] cleanup (days=${days}): removed ${result.affected_count} traces (${result.affected_bytes} bytes)`)
         return
       }
-      if (count != null && count > 0) {
-        const result = await deps.callCleanupByCount(count)
-        console.log(`[admin] trace cleanup (count=${count}): removed ${result.affected_count} traces (${result.affected_bytes} bytes)`)
+      if (taskCount != null && taskCount > 0) {
+        const result = await deps.callCleanupByTaskCount(taskCount)
+        console.log(`[admin] cleanup (task_count=${taskCount}): removed ${result.affected_count} traces (${result.affected_bytes} bytes)`)
         return
       }
       // 都没配 → 不清理
     } catch (err) {
-      console.error('[admin] trace cleanup failed:', err instanceof Error ? err.message : err)
+      console.error('[admin] cleanup failed:', err instanceof Error ? err.message : err)
     }
   }
 

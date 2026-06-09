@@ -8,86 +8,86 @@ describe('startTraceCleanupCron', () => {
 
   it('skips when both retention fields are null', async () => {
     const callCleanup = mkOk()
-    const callCleanupByCount = mkOk()
+    const callCleanupByTaskCount = mkOk()
     const stop = startTraceCleanupCron({
-      getGlobalConfig: () => ({ trace_retention_days: null, trace_retention_count: null }),
+      getGlobalConfig: () => ({ trace_retention_days: null, task_retention_count: null }),
       callCleanup,
-      callCleanupByCount,
+      callCleanupByTaskCount,
       runImmediately: true,
     })
     await new Promise((r) => setTimeout(r, 0))
     expect(callCleanup).not.toHaveBeenCalled()
-    expect(callCleanupByCount).not.toHaveBeenCalled()
+    expect(callCleanupByTaskCount).not.toHaveBeenCalled()
     stop()
   })
 
   it('skips when both retention fields are undefined', async () => {
     const callCleanup = mkOk()
-    const callCleanupByCount = mkOk()
+    const callCleanupByTaskCount = mkOk()
     const stop = startTraceCleanupCron({
       getGlobalConfig: () => ({}),
       callCleanup,
-      callCleanupByCount,
+      callCleanupByTaskCount,
       runImmediately: true,
     })
     await new Promise((r) => setTimeout(r, 0))
     expect(callCleanup).not.toHaveBeenCalled()
-    expect(callCleanupByCount).not.toHaveBeenCalled()
+    expect(callCleanupByTaskCount).not.toHaveBeenCalled()
     stop()
   })
 
   it('calls callCleanup with days when trace_retention_days is set', async () => {
     const callCleanup = vi.fn().mockResolvedValue({ affected_count: 5, affected_bytes: 1024 })
-    const callCleanupByCount = mkOk()
+    const callCleanupByTaskCount = mkOk()
     const stop = startTraceCleanupCron({
       getGlobalConfig: () => ({ trace_retention_days: 30 }),
       callCleanup,
-      callCleanupByCount,
+      callCleanupByTaskCount,
       runImmediately: true,
     })
     await new Promise((r) => setTimeout(r, 0))
     expect(callCleanup).toHaveBeenCalledWith(30)
-    expect(callCleanupByCount).not.toHaveBeenCalled()
+    expect(callCleanupByTaskCount).not.toHaveBeenCalled()
     stop()
   })
 
-  it('calls callCleanupByCount with count when only trace_retention_count is set', async () => {
+  it('calls callCleanupByTaskCount with task count when only task_retention_count is set', async () => {
     const callCleanup = mkOk()
-    const callCleanupByCount = vi.fn().mockResolvedValue({ affected_count: 7, affected_bytes: 2048 })
+    const callCleanupByTaskCount = vi.fn().mockResolvedValue({ affected_count: 7, affected_bytes: 2048 })
     const stop = startTraceCleanupCron({
-      getGlobalConfig: () => ({ trace_retention_count: 100 }),
+      getGlobalConfig: () => ({ task_retention_count: 100 }),
       callCleanup,
-      callCleanupByCount,
+      callCleanupByTaskCount,
       runImmediately: true,
     })
     await new Promise((r) => setTimeout(r, 0))
-    expect(callCleanupByCount).toHaveBeenCalledWith(100)
+    expect(callCleanupByTaskCount).toHaveBeenCalledWith(100)
     expect(callCleanup).not.toHaveBeenCalled()
     stop()
   })
 
   it('prefers days over count when both are set', async () => {
     const callCleanup = mkOk()
-    const callCleanupByCount = mkOk()
+    const callCleanupByTaskCount = mkOk()
     const stop = startTraceCleanupCron({
-      getGlobalConfig: () => ({ trace_retention_days: 30, trace_retention_count: 100 }),
+      getGlobalConfig: () => ({ trace_retention_days: 30, task_retention_count: 100 }),
       callCleanup,
-      callCleanupByCount,
+      callCleanupByTaskCount,
       runImmediately: true,
     })
     await new Promise((r) => setTimeout(r, 0))
     expect(callCleanup).toHaveBeenCalledWith(30)
-    expect(callCleanupByCount).not.toHaveBeenCalled()
+    expect(callCleanupByTaskCount).not.toHaveBeenCalled()
     stop()
   })
 
   it('swallows errors and continues', async () => {
     const callCleanup = vi.fn().mockRejectedValue(new Error('agent down'))
-    const callCleanupByCount = mkOk()
+    const callCleanupByTaskCount = mkOk()
     const stop = startTraceCleanupCron({
       getGlobalConfig: () => ({ trace_retention_days: 7 }),
       callCleanup,
-      callCleanupByCount,
+      callCleanupByTaskCount,
       runImmediately: true,
     })
     await new Promise((r) => setTimeout(r, 0))
@@ -101,7 +101,7 @@ describe('startTraceCleanupCron', () => {
     const stop = startTraceCleanupCron({
       getGlobalConfig: () => ({}),
       callCleanup: vi.fn(),
-      callCleanupByCount: vi.fn(),
+      callCleanupByTaskCount: vi.fn(),
       setIntervalFn: setIntervalFn as never,
       clearIntervalFn: clearIntervalFn as never,
     })

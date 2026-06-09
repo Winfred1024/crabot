@@ -980,12 +980,23 @@ export class ModelProviderManager {
       const data = await fs.readFile(this.globalConfigFilePath, 'utf-8')
       const raw = JSON.parse(data)
       // v3 起 default_embedding_* 字段已移除，老 raw 数据里如有这些字段直接忽略。
+      // spec 2026-06-09 §4.4: trace_retention_count → task_retention_count migration
+      // 旧字段 trace_retention_count 已删；按"每 task 平均 3 条 trace"折算到新单位
+      let taskRetentionCount = raw.task_retention_count ?? null
+      if (taskRetentionCount == null && raw.trace_retention_count != null && raw.trace_retention_count > 0) {
+        taskRetentionCount = Math.max(1, Math.round(raw.trace_retention_count / 3))
+        console.log(
+          `[ModelProviderManager] Migrated trace_retention_count=${raw.trace_retention_count} → ` +
+          `task_retention_count=${taskRetentionCount} (assuming 3 traces/task on average)`,
+        )
+      }
+
       this.globalConfig = {
         default_llm_provider_id: raw.default_llm_provider_id,
         default_llm_model_id: raw.default_llm_model_id,
         proxy: raw.proxy,
         trace_retention_days: raw.trace_retention_days ?? null,
-        trace_retention_count: raw.trace_retention_count ?? null,
+        task_retention_count: taskRetentionCount,
       }
       console.log('[ModelProviderManager] Loaded global config')
     } catch {

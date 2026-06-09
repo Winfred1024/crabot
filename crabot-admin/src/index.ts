@@ -57,6 +57,13 @@ import {
   type CreateTaskParams,
   type GetTaskParams,
   type ListTasksParams,
+  // spec 2026-06-09-task-trace-tool-unification.md §4.3 + §4.4
+  type ListConversationUnitsParams,
+  type ListConversationUnitsResult,
+  type ConversationUnit,
+  type TraceSummary,
+  type CleanupOldTasksByCountParams,
+  type CleanupOldTasksByCountResult,
   type UpdateTaskStatusParams,
   type AssignWorkerParams,
   type UpdatePlanParams,
@@ -498,6 +505,9 @@ export class AdminModule extends ModuleBase {
     this.registerMethod('create_task', this.handleCreateTask.bind(this))
     this.registerMethod('get_task', this.handleGetTask.bind(this))
     this.registerMethod('list_tasks', this.handleListTasks.bind(this))
+    // spec 2026-06-09-task-trace-tool-unification.md §4.3 + §4.4
+    this.registerMethod('list_conversation_units', this.handleListConversationUnits.bind(this))
+    this.registerMethod('cleanup_old_tasks_by_count', this.handleCleanupOldTasksByCount.bind(this))
     this.registerMethod('update_task_status', this.handleUpdateTaskStatus.bind(this))
     this.registerMethod('update_task_outcome', this.handleUpdateTaskOutcome.bind(this))
     this.registerMethod('assign_worker', this.handleAssignWorker.bind(this))
@@ -744,11 +754,10 @@ export class AdminModule extends ModuleBase {
           { affected_count: number; affected_bytes: number; deleted_trace_ids: string[] }
         >('cleanup_old_traces', { days, dry_run: false })
       },
-      callCleanupByCount: async (maxCount: number) => {
-        return this.callAgentRpc<
-          { max_count: number; dry_run: boolean },
-          { affected_count: number; affected_bytes: number; deleted_trace_ids: string[] }
-        >('cleanup_old_traces_by_count', { max_count: maxCount, dry_run: false })
+      // spec 2026-06-09 §4.4: 按 task 个数清理，调 admin 本地 handleCleanupOldTasksByCount
+      // （不再透传 agent traces_by_count）
+      callCleanupByTaskCount: async (maxCount: number) => {
+        return this.handleCleanupOldTasksByCount({ max_count: maxCount, dry_run: false })
       },
     })
     console.log('[Admin] Trace cleanup cron started')
@@ -846,8 +855,8 @@ export class AdminModule extends ModuleBase {
         break
 
       case 'channel.message_received': {
-        const { channel_id, message, crab_display_name } = event.payload as { channel_id: ModuleId; message: ChannelMessageRef; crab_display_name?: string }
-        await this.handleChannelMessage(channel_id, message, crab_display_name)
+        const { channel_id, message, crab_display_name, crab_self_handle } = event.payload as { channel_id: ModuleId; message: ChannelMessageRef; crab_display_name?: string; crab_self_handle?: string }
+        await this.handleChannelMessage(channel_id, message, crab_display_name, crab_self_handle)
         break
       }
       // 其他事件处理...
@@ -3508,7 +3517,7 @@ export class AdminModule extends ModuleBase {
   /**
    * 处理 channel.message_received 事件：鉴权，决定是否发出 channel.message_authorized
    */
-  private async handleChannelMessage(channelId: ModuleId, message: ChannelMessageRef, crabDisplayName?: string): Promise<void> {
+  private async handleChannelMessage(channelId: ModuleId, message: ChannelMessageRef, crabDisplayName?: string, crabSelfHandle?: string): Promise<void> {
     const { platform_user_id, platform_display_name } = message.sender
     const friend = this.resolveFriendByChannelIdentity(channelId, platform_user_id)
 
@@ -3537,7 +3546,7 @@ export class AdminModule extends ModuleBase {
         ...message,
         sender: { ...message.sender, friend_id: master.id },
       }
-      await this.publishMessageAuthorizedEvent(channelId, authorizedMessage, master, crabDisplayName)
+      await this.publishMessageAuthorizedEvent(channelId, authorizedMessage, master, crabDisplayName, crabSelfHandle)
       return
     }
 
@@ -3601,7 +3610,7 @@ export class AdminModule extends ModuleBase {
           friend_id: friend.id,
         },
       }
-      await this.publishMessageAuthorizedEvent(channelId, authorizedMessage, friend, crabDisplayName)
+      await this.publishMessageAuthorizedEvent(channelId, authorizedMessage, friend, crabDisplayName, crabSelfHandle)
       return
     }
 
@@ -3615,7 +3624,7 @@ export class AdminModule extends ModuleBase {
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       }
-      await this.publishMessageAuthorizedEvent(channelId, message, guestFriend, crabDisplayName)
+      await this.publishMessageAuthorizedEvent(channelId, message, guestFriend, crabDisplayName, crabSelfHandle)
       return
     }
 
@@ -3723,7 +3732,8 @@ export class AdminModule extends ModuleBase {
     channelId: ModuleId,
     message: ChannelMessageRef,
     friend: Friend,
-    crabDisplayName?: string
+    crabDisplayName?: string,
+    crabSelfHandle?: string
   ): Promise<void> {
     const event: Event = {
       id: generateId(),
@@ -3734,6 +3744,7 @@ export class AdminModule extends ModuleBase {
         message,
         friend,
         ...(crabDisplayName !== undefined ? { crab_display_name: crabDisplayName } : {}),
+        ...(crabSelfHandle !== undefined ? { crab_self_handle: crabSelfHandle } : {}),
       },
       timestamp: generateTimestamp(),
     }
@@ -4739,6 +4750,173 @@ export class AdminModule extends ModuleBase {
     }
 
     return stats
+  }
+
+  // ==========================================================================
+  // spec 2026-06-09-task-trace-tool-unification.md §4.3 + §4.4 实施
+  // ==========================================================================
+
+  /**
+   * 列出 conversation units（task + 孤儿 dispatcher trace 按时间合并 + 分页）。
+   *
+   * 后端 union 分页：
+   *  1. 拉所有满足 filter 的 task（按 task.created_at）
+   *  2. 拉所有满足 filter 的孤儿 dispatcher trace（按 trace.started_at），通过 agent RPC
+   *  3. union 后按统一时间字段排序
+   *  4. 按 page / page_size 切片
+   *
+   * trace_count + worker_trace_id 列表层暂返 0/null 占位（前端展开 task 时 lazy load get_trace_tree）。
+   */
+  private async handleListConversationUnits(params: ListConversationUnitsParams): Promise<ListConversationUnitsResult> {
+    // 1. 拉所有满足 filter 的 task（复用 handleListTasks 的过滤逻辑子集）
+    let tasks = Array.from(this.tasks.values())
+    if (params.filter) {
+      const filter = params.filter
+      if (filter.status) {
+        const statuses = Array.isArray(filter.status) ? filter.status : [filter.status]
+        tasks = tasks.filter((t) => statuses.includes(t.status))
+      }
+      if (filter.source_channel_id) {
+        tasks = tasks.filter((t) => t.source.channel_id === filter.source_channel_id)
+      }
+      if (filter.source_session_id) {
+        tasks = tasks.filter((t) => t.source.session_id === filter.source_session_id)
+      }
+      if (filter.search) {
+        const searchLower = filter.search.toLowerCase()
+        tasks = tasks.filter(
+          (t) =>
+            t.title.toLowerCase().includes(searchLower) ||
+            t.messages.some((m) => m.content.toLowerCase().includes(searchLower))
+        )
+      }
+      if (filter.created_after) {
+        tasks = tasks.filter((t) => t.created_at >= filter.created_after!)
+      }
+      if (filter.created_before) {
+        tasks = tasks.filter((t) => t.created_at <= filter.created_before!)
+      }
+    }
+
+    // 2. 拉孤儿 dispatcher trace（trigger_type=all from agent，admin 侧过滤孤儿）
+    // trigger_type filter: 'message' = 仅孤儿 dispatcher；'task' = 仅 task；'all' = 全部
+    const triggerType = params.filter?.trigger_type ?? 'all'
+    let orphans: TraceSummary[] = []
+    if (triggerType !== 'task') {
+      try {
+        const result = await this.callAgentRpc<
+          { keyword?: string; status?: string; time_range?: { start: string; end: string }; limit: number },
+          { traces: Array<TraceSummary & { related_task_id?: string }>; total: number }
+        >('search_traces', {
+          limit: 1000,
+          ...(params.filter?.created_after && params.filter?.created_before
+            ? { time_range: { start: params.filter.created_after, end: params.filter.created_before } }
+            : {}),
+        })
+        orphans = result.traces.filter((t) => t.trigger_type === 'message' && !t.related_task_id)
+      } catch (err) {
+        console.warn('[Admin] list_conversation_units: agent search_traces failed:', err instanceof Error ? err.message : err)
+      }
+    }
+    if (triggerType === 'message') {
+      tasks = []  // 仅看孤儿
+    }
+
+    // 3. union + 时间排序
+    const taskUnits: ConversationUnit[] = tasks.map((t) => ({
+      kind: 'task' as const,
+      task: t,
+      trace_count: 0,  // 列表层占位；前端展开时 lazy load
+      worker_trace_id: null,  // 同上
+    }))
+    const orphanUnits: ConversationUnit[] = orphans.map((t) => ({
+      kind: 'orphan_dispatcher' as const,
+      trace: t,
+    }))
+
+    const timeOf = (u: ConversationUnit): string =>
+      u.kind === 'task' ? u.task.created_at : u.trace.started_at
+
+    const all = [...taskUnits, ...orphanUnits]
+    const sortOrder = params.sort?.order ?? 'desc'
+    all.sort((a, b) => {
+      const ta = timeOf(a)
+      const tb = timeOf(b)
+      return sortOrder === 'desc' ? tb.localeCompare(ta) : ta.localeCompare(tb)
+    })
+
+    // 4. 分页
+    const page = params.page ?? 1
+    const pageSize = params.page_size ?? 20
+    const total = all.length
+    const totalPages = Math.max(1, Math.ceil(total / pageSize))
+    const offset = (page - 1) * pageSize
+    const items = all.slice(offset, offset + pageSize)
+
+    return {
+      items,
+      pagination: {
+        page,
+        page_size: pageSize,
+        total_items: total,
+        total_pages: totalPages,
+      },
+    }
+  }
+
+  /**
+   * spec §4.4: 按 task 个数清理。
+   *
+   * 1. 拉终态 task (status ∈ {completed, failed, cancelled}) + 有 completed_at
+   * 2. 按 completed_at 倒序取第 max_count 个的 completed_at 作为 cutoff
+   * 3. 删 cutoff 之前的所有 task 持久化条目 + 透传 agent cleanup_old_traces_by_count
+   *    （估算 max_count * 3 trace 作为粗略 boundary —— 真正按日期粒度精确清理需要 agent 加新 RPC,
+   *    本 Phase 3 用近似版本，等使用反馈再优化）
+   * 4. 活跃 task 不计入配额、不删
+   */
+  private async handleCleanupOldTasksByCount(params: CleanupOldTasksByCountParams): Promise<CleanupOldTasksByCountResult> {
+    const maxCount = params.max_count
+    const dryRun = params.dry_run ?? false
+    if (!Number.isFinite(maxCount) || maxCount < 1) {
+      return { affected_count: 0, affected_bytes: 0, deleted_trace_ids: [] }
+    }
+
+    const terminalTasks = Array.from(this.tasks.values())
+      .filter((t) => t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled')
+      .filter((t) => t.completed_at != null)
+      .sort((a, b) => (b.completed_at ?? '').localeCompare(a.completed_at ?? ''))
+
+    if (terminalTasks.length <= maxCount) {
+      return { affected_count: 0, affected_bytes: 0, deleted_trace_ids: [] }
+    }
+
+    const boundary = terminalTasks[maxCount - 1]
+    const cutoff = boundary.completed_at!
+    const tasksToDelete = terminalTasks.filter((t) => (t.completed_at ?? '') < cutoff)
+
+    // 透传 agent cleanup_old_traces_by_count（近似版）
+    let traceResult = { affected_count: 0, affected_bytes: 0, deleted_trace_ids: [] as string[] }
+    try {
+      traceResult = await this.callAgentRpc<
+        { max_count: number; dry_run: boolean },
+        { affected_count: number; affected_bytes: number; deleted_trace_ids: string[] }
+      >('cleanup_old_traces_by_count', { max_count: maxCount * 3, dry_run: dryRun })
+    } catch (err) {
+      console.warn('[Admin] cleanup_old_tasks_by_count: agent RPC failed:', err instanceof Error ? err.message : err)
+    }
+
+    if (!dryRun) {
+      for (const t of tasksToDelete) {
+        this.tasks.delete(t.id)
+      }
+      await this.saveTasks()
+    }
+
+    return {
+      affected_count: tasksToDelete.length + traceResult.affected_count,
+      affected_bytes: traceResult.affected_bytes,
+      deleted_trace_ids: traceResult.deleted_trace_ids,
+    }
   }
 
   async runWaitingHumanTimeoutScan(): Promise<void> {
