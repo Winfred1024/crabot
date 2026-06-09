@@ -1,9 +1,10 @@
 import React from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { ToastProvider } from './contexts/ToastContext'
 import { DialogApplicationsProvider } from './contexts/DialogApplicationsContext'
 import { Login } from './pages/Login'
+import { SetupPassword } from './pages/SetupPassword'
 import { Chat } from './pages/Chat'
 import { ProviderManagement } from './pages/Providers/ProviderManagement'
 import { ModuleList } from './pages/Modules/ModuleList'
@@ -29,14 +30,28 @@ import BgEntitiesPage from './pages/BgEntities'
 import './App.css'
 
 const PrivateRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { isAuthenticated } = useAuth()
-  return isAuthenticated ? <>{children}</> : <Navigate to="/login" replace />
+  const { isAuthenticated, isTemp } = useAuth()
+  const location = useLocation()
+  if (!isAuthenticated) return <Navigate to="/login" replace />
+  if (isTemp === null) return <div style={{ padding: 24 }}>加载中...</div>
+  if (isTemp === true && location.pathname !== '/setup-password') {
+    return <Navigate to="/setup-password" replace />
+  }
+  return <>{children}</>
 }
 
 const AppRoutes: React.FC = () => {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route
+        path="/setup-password"
+        element={
+          <PrivateRoute>
+            <SetupPassword />
+          </PrivateRoute>
+        }
+      />
       <Route
         path="/chat"
         element={
