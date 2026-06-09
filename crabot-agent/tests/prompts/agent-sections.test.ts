@@ -83,7 +83,7 @@ describe('buildWorkflow', () => {
     const result = buildWorkflow(true)
     expect(result).toContain('code_planner')
     expect(result).toContain('code_writer')
-    expect(result).toContain('禁止用 Write / Edit / Bash 直接修改用户项目代码')
+    expect(result).toContain('禁止用 Write / Edit / Bash 直接改用户项目代码')
   })
 
   it('sections appear in order: 阅读理解 → 信息收集 → 意图澄清 → [目标承诺] → 规划与执行', () => {
@@ -218,8 +218,13 @@ describe('#7 信息查询指引', () => {
   })
 
   it('含历史回溯锚点链', () => {
-    expect(INFO_QUERY_GUIDE).toContain('search_traces')
-    expect(INFO_QUERY_GUIDE).toContain('get_task_details')
+    // spec 2026-06-09 §4.1：find_task / get_task_progress 替代旧 search_traces / get_task_details 摸排路径
+    expect(INFO_QUERY_GUIDE).toContain('find_task')
+    expect(INFO_QUERY_GUIDE).toContain('get_task_progress')
+    expect(INFO_QUERY_GUIDE).toContain('search_short_term')
+    // 历史查询提示从 active-tasks-section 挪过来，必须保留"凭印象作答 = hallucination" 这条强约束
+    expect(INFO_QUERY_GUIDE).toContain('不允许凭印象或上下文猜测任务状态')
+    expect(INFO_QUERY_GUIDE).toContain('已结束的任务')
   })
 
   it('含指代消歧规则', () => {

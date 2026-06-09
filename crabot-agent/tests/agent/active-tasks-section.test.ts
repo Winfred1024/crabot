@@ -25,6 +25,7 @@ const BASE_INPUT = {
   currentChannel: 'telegram-001',
   currentSession: 'session-A',
   isMaster: true,
+  isGroup: false,
   timezone: 'Asia/Shanghai',
   now: FIXED_NOW,
 }
@@ -41,9 +42,7 @@ describe('renderActiveTasksSection', () => {
         ],
       })
       const output = lines.join('\n')
-      // self 行必须含 marker
       expect(output).toMatch(/- \[task-self\][^\n]*【本任务】/)
-      // 非 self 行禁止含 marker
       const otherLine = lines.find(l => l.includes('[task-other]'))
       expect(otherLine).toBeDefined()
       expect(otherLine).not.toContain('【本任务】')
@@ -80,22 +79,8 @@ describe('renderActiveTasksSection', () => {
     })
   })
 
-  describe('历史查询提示', () => {
-    it('activeTasks 非空时输出历史提示', () => {
-      const lines = renderActiveTasksSection({
-        ...BASE_INPUT,
-        currentTaskId: 'task-self' as TaskId,
-        activeTasks: [makeTask({ task_id: 'task-self' })],
-      })
-      const output = lines.join('\n')
-      expect(output).toContain('已结束的任务（completed / failed / cancelled）不在此清单里')
-      // spec 2026-06-09 §4.1 改成 find_task + get_task_progress（替代旧 search_traces / search_memory 摸排）
-      expect(output).toContain('find_task')
-      expect(output).toContain('get_task_progress')
-      expect(output).toContain('不允许凭印象或上下文猜测任务状态')
-    })
-
-    it('activeTasks 为空时仍输出历史提示——agent 在 active list 为空时也必须撞到', () => {
+  describe('空 list 文案', () => {
+    it('activeTasks 为空时显示"（无）"，且不输出历史查询提示（已挪到 system prompt）', () => {
       const lines = renderActiveTasksSection({
         ...BASE_INPUT,
         currentTaskId: 'task-self' as TaskId,
@@ -103,28 +88,44 @@ describe('renderActiveTasksSection', () => {
       })
       const output = lines.join('\n')
       expect(output).toContain('## 活跃任务')
-      expect(output).toContain('已结束的任务（completed / failed / cancelled）不在此清单里')
-      // spec 2026-06-09 §4.1 改成 find_task + get_task_progress（替代旧 search_traces / search_memory 摸排）
-      expect(output).toContain('find_task')
-      expect(output).toContain('get_task_progress')
-    })
-
-    it('历史提示明确点名"用户引用历史消息 / 问进度 / 上次那个"等触发场景', () => {
-      const lines = renderActiveTasksSection({
-        ...BASE_INPUT,
-        currentTaskId: 'task-self' as TaskId,
-        activeTasks: [],
-      })
-      const output = lines.join('\n')
-      // 三种用户表达全覆盖（13:56/13:57 那次撒谎现场就是被 "进度如何" / 引用历史消息 击中没反应过来）
-      expect(output).toContain('引用历史消息')
-      expect(output).toContain('进度如何')
-      expect(output).toContain('上次那个')
+      expect(output).toContain('（无）')
+      // 历史查询提示已经挪到 system prompt（agent-sections.INFO_QUERY_GUIDE）
+      expect(output).not.toContain('find_task')
+      expect(output).not.toContain('get_task_progress')
+      expect(output).not.toContain('已结束的任务')
+      expect(output).not.toContain('不允许凭印象')
     })
   })
 
-  describe('分组渲染', () => {
-    it('master 看到 current / other / scheduled 三个分组', () => {
+  describe('单组场景省略三级标题（flatten）', () => {
+    it('私聊只有当前对话任务时直接平铺，不顶 ### 标题', () => {
+      const lines = renderActiveTasksSection({
+        ...BASE_INPUT,
+        currentTaskId: 'task-self' as TaskId,
+        activeTasks: [makeTask({ task_id: 'task-self', title: '唯一任务' })],
+      })
+      const output = lines.join('\n')
+      expect(output).toContain('## 活跃任务')
+      expect(output).not.toContain('### 当前对话')
+      expect(output).toMatch(/- \[task-self\]/)
+    })
+
+    it('master 只有 scheduled 任务时也不顶 ### 标题', () => {
+      const lines = renderActiveTasksSection({
+        ...BASE_INPUT,
+        currentTaskId: 'task-sched' as TaskId,
+        activeTasks: [
+          makeTask({ task_id: 'task-sched', title: '定时', trigger_type: 'scheduled' }),
+        ],
+      })
+      const output = lines.join('\n')
+      expect(output).not.toContain('### schedule 触发')
+      expect(output).toContain('[定时/巡检任务，禁止 supplement]')
+    })
+  })
+
+  describe('多组场景才出 ### 标题', () => {
+    it('master 看到 current / other / scheduled 三组时各自加标题', () => {
       const lines = renderActiveTasksSection({
         ...BASE_INPUT,
         currentTaskId: 'task-current' as TaskId,
@@ -143,12 +144,30 @@ describe('renderActiveTasksSection', () => {
         ],
       })
       const output = lines.join('\n')
-      expect(output).toContain('### 当前对话对象的任务（1 条）')
+      expect(output).toContain('### 当前对话的任务（1 条）')
       expect(output).toContain('### 其他对话场景的任务（1 条）')
       expect(output).toContain('### schedule 触发任务（1 条）')
     })
 
-    it('非 master 不显示 other / scheduled 分组', () => {
+    it('群聊场景的"当前组"标题使用群聊措辞', () => {
+      const lines = renderActiveTasksSection({
+        ...BASE_INPUT,
+        isGroup: true,
+        currentTaskId: 'task-current' as TaskId,
+        activeTasks: [
+          makeTask({ task_id: 'task-current', title: '当前群聊任务' }),
+          makeTask({
+            task_id: 'task-other',
+            title: '别的会话',
+            source_session_id: 'session-B',
+          }),
+        ],
+      })
+      const output = lines.join('\n')
+      expect(output).toContain('### 当前群聊的任务（1 条）')
+    })
+
+    it('非 master 不显示 other / scheduled 组', () => {
       const lines = renderActiveTasksSection({
         ...BASE_INPUT,
         isMaster: false,
@@ -168,28 +187,41 @@ describe('renderActiveTasksSection', () => {
         ],
       })
       const output = lines.join('\n')
-      expect(output).toContain('### 当前对话对象的任务')
+      // 非 master 只剩当前组一组，flatten
+      expect(output).not.toContain('### 当前对话')
       expect(output).not.toContain('### 其他对话场景的任务')
       expect(output).not.toContain('### schedule 触发任务')
     })
+  })
 
-    it('scheduled task 行带禁止 supplement 标签', () => {
+  describe('scheduled 警示按需输出', () => {
+    it('没有 scheduled 任务时不输出"禁止 supplement"警示', () => {
+      const lines = renderActiveTasksSection({
+        ...BASE_INPUT,
+        currentTaskId: 'task-current' as TaskId,
+        activeTasks: [
+          makeTask({ task_id: 'task-current', title: '当前会话任务' }),
+        ],
+      })
+      const output = lines.join('\n')
+      expect(output).not.toContain('禁止 supplement')
+    })
+
+    it('有 scheduled 任务时输出警示', () => {
       const lines = renderActiveTasksSection({
         ...BASE_INPUT,
         currentTaskId: 'task-sched' as TaskId,
         activeTasks: [
-          makeTask({
-            task_id: 'task-sched',
-            title: '定时',
-            trigger_type: 'scheduled',
-          }),
+          makeTask({ task_id: 'task-sched', title: '定时', trigger_type: 'scheduled' }),
         ],
       })
       const output = lines.join('\n')
       expect(output).toContain('[定时/巡检任务，禁止 supplement]')
     })
+  })
 
-    it('waiting_human + pending_question 渲染等待问题', () => {
+  describe('waiting_human 不全文塞 pending_question', () => {
+    it('只输出一行"详情调 get_task_progress 取"摘要，不塞整段 quoted question', () => {
       const lines = renderActiveTasksSection({
         ...BASE_INPUT,
         currentTaskId: 'task-wh' as TaskId,
@@ -198,40 +230,17 @@ describe('renderActiveTasksSection', () => {
             task_id: 'task-wh',
             title: '等人答',
             status: 'waiting_human',
-            pending_question: '要不要继续？\n请回 yes/no',
+            pending_question: '要不要继续？\n请回 yes/no\n（很多行的细节...）',
           }),
         ],
       })
       const output = lines.join('\n')
-      expect(output).toContain('正在等待人类回答的问题')
-      expect(output).toContain('> 要不要继续？')
-      expect(output).toContain('> 请回 yes/no')
-    })
-  })
-
-  describe('原 13:58 撒谎场景的回归测试', () => {
-    it('单 task 在 active 列表里 + currentTaskId 跟它一致 → SELF marker 出现 + 历史提示在场', () => {
-      // 复现现场：worker 跑 trigger-dc19（用户引用消息新建的），active_tasks 里
-      // 只有这一条。agent 之前误把这条当成 trigger-66f2 (failed) 还在跑。
-      // 修复后 prompt 里 trigger-dc19 应该明确标【本任务】，且末尾提示让 agent
-      // 在再问"06:33 那条进度"时主动 search_memory / search_traces。
-      const lines = renderActiveTasksSection({
-        ...BASE_INPUT,
-        currentTaskId: 'trigger-dc19' as TaskId,
-        activeTasks: [
-          makeTask({
-            task_id: 'trigger-dc19',
-            title: '继续推进quant-signal 项目',
-            status: 'executing',
-          }),
-        ],
-      })
-      const output = lines.join('\n')
-      // SELF marker 让 agent 不再把"自己当前 task"误识别成"用户问的老任务"
-      expect(output).toMatch(/- \[trigger-dc19\][^\n]*【本任务】/)
-      // 历史提示让 agent 知道 trigger-66f2 这种 failed task 要去另一个入口找
-      // spec 2026-06-09 §4.1 改成 find_task（替代旧 search_memory + search_traces 摸排）
-      expect(output).toContain('find_task')
+      expect(output).toContain('正在等待人类回答')
+      expect(output).toContain('get_task_progress("task-wh")')
+      // 整段 quoted question 不塞 prompt
+      expect(output).not.toContain('> 要不要继续？')
+      expect(output).not.toContain('> 请回 yes/no')
+      expect(output).not.toContain('（很多行的细节')
     })
   })
 })
