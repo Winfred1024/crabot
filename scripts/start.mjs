@@ -5,7 +5,7 @@
 
 import './_preflight.mjs'
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { createInterface } from 'node:readline'
 import { resolve, dirname } from 'node:path'
