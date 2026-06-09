@@ -32,6 +32,12 @@ class ApiClient {
     })
 
     if (response.status === 401) {
+      // 尽量先解析 body 拿 error code（不阻塞 throw）
+      let body: { error?: string } = {}
+      try { body = await response.clone().json() } catch {}
+      if (body.error === 'ADMIN_TOKEN_REVOKED') {
+        alert('密码已被修改，请重新登录')
+      }
       storage.clearToken()
       window.location.href = '/login'
       throw new Error('Unauthorized')
