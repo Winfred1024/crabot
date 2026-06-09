@@ -328,3 +328,51 @@ describe('importFromGit 拉完整 archive', () => {
       .rejects.toThrow(/SKILL\.md 不存在/)
   })
 })
+
+describe('toRestEntry 即时附加 content 字段', () => {
+  let tmpRoot: string, dataDir: string, manager: SkillManager
+  beforeEach(async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'rest-entry-'))
+    dataDir = path.join(tmpRoot, 'data')
+    await fs.mkdir(dataDir, { recursive: true })
+    manager = new SkillManager(dataDir)
+    await manager.initialize()
+  })
+  afterEach(async () => { await fs.rm(tmpRoot, { recursive: true, force: true }) })
+
+  it('toRestEntry 返回 entry + 即时读到的 SKILL.md content', async () => {
+    const src = path.join(tmpRoot, 'src')
+    await fs.mkdir(src, { recursive: true })
+    await fs.writeFile(path.join(src, 'SKILL.md'), '---\nname: rest-test\ndescription: d\nversion: 1.0.0\n---\nbody-text')
+    const { entry } = await manager.importFromLocalPath(src)
+    const rest = await manager.toRestEntry(entry)
+    expect(rest.id).toBe(entry.id)
+    expect(rest.name).toBe(entry.name)
+    expect(rest.content).toContain('body-text')
+    expect(rest.skill_dir).toBe(entry.skill_dir)
+  })
+
+  it('toRestEntries 批量也对', async () => {
+    for (const n of ['a', 'b']) {
+      const src = path.join(tmpRoot, `src-${n}`)
+      await fs.mkdir(src, { recursive: true })
+      await fs.writeFile(path.join(src, 'SKILL.md'), `---\nname: skill-${n}\ndescription: d\nversion: 1.0.0\n---\nbody-${n}`)
+      await manager.importFromLocalPath(src)
+    }
+    const entries = manager.list()
+    const rests = await manager.toRestEntries(entries)
+    expect(rests.length).toBe(entries.length)
+    expect(rests.find(r => r.name === 'skill-a')?.content).toContain('body-a')
+    expect(rests.find(r => r.name === 'skill-b')?.content).toContain('body-b')
+  })
+
+  it('SKILL.md 丢失时 content 是空串而非崩', async () => {
+    const src = path.join(tmpRoot, 'src')
+    await fs.mkdir(src, { recursive: true })
+    await fs.writeFile(path.join(src, 'SKILL.md'), '---\nname: gone\ndescription: d\nversion: 1.0.0\n---\nbody')
+    const { entry } = await manager.importFromLocalPath(src)
+    await fs.rm(path.join(entry.skill_dir, 'SKILL.md'))
+    const rest = await manager.toRestEntry(entry)
+    expect(rest.content).toBe('')
+  })
+})

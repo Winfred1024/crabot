@@ -6554,7 +6554,7 @@ export class AdminModule extends ModuleBase {
   ): Promise<void> {
     const skills = this.skillManager.list()
     res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify(skills))
+    res.end(JSON.stringify(await this.skillManager.toRestEntries(skills)))
   }
 
   private async handleCreateSkillApi(
@@ -6566,7 +6566,7 @@ export class AdminModule extends ModuleBase {
       const skill = await this.skillManager.create(params)
       this.triggerPushAfter('skill create')
       res.writeHead(201, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify(skill))
+      res.end(JSON.stringify(await this.skillManager.toRestEntry(skill)))
     } catch (err) {
       res.writeHead(400, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'create failed' }))
@@ -6585,7 +6585,7 @@ export class AdminModule extends ModuleBase {
       return
     }
     res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify(skill))
+    res.end(JSON.stringify(await this.skillManager.toRestEntry(skill)))
   }
 
   private async handleUpdateSkillApi(
@@ -6598,7 +6598,7 @@ export class AdminModule extends ModuleBase {
       const skill = await this.skillManager.update(id, params)
       this.triggerPushAfter('skill update')
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify(skill))
+      res.end(JSON.stringify(await this.skillManager.toRestEntry(skill)))
     } catch (err) {
       const status = err instanceof Error && err.message.includes('not found') ? 404 : 400
       res.writeHead(status, { 'Content-Type': 'application/json' })
@@ -6773,7 +6773,7 @@ export class AdminModule extends ModuleBase {
         body.skill_md_url, body.source_git_url, body.overwrite,
       )
       res.writeHead(201, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ ...entry, was_overwrite }))
+      res.end(JSON.stringify({ ...await this.skillManager.toRestEntry(entry), was_overwrite }))
     } catch (err) {
       if (err instanceof DuplicateSkillError) {
         this.writeDuplicateSkillResponse(res, err)
@@ -6793,7 +6793,7 @@ export class AdminModule extends ModuleBase {
       const { entry, was_overwrite } = await this.skillManager.importFromLocalPath(body.dir_path, body.overwrite)
       this.triggerPushAfter('skill import-local')
       res.writeHead(201, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ ...entry, was_overwrite }))
+      res.end(JSON.stringify({ ...await this.skillManager.toRestEntry(entry), was_overwrite }))
     } catch (err) {
       if (err instanceof DuplicateSkillError) {
         this.writeDuplicateSkillResponse(res, err)
@@ -6816,7 +6816,7 @@ export class AdminModule extends ModuleBase {
       )
       this.triggerPushAfter('skill import-upload')
       res.writeHead(201, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ ...entry, was_overwrite }))
+      res.end(JSON.stringify({ ...await this.skillManager.toRestEntry(entry), was_overwrite }))
     } catch (err) {
       if (err instanceof DuplicateSkillError) {
         this.writeDuplicateSkillResponse(res, err)
@@ -6836,7 +6836,7 @@ export class AdminModule extends ModuleBase {
       const entry = await this.skillManager.restore(id)
       this.triggerPushAfter('skill restore')
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify(entry))
+      res.end(JSON.stringify(await this.skillManager.toRestEntry(entry)))
     } catch (err) {
       res.writeHead(400, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'restore failed' }))

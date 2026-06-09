@@ -852,6 +852,16 @@ export class SkillManager {
     }
   }
 
+  /** REST 兼容序列化：附加 content 字段（即时读 SKILL.md），让前端无需改动 */
+  async toRestEntry(entry: SkillRegistryEntry): Promise<SkillRegistryEntry & { content: string }> {
+    const content = await fs.readFile(path.join(entry.skill_dir, 'SKILL.md'), 'utf-8').catch(() => '')
+    return { ...entry, content }
+  }
+
+  async toRestEntries(entries: SkillRegistryEntry[]): Promise<Array<SkillRegistryEntry & { content: string }>> {
+    return Promise.all(entries.map(e => this.toRestEntry(e)))
+  }
+
   // --------------------------------------------------------------------------
   // 导入方法
   // --------------------------------------------------------------------------
