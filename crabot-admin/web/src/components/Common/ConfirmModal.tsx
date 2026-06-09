@@ -1,5 +1,6 @@
-import React, { useEffect, useId } from 'react'
+import React from 'react'
 import { Button } from './Button'
+import { Modal } from './Modal'
 
 interface ConfirmModalWarning {
   title: string
@@ -30,47 +31,41 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
   confirmVariant = 'primary',
   loading = false,
 }) => {
-  const titleId = useId()
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onCancel()
-    }
-    if (open) {
-      document.addEventListener('keydown', handleKeyDown)
-    }
-    return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [open, onCancel])
-
-  if (!open) return null
-
   return (
-    <div className="modal-overlay" onClick={onCancel}>
-      <div
-        className="modal-content"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h3 id={titleId} className="modal-title">{title}</h3>
-        <p className="modal-message">{message}</p>
-        {warning && (
-          <div className="modal-warning">
-            <div className="modal-warning-title">{warning.title}</div>
-            <ul className="modal-warning-items">
-              {warning.items.map((item, i) => <li key={i}>{item}</li>)}
-            </ul>
-            <div className="modal-warning-note">{warning.note}</div>
-          </div>
-        )}
-        <div className="modal-actions">
-          <Button variant="secondary" onClick={onCancel} disabled={loading}>取消</Button>
-          <Button variant={confirmVariant} onClick={onConfirm} disabled={loading}>
-            {loading ? '处理中...' : confirmText}
+    <Modal
+      open={open}
+      onClose={loading ? () => {} : onCancel}
+      title={title}
+      description={message}
+      hideCloseButton
+      dismissOnBackdrop={!loading}
+      dismissOnEscape={!loading}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onCancel} disabled={loading}>
+            取消
           </Button>
+          <Button
+            variant={confirmVariant}
+            onClick={onConfirm}
+            disabled={loading}
+          >
+            {loading ? '处理中…' : confirmText}
+          </Button>
+        </>
+      }
+    >
+      {warning && (
+        <div className="modal-warning">
+          <div className="modal-warning-title">{warning.title}</div>
+          <ul className="modal-warning-items">
+            {warning.items.map((item, i) => (
+              <li key={i}>{item}</li>
+            ))}
+          </ul>
+          <div className="modal-warning-note">{warning.note}</div>
         </div>
-      </div>
-    </div>
+      )}
+    </Modal>
   )
 }
