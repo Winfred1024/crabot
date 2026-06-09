@@ -889,10 +889,9 @@ export class AgentHandler {
         relatedTaskId: traceContext.relatedTaskId,
       } : undefined
 
-      // Trace search tool (异步 import，提前加载，lambda 内只用同步引用)
-      const traceSearchTool = traceContext
-        ? (await import('./trace-search-tool.js')).createSearchTracesTool(traceContext.traceStore)
-        : undefined
+      // search_traces 工具已从 LLM 工具盘移除（spec 2026-06-09-task-trace-tool-unification.md §4.1）。
+      // Agent 视角不再区分 task vs trace；查历史 task 走 find_task，看进度走 get_task_progress。
+      // trace-search-tool.ts 实现仍保留，admin UI 内部仍通过 RPC 用 traceStore.searchTraces。
 
       // Goal mode：worker 启动时拍当前 task.goal 状态快照，构造同步 getter
       // spec: 2026-05-23-goal-mode-design.md §7.5
@@ -923,17 +922,28 @@ export class AgentHandler {
         }
       }
 
-      // get_task_details 工具：让 worker 能查任意历史任务的完整执行复盘（用于"继续上次"场景）
+      // get_task_progress 工具：让 worker 能查任意历史任务的完整执行复盘（用于"继续上次"场景）
       // digest LLM 用于超阈值时压缩；缺省则只截断
+      // spec 2026-06-09-task-trace-tool-unification.md §4.1 改名 get_task_details → get_task_progress
       const digestAdapterForTool = this.digestSdkEnv ? adapterFromSdkEnv(this.digestSdkEnv) : undefined
-      const getTaskDetailsTool = (traceContext && this.deps?.getAdminPort)
-        ? (await import('./get-task-details-tool.js')).createGetTaskDetailsTool({
+      const getTaskProgressTool = (traceContext && this.deps?.getAdminPort)
+        ? (await import('./get-task-details-tool.js')).createGetTaskProgressTool({
             rpcClient: this.deps.rpcClient,
             moduleId: this.deps.moduleId,
             getAdminPort: this.deps.getAdminPort,
             traceStore: traceContext.traceStore,
             digestAdapter: digestAdapterForTool,
             digestModelId: this.digestSdkEnv?.modelId,
+          })
+        : undefined
+
+      // find_task 工具：按 task 维度找历史任务（替代 search_traces 摸排 task_id 的绕路）
+      // spec 2026-06-09-task-trace-tool-unification.md §4.1 新增
+      const findTaskTool = this.deps?.getAdminPort
+        ? (await import('./find-task-tool.js')).createFindTaskTool({
+            rpcClient: this.deps.rpcClient,
+            moduleId: this.deps.moduleId,
+            getAdminPort: this.deps.getAdminPort,
           })
         : undefined
 
@@ -1128,14 +1138,12 @@ export class AgentHandler {
           }))
         }
 
-        // 3h. Trace search tool
-        if (traceSearchTool) {
-          tools.push(traceSearchTool)
+        // 3h. find_task + get_task_progress（spec 2026-06-09 §4.1）— search_traces 已从 LLM 工具盘删除
+        if (findTaskTool) {
+          tools.push(findTaskTool)
         }
-
-        // 3i. get_task_details tool（人话化的任务复盘）
-        if (getTaskDetailsTool) {
-          tools.push(getTaskDetailsTool)
+        if (getTaskProgressTool) {
+          tools.push(getTaskProgressTool)
         }
 
         // 3j. todo tool — per-task mutable plan

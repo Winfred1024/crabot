@@ -1,14 +1,19 @@
 /**
- * get_task_details 工具 — 拉取一个任务的"完整执行复盘"。
+ * get_task_progress 工具 — 拉取一个任务的"完整执行复盘"。
+ *
+ * spec 2026-06-09-task-trace-tool-unification.md §4.1
  *
  * 用途：用户说"继续之前那个任务" / "上次到哪了" 时，agent 用这个工具拉详情，
  * 决定下一步该干什么（基于已做的工作、停止原因、遗留现场）。
  *
  * 数据源：
- * - admin.get_task → 任务元数据（title / description / plan / result / outcome / 时间）
+ * - admin.get_task → 任务元数据（title / plan / result / outcome / 时间 / messages 对话流）
  * - 本地 traceStore.getFullTrace → trace span 树（含每轮 llm_call + tool_call）
  *
- * 输出：人类可读文本。如果原始数据估算 token 超阈值，自动用 digest LLM 压缩。
+ * 输出：人类可读文本。Agent 视角下不暴露 trace_id 概念（subagent 流水按时间内嵌）。
+ * 如果原始数据估算 token 超阈值，自动用 digest LLM 压缩。
+ *
+ * 工具名从旧 get_task_details 改名 get_task_progress（spec 2026-06-09 §4.1）。
  */
 
 import type { ToolDefinition } from '../engine/types'
@@ -26,7 +31,7 @@ const COMPRESS_THRESHOLD_TOKENS = 4000
 /** tool 输出的最终硬上限（即便压缩失败也要截断） */
 const FINAL_HARD_LIMIT_CHARS = 16_000
 
-export interface GetTaskDetailsToolDeps {
+export interface GetTaskProgressToolDeps {
   readonly rpcClient: RpcClient
   readonly moduleId: string
   readonly getAdminPort: () => Promise<number>
@@ -105,25 +110,26 @@ function renderTraceFlow(traces: AgentTrace[]): string {
   return lines.join('\n')
 }
 
-/** 渲染 task 元数据段 */
+/** 渲染 task 元数据段 + 对话流 */
 function renderTaskMeta(task: {
   id: string
   title: string
   status: string
-  description?: string
   created_at: string
   updated_at: string
   started_at?: string
   completed_at?: string
   plan?: { goal: string; steps?: Array<{ description?: string; status?: string }> }
-  result?: { outcome: string; summary: string; final_reply?: { text: string } }
+  result?: { outcome: string; outcome_brief?: string; summary?: string; final_reply?: { text: string } }
   error?: string
+  messages?: Array<{ role?: string; content?: string; timestamp?: string; agent_intent?: string }>
+  pending_question?: string
 }): string {
   const lines: string[] = []
   lines.push(`# 任务 [${task.id}] ${task.title}`)
   lines.push(`状态: ${task.status}`)
   lines.push(`创建: ${fmtTime(task.created_at)} / 启动: ${fmtTime(task.started_at)} / 结束: ${fmtTime(task.completed_at)}`)
-  if (task.description) lines.push(`描述: ${task.description}`)
+  if (task.pending_question) lines.push(`等待人类回答: ${task.pending_question}`)
   if (task.plan) {
     lines.push(`计划目标: ${task.plan.goal}`)
     if (task.plan.steps && task.plan.steps.length > 0) {
@@ -133,10 +139,22 @@ function renderTaskMeta(task: {
       })
     }
   }
+  // 对话流（spec 2026-06-09 §4.2 task.messages 真值流）
+  if (task.messages && task.messages.length > 0) {
+    lines.push(`\n## 对话流（共 ${task.messages.length} 条）`)
+    for (const m of task.messages) {
+      const ts = fmtTime(m.timestamp)
+      const intentTag = m.agent_intent && m.agent_intent !== 'info' ? ` [${m.agent_intent}]` : ''
+      const roleLabel = m.role === 'human' ? '人类' : m.role === 'agent' ? 'agent' : (m.role ?? '?')
+      lines.push(`- [${ts}] ${roleLabel}${intentTag}: ${truncate(m.content, 300)}`)
+    }
+  }
   if (task.result) {
     lines.push(`\n## 最终结果`)
     lines.push(`outcome: ${task.result.outcome}`)
-    lines.push(`summary: ${task.result.summary}`)
+    // outcome_brief 是反思器写的"做了什么、是否顺利"；旧 summary 字段 deprecated 但保留兜底
+    const brief = task.result.outcome_brief ?? task.result.summary
+    if (brief) lines.push(`brief: ${brief}`)
     if (task.result.final_reply?.text) {
       lines.push(`final_reply: ${task.result.final_reply.text}`)
     }
@@ -191,21 +209,21 @@ async function compressWithDigestLLM(
   }
 }
 
-export function createGetTaskDetailsTool(deps: GetTaskDetailsToolDeps): ToolDefinition {
+export function createGetTaskProgressTool(deps: GetTaskProgressToolDeps): ToolDefinition {
   return defineTool({
-    name: 'get_task_details',
+    name: 'get_task_progress',
     description:
-      '已知 task_id 时查询任务的完整执行详情：元数据、计划、按时间顺序的工具调用流水、最终结果或停止原因。' +
+      '已知 task_id 时查询任务的完整执行进度：元数据、对话流（人/agent 消息）、计划、按时间顺序的执行流水、最终结果或停止原因。' +
       '用于回答"上次做到哪了"/"之前那个任务怎么样了"，或在"继续之前的任务"场景里判断下一步该做什么。' +
-      '【先决条件】调用前应已知 task_id——可从 active_tasks 上下文段挑，或先调 `search_short_term` / `search_traces` 拿任务流水账里的 task_id 锚点。' +
+      '【先决条件】调用前应已知 task_id——可从「## 活跃任务」段挑，或先调 `find_task` 按 status/search/time 找到。' +
       '不要用任意字符串猜 task_id；不存在的 task_id 会立即报错。' +
-      '超长时会自动压缩。',
+      '超长时会自动压缩。返回的执行细节按时间内嵌 subagent 流水，agent 视角下不暴露独立 trace_id。',
     inputSchema: {
       type: 'object',
       properties: {
         task_id: {
           type: 'string',
-          description: '要查询的任务 ID（可从 active_tasks 里挑，或用 search_short_term / search_traces 查到）',
+          description: '要查询的任务 ID（从「## 活跃任务」段挑，或用 find_task 查到）',
         },
       },
       required: ['task_id'],
@@ -214,7 +232,7 @@ export function createGetTaskDetailsTool(deps: GetTaskDetailsToolDeps): ToolDefi
     call: async (input) => {
       const { task_id } = input as { task_id: string }
       if (!task_id || typeof task_id !== 'string') {
-        return { output: 'get_task_details: task_id 必填且为字符串', isError: true }
+        return { output: 'get_task_progress: task_id 必填且为字符串', isError: true }
       }
 
       // 1. 拉 admin task 元数据
@@ -228,7 +246,7 @@ export function createGetTaskDetailsTool(deps: GetTaskDetailsToolDeps): ToolDefi
         task = result.task
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error)
-        return { output: `get_task_details: 找不到任务 ${task_id}（${msg}）`, isError: true }
+        return { output: `get_task_progress: 找不到任务 ${task_id}（${msg}）`, isError: true }
       }
 
       // 2. 拉本地 trace 树，加载完整 trace（getFullTrace 走 ring buffer + 文件按需读）

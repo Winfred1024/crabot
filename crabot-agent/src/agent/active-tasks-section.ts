@@ -43,10 +43,11 @@ const HISTORY_HINT_LINES: ReadonlyArray<string> = [
   '',
   '上面"活跃任务"清单只包含 admin 维护的活跃状态（pending / planning / executing / waiting_human）。',
   '**已结束的任务（completed / failed / cancelled）不在此清单里**，但它们仍存在历史中：',
-  '- 已知 task_id 或 trace_id → `search_traces` 拿过程详情',
-  '- 不知道 ID（只记得时间窗 / 关键词 / 对话锚点）→ 先 `search_memory level=short_term` 拿到 task_id 锚点，再 `search_traces`',
+  '- 已知 task_id → `get_task_progress(task_id)` 拿完整执行流水（含对话流 + 工具调用序列）',
+  '- 不知道 task_id（只记得时间窗 / 关键词 / 对话锚点）→ `find_task` 按 status / search / time_range / channel_id 找；找到后用 `get_task_progress`',
+  '- `find_task` 的 search 关键词在 task.title + 对话流（task.messages[].content）上匹配，按聊天细节词查找命中率高',
   '',
-  '**凡用户提到 / 暗示 / 引用过去的事（"上次那个" / "进度如何" / 引用历史消息 / 你自己在 recent_messages 里说过却找不到对应 active task），先调上述工具查清楚再答——不允许凭印象或上下文猜测任务状态。**',
+  '**凡用户提到 / 暗示 / 引用过去的事（"上次那个" / "进度如何" / 引用历史消息 / 你自己在 recent_messages 里说过却找不到对应 active task），先调 find_task / get_task_progress 查清楚再答——不允许凭印象或上下文猜测任务状态。**',
 ]
 
 export function renderActiveTasksSection(input: RenderActiveTasksInput): string[] {

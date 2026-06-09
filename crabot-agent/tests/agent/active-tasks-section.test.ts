@@ -89,8 +89,9 @@ describe('renderActiveTasksSection', () => {
       })
       const output = lines.join('\n')
       expect(output).toContain('已结束的任务（completed / failed / cancelled）不在此清单里')
-      expect(output).toContain('search_traces')
-      expect(output).toContain('search_memory')
+      // spec 2026-06-09 §4.1 改成 find_task + get_task_progress（替代旧 search_traces / search_memory 摸排）
+      expect(output).toContain('find_task')
+      expect(output).toContain('get_task_progress')
       expect(output).toContain('不允许凭印象或上下文猜测任务状态')
     })
 
@@ -103,8 +104,9 @@ describe('renderActiveTasksSection', () => {
       const output = lines.join('\n')
       expect(output).toContain('## 活跃任务')
       expect(output).toContain('已结束的任务（completed / failed / cancelled）不在此清单里')
-      expect(output).toContain('search_traces')
-      expect(output).toContain('search_memory')
+      // spec 2026-06-09 §4.1 改成 find_task + get_task_progress（替代旧 search_traces / search_memory 摸排）
+      expect(output).toContain('find_task')
+      expect(output).toContain('get_task_progress')
     })
 
     it('历史提示明确点名"用户引用历史消息 / 问进度 / 上次那个"等触发场景', () => {
@@ -228,7 +230,8 @@ describe('renderActiveTasksSection', () => {
       // SELF marker 让 agent 不再把"自己当前 task"误识别成"用户问的老任务"
       expect(output).toMatch(/- \[trigger-dc19\][^\n]*【本任务】/)
       // 历史提示让 agent 知道 trigger-66f2 这种 failed task 要去另一个入口找
-      expect(output).toContain('search_memory')
+      // spec 2026-06-09 §4.1 改成 find_task（替代旧 search_memory + search_traces 摸排）
+      expect(output).toContain('find_task')
     })
   })
 })
