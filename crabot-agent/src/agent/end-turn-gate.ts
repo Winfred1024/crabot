@@ -5,12 +5,16 @@
  *  - 旧：闭包 await runGoalAudit → 10-30s 阻塞 main loop
  *  - 新：闭包 spawnAuditSubagent → 立即返回 audit_id，注入 [audit_pending] marker → 续 turn 不真 end_turn
  *
- * 闭包行为（spec 2026-06-07-goal-audit-async-buffered-info-design.md §4.3）：
+ * 闭包行为（spec 2026-06-07-goal-audit-async-buffered-info-design.md §4.3 + Revision 2026-06-09 第 2 段 §4.13）：
  *  1. goalSetCache=false（worker 尚未 set_task_goal）→ null（透明放行）
- *  2. outboundBuffer 空 → null（无 final 待审；讨论型/进度型场景已 flush）
- *  3. 拿 goal（admin get_task RPC）；缺失/RPC 挂 → null（fail-open）
- *  4. spawnAuditSubagent → 设 taskState.activeAuditId → 返回 [audit_pending] marker
- *  5. spawn 抛错 → null（fail-open，console.warn 记录）
+ *  2. buffer 空：
+ *     2a. everSentMessage=true → null（讨论型场景：之前 flush 过 info，这次没事干 end_turn）
+ *     2b. !everSentMessage + retries < 3 → 塞 GOAL_MODE_NO_DELIVERY_PROMPT、retries++
+ *     2c. !everSentMessage + retries ≥ 3 → 强制走"派 audit"路径（即使 buffer 空），让 auditor 跑一次正式评估
+ *  3. buffer 非空 → 走"派 audit"路径
+ *  4. "派 audit"共享路径：拿 goal（admin get_task RPC）；缺失/RPC 挂 → null（fail-open）
+ *  5. spawnAuditSubagent → 设 taskState.activeAuditId → 返回 [audit_pending] marker
+ *  6. spawn 抛错 → null（fail-open，console.warn 记录）
  *
  * runGoalAudit 保留不动，未来如需 sync fallback / 兼容旧路径仍可用。
  */
@@ -20,6 +24,19 @@ import { spawnAuditSubagent, type SpawnAuditSubagentDeps } from './audit-spawn.j
 import type { GoalAuditTaskGoal } from './goal-audit.js'
 import type { RpcClient } from 'crabot-shared'
 import type { WorkerTaskState } from '../types.js'
+
+/**
+ * "buffer 空 + has goal + !everSentMessage" 路径前 3 次注入的提示文案。
+ * 第 4 次起切走强制派 audit 路径（spec §4.13.4 / §4.13.5）。
+ */
+export const GOAL_MODE_NO_DELIVERY_PROMPT =
+  '你设了 task goal 但从未通过 send_message 交付任何内容给人类。\n'
+  + 'audit 在这种情况下默认判 incomplete。请选一条路径继续：\n'
+  + '  ① 继续工作（调你需要的工具完成 acceptance_criteria）\n'
+  + '  ② 如果遇到实际阻塞或需要人类决策，调 send_message(intent=\'ask_human\') 提问\n'
+  + '不要再次直接 end_turn——它会再次注入本提示，反复 3 次后强制派 audit subagent 评估你的进度。'
+
+const MAX_SILENT_NO_DELIVERY_RETRIES = 3
 
 export interface AsyncAuditEndTurnGateDeps {
   /** 任务 ID — admin RPC 查 goal 用 + 透传给 spawnAuditSubagent。 */
@@ -62,10 +79,27 @@ export function createAsyncAuditEndTurnGate(
     // 1. 工作态门控：worker 尚未 set_task_goal → 没东西要审 → 透明放行
     if (!deps.goalSetCacheGetter()) return null
 
-    // 2. 空 buffer 走 passthrough — 讨论型/进度型场景已 flush，无 final 待审
-    if (deps.taskState.outboundBuffer.length === 0) return null
+    // 2. buffer 空分支（spec §4.13.4 二级决策）
+    //    has goal + buffer 空 命中以下三种情形之一：
+    //    - 从未 audit（agent 全程没 send_message 触发过 audit）
+    //    - 上一轮 audit fail，agent 看完 detailedReport 又直接 end_turn（buffer 在 fail 时已 drop）
+    //    - 上一轮 audit aborted（改 goal 触发），agent 看完 abort marker 又直接 end_turn
+    //    按 everSentMessage 区分讨论型 vs 从未交付。
+    if (deps.taskState.outboundBuffer.length === 0) {
+      if (deps.taskState.everSentMessage) {
+        // 讨论型放行：之前 flush 过 info，这次没事干 end_turn 是预期行为
+        return null
+      }
+      // !everSentMessage：goal 设了但从未交付
+      if (deps.taskState.silentNoDeliveryRetries < MAX_SILENT_NO_DELIVERY_RETRIES) {
+        deps.taskState.silentNoDeliveryRetries++
+        return GOAL_MODE_NO_DELIVERY_PROMPT
+      }
+      // 兜底耗尽：fall through 到 audit-spawn 共享路径，强制派 audit（buffer 空也派，让 auditor 跑一次正式评估）
+    }
 
     // 3. 拿 goal（闭包触发时 RPC，保证拿到最新值；set_task_goal 改 goal 后立刻生效）
+    //    buffer 非空 / 强制 audit 两条路径共享。
     let goal: GoalAuditTaskGoal
     try {
       const adminPort = await deps.getAdminPort()

@@ -58,13 +58,34 @@ export interface OutboundBufferEntry {
 }
 
 /**
+ * dispatch 钩子点 — `dispatchOutboundMessage` success 路径触发一次。
+ *
+ * spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.13.6 Invariants
+ *
+ * Invariant #1 — anchor 钉在 `dispatchOutboundMessage` success 返回之后：
+ *   immediate-send / 缓冲分支新顶旧 sync flush / post-tool flush / audit pass flush
+ *   四个入口的所有 caller 共享同一钩子，自动统一。
+ *
+ * Invariant #2 — `dispatchOutboundMessage` 抛错时不触发钩子：
+ *   everSentMessage 不置 true、task.messages 不追加；"未送达 = 未发过" 跨边界对称。
+ *
+ * Invariant #3 — 钩子点是叠加点：
+ *   PR-1（本 spec §4.13）加 `taskState.everSentMessage = true`
+ *   PR-2（spec B §4.2）会在同函数体后续追加 `task.messages.push(...)`
+ *   未来扩展可继续叠加，conflict 严格限定在 callback 函数体内。
+ */
+export type OnDispatchedHook = (entry: OutboundBufferEntry) => void
+
+/**
  * dispatchOutboundMessage 所需依赖。
  *
  * - rpcClient + moduleId: 调 channel sendMessage / admin get_friend
  * - resolveChannelPort: channelId → 端口
  * - getAdminPort: 解析 friend_id 时调 admin
- * - sandboxPathMappingsRef: file_path → host_path 转换；本地 unified agent 路径下 mappings 可能为空，
+ * - sandboxPathMappingsRef: file_path → host_path 转换；本地 unified agent 路径下 mappings 可能为空,
  *   此时 dispatchOutboundMessage 会按"无映射且 file_path 是绝对路径"直接放行（与 immediate-send 一致）。
+ * - onDispatched: 真正 flush 到 channel success 返回后调用一次的钩子（spec §4.13.6 / §4.13.7）。
+ *   异常路径不触发；caller 不传时无副作用。
  *
  * sendResult 返回与 channel 'send_message' RPC 返回一致；调用方按需消费。
  */
@@ -74,6 +95,7 @@ export interface OutboundDispatchDeps {
   readonly resolveChannelPort: (channelId: string) => Promise<number>
   readonly getAdminPort: () => Promise<number>
   readonly sandboxPathMappingsRef?: { current: PathMapping[] }
+  readonly onDispatched?: OnDispatchedHook
 }
 
 export interface OutboundSendResult {
@@ -222,7 +244,7 @@ export async function dispatchOutboundMessage(
     (platformMentions !== undefined && platformMentions.length > 0)
     || entry.quote_message_id !== undefined
 
-  return await deps.rpcClient.call<
+  const sendResult = await deps.rpcClient.call<
     {
       session_id: string
       content: MessageContent
@@ -248,6 +270,21 @@ export async function dispatchOutboundMessage(
       }
       : {}),
   }, deps.moduleId)
+
+  // <-- HOOK POINT (spec §4.13.6 Invariant #1: success 路径触发；Invariant #2: 抛错路径上方 await 已throw，不到此处) -->
+  // 钩子内任何 throw 都被 catch 后 console.warn，避免污染 dispatch 返回 / 影响 caller。
+  if (deps.onDispatched) {
+    try {
+      deps.onDispatched(entry)
+    } catch (err) {
+      console.warn(
+        '[dispatchOutboundMessage] onDispatched hook threw:',
+        err instanceof Error ? err.message : String(err),
+      )
+    }
+  }
+
+  return sendResult
 }
 
 /**

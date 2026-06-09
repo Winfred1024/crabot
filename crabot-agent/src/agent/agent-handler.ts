@@ -820,6 +820,8 @@ export class AgentHandler {
         outboundBuffer: [],
         activeAuditId: undefined,
         activeAsyncSubagentIds: new Set<string>(),
+        everSentMessage: false,
+        silentNoDeliveryRetries: 0,
       }
       this.activeTasks.set(task.task_id, taskState)
     }
@@ -999,6 +1001,12 @@ export class AgentHandler {
           // spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 6
           outboundBuffer: taskState.outboundBuffer,
           hasActiveAudit: () => taskState.activeAuditId !== undefined,
+          // Dispatch 钩子点（spec §4.13.6 Invariant #1+#2 / §4.13.7）。dispatchOutboundMessage success
+          // 路径触发；抛错路径不触发。PR-1 effect：置 everSentMessage=true（永不清零）。
+          // PR-2 落地时会在同 callback 函数体追加 task.messages.push(...)，conflict 范围限定本函数体内。
+          onDispatched: () => {
+            taskState.everSentMessage = true
+          },
           // 透传 sub-agent trace 上下文：让 audit gate 触发的 audit subagent
           // 产生的 sub_agent_call span 挂到主 worker trace 下，admin UI 能渲染。
           // spec: 2026-05-23-goal-mode-design.md §4.2
@@ -1378,7 +1386,11 @@ export class AgentHandler {
           ...(context.resolved_permissions ? { resolvedPermissions: context.resolved_permissions } : {}),
           contentReviewer: this.buildContentReviewer(),
           sessionType: context.task_origin?.session_type ?? 'private',
-          suppressForcedSummary: () => workerTriggerType === 'scheduled' || goalSetCache || sentInfoMessage,
+          // spec §4.13.5 修订：去掉 goalSetCache 触发条件，让 silent end_turn 拦截 + audit gate 各管各、不再彼此假设兜底。
+          // - 第 1 道闸（FORCED_SUMMARY_PROMPT）：sentInfoMessage=false 时拦截
+          // - 第 2 道闸（endTurnGate §4.13.4 二级分支）：goal 设了但 everSentMessage=false 时拦截
+          // 两者独立计数、独立兜底；任何一道闸触发都不放过"goal mode + 静默 end_turn + 0 交付"。
+          suppressForcedSummary: () => workerTriggerType === 'scheduled' || sentInfoMessage,
           // Goal mode 缓冲消息 flush 钩子：engine 在 stop_reason='tool_use' 续 turn 之前
           // 和 endTurnGate 返回 null 后调用。把 taskState.outboundBuffer 里截留的 info
           // 消息真正发到 channel 并清空 buffer。失败 entry 不阻塞后续 entry（continue on error）。
@@ -1400,6 +1412,12 @@ export class AgentHandler {
               ...(this.deps.sandboxPathMappingsRef
                 ? { sandboxPathMappingsRef: this.deps.sandboxPathMappingsRef }
                 : {}),
+              // spec §4.13.6 钩子点：同 mcpConfigFactory 注入 TaskContext 时一致的 effect。
+              // post-tool flushOutboundBuffer / audit pass flush 路径触发 → everSentMessage=true。
+              // PR-2 落地时在同 callback 函数体追加 task.messages.push(...)。
+              onDispatched: () => {
+                taskState.everSentMessage = true
+              },
             }
             return createOutboundFlush(taskState.outboundBuffer, dispatchDeps)
           })(),
@@ -1801,6 +1819,8 @@ export class AgentHandler {
       outboundBuffer: [],
       activeAuditId: undefined,
       activeAsyncSubagentIds: new Set<string>(),
+      everSentMessage: false,
+      silentNoDeliveryRetries: 0,
     })
 
     return { taskId: syntheticTaskId, registered, task, context, taskTitle }

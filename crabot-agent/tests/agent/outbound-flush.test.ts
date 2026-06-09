@@ -301,3 +301,126 @@ describe('createOutboundFlush', () => {
     expect(buffer.length).toBe(0)
   })
 })
+
+// ============================================================================
+// §4.13.6 dispatch 钩子点 invariant 测试
+// ============================================================================
+
+describe('dispatchOutboundMessage onDispatched 钩子（§4.13.6 Invariant #1 + #2）', () => {
+  function successDeps(onDispatched?: (e: OutboundBufferEntry) => void): OutboundDispatchDeps {
+    return {
+      rpcClient: {
+        call: vi.fn(async (_port: number, method: string) => {
+          if (method === 'send_message') return { platform_message_id: 'mid', sent_at: 'now' }
+          return {}
+        }),
+      } as never,
+      moduleId: 'm',
+      resolveChannelPort: async () => 19009,
+      getAdminPort: async () => 19001,
+      ...(onDispatched ? { onDispatched } : {}),
+    }
+  }
+
+  it('Invariant #1: success 路径触发 onDispatched 恰好 1 次，entry 作为参数', async () => {
+    const hook = vi.fn()
+    const deps = successDeps(hook)
+    const entry = makeEntry({ content: 'hello' })
+
+    await dispatchOutboundMessage(entry, deps)
+
+    expect(hook).toHaveBeenCalledOnce()
+    expect(hook).toHaveBeenCalledWith(entry)
+  })
+
+  it('Invariant #2: dispatch 抛错（channel rpc 抛错）不触发钩子', async () => {
+    const hook = vi.fn()
+    const deps: OutboundDispatchDeps = {
+      rpcClient: {
+        call: vi.fn(async (_port: number, method: string) => {
+          if (method === 'send_message') throw new Error('channel down')
+          return {}
+        }),
+      } as never,
+      moduleId: 'm',
+      resolveChannelPort: async () => 19009,
+      getAdminPort: async () => 19001,
+      onDispatched: hook,
+    }
+
+    await expect(dispatchOutboundMessage(makeEntry(), deps)).rejects.toThrow('channel down')
+    expect(hook).not.toHaveBeenCalled()
+  })
+
+  it('Invariant #2: resolveChannelPort 抛错也不触发钩子', async () => {
+    const hook = vi.fn()
+    const deps: OutboundDispatchDeps = {
+      rpcClient: { call: vi.fn() } as never,
+      moduleId: 'm',
+      resolveChannelPort: async () => { throw new Error('channel not found') },
+      getAdminPort: async () => 19001,
+      onDispatched: hook,
+    }
+
+    await expect(dispatchOutboundMessage(makeEntry(), deps)).rejects.toThrow()
+    expect(hook).not.toHaveBeenCalled()
+  })
+
+  it('不传 onDispatched（向后兼容）→ dispatch 行为正常', async () => {
+    const deps = successDeps(undefined)
+    const result = await dispatchOutboundMessage(makeEntry(), deps)
+    expect(result.platform_message_id).toBe('mid')
+  })
+
+  it('钩子内部抛错被 catch + console.warn，不污染 dispatch 返回', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const hook = vi.fn(() => { throw new Error('hook bomb') })
+    const deps = successDeps(hook)
+
+    const result = await dispatchOutboundMessage(makeEntry(), deps)
+
+    // dispatch 仍然成功返回（钩子抛错不影响 caller）
+    expect(result.platform_message_id).toBe('mid')
+    expect(warnSpy).toHaveBeenCalled()
+    expect(warnSpy.mock.calls[0][0]).toContain('onDispatched hook threw')
+
+    warnSpy.mockRestore()
+  })
+
+  it('createOutboundFlush 多 entry：每条 success entry 都触发钩子；失败 entry 不触发但不阻塞后续', async () => {
+    const hook = vi.fn()
+    let callCount = 0
+    const deps: OutboundDispatchDeps = {
+      rpcClient: {
+        call: vi.fn(async (_port: number, method: string) => {
+          if (method === 'send_message') {
+            callCount++
+            if (callCount === 2) throw new Error('mid failure')
+            return { platform_message_id: `m${callCount}`, sent_at: '' }
+          }
+          return {}
+        }),
+      } as never,
+      moduleId: 'm',
+      resolveChannelPort: async () => 19009,
+      getAdminPort: async () => 19001,
+      onDispatched: hook,
+    }
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const buffer: OutboundBufferEntry[] = [
+      makeEntry({ content: 'a' }),
+      makeEntry({ content: 'b' }),  // 第 2 条 dispatch 抛错
+      makeEntry({ content: 'c' }),
+    ]
+    await createOutboundFlush(buffer, deps)()
+
+    // 钩子触发 2 次（第 1 / 第 3 entry success），第 2 entry 因抛错不触发
+    expect(hook).toHaveBeenCalledTimes(2)
+    expect(hook.mock.calls[0][0].content).toBe('a')
+    expect(hook.mock.calls[1][0].content).toBe('c')
+    expect(buffer.length).toBe(0) // splice 已清空
+
+    warnSpy.mockRestore()
+  })
+})

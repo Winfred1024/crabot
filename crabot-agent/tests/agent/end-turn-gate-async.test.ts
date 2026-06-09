@@ -2,18 +2,26 @@
  * end-turn-gate.ts — createAsyncAuditEndTurnGate 闭包行为单测。
  *
  * 不跑完整 runWorkerLoop，只测闭包：
- *  - empty outboundBuffer → null（passthrough，不 spawn）
+ *  - empty outboundBuffer + everSentMessage=true → null（讨论型放行，§4.13.4）
  *  - goalSetCache=false → null（worker 没 set_task_goal）
  *  - 非空 buffer + goal 存在 → spawn audit + 设 activeAuditId + 返回 [audit_pending] marker
  *  - get_task RPC 抛错 → null（fail-open）
  *  - task.goal 缺失 → null
  *  - spawn 抛错 → null（fail-open，console.warn）
+ *  - **§4.13.9 新增**：
+ *    - buffer 空 + has goal + !everSentMessage + retries<3 → GOAL_MODE_NO_DELIVERY_PROMPT + retries++
+ *    - 3 次兜底耗尽 → 强制 spawn audit（buffer 空也派）
+ *    - 讨论型不误伤：buffer 空 + has goal + everSentMessage=true → null
  *
- * spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.3
+ * spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.3 + §4.13
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { createAsyncAuditEndTurnGate, type AsyncAuditEndTurnGateDeps } from '../../src/agent/end-turn-gate'
+import {
+  createAsyncAuditEndTurnGate,
+  GOAL_MODE_NO_DELIVERY_PROMPT,
+  type AsyncAuditEndTurnGateDeps,
+} from '../../src/agent/end-turn-gate'
 import { parseSystemMarker } from '../../src/agent/audit-result-marker'
 import type { WorkerTaskState } from '../../src/types'
 import type { GoalAuditTaskGoal } from '../../src/agent/goal-audit'
@@ -51,6 +59,9 @@ function makeTaskState(overrides: Partial<WorkerTaskState> = {}): WorkerTaskStat
     outboundBuffer: [],
     activeAuditId: undefined,
     activeAsyncSubagentIds: new Set<string>(),
+    // §4.13 默认：未发过、零计数。具体测试按需 override 模拟"讨论型 / 已塞过 N 次 prompt"等场景。
+    everSentMessage: false,
+    silentNoDeliveryRetries: 0,
     ...overrides,
   }
 }
@@ -71,6 +82,9 @@ function makeHarness(opts: {
   rpcCallOverride?: ReturnType<typeof vi.fn>
   spawnReturn?: string | Promise<string>
   spawnThrows?: Error
+  /** §4.13 — 显式控制初始 everSentMessage / silentNoDeliveryRetries */
+  everSentMessage?: boolean
+  silentNoDeliveryRetries?: number
 } = {}): Harness {
   const goal: GoalAuditTaskGoal | undefined =
     opts.goal === null ? undefined : opts.goal ?? makeGoal()
@@ -80,6 +94,8 @@ function makeHarness(opts: {
 
   const taskState = makeTaskState({
     outboundBuffer: [...(opts.bufferEntries ?? [makeBufferEntry()])],
+    ...(opts.everSentMessage !== undefined ? { everSentMessage: opts.everSentMessage } : {}),
+    ...(opts.silentNoDeliveryRetries !== undefined ? { silentNoDeliveryRetries: opts.silentNoDeliveryRetries } : {}),
   })
 
   const spawnFn = vi.fn(async () => {
@@ -124,8 +140,8 @@ describe('createAsyncAuditEndTurnGate', () => {
     vi.clearAllMocks()
   })
 
-  it('empty outboundBuffer → returns null (passthrough; spawn 不被调用)', async () => {
-    const h = makeHarness({ bufferEntries: [] })
+  it('empty outboundBuffer + everSentMessage=true → returns null (讨论型放行；§4.13.4)', async () => {
+    const h = makeHarness({ bufferEntries: [], everSentMessage: true })
     const gate = createAsyncAuditEndTurnGate(h.deps)
 
     const result = await gate()
@@ -234,5 +250,134 @@ describe('createAsyncAuditEndTurnGate', () => {
     expect(warnSpy).toHaveBeenCalled()
 
     warnSpy.mockRestore()
+  })
+})
+
+// ============================================================================
+// §4.13 Revision 2026-06-09 第 2 段：everSentMessage 二级分支 + 3 次兜底
+// ============================================================================
+
+describe('createAsyncAuditEndTurnGate § 4.13 二级分支', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('trace cd1aaa5b 重现：buffer 空 + has goal + !everSentMessage + retries=0 → 返回 GOAL_MODE_NO_DELIVERY_PROMPT、retries++、不 RPC 不 spawn', async () => {
+    const h = makeHarness({
+      bufferEntries: [],
+      everSentMessage: false,
+      silentNoDeliveryRetries: 0,
+    })
+    const gate = createAsyncAuditEndTurnGate(h.deps)
+
+    const result = await gate()
+
+    expect(result).toBe(GOAL_MODE_NO_DELIVERY_PROMPT)
+    expect(h.taskState.silentNoDeliveryRetries).toBe(1)
+    expect(h.rpcCall).not.toHaveBeenCalled()
+    expect(h.spawnFn).not.toHaveBeenCalled()
+    expect(h.taskState.activeAuditId).toBeUndefined()
+  })
+
+  it('retries=1, 2 时仍塞 prompt + 计数 +1', async () => {
+    for (const startRetries of [1, 2]) {
+      const h = makeHarness({
+        bufferEntries: [],
+        everSentMessage: false,
+        silentNoDeliveryRetries: startRetries,
+      })
+      const gate = createAsyncAuditEndTurnGate(h.deps)
+
+      const result = await gate()
+
+      expect(result).toBe(GOAL_MODE_NO_DELIVERY_PROMPT)
+      expect(h.taskState.silentNoDeliveryRetries).toBe(startRetries + 1)
+      expect(h.spawnFn).not.toHaveBeenCalled()
+    }
+  })
+
+  it('retries=3 → 强制派 audit（buffer 空也派；走完整 RPC+spawn 路径，设 activeAuditId）', async () => {
+    const h = makeHarness({
+      bufferEntries: [],
+      everSentMessage: false,
+      silentNoDeliveryRetries: 3,
+      spawnReturn: 'forced-audit-zzz',
+    })
+    const gate = createAsyncAuditEndTurnGate(h.deps)
+
+    const result = await gate()
+
+    // 不再塞 prompt，直接走 audit 路径
+    expect(result).not.toBe(GOAL_MODE_NO_DELIVERY_PROMPT)
+    expect(h.rpcCall).toHaveBeenCalledOnce()
+    expect(h.spawnFn).toHaveBeenCalledOnce()
+    expect(h.taskState.activeAuditId).toBe('forced-audit-zzz')
+    // 强制路径不再 ++ 计数器（计数器本就 ≥3）
+    expect(h.taskState.silentNoDeliveryRetries).toBe(3)
+
+    // 返回的是 audit_pending marker
+    const parsed = parseSystemMarker(result!)
+    expect(parsed?.type).toBe('audit_pending')
+  })
+
+  it('讨论型不误伤：buffer 空 + has goal + everSentMessage=true + retries=0 → null', async () => {
+    const h = makeHarness({
+      bufferEntries: [],
+      everSentMessage: true,
+      silentNoDeliveryRetries: 0,
+    })
+    const gate = createAsyncAuditEndTurnGate(h.deps)
+
+    const result = await gate()
+
+    expect(result).toBeNull()
+    expect(h.rpcCall).not.toHaveBeenCalled()
+    expect(h.spawnFn).not.toHaveBeenCalled()
+    expect(h.taskState.activeAuditId).toBeUndefined()
+    // 不动计数器
+    expect(h.taskState.silentNoDeliveryRetries).toBe(0)
+  })
+
+  it('讨论型也不受 retries 影响：everSentMessage=true 在 retries=5 时仍 null', async () => {
+    const h = makeHarness({
+      bufferEntries: [],
+      everSentMessage: true,
+      silentNoDeliveryRetries: 5,
+    })
+    const gate = createAsyncAuditEndTurnGate(h.deps)
+
+    expect(await gate()).toBeNull()
+    expect(h.spawnFn).not.toHaveBeenCalled()
+  })
+
+  it('non-goal 路径独立：!goalSetCache + buffer 空 + !everSentMessage → null (不命中 §4.13)', async () => {
+    const h = makeHarness({
+      bufferEntries: [],
+      goalSetCache: false,
+      everSentMessage: false,
+    })
+    const gate = createAsyncAuditEndTurnGate(h.deps)
+
+    expect(await gate()).toBeNull()
+    expect(h.taskState.silentNoDeliveryRetries).toBe(0)
+    expect(h.spawnFn).not.toHaveBeenCalled()
+  })
+
+  it('trace 7470b21d 回归：buffer 非空 + has goal + everSentMessage=false → 仍走 audit 路径（§4.13 不影响 buffer 非空分支）', async () => {
+    const h = makeHarness({
+      everSentMessage: false,
+      silentNoDeliveryRetries: 0,
+      spawnReturn: 'audit-from-buffered',
+    })
+    const gate = createAsyncAuditEndTurnGate(h.deps)
+
+    const result = await gate()
+
+    expect(h.spawnFn).toHaveBeenCalledOnce()
+    expect(h.taskState.activeAuditId).toBe('audit-from-buffered')
+    expect(h.taskState.silentNoDeliveryRetries).toBe(0)
+
+    const parsed = parseSystemMarker(result!)
+    expect(parsed?.type).toBe('audit_pending')
   })
 })

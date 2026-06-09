@@ -215,6 +215,112 @@ describe('engine: flushOutboundBuffer hook', () => {
     ).rejects.toThrow('flush exploded')
   })
 
+  // ==========================================================================
+  // §4.2 Revision 第 1 段：L816 守门加 !bufferedSendMessageInTurn
+  // 本 turn 含 send_message 且进了 outboundBuffer → post-tool 阶段 skip flush
+  // ==========================================================================
+
+  it('§4.13 L816 守门：tool_use=send_message + tool_result 含 buffered:true → 本 turn 之后不 flush (trace 7470b21d 回归)', async () => {
+    // 模拟 send_message handler 缓冲分支返回 buffered:true 后立刻 end_turn 的组合
+    const flushFn = vi.fn(async () => { /* noop */ })
+    const sendMsgBufferedTool = {
+      name: 'send_message',
+      description: 'send',
+      inputSchema: { type: 'object' as const, properties: {} },
+      isReadOnly: false,
+      call: async () => ({
+        output: '{"buffered":true,"sent_at":null,"note":"消息已待发"}',
+        isError: false,
+      }),
+    }
+    // turn 1 = send_message buffered → turn 2 = end_turn
+    const adapter = makeAdapter([
+      { kind: 'tool', toolId: 'tu-send', toolName: 'send_message' },
+      { kind: 'end_turn', text: '' },
+    ])
+    // endTurnGate=null → 走 fallthrough flush 分支
+    const gateFn = vi.fn(async () => null)
+
+    await runEngine({
+      prompt: 'go',
+      adapter,
+      options: {
+        tools: [sendMsgBufferedTool],
+        systemPrompt: '',
+        model: 'test-model',
+        endTurnGate: gateFn,
+        flushOutboundBuffer: flushFn,
+      },
+    })
+
+    // turn 1（send_message buffered）之后 L816 守门挡掉 flush（关键 fix）；
+    // turn 2（end_turn + gate=null）后 fallthrough flush 调用 1 次（这道闸不受守门影响）。
+    // 总计应等于 1 —— 修复前等于 2（turn 1 后多调一次提前把 buffer flush 出去）。
+    expect(flushFn.mock.calls.length).toBe(1)
+  })
+
+  it('§4.13 L816 守门：本 turn 调非 send_message 工具（如 noop）不受守门影响，仍 flush', async () => {
+    // 回归保证：守门只挡"本 turn 缓冲了新 send_message"那种 turn，普通工具续 turn 路径不动
+    const flushFn = vi.fn(async () => { /* noop */ })
+    // turn 1 = noop（非 send_message）→ turn 2 = end_turn
+    const adapter = makeAdapter([
+      { kind: 'tool', toolId: 'tu1', toolName: 'noop' },
+      { kind: 'end_turn', text: '' },
+    ])
+    const gateFn = vi.fn(async () => null)
+
+    await runEngine({
+      prompt: 'go',
+      adapter,
+      options: {
+        tools: [noopTool],
+        systemPrompt: '',
+        model: 'test-model',
+        endTurnGate: gateFn,
+        flushOutboundBuffer: flushFn,
+      },
+    })
+
+    // turn 1 后 flush（普通 tool_use 续 turn 路径）+ turn 2 后 flush（end_turn gate=null）= 2 次
+    expect(flushFn.mock.calls.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('§4.13 L816 守门：tool_use=send_message 但 result 不含 buffered:true（immediate-send 路径，未走缓冲）→ 守门不挡，照常 flush', async () => {
+    // 边界 case：send_message 在 immediate-send 路径下（无 goal 或等审态）返回 platform_message_id
+    // 而不是 buffered:true，bufferedSendMessageInTurn 判定应为 false，flush 照常
+    const flushFn = vi.fn(async () => { /* noop */ })
+    const sendMsgImmediateTool = {
+      name: 'send_message',
+      description: 'send',
+      inputSchema: { type: 'object' as const, properties: {} },
+      isReadOnly: false,
+      call: async () => ({
+        output: '{"platform_message_id":"pmid","sent_at":"2026-06-09T00:00:00Z"}',
+        isError: false,
+      }),
+    }
+    const adapter = makeAdapter([
+      { kind: 'tool', toolId: 'tu-send', toolName: 'send_message' },
+      { kind: 'end_turn', text: '' },
+    ])
+    const gateFn = vi.fn(async () => null)
+
+    await runEngine({
+      prompt: 'go',
+      adapter,
+      options: {
+        tools: [sendMsgImmediateTool],
+        systemPrompt: '',
+        model: 'test-model',
+        endTurnGate: gateFn,
+        flushOutboundBuffer: flushFn,
+      },
+    })
+
+    // turn 1 后 flush 调用（守门不挡 immediate-send 路径）+ turn 2 后 fallthrough flush = 2 次
+    expect(flushFn.mock.calls.length).toBeGreaterThanOrEqual(2)
+  })
+
   it('flush is called AFTER post-tool drain on tool_use turn (ordering check)', async () => {
     // 验证 flush 在 post-tool drain 之后调（spec: drain 已发的 supplement，再 flush 缓冲）
     const events: string[] = []

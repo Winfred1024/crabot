@@ -59,12 +59,23 @@ export interface TaskContext {
   /** Audit 等待态下被截留的 send_message intent='info' 缓冲区（同 WorkerTaskState.outboundBuffer 引用）。
    *  goal mode + 工作态时 handler 把 info 消息推入此处不真发；engine 在 audit pass / tool_use 等时机 flush。
    *  shape 与 WorkerTaskState.outboundBuffer 完全对齐（同一 OutboundBufferEntry 类型）。
-   *  spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 6 */
+   *
+   *  **语义（spec §4.1 Revision 2026-06-09 第 1 段）**：永远 ≤ 1 条。
+   *  push 新条前若已有旧条 → 先 sync flush 旧条（"新顶旧"），再 push 新条。
+   *
+   *  spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.1 + Revision 第 1 段 */
   outboundBuffer?: Array<OutboundBufferEntry>
   /** 当前 task 是否处于"等审态"（activeAuditId 非空）。同步 getter，工具内每次调用现读。
    *  工作态（false）= 缓冲；等审态（true）= 立即 flush 给用户（过程响应）。
    *  spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 6 */
   hasActiveAudit?: () => boolean
+  /** Dispatch 钩子点 callback（spec §4.13.6 Invariant #1+#2 / §4.13.7）。
+   *  dispatchOutboundMessage 真 flush 成功后触发；抛错路径不触发。
+   *  worker setup 时由 agent-handler 注入，回调内置 `taskState.everSentMessage = true`（PR-1 effect）。
+   *  PR-2 落地时在同 callback 函数体追加 task.messages.push(...)。
+   *  Front 调用路径无 task 上下文时不注入。
+   *  spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.13.6 / §4.13.7 */
+  onDispatched?: import('../agent/outbound-flush.js').OnDispatchedHook
 }
 
 // ============================================================================
@@ -636,10 +647,28 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
           }
         }
 
+        // 统一构造 dispatchDeps（含 §4.13 钩子点 onDispatched）—— 缓冲分支 "新顶旧" sync flush 与
+        // immediate-send 都用同一份，保证 dispatch success 路径触发钩子的语义统一。
+        // taskCtx 为空时（front 调用）onDispatched 缺省，钩子不触发，行为不变。
+        const dispatchDeps: OutboundDispatchDeps = {
+          rpcClient,
+          moduleId,
+          resolveChannelPort,
+          getAdminPort,
+          ...(sandboxPathMappingsRef ? { sandboxPathMappingsRef } : {}),
+          ...((() => {
+            const taskCtx = deps.getTaskContext?.()
+            return taskCtx?.onDispatched ? { onDispatched: taskCtx.onDispatched } : {}
+          })()),
+        }
+
         // === Goal mode 缓冲分支：goal mode + 工作态（无 active audit）时 intent='info' 进 outboundBuffer 不真发 ===
         // 等审态（audit 在跑）→ 立即 flush（过程响应/进度告知，不进新缓冲）
         // ask_human → 走下面的 send + barrier 路径
         // 非 goal mode → 立即发（现行行为）
+        //
+        // **新顶旧（spec §4.1 Revision 第 1 段）**：buffer 已有旧条时先 sync flush 旧条再 push 新条。
+        // buffer 永远 ≤ 1 条，"send_message + 立即 end_turn" 组合才是触发 audit 的唯一路径。
         // spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.1 + §4.6
         if (intent !== 'ask_human') {
           const taskCtx = deps.getTaskContext?.()
@@ -650,6 +679,21 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
             && taskCtx.hasActiveAudit
             && !taskCtx.hasActiveAudit()
           ) {
+            // 新顶旧：buffer 已有上一条 → 先 sync flush 出去（触发 onDispatched 钩子置 everSentMessage）
+            // 失败不阻塞新条入 buffer（与 createOutboundFlush 的 continue-on-error 一致）
+            if (taskCtx.outboundBuffer.length > 0) {
+              const oldEntries = taskCtx.outboundBuffer.splice(0)
+              for (const oldEntry of oldEntries) {
+                try {
+                  await dispatchOutboundMessage(oldEntry, dispatchDeps)
+                } catch (err) {
+                  console.warn(
+                    '[send_message] 新顶旧 flush 旧条失败:',
+                    err instanceof Error ? err.message : String(err),
+                  )
+                }
+              }
+            }
             taskCtx.outboundBuffer.push({
               channel_id,
               session_id,
@@ -673,14 +717,7 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
 
         // === Step 1: 先 send（高失败率操作先做；失败 → state 完全不变）===
         // 路径选择 + mention 解析 + channel sendMessage 共用 dispatchOutboundMessage，保证 immediate-send
-        // 与 flush 路径（createOutboundFlush）功能等价（同样的 path mapping + friend_id resolve）。
-        const dispatchDeps: OutboundDispatchDeps = {
-          rpcClient,
-          moduleId,
-          resolveChannelPort,
-          getAdminPort,
-          ...(sandboxPathMappingsRef ? { sandboxPathMappingsRef } : {}),
-        }
+        // 与 flush 路径（createOutboundFlush）功能等价（同样的 path mapping + friend_id resolve + §4.13 钩子）。
         const dispatchEntry: OutboundBufferEntry = {
           channel_id,
           session_id,

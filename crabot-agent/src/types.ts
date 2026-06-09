@@ -776,13 +776,17 @@ export interface WorkerTaskState {
    */
   goalRevisionUnlocked?: boolean
   /**
-   * Audit 等待态下被截留的 send_message intent='info' 调用缓冲。
-   * handler 在 audit 跑中把对外 info 消息推到这里，engine 在 audit pass / stop_reason='tool_use' /
-   * endTurnGate 返回 null 时 splice 出来一次性 flush；audit fail / set_task_goal 改目标时清空丢弃。
+   * Goal mode 工作态下"待审最终交付候选"的缓冲槽。
+   *
+   * **语义（spec §4.1 Revision 2026-06-09 第 1 段）**：永远 ≤ 1 条。
+   * - 数组形态保留是实现选择（共享引用、跨模块改动小），但**业务语义就是单值**
+   * - send_message handler 缓冲分支 push 新条前若数组已有旧条 → 先 sync flush 旧条（"新顶旧"）
+   * - audit pass 后引擎 flush 这一条；audit fail / 改 goal abort 时整体丢弃
+   * - 维护者千万不要把它当通用 array 用、push 多条
    *
    * Entry shape 用 OutboundBufferEntry（与 TaskContext.outboundBuffer / 测试 mock 共享同一类型，
    * 由 ./agent/outbound-flush 导出）。
-   * spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 5
+   * spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.1（含 Revision 2026-06-09 第 1 段）
    */
   readonly outboundBuffer: Array<import('./agent/outbound-flush.js').OutboundBufferEntry>
   /** Active audit subagent id；设置后表示 task 处于"等审态"。undefined = 工作态。 */
@@ -793,6 +797,24 @@ export interface WorkerTaskState {
    * 判断是否还有 active subagent。spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 5
    */
   readonly activeAsyncSubagentIds: Set<string>
+  /**
+   * Task 生命周期内是否至少一次 send_message 真正 flush 到 channel 成功返回过。
+   * 一旦置 true 不再清零（task 即使续作 audit fail，"过去发过"是事实）。
+   *
+   * 由 dispatchOutboundMessage 钩子点统一设值（spec §4.13.6 Invariant #1+#2）：
+   * - success 路径触发钩子 → 置 true
+   * - 抛错路径不触发 → 状态不变
+   *
+   * endTurnGate 用此字段在 "buffer 空 + has goal" 路径区分讨论型放行 vs 从未交付拦截。
+   * spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.13.3
+   */
+  everSentMessage: boolean
+  /**
+   * endTurnGate "buffer 空 + has goal + !everSentMessage" 路径已塞 GOAL_MODE_NO_DELIVERY_PROMPT 次数。
+   * 累计 3 次仍 silent end_turn → 第 4 次切换强制派 audit subagent 路径（even with empty buffer）。
+   * spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.13.3 / §4.13.4
+   */
+  silentNoDeliveryRetries: number
 }
 
 export interface SupplementTaskDecision {

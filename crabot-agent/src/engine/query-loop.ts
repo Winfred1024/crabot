@@ -812,8 +812,18 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
     // 才决定 flush(pass) / drop(fail) / abort(改 goal)。
     // 等审态新发的 send_message(info) 已经被 Task 6 的 immediate-send 路径绕开 buffer，
     // 所以此处只可能是 pre-audit 内容，绝不能在此 flush（spec §4.1 "未审消息不到达用户"）。
-    // spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 8 + §4.1
-    if (options.flushOutboundBuffer && options.hasActiveAudit?.() !== true) {
+    //
+    // **Revision 2026-06-09 第 1 段**：加 !bufferedSendMessageInTurn 守门。本 turn 缓冲了新条
+    // send_message 时，跳过这道 flush —— buffer 留给下一轮 LLM 决策，"send_message + 立即 end_turn"
+    // 组合才能命中 endTurnGate 派 audit。否则刚 push 进 buffer 的最新条会被本 turn 末就 flush 出去，
+    // 等于 buffer 完没进下一 turn 就被自己 flush（trace 7470b21d 案例）。
+    // 与 L788 的 drainPending 守门是一对，必须同时挡。
+    // spec: 2026-06-07-goal-audit-async-buffered-info-design.md Task 8 + §4.1 + §4.2 Revision 第 1 段
+    if (
+      options.flushOutboundBuffer
+      && options.hasActiveAudit?.() !== true
+      && !bufferedSendMessageInTurn
+    ) {
       await options.flushOutboundBuffer()
     }
 
