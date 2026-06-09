@@ -59,10 +59,14 @@ export interface PresetVendor {
 export interface GlobalModelConfig {
   default_llm_provider_id?: string
   default_llm_model_id?: string
-  /** 自动清理 trace 的保留天数；null = 不按天清理。与 trace_retention_count 互斥，同时存在时 days 优先 */
+  /** 自动清理保留天数；null = 不按天清理。与 task_retention_count 互斥，同时存在时 days 优先 */
   trace_retention_days?: number | null
-  /** 自动清理 trace 的保留条数；null = 不按条清理。按文件粒度近似，实际保留 ≥ N */
-  trace_retention_count?: number | null
+  /**
+   * 自动清理保留 task 个数；null = 不按个数清理。
+   * spec 2026-06-09-task-trace-tool-unification.md §4.4：单位从 trace 改 task，跟用户心智一致
+   * （"保留最近 N 个对话"）。活跃 task 不计入配额。
+   */
+  task_retention_count?: number | null
 }
 
 export interface ModelConnectionInfo {

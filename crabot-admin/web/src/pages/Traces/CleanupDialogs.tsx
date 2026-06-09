@@ -111,7 +111,7 @@ export const AutoCleanupSettingsDialog: React.FC<{
     setLoaded(false)
     void providerService.getGlobalConfig().then((s) => {
       const d = s.trace_retention_days
-      const c = s.trace_retention_count
+      const c = s.task_retention_count
       if (d != null && d > 0) {
         setMode('days')
         setDays(d)
@@ -131,11 +131,12 @@ export const AutoCleanupSettingsDialog: React.FC<{
   const save = async () => {
     setBusy(true)
     try {
+      // spec 2026-06-09 §4.4: trace_retention_count → task_retention_count（单位改 task 个数）
       const payload = enabled
         ? mode === 'days'
-          ? { trace_retention_days: days, trace_retention_count: null }
-          : { trace_retention_days: null, trace_retention_count: count }
-        : { trace_retention_days: null, trace_retention_count: null }
+          ? { trace_retention_days: days, task_retention_count: null }
+          : { trace_retention_days: null, task_retention_count: count }
+        : { trace_retention_days: null, task_retention_count: null }
       await providerService.updateGlobalConfig(payload)
       toast.success('自动清理设置已保存')
       onClose()
@@ -151,7 +152,7 @@ export const AutoCleanupSettingsDialog: React.FC<{
       open={open}
       onClose={busy ? () => {} : onClose}
       title="自动清理设置"
-      description="按时间或条数为单位每天自动清理历史 trace。"
+      description="按时间或任务数为单位每天自动清理历史。"
       dismissOnBackdrop={!busy}
       dismissOnEscape={!busy}
       footer={
@@ -196,20 +197,20 @@ export const AutoCleanupSettingsDialog: React.FC<{
                 min={1}
                 disabled={!enabled || mode !== 'days'}
               />
-              <span>天的 trace</span>
+              <span>天的数据</span>
             </label>
             <label className="cleanup-radio">
               <input
                 type="radio"
                 name="cleanup-mode"
-                aria-label="按条清理"
+                aria-label="按任务数清理"
                 checked={mode === 'count'}
                 onChange={() => setMode('count')}
                 disabled={!enabled}
               />
               <span>保留最近</span>
               <input
-                aria-label="保留最近条数"
+                aria-label="保留最近任务数"
                 type="number"
                 className="input cleanup-input"
                 value={count}
@@ -217,13 +218,13 @@ export const AutoCleanupSettingsDialog: React.FC<{
                 min={1}
                 disabled={!enabled || mode !== 'count'}
               />
-              <span>条 trace</span>
+              <span>个任务</span>
             </label>
           </div>
           <div className="cleanup-hint">
             {mode === 'days'
-              ? '超过此期限的 trace 每日自动删除'
-              : '按天文件粒度删除多余 trace；实际保留条数可能略大于设定值'}
+              ? '超过此期限的 trace + task 每日自动删除'
+              : 'spec 2026-06-09 §4.4：按 task 维度计数（活跃任务不计入配额）；按天文件粒度删除，实际保留可能略大于设定值'}
           </div>
         </>
       )}
