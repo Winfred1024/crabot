@@ -176,6 +176,11 @@ export const traceService = {
   async listConversationUnits(params: ListConversationUnitsParams): Promise<ListConversationUnitsResult> {
     return api.post<ListConversationUnitsResult>(`/admin/conversation-units`, params)
   },
+
+  /** 永久删除单条 task（活跃 task 后端会拒绝） */
+  async deleteTask(taskId: string): Promise<{ deleted: boolean }> {
+    return api.delete<{ deleted: boolean }>(`/admin/tasks/${encodeURIComponent(taskId)}`)
+  },
 }
 
 // ============================================================================

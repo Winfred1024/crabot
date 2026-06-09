@@ -516,6 +516,7 @@ export class AdminModule extends ModuleBase {
     this.registerMethod('get_task_messages', this.handleGetTaskMessages.bind(this))
     this.registerMethod('get_task_stats', this.handleGetTaskStats.bind(this))
     this.registerMethod('cancel_task', this.handleCancelTask.bind(this))
+    this.registerMethod('delete_task', this.handleDeleteTask.bind(this))
 
     // Schedule 管理
     this.registerMethod('create_schedule', this.handleCreateSchedule.bind(this))
@@ -1921,6 +1922,13 @@ export class AdminModule extends ModuleBase {
       // spec 2026-06-09-task-trace-tool-unification.md §4.3: 按 task 维度合并列表
       if (pathname === '/api/admin/conversation-units' && req.method === 'POST') {
         await this.handleListConversationUnitsApi(req, res)
+        return
+      }
+
+      // 单条删除 task（spec §4.3 后续 UI 清理辅助）。活跃 task 拒绝删
+      const deleteTaskMatch = pathname.match(/^\/api\/admin\/tasks\/([^/]+)$/)
+      if (deleteTaskMatch && req.method === 'DELETE') {
+        await this.handleDeleteTaskApi(req, res, deleteTaskMatch[1])
         return
       }
 
@@ -4982,6 +4990,31 @@ export class AdminModule extends ModuleBase {
     })
 
     return { task, cancelled: true }
+  }
+
+  /**
+   * 永久删除 task（spec 2026-06-09 §4.3 后续 — UI 清理"测试消息"堆积的辅助 RPC）。
+   *
+   * 跟 cancel_task 的差别：cancel 只切 status，task 仍在 admin.tasks；delete 直接从持久化删。
+   * 活跃 task（pending/planning/executing/waiting_human/waiting）拒绝删 —— 防误删跑中的任务。
+   *
+   * agent 侧的 trace 数据不受影响（仍在 traces-*.jsonl）；要清 trace 走 cleanup_old_tasks_by_count。
+   */
+  private async handleDeleteTask(params: { task_id: string }): Promise<{ deleted: boolean }> {
+    const task = this.tasks.get(params.task_id)
+    if (!task) {
+      throw new Error(AdminErrorCode.TASK_NOT_FOUND)
+    }
+    const isActive = task.status === 'pending' || task.status === 'planning'
+      || task.status === 'executing' || task.status === 'waiting_human' || task.status === 'waiting'
+    if (isActive) {
+      throw new Error('TASK_STILL_ACTIVE: 活跃 task 不能直接删除，请先 cancel 或等待完成')
+    }
+    this.tasks.delete(params.task_id)
+    await this.saveTasks()
+    // 不 publish admin.task_deleted 事件 —— 该事件不在 AdminEventPayloads enum；
+    // 订阅者无人监听 task 删除（cancelTask 也只发 admin.task_cancelled）。
+    return { deleted: true }
   }
 
   // ============================================================================
@@ -8568,6 +8601,25 @@ export class AdminModule extends ModuleBase {
         msg.includes('connect failed')
       res.writeHead(isUnreachable ? 503 : 500, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: isUnreachable ? 'Agent not available' : msg }))
+    }
+  }
+
+  private async handleDeleteTaskApi(
+    _req: IncomingMessage,
+    res: ServerResponse,
+    taskId: string,
+  ): Promise<void> {
+    try {
+      const result = await this.handleDeleteTask({ task_id: taskId })
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(result))
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      const notFound = msg.includes('TASK_NOT_FOUND')
+      const active = msg.includes('TASK_STILL_ACTIVE')
+      const code = notFound ? 404 : active ? 409 : 500
+      res.writeHead(code, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: msg }))
     }
   }
 

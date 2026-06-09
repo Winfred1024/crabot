@@ -396,6 +396,7 @@ function ConversationUnitRow({
   selectedTraceId,
   onSelectTask,
   onSelectTrace,
+  onDeleteTask,
 }: {
   unit: ConversationUnit
   selectedTraceId: string | null
@@ -403,6 +404,8 @@ function ConversationUnitRow({
   onSelectTask: (taskId: string) => void
   /** 点击孤儿 dispatcher 行 → 加载 trace detail */
   onSelectTrace: (traceId: string) => void
+  /** 点击删除按钮 → confirm 后永久删除 task（活跃 task 后端会拒绝） */
+  onDeleteTask: (taskId: string, title: string) => void
 }) {
   const cellStyle: React.CSSProperties = {
     padding: '6px 10px',
@@ -464,7 +467,28 @@ function ConversationUnitRow({
           {formatTime(t.created_at)}
         </td>
         <td style={{ ...cellStyle, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-          {t.messages?.length ?? 0}
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <span>{t.messages?.length ?? 0}</span>
+            <Tooltip content={isTerminal ? '永久删除此任务（trace 数据不受影响）' : '活跃 task 不能直接删除，请先 cancel 或等待完成'}>
+              <button
+                onClick={(e) => { e.stopPropagation(); onDeleteTask(t.id, t.title) }}
+                disabled={!isTerminal}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  cursor: isTerminal ? 'pointer' : 'not-allowed',
+                  color: isTerminal ? 'var(--error)' : 'var(--text-muted)',
+                  fontSize: 14,
+                  padding: '0 4px',
+                  opacity: isTerminal ? 0.6 : 0.3,
+                }}
+                onMouseEnter={(e) => { if (isTerminal) e.currentTarget.style.opacity = '1' }}
+                onMouseLeave={(e) => { if (isTerminal) e.currentTarget.style.opacity = '0.6' }}
+              >
+                ✕
+              </button>
+            </Tooltip>
+          </span>
         </td>
       </tr>
     )
@@ -697,6 +721,18 @@ export const Traces: React.FC = () => {
     url.searchParams.set('task_id', taskId)
     window.history.replaceState({}, '', url.toString())
   }, [])
+
+  // 永久删除单条 task（用于清理"测试消息"堆积）。活跃 task 后端会拒绝。
+  const handleDeleteTask = useCallback(async (taskId: string, title: string) => {
+    if (!confirm(`永久删除任务「${title}」？\n（trace 数据不受影响）`)) return
+    try {
+      await traceService.deleteTask(taskId)
+      toast.success('已删除')
+      await loadList()
+    } catch (err) {
+      toast.error(`删除失败: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }, [toast, loadList])
 
   const handleClear = useCallback(async () => {
     if (!confirm('确认清理全部 Trace？\n（仅清空内存 ring buffer，磁盘 JSONL 不受影响）')) return
@@ -932,6 +968,7 @@ export const Traces: React.FC = () => {
                             selectedTraceId={selectedTraceId}
                             onSelectTask={handleSelectTask}
                             onSelectTrace={handleSelectTrace}
+                            onDeleteTask={handleDeleteTask}
                           />
                         ))
                       : entries.map((entry) => (
