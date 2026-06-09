@@ -530,54 +530,6 @@ export class SkillManager {
     return undefined
   }
 
-  /**
-   * 导入时处理同名 Skill：
-   * - 目标是内置 Skill → 拒绝（内置由 registerBuiltins 独立管理）
-   * - overwrite=true → 更新现有条目并返回
-   * - 否则 → 抛出 DuplicateSkillError，由调用方询问用户
-   */
-  private async handleDuplicateOnImport(
-    existing: SkillRegistryEntry,
-    incoming: {
-      name: string
-      description: string
-      version: string
-      content: string
-      source_package?: string
-      skill_dir?: string
-    },
-    overwrite?: boolean
-  ): Promise<{ entry: SkillRegistryEntry; was_overwrite: true }> {
-    if (existing.is_builtin) {
-      throw new Error(`Skill "${existing.name}" 是内置的，不可通过导入覆盖`)
-    }
-    if (!overwrite) {
-      throw new DuplicateSkillError(existing, {
-        name: incoming.name,
-        description: incoming.description,
-        version: incoming.version,
-      })
-    }
-    const updated = await this.update(existing.id, {
-      name: incoming.name,
-      description: incoming.description,
-      version: incoming.version,
-      content: incoming.content,
-    })
-    if (incoming.skill_dir !== undefined || incoming.source_package !== undefined) {
-      const patched: SkillRegistryEntry = {
-        ...updated,
-        ...(incoming.skill_dir !== undefined ? { skill_dir: incoming.skill_dir } : {}),
-        ...(incoming.source_package !== undefined ? { source_package: incoming.source_package } : {}),
-        updated_at: generateTimestamp(),
-      }
-      this.skills.set(updated.id, patched)
-      await this.save()
-      return { entry: patched, was_overwrite: true }
-    }
-    return { entry: updated, was_overwrite: true }
-  }
-
   async create(params: {
     name: string
     description: string
