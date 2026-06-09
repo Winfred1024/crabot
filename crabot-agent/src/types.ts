@@ -492,7 +492,6 @@ export interface FrontAgentContext {
    * - telegram: `@<username>`
    * - feishu: `@<bot_open_id>`
    * - wechat: `@<puppet_wxid>`
-   * - channel-host: 来自 channel config 的 `crab_platform_user_id`，加 `@` 前缀
    */
   crab_self_handle?: string
   /** 用于 prompt 渲染时显示窗口边界 */

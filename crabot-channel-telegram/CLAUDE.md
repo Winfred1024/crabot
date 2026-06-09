@@ -16,11 +16,6 @@ Telegram 消息
   → Telegram 发送消息
 ```
 
-## 与 channel-host 的区别
-
-- **channel-host** 是 OpenClaw 插件兼容层（Shim），加载 OpenClaw 插件运行
-- **channel-telegram** 直接对接 Telegram Bot API，不依赖 OpenClaw 生态
-
 ## 环境变量
 
 | 变量 | 必须 | 说明 |

@@ -473,7 +473,7 @@ plan：`crabot-docs/superpowers/plans/2026-05-08-messaging-list-tools-alignment.
 - **channel-feishu/src/onboard.ts**：实现 `Onboarder`，飞书设备码 OAuth（`POST /oauth/v1/app/registration` init/begin/poll）。
 - **Admin OnboardingManager**：启动时扫 builtin yaml.onboarding_methods，require(handler) 加载 onboarder 缓存；通用 REST 路由 `/api/channels/onboard/(begin|poll|finish|cancel)`，body 带 `implementation_id` + `method_id`；admin 在 finish 收到 onboarder 返回的 env 后调 `channelManager.createInstance`。SSE 走 `?token=` query string 鉴权。
 - **Admin Web UI**：`/channels/new` 数据驱动 picker（按每个 implementation × onboarding_methods 渲卡片 + 各 implementation 独立"手动填写"卡），`/channels/new/:implId/:methodId` 通用 onboarding 页（按 `ui_mode = qrcode/redirect/pending` 切换 widget）。
-- **BUILTIN_MODULE_PATHS** 增加 `'../crabot-channel-feishu'`，channel-host 保留过渡期。
+- **BUILTIN_MODULE_PATHS** 增加 `'../crabot-channel-feishu'`。
 - **测试**：channel-feishu 52/52（含 11 个 onboard tests）+ admin 301/301 + admin-web 145/145，0 tsc 错误。
 
 ## 上一里程碑（2026-04-29 — Time Awareness）
@@ -626,16 +626,14 @@ Module Manager (port 19000)
 │   ├── MCP Server + Skill 注册表管理（全局管理 + Agent 配置引用）
 │   ├── Agent 配置管理（含 MCP Server/Skill 关联）
 │   ├── Web 管理界面 + Master Chat (WebSocket)
-│   ├── 消息鉴权网关（channel.message_received → channel.message_authorized）
-│   └── PTY 会话管理 + Web 终端 (/ws/pty/*)
+│   └── 消息鉴权网关（channel.message_received → channel.message_authorized）
 ├── Agent (port 由 MM 分配)
 │   ├── Front Handler（快速分诊，默认 10 轮，3 次重试）
 │   └── Worker Handler（深度执行）
 ├── Memory (Python, port 19002)
 │   └── 短期/长期记忆（LanceDB 向量检索）
 └── Channel(s)
-    ├── 微信 / Telegram 原生模块
-    └── OpenClaw Host Shim（crabot-channel-host/，跑 OpenClaw 生态插件）
+    └── 微信 / Telegram / 飞书 原生模块
 ```
 
 ## 端口分配
@@ -646,7 +644,6 @@ Module Manager (port 19000)
 | Admin RPC | 19001 |
 | Admin Web | 3000 |
 | Memory | 19002 |
-| OpenClaw Host | 19003 |
 | Agent | 19005+ |
 | Vite Dev | 5173 |
 

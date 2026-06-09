@@ -6,7 +6,6 @@ import type {
   ChannelConfig,
   CreateChannelInstanceParams,
   UpdateChannelInstanceParams,
-  ScanResult,
   OnboardBeginResult,
   OnboardPollEvent,
 } from '../types'
@@ -79,11 +78,6 @@ export const channelService = {
 
   async restartInstance(id: string) {
     return api.post(`/channel-instances/${id}/restart`)
-  },
-
-  // State Dir Scan
-  async scanStateDir(stateDir: string) {
-    return api.post<ScanResult>('/channels/scan-state-dir', { state_dir: stateDir })
   },
 
   // ── 通用 Channel onboarding（base-protocol §10）────────────────────

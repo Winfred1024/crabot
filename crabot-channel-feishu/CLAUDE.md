@@ -17,11 +17,6 @@
 
 扫码 onboarding 由 `crabot-admin` 独立提供（`feishu-onboard.ts` 设备码 OAuth），channel 模块本身只关心"已经有 app_id/app_secret 时如何工作"。
 
-## 与 channel-host 的区别
-
-- **channel-host** 是 OpenClaw 插件兼容层（Shim），加载 `@openclaw/feishu` 等插件运行
-- **channel-feishu** 直接使用 lark SDK，不依赖 OpenClaw 生态，运行时占用更小
-
 ## 环境变量
 
 | 变量 | 必须 | 说明 |

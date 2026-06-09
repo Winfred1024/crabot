@@ -355,7 +355,6 @@ export interface ChannelInstance {
   implementation_id: string
   name: string
   platform: string
-  state_dir?: string
   auto_start: boolean
   start_priority: number
   module_registered: boolean
@@ -393,7 +392,6 @@ export interface CreateChannelInstanceParams {
   implementation_id: string
   name: string
   platform?: string
-  state_dir?: string
   auto_start?: boolean
   env?: Record<string, string>
 }
@@ -616,21 +614,6 @@ export interface DialogObjectGroupEntry extends DialogObjectChannelSession {
   master_in_group: boolean
   /** 当前 channel 是否支持手动回填历史（目前仅 feishu native channel 实现了 backfill_history RPC） */
   supports_backfill: boolean
-}
-
-// ============================================================================
-// Channel 扫描类型
-// ==============================================================================
-
-export interface ScannedPlugin {
-  name: string        // 包名，如 @openclaw/feishu
-  platform: string    // 平台，如 feishu
-  entry_path: string  // 入口文件路径
-}
-
-export interface ScanResult {
-  plugins: ScannedPlugin[]
-  has_config: boolean
 }
 
 // ============================================================================

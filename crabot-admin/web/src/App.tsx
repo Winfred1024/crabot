@@ -11,7 +11,6 @@ import { ModuleList } from './pages/Modules/ModuleList'
 import { ModuleDetail } from './pages/Modules/ModuleDetail'
 import { AgentConfig } from './pages/Agents/AgentConfig'
 import { ChannelConfig } from './pages/Channels/ChannelConfig'
-import { ChannelPty } from './pages/Channels/ChannelPty'
 import { NewChannel } from './pages/Channels/NewChannel'
 import { NewChannelOnboarding } from './pages/Channels/NewChannelOnboarding'
 import { GlobalSettings } from './pages/Settings/GlobalSettings'
@@ -97,14 +96,6 @@ const AppRoutes: React.FC = () => {
         element={
           <PrivateRoute>
             <ChannelConfig />
-          </PrivateRoute>
-        }
-      />
-      <Route
-        path="/channels/pty"
-        element={
-          <PrivateRoute>
-            <ChannelPty />
           </PrivateRoute>
         }
       />

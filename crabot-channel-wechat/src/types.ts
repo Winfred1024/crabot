@@ -56,7 +56,7 @@ export interface WebhookEnvelope {
 }
 
 // ============================================================================
-// Crabot Channel 协议类型（对齐 channel-host/src/types.ts）
+// Crabot Channel 协议类型（对齐 crabot-docs/protocols/protocol-channel.md）
 // ============================================================================
 
 export type MessageType = 'text' | 'image' | 'file'

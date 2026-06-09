@@ -1763,8 +1763,6 @@ export interface ChannelInstance {
   implementation_id: string
   name: string
   platform: string
-  /** channel-host 实例必须，指向 OpenClaw 插件安装目录 */
-  state_dir?: string
   auto_start: boolean
   start_priority: number
   module_registered: boolean
@@ -1809,7 +1807,6 @@ export interface CreateChannelInstanceParams {
   implementation_id: string
   name: string
   platform?: string
-  state_dir?: string
   auto_start?: boolean
   /** 模块启动环境变量（如 WECHAT_CONNECTOR_URL），保存到 channel-configs/<id>.json */
   env?: Record<string, string>
@@ -1830,20 +1827,6 @@ export interface UpdateChannelInstanceParams {
 export interface UpdateChannelConfigParams {
   instance_id: string
   config: Partial<ChannelConfig>
-}
-
-/**
- * state_dir 扫描结果 - 检测已安装的 OpenClaw 插件
- */
-export interface ScannedPlugin {
-  name: string        // 插件名，如 openclaw-lark 或 @openclaw/feishu
-  platform: string    // 平台，如 feishu
-  entry_path: string  // 入口文件路径（向导安装时为空）
-}
-
-export interface ScanResult {
-  plugins: ScannedPlugin[]
-  has_config: boolean
 }
 
 // ============================================================================

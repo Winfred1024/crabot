@@ -89,14 +89,14 @@ message_received → startTrace(trigger=message)
 # 2. 查看是否有 trace 产生
 ./scripts/debug-agent.sh traces 5
 
-# 如果没有 trace → 消息没到达 Agent（检查 channel-host）
+# 如果没有 trace → 消息没到达 Agent（检查 channel 模块）
 # 如果有 failed trace → 看详情
 ./scripts/debug-agent.sh trace
 ```
 
 **没有 Trace 产生**的可能原因：
 - Agent 收到消息但 Permission 检查拒绝了（不会产生 trace）
-- channel-host 没有正确路由到 Agent（检查 channel-host 日志）
+- channel 模块没有正确路由到 Agent（检查对应 channel 模块日志）
 - `is_mention_crab` 为 false 且是群聊 → 走了 Debounce，还没触发
 
 ### 问题 2：任务创建了但没有回复
@@ -111,7 +111,7 @@ message_received → startTrace(trigger=message)
 
 **常见根因：**
 - 任务状态卡在 `pending` → Worker 没有收到任务或状态机转换失败
-- 任务 `completed` 但没有回复 → `sendReplyToUser` 失败（channel-host `pendingDispatches` 过期）
+- 任务 `completed` 但没有回复 → `sendReplyToUser` 失败（channel 模块 dispatch 过期）
 - `rpc_call` span 失败 → 目标模块不可达
 
 ### 问题 3：LLM 没有调用工具
@@ -176,7 +176,7 @@ curl -s -X POST http://localhost:19001/get_tasks \
 
 ## Trace 的局限性
 
-当前 Trace 系统仅覆盖 Agent 内部逻辑，**不包含跨模块 RPC 调用**（如 Admin、channel-host）的耗时和结果。
+当前 Trace 系统仅覆盖 Agent 内部逻辑，**不包含跨模块 RPC 调用**（如 Admin、channel 模块）的耗时和结果。
 
 `rpc_call` Span 已在 `RpcClient` 中实现自动记录（见 `crabot-agent/src/core/module-base.ts`），能捕获：
 - 目标模块和方法
@@ -184,7 +184,7 @@ curl -s -X POST http://localhost:19001/get_tasks \
 - 调用耗时
 - 错误信息
 
-如果 Trace 系统在 Agent 看来正常，但用户没有收到消息，需要在 channel-host 侧查看日志（`pendingDispatches` 生命周期、`deliver` 是否被调用）。
+如果 Trace 系统在 Agent 看来正常，但用户没有收到消息，需要在对应 channel 模块查看日志（dispatch 生命周期、`deliver` 是否被调用）。
 
 ---
 

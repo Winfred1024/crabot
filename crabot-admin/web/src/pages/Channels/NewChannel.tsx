@@ -5,7 +5,6 @@
  * 每个 (implementation, method) 渲一张卡片。点击进入 /channels/new/:implId/:methodId。
  *
  * 没有声明 onboarding_methods 的实现额外提供"手动填写"入口（指向 /channels/config 旧表单）。
- * OpenClaw 兼容路径单独保留指向 /channels/pty。
  */
 
 import React, { useEffect, useState } from 'react'
@@ -39,8 +38,6 @@ export const NewChannel: React.FC = () => {
   const cards: CardEntry[] = []
 
   for (const impl of impls) {
-    if (impl.id === 'channel-host') continue // OpenClaw 单独入口
-
     if (impl.onboarding_methods && impl.onboarding_methods.length > 0) {
       for (const method of impl.onboarding_methods) {
         cards.push({
@@ -59,16 +56,6 @@ export const NewChannel: React.FC = () => {
       title: `${impl.name} · 手动填写`,
       description: methodFallbackDescription(impl),
       onClick: () => navigate(`/channels/config?implementation_id=${encodeURIComponent(impl.id)}`),
-    })
-  }
-
-  // OpenClaw 单独卡（保留过渡期）
-  if (impls.some((i) => i.id === 'channel-host')) {
-    cards.push({
-      key: 'openclaw',
-      title: 'OpenClaw 兼容',
-      description: '仅用于安装其他 OpenClaw 插件。已有原生模块的平台请优先用上方专用入口。',
-      onClick: () => navigate('/channels/pty'),
     })
   }
 

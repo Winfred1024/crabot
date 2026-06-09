@@ -13,7 +13,6 @@ import type {
   ChannelImplementation,
   ChannelInstance,
   ChannelConfig,
-  ScannedPlugin,
   CreateChannelInstanceParams,
   UpdateChannelInstanceParams,
   UpdateChannelConfigParams,
@@ -28,7 +27,6 @@ import type {
 
 /** 内置 Channel 模块的相对路径（相对于 crabot-admin 根目录） */
 const BUILTIN_MODULE_PATHS: readonly string[] = [
-  '../crabot-channel-host',
   '../crabot-channel-wechat',
   '../crabot-channel-telegram',
   '../crabot-channel-feishu',
@@ -73,10 +71,9 @@ function loadBuiltinImplementation(modulePath: string): ChannelImplementation | 
 }
 
 /**
- * 从 module_id 推断平台（channel-wechat → wechat, channel-host → *）
+ * 从 module_id 推断平台（channel-wechat → wechat）
  */
 function inferPlatformFromModuleId(moduleId: string): string {
-  if (moduleId === 'channel-host') return '*'
   const match = moduleId.match(/^channel-(.+)$/)
   return match ? match[1] : 'unknown'
 }
@@ -196,22 +193,13 @@ export class ChannelManager {
     }
 
     const now = generateTimestamp()
-    // channel-host 实例的 platform 由参数传入（因为 impl.platform = '*'），其他实现使用 impl.platform
     const platform = params.platform ?? impl.platform
-
-    // channel-host 实例：自动生成 state_dir（如果未提供）
-    let stateDir = params.state_dir
-    if (impl.id === 'channel-host' && !stateDir) {
-      stateDir = path.resolve(this.dataDir, 'channels', instanceId)
-      await this.initializeStateDir(stateDir)
-    }
 
     const instance: ChannelInstance = {
       id: instanceId,
       implementation_id: params.implementation_id,
       name: params.name,
       platform,
-      ...(stateDir !== undefined && { state_dir: stateDir }),
       auto_start: params.auto_start ?? false,
       start_priority: 30,
       module_registered: false,
@@ -275,28 +263,12 @@ export class ChannelManager {
   }
 
   /**
-   * 初始化 channel-host 的 state_dir 目录结构
-   * 创建 config.json（空配置）和 extensions/ 目录
-   */
-  private async initializeStateDir(stateDir: string): Promise<void> {
-    await fs.mkdir(stateDir, { recursive: true })
-    await fs.mkdir(path.join(stateDir, 'extensions'), { recursive: true })
-
-    const configPath = path.join(stateDir, 'config.json')
-    try {
-      await fs.access(configPath)
-    } catch {
-      await fs.writeFile(configPath, JSON.stringify({}, null, 2), 'utf-8')
-    }
-  }
-
-  /**
    * 注册 builtin 实现的模块到 Module Manager
    */
   private async registerBuiltinModule(impl: ChannelImplementation, instance: ChannelInstance): Promise<void> {
     const resolvedModulePath = path.resolve(__dirname, '..', impl.module_path!)
     const entry = `node ${resolvedModulePath}/dist/main.js`
-    const env = await this.buildModuleEnv(impl, instance)
+    const env = await this.buildModuleEnv(instance)
 
     await this.rpcClient.registerModuleDefinition(
       {
@@ -315,18 +287,13 @@ export class ChannelManager {
   /**
    * 构建模块启动时的环境变量
    *
-   * - channel-host: CRABOT_MODULE_ID + OPENCLAW_STATE_DIR
-   * - channel-wechat: CRABOT_MODULE_ID + channel-configs/<id>.json 中的 WECHAT_* 变量
+   * channel-wechat: CRABOT_MODULE_ID + channel-configs/<id>.json 中的 WECHAT_* 变量
    */
-  private async buildModuleEnv(impl: ChannelImplementation, instance: ChannelInstance): Promise<Record<string, string>> {
+  private async buildModuleEnv(instance: ChannelInstance): Promise<Record<string, string>> {
     const instanceDataDir = path.join(this.dataDir, 'channels', instance.id)
     const env: Record<string, string> = {
       CRABOT_MODULE_ID: instance.id,
       DATA_DIR: instanceDataDir,
-    }
-
-    if (impl.id === 'channel-host' && instance.state_dir) {
-      env.OPENCLAW_STATE_DIR = instance.state_dir
     }
 
     // 从 channel-configs/<id>.json 加载额外环境变量
@@ -541,211 +508,6 @@ export class ChannelManager {
     return Array.from(this.instances.values())
       .filter((i) => i.auto_start)
       .sort((a, b) => a.start_priority - b.start_priority)
-  }
-
-  // ============================================================================
-  // State Dir 扫描（检测已安装的 OpenClaw 插件）
-  // ============================================================================
-
-  /**
-   * 扫描 state_dir 中已安装的 OpenClaw 插件
-   *
-   * 两种检测策略：
-   * 1. openclaw.json（向导安装的标准格式）—— 解析 plugins.entries 和 channels
-   * 2. extensions/ 目录（手动安装 / npm install）—— 在 node_modules 中查找 openclaw.plugin.json
-   */
-  scanStateDir(stateDir: string): { plugins: ScannedPlugin[]; has_config: boolean } {
-    // 策略 1：解析 openclaw.json（@larksuite/openclaw-lark-tools install 写入）
-    const openclawJsonPath = path.join(stateDir, 'openclaw.json')
-    if (fsSync.existsSync(openclawJsonPath)) {
-      return this.scanFromOpenclawJson(openclawJsonPath)
-    }
-
-    // 策略 2：扫描 extensions/ 目录（手动安装场景）
-    const plugins: ScannedPlugin[] = []
-    const extensionsDir = path.join(stateDir, 'extensions')
-
-    if (fsSync.existsSync(extensionsDir)) {
-      const pluginDirs = fsSync.readdirSync(extensionsDir)
-      for (const pluginDir of pluginDirs) {
-        const base = path.join(extensionsDir, pluginDir)
-        if (!fsSync.statSync(base).isDirectory()) continue
-
-        const nodeModules = path.join(base, 'node_modules')
-        if (!fsSync.existsSync(nodeModules)) continue
-
-        const found = this.findOpenClawPlugins(nodeModules)
-        plugins.push(...found)
-      }
-    }
-
-    // 检查 config.json 是否存在且非空对象
-    let hasConfig = false
-    const configPath = path.join(stateDir, 'config.json')
-    if (fsSync.existsSync(configPath)) {
-      try {
-        const content = fsSync.readFileSync(configPath, 'utf-8')
-        const parsed = JSON.parse(content) as Record<string, unknown>
-        hasConfig = Object.keys(parsed).length > 0
-      } catch {
-        // 解析失败视为无配置
-      }
-    }
-
-    return { plugins, has_config: hasConfig }
-  }
-
-  /**
-   * 从 openclaw.json 解析已安装的插件
-   *
-   * openclaw.json 格式：
-   * {
-   *   "plugins": { "entries": { "feishu": { "enabled": false }, "openclaw-lark": { "enabled": true } }, "allow": ["openclaw-lark"] },
-   *   "channels": { "feishu": { "enabled": true, "appId": "...", ... } }
-   * }
-   */
-  private scanFromOpenclawJson(jsonPath: string): { plugins: ScannedPlugin[]; has_config: boolean } {
-    try {
-      const content = fsSync.readFileSync(jsonPath, 'utf-8')
-      const data = JSON.parse(content) as {
-        plugins?: { entries?: Record<string, { enabled?: boolean }>; allow?: string[] }
-        channels?: Record<string, { enabled?: boolean; [key: string]: unknown }>
-      }
-
-      const plugins: ScannedPlugin[] = []
-
-      // 从 plugins.entries 中提取已启用的插件
-      const entries = data.plugins?.entries ?? {}
-      const allowList = new Set(data.plugins?.allow ?? [])
-
-      for (const [name, info] of Object.entries(entries)) {
-        // 插件在 allow 列表中或明确 enabled
-        if (allowList.has(name) || info.enabled) {
-          const platform = this.inferPlatform(name)
-          plugins.push({ name, platform, entry_path: '' })
-        }
-      }
-
-      // 如果 plugins.entries 没有有效的启用插件，从 channels 推断
-      if (plugins.length === 0 && data.channels) {
-        for (const [channelName, channelInfo] of Object.entries(data.channels)) {
-          if (channelInfo.enabled !== false) {
-            const platform = this.inferPlatform(channelName)
-            plugins.push({ name: channelName, platform, entry_path: '' })
-          }
-        }
-      }
-
-      // channels 有内容即视为 has_config
-      const hasConfig = data.channels !== undefined && Object.keys(data.channels).length > 0
-
-      return { plugins, has_config: hasConfig }
-    } catch {
-      return { plugins: [], has_config: false }
-    }
-  }
-
-  /**
-   * 在 node_modules 中查找所有 OpenClaw 插件包
-   */
-  private findOpenClawPlugins(nodeModulesDir: string): ScannedPlugin[] {
-    const results: ScannedPlugin[] = []
-    const entries = fsSync.readdirSync(nodeModulesDir)
-
-    for (const entry of entries) {
-      const pkgBase = path.join(nodeModulesDir, entry)
-      if (!fsSync.statSync(pkgBase).isDirectory()) continue
-
-      if (entry.startsWith('@')) {
-        // @scope/pkg 格式
-        const scopedPkgs = fsSync.readdirSync(pkgBase)
-        for (const pkg of scopedPkgs) {
-          const pkgDir = path.join(pkgBase, pkg)
-          if (fsSync.existsSync(path.join(pkgDir, 'openclaw.plugin.json'))) {
-            const plugin = this.readPluginInfo(pkgDir, `${entry}/${pkg}`)
-            if (plugin) results.push(plugin)
-          }
-        }
-      } else {
-        if (fsSync.existsSync(path.join(pkgBase, 'openclaw.plugin.json'))) {
-          const plugin = this.readPluginInfo(pkgBase, entry)
-          if (plugin) results.push(plugin)
-        }
-      }
-    }
-
-    return results
-  }
-
-  /**
-   * 读取单个插件包的信息
-   */
-  private readPluginInfo(pkgDir: string, fallbackName: string): ScannedPlugin | null {
-    const pkgJsonPath = path.join(pkgDir, 'package.json')
-    let name = fallbackName
-
-    if (fsSync.existsSync(pkgJsonPath)) {
-      try {
-        const pkg = JSON.parse(fsSync.readFileSync(pkgJsonPath, 'utf-8')) as { name?: string }
-        if (pkg.name) name = pkg.name
-      } catch {
-        // 解析失败用 fallbackName
-      }
-    }
-
-    // 查找入口文件
-    const entryPaths = ['index.ts', 'src/index.ts', 'dist/index.js', 'index.js']
-    let entryPath: string | null = null
-    for (const ep of entryPaths) {
-      const candidate = path.join(pkgDir, ep)
-      if (fsSync.existsSync(candidate)) {
-        entryPath = candidate
-        break
-      }
-    }
-    if (!entryPath) return null
-
-    const platform = this.inferPlatform(name)
-
-    return { name, platform, entry_path: entryPath }
-  }
-
-  /**
-   * 从包名推断平台
-   */
-  private inferPlatform(packageName: string): string {
-    const platformMap: Record<string, string> = {
-      feishu: 'feishu',
-      lark: 'feishu',
-      dingtalk: 'dingtalk',
-      slack: 'slack',
-      wechat: 'wechat',
-      weixin: 'wechat',
-      wecom: 'wechat',
-      telegram: 'telegram',
-      discord: 'discord',
-    }
-
-    const lower = packageName.toLowerCase()
-    for (const [keyword, platform] of Object.entries(platformMap)) {
-      if (lower.includes(keyword)) return platform
-    }
-
-    // fallback：从包名清理前缀后提取平台名
-    // 例如 @openclaw/line → line，openclaw-matrix → matrix，@tencent-weixin/openclaw-weixin-cli → weixin（已在上面匹配）
-    let cleaned = packageName
-    // 去掉 @scope/ 前缀
-    cleaned = cleaned.replace(/^@[^/]+\//, '')
-    // 去掉 openclaw- 前缀
-    cleaned = cleaned.replace(/^openclaw-/, '')
-    // 去掉 -cli、-tools、-bot 等常见后缀
-    cleaned = cleaned.replace(/-(cli|tools|bot|plugin|sdk|adapter)$/, '')
-
-    if (cleaned && cleaned !== packageName.replace(/^@[^/]+\//, '')) {
-      return cleaned.toLowerCase()
-    }
-
-    return 'unknown'
   }
 
   // ============================================================================

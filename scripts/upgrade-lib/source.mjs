@@ -8,7 +8,6 @@ const JS_MODULES = [
   'crabot-core',
   'crabot-admin',
   'crabot-agent',
-  'crabot-channel-host',
   'crabot-channel-wechat',
   'crabot-channel-telegram',
   'crabot-channel-feishu',

@@ -221,7 +221,6 @@ describe('send_master_private', () => {
           calls.push({ method, params: params as Record<string, unknown> })
           if (method === 'find_master_friend') return { friend: master }
           if (method === 'find_or_create_private_session') {
-            // 与 channel-host/types.ts:FindOrCreatePrivateSessionResult 一致
             return { session: { id: 'real-session-uuid' }, created: false }
           }
           if (method === 'send_message') return { platform_message_id: 'mid-2', sent_at: '2026-06-03T00:00:00Z' }

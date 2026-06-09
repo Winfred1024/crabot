@@ -32,9 +32,9 @@
 | `crabot-admin` | TypeScript | Admin WebUI + REST API + 编排层 |
 | `crabot-agent` | TypeScript | AI 智能体，多格式 LLM 引擎（Anthropic/OpenAI/Gemini） |
 | `crabot-memory` | Python | 长短期记忆（LanceDB + 向量嵌入） |
-| `crabot-channel-host` | TypeScript | 渠道插件宿主 |
 | `crabot-channel-telegram` | TypeScript | Telegram 渠道 |
 | `crabot-channel-wechat` | TypeScript | 微信渠道 |
+| `crabot-channel-feishu` | TypeScript | 飞书渠道 |
 | `crabot-mcp-tools` | TypeScript | 内置 MCP 工具服务 |
 
 ## 快速开始

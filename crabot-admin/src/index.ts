@@ -155,7 +155,6 @@ import {
 } from './schedule-migration.js'
 import { ModuleInstaller } from './module-installer.js'
 import { ChatManager } from './chat-manager.js'
-import { PtyManager } from './pty-manager.js'
 import { MCPServerManager, SkillManager, EssentialToolsManager, DuplicateSkillError } from './mcp-skill-manager.js'
 import { SubAgentManager, resolveSubAgentModel } from './subagent-manager.js'
 import { PRESET_VENDORS } from './preset-vendors.js'
@@ -373,9 +372,6 @@ export class AdminModule extends ModuleBase {
 
   // Chat 管理器
   private chatManager: ChatManager | null = null
-
-  // PTY 管理器（Web CLI 终端）
-  private ptyManager: PtyManager | null = null
 
   // Channel 配置入口管理（onboarding_methods）
   private onboardingManager: OnboardingManager
@@ -656,7 +652,7 @@ export class AdminModule extends ModuleBase {
     // 初始化 Channel 管理器
     await this.channelManager.initialize()
 
-    // 重新注册 channel-host 实例到 MM（MM 重启后动态注册会丢失）
+    // 重新注册 builtin channel 实例到 MM（MM 重启后动态注册会丢失）
     await this.channelManager.reRegisterInstances()
 
     // 加载 onboarding handler（从 builtin 模块的 yaml 读取 onboarding_methods）
@@ -716,14 +712,6 @@ export class AdminModule extends ModuleBase {
       verifyJwtWithEpoch,
     )
     await this.chatManager.loadData()
-
-    // 初始化 PTY 管理器（Web CLI 终端）
-    this.ptyManager = new PtyManager(
-      this.jwtSecret,
-      parseInt(process.env.CRABOT_MM_PORT || '19000', 10),
-      verifyJwtWithEpoch,
-      this.adminConfig.data_dir,
-    )
 
     // Agent 端口由 module_started 事件驱动写入（见 onEvent），
     // 若 Admin 单独重启错过事件，由 ensureAgentPort() 惰性兜底。
@@ -881,11 +869,8 @@ export class AdminModule extends ModuleBase {
 
     // WebSocket upgrade 处理
     this.webServer.on('upgrade', (req, socket, head) => {
-      const url = new URL(req.url ?? '/', 'http://localhost')
       const handleAsync = async (): Promise<void> => {
-        if (url.pathname.startsWith('/ws/pty/') && this.ptyManager) {
-          await this.ptyManager.handleUpgrade(req, socket as Socket, head)
-        } else if (this.chatManager) {
+        if (this.chatManager) {
           await this.chatManager.handleUpgrade(req, socket as Socket, head)
         } else {
           socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n')
@@ -1897,44 +1882,6 @@ export class AdminModule extends ModuleBase {
           this.onboardingManager.get(body.implementation_id, body.method_id)?.cancel(body.session_id)
         }
         sendJson(res, 200, { ok: true })
-        return
-      }
-
-      // Channel state_dir 扫描（检测已安装的 OpenClaw 插件）
-      if (req.method === 'POST' && pathname === '/api/channels/scan-state-dir') {
-        const body = await this.readJsonBody<{ state_dir: string }>(req)
-        if (!body.state_dir) {
-          res.writeHead(400, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ error: 'state_dir is required' }))
-          return
-        }
-        try {
-          const result = this.channelManager.scanStateDir(body.state_dir)
-          res.writeHead(200, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify(result))
-        } catch (err) {
-          res.writeHead(500, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'scan failed' }))
-        }
-        return
-      }
-
-      // PTY 路由（Web CLI 终端）
-      if (req.method === 'POST' && pathname === '/api/channels/pty/create') {
-        const body = await this.readJsonBody<{ module_id?: string; init_cmd?: string }>(req)
-        const moduleId = body.module_id ?? `channel-openclaw-${Date.now()}`
-        const stateDir = path.join(this.adminConfig.data_dir, 'openclaw', moduleId)
-        const sessionId = this.ptyManager!.createSession(moduleId, stateDir, body.init_cmd)
-        res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ session_id: sessionId, module_id: moduleId, state_dir: stateDir }))
-        return
-      }
-
-      const ptyKillMatch = pathname.match(/^\/api\/channels\/pty\/([^/]+)$/)
-      if (ptyKillMatch && req.method === 'DELETE') {
-        this.ptyManager!.killSession(ptyKillMatch[1])
-        res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ ok: true }))
         return
       }
 
