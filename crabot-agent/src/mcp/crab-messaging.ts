@@ -698,6 +698,8 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
               channel_id,
               session_id,
               content,
+              // 缓冲分支只在 intent='info' 命中（goal mode + 工作态 + !ask_human + 非 immediate）。
+              // ask_human 永远走下方 immediate-send 路径，不进 buffer。
               intent: 'info',
               ...(content_type !== undefined ? { content_type } : {}),
               ...(media_url !== undefined ? { media_url } : {}),
@@ -722,7 +724,10 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
           channel_id,
           session_id,
           content,
-          intent: 'info', // 占位：仅 buffer entry 类型语义需要，dispatch 内不消费此字段
+          // 真实 intent —— immediate-send 路径覆盖了 ask_human + 非 goal mode info + 等审态 info 等。
+          // PR-2 onDispatched callback 用 entry.intent 写 task.messages.agent_intent 真值。
+          // intent 缺省（front 路径不带）时回退 'info'。spec §4.13.7 Revision 2026-06-09 第 2 段。
+          intent: intent ?? 'info',
           ...(content_type !== undefined ? { content_type } : {}),
           ...(media_url !== undefined ? { media_url } : {}),
           ...(file_path !== undefined ? { file_path } : {}),

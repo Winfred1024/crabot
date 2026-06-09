@@ -43,7 +43,19 @@ export interface OutboundBufferEntry {
   readonly channel_id: string
   readonly session_id: string
   readonly content: string
-  readonly intent: 'info'
+  /**
+   * send_message handler 传入的真实 intent。
+   * - 'info': 进度告知 / 最终交付（默认，单向，不等回复）
+   * - 'ask_human': 阻塞等人类同步回复
+   *
+   * 钩子点（spec §4.13.6 / §4.13.7）会把 entry 透传给 onDispatched callback，
+   * PR-2 用此字段把 task.messages 的 agent_intent 字段写真值（不再固定 'info'）。
+   *
+   * 注意 goal mode 缓冲分支只缓冲 intent='info' 的条目（ask_human 走 immediate-send
+   * 不进 buffer），但 immediate-send 路径仍构造 OutboundBufferEntry 喂给 dispatchOutboundMessage，
+   * 所以 entry 类型必须能表达 'ask_human'。
+   */
+  readonly intent: 'info' | 'ask_human'
   readonly content_type?: 'text' | 'image' | 'file'
   readonly media_url?: string
   readonly file_path?: string
@@ -71,10 +83,17 @@ export interface OutboundBufferEntry {
  *
  * Invariant #3 — 钩子点是叠加点：
  *   PR-1（本 spec §4.13）加 `taskState.everSentMessage = true`
- *   PR-2（spec B §4.2）会在同函数体后续追加 `task.messages.push(...)`
+ *   PR-2（spec B §4.2）在同函数体追加 `task.messages.push(...)`，agent_intent 取 entry.intent，
+ *     source.platform_message_id 取 sendResult.platform_message_id
  *   未来扩展可继续叠加，conflict 严格限定在 callback 函数体内。
+ *
+ * 签名（spec §4.13.7 Revision 2026-06-09 第 2 段）：(entry, sendResult) => void
+ *   entry: dispatch 的 buffer entry（含真实 intent、content、media 字段等）
+ *   sendResult: channel send_message RPC 返回（含 platform_message_id / sent_at）
+ *
+ * 钩子内任何抛错都被 dispatch 内 catch + warn，不污染 dispatch 返回。
  */
-export type OnDispatchedHook = (entry: OutboundBufferEntry) => void
+export type OnDispatchedHook = (entry: OutboundBufferEntry, sendResult: OutboundSendResult) => void
 
 /**
  * dispatchOutboundMessage 所需依赖。
@@ -273,9 +292,10 @@ export async function dispatchOutboundMessage(
 
   // <-- HOOK POINT (spec §4.13.6 Invariant #1: success 路径触发；Invariant #2: 抛错路径上方 await 已throw，不到此处) -->
   // 钩子内任何 throw 都被 catch 后 console.warn，避免污染 dispatch 返回 / 影响 caller。
+  // sendResult 一并透传，PR-2 等叠加 effect 需要 platform_message_id / sent_at 时直接取。
   if (deps.onDispatched) {
     try {
-      deps.onDispatched(entry)
+      deps.onDispatched(entry, sendResult)
     } catch (err) {
       console.warn(
         '[dispatchOutboundMessage] onDispatched hook threw:',

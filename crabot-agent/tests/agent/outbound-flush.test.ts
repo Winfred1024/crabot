@@ -15,6 +15,7 @@ import {
   dispatchOutboundMessage,
   type OutboundBufferEntry,
   type OutboundDispatchDeps,
+  type OutboundSendResult,
   type PathMapping,
 } from '../../src/agent/outbound-flush.js'
 
@@ -307,7 +308,7 @@ describe('createOutboundFlush', () => {
 // ============================================================================
 
 describe('dispatchOutboundMessage onDispatched 钩子（§4.13.6 Invariant #1 + #2）', () => {
-  function successDeps(onDispatched?: (e: OutboundBufferEntry) => void): OutboundDispatchDeps {
+  function successDeps(onDispatched?: (e: OutboundBufferEntry, r: OutboundSendResult) => void): OutboundDispatchDeps {
     return {
       rpcClient: {
         call: vi.fn(async (_port: number, method: string) => {
@@ -322,7 +323,7 @@ describe('dispatchOutboundMessage onDispatched 钩子（§4.13.6 Invariant #1 + 
     }
   }
 
-  it('Invariant #1: success 路径触发 onDispatched 恰好 1 次，entry 作为参数', async () => {
+  it('Invariant #1: success 路径触发 onDispatched 恰好 1 次，entry + sendResult 作为参数', async () => {
     const hook = vi.fn()
     const deps = successDeps(hook)
     const entry = makeEntry({ content: 'hello' })
@@ -330,7 +331,8 @@ describe('dispatchOutboundMessage onDispatched 钩子（§4.13.6 Invariant #1 + 
     await dispatchOutboundMessage(entry, deps)
 
     expect(hook).toHaveBeenCalledOnce()
-    expect(hook).toHaveBeenCalledWith(entry)
+    // spec A §4.13.7 Revision (3): 钩子签名 (entry, sendResult)；sendResult 含 platform_message_id / sent_at
+    expect(hook).toHaveBeenCalledWith(entry, { platform_message_id: 'mid', sent_at: 'now' })
   })
 
   it('Invariant #2: dispatch 抛错（channel rpc 抛错）不触发钩子', async () => {

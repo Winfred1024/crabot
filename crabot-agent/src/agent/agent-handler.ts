@@ -24,7 +24,7 @@ import type { BgEntityOwner, BgEntityRecord, BgEntityStatus, BgEntityType } from
 import type { BashBgContext } from '../engine/tools/index.js'
 import type { BgToolDeps } from '../engine/tools/index.js'
 import type { TaskContext } from '../mcp/crab-messaging.js'
-import { createOutboundFlush, type PathMapping, type OutboundDispatchDeps, type OutboundBufferEntry } from './outbound-flush.js'
+import { createOutboundFlush, type PathMapping, type OutboundDispatchDeps, type OutboundBufferEntry, type OutboundSendResult } from './outbound-flush.js'
 import type { BgEntityTraceContext } from '../engine/bg-entities/trace.js'
 import type {
   ToolDefinition,
@@ -1005,9 +1005,9 @@ export class AgentHandler {
           // 路径触发；抛错路径不触发。
           // PR-1 effect：置 everSentMessage=true（永不清零）。
           // PR-2 effect：追加 task.messages（role='agent'）—— spec 2026-06-09 §4.2 invariant #3 叠加。
-          onDispatched: (entry) => {
+          onDispatched: (entry, sendResult) => {
             taskState.everSentMessage = true
-            this.appendAgentMessageBestEffort(taskState.taskId, entry)
+            this.appendAgentMessageBestEffort(taskState.taskId, entry, sendResult)
           },
           // 透传 sub-agent trace 上下文：让 audit gate 触发的 audit subagent
           // 产生的 sub_agent_call span 挂到主 worker trace 下，admin UI 能渲染。
@@ -1418,9 +1418,9 @@ export class AgentHandler {
               // post-tool flushOutboundBuffer / audit pass flush 路径触发。
               // PR-1 effect：everSentMessage=true。
               // PR-2 effect：append task.messages（role='agent'）— spec 2026-06-09 §4.2 invariant #3。
-              onDispatched: (entry) => {
+              onDispatched: (entry, sendResult) => {
                 taskState.everSentMessage = true
-                this.appendAgentMessageBestEffort(taskState.taskId, entry)
+                this.appendAgentMessageBestEffort(taskState.taskId, entry, sendResult)
               },
             }
             return createOutboundFlush(taskState.outboundBuffer, dispatchDeps)
@@ -2359,32 +2359,49 @@ export class AgentHandler {
   }
 
   /**
-   * spec 2026-06-09 §4.2 + spec A §4.13.6 invariant #3:
+   * spec 2026-06-09 §4.2 + spec A §4.13.6 invariant #3 + §4.13.7 Revision 2026-06-09 第 2 段:
    * onDispatched callback 叠加 effect — 把出站消息写入 admin task.messages（role='agent'）。
    * fire-and-forget：失败只 log，不影响 dispatch 主路径。
    *
    * 跟 deliverHumanResponse 里的 supplement 写入对称：人类入站 role='human'，agent 出站 role='agent'。
+   *
+   * 字段真值：
+   *  - agent_intent 取 entry.intent（'info' | 'ask_human'）—— spec §4.13.7 Revision 后 entry.intent
+   *    已是真值，不再固定 'info'
+   *  - source.platform_message_id 取 sendResult.platform_message_id —— quote/引用回溯锚点
+   *  - content 序列化媒体（[image/file: filename]），跟 deliverHumanResponse 的 formatMessageContent 对称
    */
-  private appendAgentMessageBestEffort(taskId: string, entry: OutboundBufferEntry): void {
+  private appendAgentMessageBestEffort(
+    taskId: string,
+    entry: OutboundBufferEntry,
+    sendResult: OutboundSendResult,
+  ): void {
     if (!this.deps?.getAdminPort || !this.deps.rpcClient) return
     const moduleId = this.deps.moduleId
     const getAdminPortFn = this.deps.getAdminPort
     const rpcClient = this.deps.rpcClient
+
+    // 序列化媒体：跟人类入站 formatMessageContent 概念对称——文本部分 + [type: name] 标签
+    const mediaTag = entry.media_url
+      ? `\n[${entry.content_type ?? 'media'}: ${entry.filename ?? entry.media_url}]`
+      : entry.file_path
+        ? `\n[${entry.content_type ?? 'file'}: ${entry.filename ?? entry.file_path}]`
+        : ''
+    const content = entry.content + mediaTag
+
     void (async () => {
       try {
         const adminPort = await getAdminPortFn()
         await rpcClient.call(adminPort, 'append_message', {
           task_id: taskId,
           role: 'agent',
-          content: entry.content,
+          content,
           source: {
             channel_id: entry.channel_id,
             session_id: entry.session_id,
+            platform_message_id: sendResult.platform_message_id,
           },
-          // entry.intent 是 'info' literal（OutboundBufferEntry 占位）；'ask_human' 路径
-          // 走 immediate-send 也共享同钩子，但 entry.intent 拿不到真值——caller 可通过
-          // task.status='waiting_human' + task.pending_question 推断 ask_human 那一条。
-          agent_intent: 'info',
+          agent_intent: entry.intent,
         }, moduleId)
       } catch (err) {
         log(`[onDispatched] append_message admin RPC failed (non-fatal) task=${taskId}: ${err instanceof Error ? err.message : String(err)}`)
