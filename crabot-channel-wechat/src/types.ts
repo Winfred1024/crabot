@@ -149,6 +149,8 @@ export interface ChannelCapabilities {
   supports_list_contacts: boolean
   /** 是否支持 list_groups */
   supports_list_groups: boolean
+  /** 是否支持 list_group_members */
+  supports_list_group_members: boolean
 }
 
 export interface SendMessageParams {
@@ -286,4 +288,28 @@ export interface ListGroupsResult {
     total_items: number
     total_pages: number
   }
+}
+
+export interface GroupMember {
+  platform_user_id: string
+  display_name?: string
+  role: 'owner' | 'admin' | 'member'
+}
+
+export interface ListGroupMembersParams {
+  session_id: SessionId
+  pagination?: PaginationParams
+}
+
+export interface ListGroupMembersResult {
+  items: GroupMember[]
+  pagination: {
+    page: number
+    page_size: number
+    total_items: number
+    total_pages: number
+  }
+  member_count: number
+  members_complete: boolean
+  partial_reason?: string
 }

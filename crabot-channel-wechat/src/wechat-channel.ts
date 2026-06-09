@@ -34,6 +34,9 @@ import type {
   ListContactsResult,
   ListGroupsParams,
   ListGroupsResult,
+  ListGroupMembersParams,
+  ListGroupMembersResult,
+  GroupMember,
   ContactItem,
   GroupItem,
 } from './types.js'
@@ -406,6 +409,7 @@ export class WechatChannel extends ModuleBase {
     this.registerMethod('get_sessions', this.handleGetSessions.bind(this))
     this.registerMethod('list_contacts', this.handleListContacts.bind(this))
     this.registerMethod('list_groups', this.handleListGroups.bind(this))
+    this.registerMethod('list_group_members', this.handleListGroupMembers.bind(this))
     this.registerMethod('get_session', this.handleGetSession.bind(this))
     this.registerMethod('find_or_create_private_session', this.handleFindOrCreatePrivateSession.bind(this))
     this.registerMethod('get_history', this.handleGetHistory.bind(this))
@@ -482,6 +486,7 @@ export class WechatChannel extends ModuleBase {
       allowed_file_paths: ['/tmp/', '/private/tmp/'],
       supports_list_contacts: true,
       supports_list_groups: true,
+      supports_list_group_members: true,
     }
   }
 
@@ -525,6 +530,46 @@ export class WechatChannel extends ModuleBase {
         total_items: raw.pagination.total,
         total_pages: raw.pagination.totalPages,
       },
+    }
+  }
+
+  private async handleListGroupMembers(params: ListGroupMembersParams): Promise<ListGroupMembersResult> {
+    const session = this.sessionManager.findById(params.session_id)
+    if (!session) throwError('NOT_FOUND', `Session ${params.session_id} not found`)
+    if (session.type !== 'group') throwError('INVALID_ARGUMENT', `Session ${params.session_id} is not a group`)
+
+    const resp = await this.client.getGroupMembers(session.platform_session_id)
+    if (!resp) {
+      return {
+        items: [],
+        pagination: { page: 1, page_size: 0, total_items: 0, total_pages: 1 },
+        member_count: 0,
+        members_complete: false,
+        partial_reason: '上游服务暂时取不到群成员，数据可能过期。稍后重试或触发 sync_sessions 后再查。',
+      }
+    }
+
+    const all: GroupMember[] = resp.members.map((m) => ({
+      platform_user_id: m.username,
+      display_name: m.chatroom_nick || m.nickname || undefined,
+      role: 'member' as const,
+    }))
+
+    const page = params.pagination?.page ?? 1
+    const pageSize = params.pagination?.page_size ?? 50
+    const start = (page - 1) * pageSize
+    const items = all.slice(start, start + pageSize)
+
+    return {
+      items,
+      pagination: {
+        page,
+        page_size: pageSize,
+        total_items: all.length,
+        total_pages: Math.max(1, Math.ceil(all.length / pageSize)),
+      },
+      member_count: resp.memberCount,
+      members_complete: true,
     }
   }
 
@@ -666,5 +711,11 @@ function connectorMsgToProtocolItem(m: Record<string, unknown>, talker: string) 
 function connectorTimeToISO(ts: string): string {
   const ms = parseInt(ts, 10)
   return isNaN(ms) ? new Date().toISOString() : new Date(ms).toISOString()
+}
+
+function throwError(code: string, message: string): never {
+  const err = new Error(message) as Error & { code: string }
+  err.code = code
+  throw err
 }
 

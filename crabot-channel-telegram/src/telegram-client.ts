@@ -144,6 +144,14 @@ export class TelegramClient {
     })
   }
 
+  async getChatMemberCount(chatId: string | number): Promise<number> {
+    return this.callApi<number>('getChatMemberCount', { chat_id: chatId })
+  }
+
+  async getChatAdministrators(chatId: string | number): Promise<TgChatMember[]> {
+    return this.callApi<TgChatMember[]>('getChatAdministrators', { chat_id: chatId })
+  }
+
   async getFile(fileId: string): Promise<TgFile> {
     return this.callApi<TgFile>('getFile', { file_id: fileId })
   }

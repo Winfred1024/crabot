@@ -45,6 +45,9 @@ import type {
   SessionType,
   TelegramChannelConfig,
   TelegramCacheConfig,
+  ListGroupMembersParams,
+  ListGroupMembersResult,
+  GroupMember,
 } from './types.js'
 
 const MAX_MESSAGE_LENGTH = 4096
@@ -432,6 +435,7 @@ export class TelegramChannel extends ModuleBase {
     this.registerMethod('get_config', this.handleGetConfig.bind(this))
     this.registerMethod('update_config', this.handleUpdateConfig.bind(this))
     this.registerMethod('add_reaction', this.handleAddReaction.bind(this))
+    this.registerMethod('list_group_members', this.handleListGroupMembers.bind(this))
   }
 
   /**
@@ -613,6 +617,7 @@ export class TelegramChannel extends ModuleBase {
       allowed_file_paths: [path.join(this.dataDir, 'media')],
       supports_list_contacts: false,
       supports_list_groups: false,
+      supports_list_group_members: true,
     }
   }
 
@@ -638,6 +643,53 @@ export class TelegramChannel extends ModuleBase {
     const session = this.sessionManager.findById(params.session_id)
     if (!session) throw new Error('Session not found')
     return { session }
+  }
+
+  private async handleListGroupMembers(params: ListGroupMembersParams): Promise<ListGroupMembersResult> {
+    const session = this.sessionManager.findById(params.session_id)
+    if (!session) throwError('NOT_FOUND', `Session ${params.session_id} not found`)
+    if (session.type !== 'group') throwError('INVALID_ARGUMENT', `Session ${params.session_id} is not a group`)
+
+    const chatId = session.platform_session_id
+    let memberCount: number
+    let admins: GroupMember[]
+    try {
+      const [count, rawAdmins] = await Promise.all([
+        this.client.getChatMemberCount(chatId),
+        this.client.getChatAdministrators(chatId),
+      ])
+      memberCount = count
+      admins = rawAdmins.map((m): GroupMember => ({
+        platform_user_id: String(m.user.id),
+        display_name: formatTgUserName(m.user),
+        role: m.status === 'creator' ? 'owner' : 'admin',
+      }))
+    } catch (err) {
+      if (err instanceof TelegramApiError && (err.errorCode === 403 || err.errorCode === 401)) {
+        throwError('PERMISSION_DENIED', err.message)
+      }
+      throw err
+    }
+
+    const page = params.pagination?.page ?? 1
+    const pageSize = params.pagination?.page_size ?? 50
+    const start = (page - 1) * pageSize
+    const items = admins.slice(start, start + pageSize)
+
+    return {
+      items,
+      pagination: {
+        page,
+        page_size: pageSize,
+        total_items: admins.length,
+        total_pages: Math.max(1, Math.ceil(admins.length / pageSize)),
+      },
+      member_count: memberCount,
+      members_complete: false,
+      partial_reason:
+        '平台不允许枚举普通成员。member_count 准确；items 只含管理员（如果有）。' +
+        '要确认某个特定用户是否在群里，用 get_platform_user_info 单查。',
+    }
   }
 
   private handleFindOrCreatePrivateSession(params: FindOrCreatePrivateSessionParams) {

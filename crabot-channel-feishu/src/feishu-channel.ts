@@ -65,6 +65,9 @@ import type {
   ListContactsResult,
   ListGroupsParams,
   ListGroupsResult,
+  ListGroupMembersParams,
+  ListGroupMembersResult,
+  GroupMember,
   ContactItem,
   GroupItem,
   MentionTarget,
@@ -677,6 +680,7 @@ export class FeishuChannel extends ModuleBase {
     this.registerMethod('delete_session', this.handleDeleteSession.bind(this))
     this.registerMethod('list_contacts', this.handleListContacts.bind(this))
     this.registerMethod('list_groups', this.handleListGroups.bind(this))
+    this.registerMethod('list_group_members', this.handleListGroupMembers.bind(this))
     this.registerMethod('get_config', this.handleGetConfig.bind(this))
     this.registerMethod('update_config', this.handleUpdateConfig.bind(this))
     this.registerMethod('read_document', this.handleReadDocument.bind(this))
@@ -890,6 +894,7 @@ export class FeishuChannel extends ModuleBase {
       allowed_file_paths: this.allowedFilePaths(),
       supports_list_contacts: true,
       supports_list_groups: true,
+      supports_list_group_members: true,
       extensions: [],
     }
   }
@@ -1186,6 +1191,36 @@ export class FeishuChannel extends ModuleBase {
         total_items: items.length,
         total_pages: raw.has_more ? 2 : 1,
       },
+    }
+  }
+
+  private async handleListGroupMembers(params: ListGroupMembersParams): Promise<ListGroupMembersResult> {
+    const session = this.sessionManager.findById(params.session_id)
+    if (!session) throwError('NOT_FOUND', `Session ${params.session_id} not found`)
+    if (session.type !== 'group') throwError('INVALID_ARGUMENT', `Session ${params.session_id} is not a group`)
+
+    const members = await this.client.getChatMembers(session.platform_session_id)
+    const all: GroupMember[] = members.map((m) => ({
+      platform_user_id: m.open_id,
+      display_name: m.name || undefined,
+      role: 'member' as const,
+    }))
+
+    const page = params.pagination?.page ?? 1
+    const pageSize = params.pagination?.page_size ?? 50
+    const start = (page - 1) * pageSize
+    const items = all.slice(start, start + pageSize)
+
+    return {
+      items,
+      pagination: {
+        page,
+        page_size: pageSize,
+        total_items: all.length,
+        total_pages: Math.max(1, Math.ceil(all.length / pageSize)),
+      },
+      member_count: all.length,
+      members_complete: true,
     }
   }
 

@@ -1,7 +1,7 @@
 /**
  * Crab-Messaging MCP Server — Agent 统一通讯能力
  *
- * 提供 8 个工具：lookup_friend, list_contacts, list_groups, list_sessions, send_private_message, send_message, get_history, get_message
+ * 提供 9 个工具：lookup_friend, list_contacts, list_groups, list_sessions, list_group_members, send_private_message, send_message, get_history, get_message
  * 对齐 protocol-crab-messaging.md
  *
  * @see crabot-docs/protocols/protocol-crab-messaging.md
@@ -374,6 +374,60 @@ export function buildMessagingTools(
           >(
             channelPort, 'get_sessions',
             { type: args.type as string | undefined, pagination: { page, page_size } },
+            moduleId,
+          )
+          return wrapText(annotatePagination(result, { requestedPage: page, requestedPageSize: page_size, userSpecifiedPageSize }))
+        } catch (err) {
+          return wrapText(translateChannelError(err))
+        }
+      },
+    },
+
+    // ================================================================
+    // 3b. list_group_members — 查指定群的成员列表与总数
+    // ================================================================
+    {
+      name: 'list_group_members',
+      description:
+        '查指定群（session_id 必须是 group 类型 session）的成员列表与总数。' +
+        '返回 { items, pagination, member_count, members_complete, partial_reason? }。' +
+        '**`members_complete=false` 时 `partial_reason` 会说明为什么不完整、哪些字段可信、如何兜底——必须读它再决定怎么用结果，不能拿 items 当全集**。' +
+        '不要从 Session.participants 反推群成员，那是 channel 内部维护的"已感知"集合，不是全集。',
+      schema: {
+        channel_id: z.string().describe('Channel 模块实例 ID'),
+        session_id: z.string().describe('群 Session ID（type=group）'),
+        page: z.number().optional().describe('页码，从 1 开始'),
+        page_size: z.number().optional().describe('每页数量，默认 50，最大 100'),
+      },
+      handler: async (args) => {
+        const channel_id = args.channel_id as string
+        const session_id = args.session_id as string
+        let channelPort: number
+        try {
+          channelPort = await resolveChannelPort(channel_id)
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          return wrapText({ error_code: 'CHANNEL_UNAVAILABLE', error: `Channel ${channel_id} 不可用: ${msg}` })
+        }
+        if (!channelPort) {
+          return wrapText({ error_code: 'CHANNEL_UNAVAILABLE', error: `Channel ${channel_id} 不可用` })
+        }
+        const page = (args.page as number | undefined) ?? 1
+        const userSpecifiedPageSize = args.page_size != null
+        const page_size = clampPageSize((args.page_size as number | undefined) ?? 50)
+        try {
+          const result = await rpcClient.call<
+            { session_id: string; pagination: { page: number; page_size: number } },
+            {
+              items: unknown[]
+              pagination: { page: number; page_size: number; total_items: number; total_pages: number }
+              member_count: number
+              members_complete: boolean
+              partial_reason?: string
+            }
+          >(
+            channelPort, 'list_group_members',
+            { session_id, pagination: { page, page_size } },
             moduleId,
           )
           return wrapText(annotatePagination(result, { requestedPage: page, requestedPageSize: page_size, userSpecifiedPageSize }))
