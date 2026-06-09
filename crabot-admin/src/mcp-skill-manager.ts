@@ -112,7 +112,7 @@ export interface SkillRegistryEntry {
   name: string
   description: string
   version: string
-  /** Skill 目录绝对路径（builtin 指向 builtins/skills/<name>，其它指向 <data_dir>/skills/<id>） */
+  /** Skill 目录绝对路径（统一用 name 作 basename：builtin 指向 builtins/skills/<name>，imported 指向 <data_dir>/skills/<name>，scanned 指向 ~/.agents/skills/<name>） */
   skill_dir: string
   /** 触发短语（用于 LLM 匹配） */
   trigger_phrases?: string[]
@@ -136,7 +136,7 @@ export interface SkillRegistryEntry {
    * 详见 spec 2026-06-07-skill-previous-version-and-diff-design.md §4.1。
    */
   previous_snapshot?: {
-    /** 快照目录的相对路径（相对 skillsRoot），形如 .snapshots/<id>-<ts> */
+    /** 快照目录的相对路径（相对 skillsRoot），形如 .snapshots/<name>-<ts> */
     snapshot_dir: string
     version: string
     updated_at: string
@@ -508,6 +508,13 @@ export class SkillManager {
         needsMigrate = true
         break
       }
+      // 已是新格式但 skill_dir basename 不是 name（UUID 命名 → name 命名）
+      if (!e.is_builtin && e.skill_dir && e.skill_dir.startsWith(this.skillsRoot + path.sep)) {
+        if (path.basename(e.skill_dir) !== e.name) {
+          needsMigrate = true
+          break
+        }
+      }
     }
     if (!needsMigrate) return
 
@@ -537,11 +544,13 @@ export class SkillManager {
         continue
       }
 
-      const newSkillDir = path.join(this.skillsRoot, id)
+      // 用 name 做目录名（对齐 Anthropic 标准）；name 缺失时降级到 id（防御性）
+      const dirName = entry.name && isValidSkillName(entry.name) ? entry.name : id
+      const newSkillDir = path.join(this.skillsRoot, dirName)
       const newHasSkillMd = await fs.access(path.join(newSkillDir, 'SKILL.md')).then(() => true).catch(() => false)
 
       if (!newHasSkillMd && entry.content !== undefined) {
-        // 1. 在 <skillsRoot>/<id>/ 写 SKILL.md
+        // 1. 在 <skillsRoot>/<name>/ 写 SKILL.md
         await fs.mkdir(newSkillDir, { recursive: true })
         await atomicWriteFileBuf(path.join(newSkillDir, 'SKILL.md'), Buffer.from(entry.content, 'utf-8'))
 
@@ -559,6 +568,34 @@ export class SkillManager {
         // 无 content 又无 skill_dir 的 zombie entry
         console.warn(`[SkillManager] legacy entry "${entry.name}" 无 content 无 skill_dir，无法迁移`)
         entry.skill_dir = newSkillDir
+      } else if (
+        entry.skill_dir.startsWith(this.skillsRoot + path.sep) &&
+        path.basename(entry.skill_dir) !== dirName
+      ) {
+        // 已新格式但目录名是 UUID（或别的旧 basename），rename 到 name 目录
+        const targetExists = await fs.access(newSkillDir).then(() => true).catch(() => false)
+        if (targetExists) {
+          console.warn(`[SkillManager] 无法迁移 "${entry.name}"：目标目录 ${newSkillDir} 已存在`)
+        } else {
+          const srcExists = await fs.access(entry.skill_dir).then(() => true).catch(() => false)
+          if (srcExists) {
+            await fs.rename(entry.skill_dir, newSkillDir)
+            // 同步 previous_snapshot.snapshot_dir 里的旧 basename 前缀
+            const oldBasename = path.basename(entry.skill_dir)
+            if (entry.previous_snapshot?.snapshot_dir?.includes(`/${oldBasename}-`)) {
+              const oldSnapRel = entry.previous_snapshot.snapshot_dir
+              const oldSnapAbs = path.join(this.skillsRoot, oldSnapRel)
+              const newSnapRel = oldSnapRel.replace(`/${oldBasename}-`, `/${dirName}-`)
+              const newSnapAbs = path.join(this.skillsRoot, newSnapRel)
+              const oldSnapExists = await fs.access(oldSnapAbs).then(() => true).catch(() => false)
+              if (oldSnapExists) {
+                await fs.rename(oldSnapAbs, newSnapAbs)
+                entry.previous_snapshot = { ...entry.previous_snapshot, snapshot_dir: newSnapRel }
+              }
+            }
+            entry.skill_dir = newSkillDir
+          }
+        }
       }
 
       // 3. 迁移 previous_snapshot 嵌入式 → 文件夹
@@ -567,7 +604,7 @@ export class SkillManager {
         | { content?: string; files?: Record<string, string>; snapshot_dir?: string; version: string; updated_at: string; snapshotted_at: string }
       if (prev && prev.content !== undefined && !prev.snapshot_dir) {
         const snapTs = isoCompactTs(prev.snapshotted_at)
-        const snapRel = path.posix.join('.snapshots', `${id}-${snapTs}`)
+        const snapRel = path.posix.join('.snapshots', `${dirName}-${snapTs}`)
         const snapAbs = path.join(this.skillsRoot, snapRel)
         await fs.mkdir(snapAbs, { recursive: true })
         await atomicWriteFileBuf(path.join(snapAbs, 'SKILL.md'), Buffer.from(prev.content, 'utf-8'))
@@ -641,8 +678,16 @@ export class SkillManager {
     source_package?: string
     source_type?: 'builtin' | 'imported' | 'scanned'
   }): Promise<SkillRegistryEntry> {
+    if (!isValidSkillName(params.name)) {
+      throw new Error(`Skill name "${params.name}" 含非法字符（仅允许小写字母/数字/连字符，最长 64 字符）`)
+    }
     const id = generateId()
-    const skillDir = path.join(this.skillsRoot, id)
+    const skillDir = path.join(this.skillsRoot, params.name)
+    await fs.mkdir(this.skillsRoot, { recursive: true })
+    const orphanCheck = await fs.access(skillDir).then(() => true).catch(() => false)
+    if (orphanCheck) {
+      throw new Error(`目录 ${skillDir} 已存在但 registry 中找不到对应 entry，可能是孤儿数据，请手工清理`)
+    }
     await fs.mkdir(skillDir, { recursive: true })
     await atomicWriteFileBuf(path.join(skillDir, 'SKILL.md'), Buffer.from(params.content, 'utf-8'))
 
@@ -683,19 +728,43 @@ export class SkillManager {
       throw new Error(`Skill "${entry.name}" 是内置的，不能修改 content`)
     }
 
+    // 处理 name 改名：mv 物理目录（仅在 skillsRoot 下的非 builtin entry）
+    let workingSkillDir = entry.skill_dir
+    if (params.name !== undefined && params.name !== entry.name && !entry.is_builtin) {
+      if (!isValidSkillName(params.name)) {
+        throw new Error(`Skill name "${params.name}" 含非法字符（仅允许小写字母/数字/连字符，最长 64 字符）`)
+      }
+      const newNameConflict = Array.from(this.skills.values()).find(s => s.id !== id && s.name === params.name)
+      if (newNameConflict) {
+        throw new Error(`Skill name "${params.name}" 已被其他 entry 使用`)
+      }
+      const isUnderSkillsRoot = entry.skill_dir.startsWith(this.skillsRoot + path.sep)
+      if (isUnderSkillsRoot) {
+        const newSkillDir = path.join(this.skillsRoot, params.name)
+        const newExists = await fs.access(newSkillDir).then(() => true).catch(() => false)
+        if (newExists) {
+          throw new Error(`目标目录 ${newSkillDir} 已存在`)
+        }
+        await fs.rename(entry.skill_dir, newSkillDir)
+        workingSkillDir = newSkillDir
+      }
+    }
+
     let previousSnapshot = entry.previous_snapshot
     if (params.content !== undefined && !entry.is_builtin) {
-      const skillMdPath = path.join(entry.skill_dir, 'SKILL.md')
+      const skillMdPath = path.join(workingSkillDir, 'SKILL.md')
       const oldContent = await fs.readFile(skillMdPath, 'utf-8').catch(() => '')
       if (oldContent !== params.content) {
         const snapTs = isoCompactTs(generateTimestamp())
-        const snapRel = path.posix.join('.snapshots', `${id}-${snapTs}`)
+        // snapshot 用当前 name（取改名后的，若改了名）
+        const snapBase = params.name ?? entry.name
+        const snapRel = path.posix.join('.snapshots', `${snapBase}-${snapTs}`)
         const snapDir = path.join(this.skillsRoot, snapRel)
         await fs.mkdir(path.dirname(snapDir), { recursive: true })
         // 1. 先 copy 到 tmp，成功后 rename 到正式 snapDir；失败仅 tmp 残留被清，旧 snapshot 完好
         const tmpSnapDir = `${snapDir}.tmp.${process.pid}.${Date.now()}.${randomBytes(4).toString('hex')}`
         try {
-          await copyDir(entry.skill_dir, tmpSnapDir)
+          await copyDir(workingSkillDir, tmpSnapDir)
           await fs.rename(tmpSnapDir, snapDir)
         } catch (err) {
           await fs.rm(tmpSnapDir, { recursive: true, force: true }).catch(() => {})
@@ -720,6 +789,7 @@ export class SkillManager {
       name: params.name ?? entry.name,
       description: params.description ?? entry.description,
       version: params.version ?? entry.version,
+      skill_dir: workingSkillDir,
       trigger_phrases: params.trigger_phrases ?? entry.trigger_phrases,
       is_essential: params.is_essential ?? entry.is_essential,
       enabled: params.enabled ?? entry.enabled,
@@ -741,7 +811,7 @@ export class SkillManager {
     const oldSnapDir = path.join(this.skillsRoot, oldSnapRel)
     const now = generateTimestamp()
     const newSnapTs = isoCompactTs(now)
-    const newSnapRel = path.posix.join('.snapshots', `${id}-${newSnapTs}`)
+    const newSnapRel = path.posix.join('.snapshots', `${entry.name}-${newSnapTs}`)
     const newSnapDir = path.join(this.skillsRoot, newSnapRel)
     await fs.mkdir(path.dirname(newSnapDir), { recursive: true })
 
@@ -761,7 +831,7 @@ export class SkillManager {
         // B 失败：磁盘 swap 已半成功（entry.skill_dir 已是旧版内容），但 registry 尚未更新。
         // tempStash 是被替换下来的"原新版"内容；把它挪到 .orphan-<ts> 便于用户手工捞，
         // 然后抛 error 让 upstream 知道 registry 没同步。
-        const orphanRel = path.posix.join('.snapshots', `${id}-orphan-${newSnapTs}`)
+        const orphanRel = path.posix.join('.snapshots', `${entry.name}-orphan-${newSnapTs}`)
         const orphanDir = path.join(this.skillsRoot, orphanRel)
         await fs.rename(tempStash, orphanDir).catch(() => {})
       }
@@ -1120,6 +1190,9 @@ export class SkillManager {
     }
     const parsed = parseSkillMd(content)
     if (!parsed.name) throw new Error('SKILL.md 缺少 name 字段')
+    if (!isValidSkillName(parsed.name)) {
+      throw new Error(`Skill name "${parsed.name}" 含非法字符（仅允许小写字母/数字/连字符，最长 64 字符）`)
+    }
 
     const existing = this.findByName(parsed.name)
     if (existing && !overwrite) {
@@ -1137,9 +1210,16 @@ export class SkillManager {
     }
 
     const id = existing?.id ?? generateId()
-    const targetDir = path.join(this.skillsRoot, id)
+    const targetDir = path.join(this.skillsRoot, parsed.name)
 
     await fs.mkdir(this.skillsRoot, { recursive: true })
+    // 防御：targetDir 已存在但 registry 中找不到对应 entry（孤儿目录）
+    if (!existing) {
+      const orphanCheck = await fs.access(targetDir).then(() => true).catch(() => false)
+      if (orphanCheck) {
+        throw new Error(`目录 ${targetDir} 已存在但 registry 中找不到对应 entry，可能是孤儿数据，请手工清理`)
+      }
+    }
     const tmpDir = path.join(this.skillsRoot, `.tmp.${process.pid}.${Date.now()}.${randomBytes(4).toString('hex')}`)
     // 放在 try 外面：如果旧 targetDir 已被 rename 到 snapDir，catch 块需要回滚
     let snapDir: string | undefined
@@ -1152,7 +1232,7 @@ export class SkillManager {
         oldDirExists = await fs.access(targetDir).then(() => true).catch(() => false)
         if (oldDirExists) {
           const snapTs = isoCompactTs(generateTimestamp())
-          const snapRel = path.posix.join('.snapshots', `${id}-${snapTs}`)
+          const snapRel = path.posix.join('.snapshots', `${parsed.name}-${snapTs}`)
           snapDir = path.join(this.skillsRoot, snapRel)
           await fs.mkdir(path.dirname(snapDir), { recursive: true })
           if (existing.previous_snapshot?.snapshot_dir) {
@@ -1624,6 +1704,16 @@ async function cleanupExtraFiles(
  */
 function isoCompactTs(iso: string): string {
   return iso.replace(/[:.]/g, '-')
+}
+
+/**
+ * 校验 skill name 是否符合 Anthropic 规范且可安全做目录名：
+ * - 仅小写字母 / 数字 / 连字符
+ * - 长度 1-64
+ * 防御 path traversal / Windows 非法字符等。
+ */
+function isValidSkillName(name: string): boolean {
+  return /^[a-z0-9-]{1,64}$/.test(name)
 }
 
 /**

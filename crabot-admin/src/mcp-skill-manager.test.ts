@@ -22,7 +22,7 @@ describe('installSkillFromDirectory', () => {
     await fs.rm(tmpRoot, { recursive: true, force: true })
   })
 
-  it('安装完整 skill 目录（含 scripts/references/assets）后所有文件落到 <data_dir>/skills/<id>/', async () => {
+  it('安装完整 skill 目录（含 scripts/references/assets）后所有文件落到 <data_dir>/skills/<name>/', async () => {
     const srcDir = path.join(tmpRoot, 'src-skill')
     await fs.mkdir(path.join(srcDir, 'scripts'), { recursive: true })
     await fs.mkdir(path.join(srcDir, 'references'), { recursive: true })
@@ -32,7 +32,7 @@ describe('installSkillFromDirectory', () => {
 
     const { entry } = await (manager as any).installSkillFromDirectory(srcDir, { source_type: 'imported', source_url: 'test://x' })
 
-    const installedDir = path.join(dataDir, 'skills', entry.id)
+    const installedDir = path.join(dataDir, 'skills', entry.name)
     expect(await fs.readFile(path.join(installedDir, 'SKILL.md'), 'utf-8')).toContain('# Body')
     expect(await fs.readFile(path.join(installedDir, 'scripts', 'foo.py'), 'utf-8')).toBe('print("hi")')
     expect(await fs.readFile(path.join(installedDir, 'references', 'api.md'), 'utf-8')).toBe('# API')
@@ -85,7 +85,7 @@ describe('installSkillFromDirectory', () => {
       srcDir1,
       { source_type: 'imported' },
     )
-    const targetDir = path.join(dataDir, 'skills', e1.id)
+    const targetDir = path.join(dataDir, 'skills', e1.name)
     // 第二次覆盖时让最终 rename(tmpDir → targetDir) 失败
     const srcDir2 = path.join(tmpRoot, 'src-v2')
     await fs.mkdir(srcDir2, { recursive: true })
@@ -146,7 +146,7 @@ describe('importFromZip 完整保留 scripts/references/assets', () => {
     return zip.toBuffer().toString('base64')
   }
 
-  it('zip 含 scripts/foo.py 上传后 scripts/foo.py 落到 <data_dir>/skills/<id>/', async () => {
+  it('zip 含 scripts/foo.py 上传后 scripts/foo.py 落到 <data_dir>/skills/<name>/', async () => {
     const b64 = buildZipBase64([
       { name: 'SKILL.md', content: '---\nname: zip-skill\ndescription: d\nversion: 1.0.0\n---\nbody' },
       { name: 'scripts/foo.py', content: 'print(1)' },
@@ -411,7 +411,7 @@ describe('migrateLegacyEntries 自动迁移', () => {
     await manager.initialize()
 
     const e = manager.get('legacy-1')!
-    expect(e.skill_dir).toBe(path.join(dataDir, 'skills', 'legacy-1'))
+    expect(e.skill_dir).toBe(path.join(dataDir, 'skills', 'legacy-skill'))
     expect(await fs.readFile(path.join(e.skill_dir, 'SKILL.md'), 'utf-8')).toContain('old body')
     expect('content' in e).toBe(false)
     // 备份文件存在
@@ -446,7 +446,7 @@ describe('migrateLegacyEntries 自动迁移', () => {
     await manager.initialize()
 
     const e = manager.get('legacy-2')!
-    expect(e.skill_dir).toBe(path.join(dataDir, 'skills', 'legacy-2'))
+    expect(e.skill_dir).toBe(path.join(dataDir, 'skills', 'legacy-local'))
     expect(await fs.readFile(path.join(e.skill_dir, 'scripts', 'a.py'), 'utf-8')).toBe('a')
     expect(await fs.readFile(path.join(e.skill_dir, 'SKILL.md'), 'utf-8')).toContain('body')
   })
@@ -488,8 +488,8 @@ describe('migrateLegacyEntries 自动迁移', () => {
   })
 
   it('已新格式 entry 不重复迁移（幂等）', async () => {
-    // 提前手动建好新格式的 entry + 磁盘
-    const skillDir = path.join(dataDir, 'skills', 'modern-1')
+    // 提前手动建好新格式的 entry + 磁盘（dir 用 name，basename === entry.name）
+    const skillDir = path.join(dataDir, 'skills', 'modern')
     await fs.mkdir(skillDir, { recursive: true })
     await fs.writeFile(path.join(skillDir, 'SKILL.md'), '---\nname: modern\ndescription: d\nversion: 1.0.0\n---\nbody')
     const modernEntries = [{
@@ -540,5 +540,108 @@ describe('migrateLegacyEntries 自动迁移', () => {
     expect(e.skill_dir).toBe('/some/builtin/dir')
     // content 仍删除（接口清理）
     expect('content' in e).toBe(false)
+  })
+})
+
+describe('skill 目录用 name 不用 UUID（Anthropic 标准）', () => {
+  let tmpRoot: string, dataDir: string, manager: SkillManager
+  beforeEach(async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'name-dir-'))
+    dataDir = path.join(tmpRoot, 'data')
+    await fs.mkdir(dataDir, { recursive: true })
+    manager = new SkillManager(dataDir)
+    await manager.initialize()
+  })
+  afterEach(async () => { await fs.rm(tmpRoot, { recursive: true, force: true }) })
+
+  it('importFromLocalPath 后 skill_dir 用 name 而不是 UUID', async () => {
+    const src = path.join(tmpRoot, 'src')
+    await fs.mkdir(src, { recursive: true })
+    await fs.writeFile(path.join(src, 'SKILL.md'), '---\nname: my-cool-skill\ndescription: d\nversion: 1.0.0\n---\nbody')
+    const { entry } = await manager.importFromLocalPath(src)
+    expect(entry.skill_dir).toBe(path.join(dataDir, 'skills', 'my-cool-skill'))
+    expect(path.basename(entry.skill_dir)).toBe('my-cool-skill')
+    // entry.id 仍是 UUID（registry 主键）
+    expect(entry.id).toMatch(/^[0-9a-f]{8}-/)
+  })
+
+  it('importFromZip 后 skill_dir 用 name', async () => {
+    const zip = new AdmZip()
+    zip.addFile('SKILL.md', Buffer.from('---\nname: zip-named\ndescription: d\nversion: 1.0.0\n---\nbody'))
+    const { entry } = await manager.importFromZip(zip.toBuffer().toString('base64'), 'test.zip')
+    expect(path.basename(entry.skill_dir)).toBe('zip-named')
+  })
+
+  it('update content 后 snapshot 用 name 不用 id', async () => {
+    const src = path.join(tmpRoot, 'src')
+    await fs.mkdir(src, { recursive: true })
+    await fs.writeFile(path.join(src, 'SKILL.md'), '---\nname: snap-named\ndescription: d\nversion: 1.0.0\n---\nold')
+    const { entry } = await manager.importFromLocalPath(src)
+    await manager.update(entry.id, { content: '---\nname: snap-named\ndescription: d\nversion: 2.0.0\n---\nnew' })
+    const after = manager.get(entry.id)!
+    expect(after.previous_snapshot!.snapshot_dir).toMatch(/^\.snapshots\/snap-named-/)
+  })
+
+  it('update name 时 mv 目录', async () => {
+    const src = path.join(tmpRoot, 'src')
+    await fs.mkdir(src, { recursive: true })
+    await fs.writeFile(path.join(src, 'SKILL.md'), '---\nname: old-name\ndescription: d\nversion: 1.0.0\n---\nbody')
+    const { entry } = await manager.importFromLocalPath(src)
+    const oldDir = entry.skill_dir
+    await manager.update(entry.id, { name: 'new-name' })
+    const after = manager.get(entry.id)!
+    expect(path.basename(after.skill_dir)).toBe('new-name')
+    expect(await fs.access(oldDir).then(() => true).catch(() => false)).toBe(false)
+    expect(await fs.access(after.skill_dir).then(() => true).catch(() => false)).toBe(true)
+  })
+
+  it('orphan 目录冲突 → 拒绝导入', async () => {
+    // 手动建一个孤儿目录
+    await fs.mkdir(path.join(dataDir, 'skills', 'orphan-skill'), { recursive: true })
+    const src = path.join(tmpRoot, 'src')
+    await fs.mkdir(src, { recursive: true })
+    await fs.writeFile(path.join(src, 'SKILL.md'), '---\nname: orphan-skill\ndescription: d\nversion: 1.0.0\n---\nbody')
+    await expect(manager.importFromLocalPath(src)).rejects.toThrow(/孤儿|orphan/i)
+  })
+
+  it('非法 name（含 ../）拒绝导入', async () => {
+    const src = path.join(tmpRoot, 'src')
+    await fs.mkdir(src, { recursive: true })
+    await fs.writeFile(path.join(src, 'SKILL.md'), '---\nname: ../evil\ndescription: d\nversion: 1.0.0\n---\nbody')
+    await expect(manager.importFromLocalPath(src)).rejects.toThrow(/非法字符|invalid/i)
+  })
+
+  it('migrate: legacy UUID 目录自动 mv 到 name 目录', async () => {
+    // 手工建一个"已用新格式但目录是 UUID 命名"的 entry
+    const uuidDir = path.join(dataDir, 'skills', 'old-uuid-id-12345')
+    await fs.mkdir(uuidDir, { recursive: true })
+    await fs.writeFile(path.join(uuidDir, 'SKILL.md'), '---\nname: legacy-named\ndescription: d\nversion: 1.0.0\n---\nbody')
+    await fs.mkdir(path.join(uuidDir, 'scripts'), { recursive: true })
+    await fs.writeFile(path.join(uuidDir, 'scripts', 'foo.py'), 'foo')
+
+    const entries = [{
+      id: 'old-uuid-id-12345',
+      name: 'legacy-named',
+      description: 'd',
+      version: '1.0.0',
+      skill_dir: uuidDir,
+      source_type: 'imported' as const,
+      is_builtin: false,
+      is_essential: false,
+      can_disable: true,
+      enabled: true,
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+    }]
+    await fs.writeFile(path.join(dataDir, 'skills.json'), JSON.stringify(entries))
+
+    const m2 = new SkillManager(dataDir)
+    await m2.initialize()
+    const e = m2.get('old-uuid-id-12345')!
+    expect(e.skill_dir).toBe(path.join(dataDir, 'skills', 'legacy-named'))
+    expect(await fs.readFile(path.join(e.skill_dir, 'SKILL.md'), 'utf-8')).toContain('body')
+    expect(await fs.readFile(path.join(e.skill_dir, 'scripts', 'foo.py'), 'utf-8')).toBe('foo')
+    // 旧 UUID 目录应不存在
+    expect(await fs.access(uuidDir).then(() => true).catch(() => false)).toBe(false)
   })
 })
