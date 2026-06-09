@@ -6,6 +6,7 @@
 
 import fs from 'fs/promises'
 import path from 'path'
+import { randomBytes } from 'node:crypto'
 import AdmZip from 'adm-zip'
 import { generateId, generateTimestamp } from 'crabot-shared'
 
@@ -111,8 +112,13 @@ export interface SkillRegistryEntry {
   name: string
   description: string
   version: string
-  /** SKILL.md 格式的提示词内容 */
-  content: string
+  /**
+   * SKILL.md 格式的提示词内容
+   *
+   * 过渡阶段：Task 1 起新建条目不再写入此字段，但旧条目仍可能存在。
+   * Task 6 会彻底删除。
+   */
+  content?: string
   /** skill 所在目录的绝对路径（目录型 skill） */
   skill_dir?: string
   /** 触发短语（用于 LLM 匹配） */
@@ -123,6 +129,8 @@ export interface SkillRegistryEntry {
   can_disable: boolean
   source_market?: string
   source_package?: string
+  /** 原始来源 URL（如 GitHub 仓库 URL） */
+  source_url?: string
   enabled: boolean
   created_at: string
   updated_at: string
@@ -135,9 +143,13 @@ export interface SkillRegistryEntry {
    * 详见 spec 2026-06-07-skill-previous-version-and-diff-design.md §4.1。
    */
   previous_snapshot?: {
-    content: string
+    /** legacy 字段，Task 6 删 */
+    content?: string
     version: string
-    files?: Record<string, string>  // key=skill_dir 相对路径，value=文本或 'base64:<encoded>'
+    /** legacy 字段，Task 6 删；key=skill_dir 相对路径，value=文本或 'base64:<encoded>' */
+    files?: Record<string, string>
+    /** 新增：快照目录的相对路径（相对 skillsRoot） */
+    snapshot_dir?: string
     updated_at: string
     snapshotted_at: string
   }
@@ -460,9 +472,11 @@ export class MCPServerManager {
 export class SkillManager {
   private skills: Map<string, SkillRegistryEntry> = new Map()
   private readonly filePath: string
+  private readonly skillsRoot: string
 
   constructor(dataDir: string) {
     this.filePath = path.join(dataDir, 'skills.json')
+    this.skillsRoot = path.join(dataDir, 'skills')
   }
 
   async initialize(): Promise<void> {
@@ -656,7 +670,7 @@ export class SkillManager {
 
     // 先写磁盘（atomic），失败 throw 不更新 json，保证 json + 磁盘一致
     if (entry.skill_dir) {
-      await writeSkillDirFiles(entry.skill_dir, snap.content, snap.files)
+      await writeSkillDirFiles(entry.skill_dir, snap.content ?? '', snap.files)
     }
 
     const updated: SkillRegistryEntry = {
@@ -847,7 +861,7 @@ export class SkillManager {
     return {
       id: entry.id,
       name: entry.name,
-      content: entry.content,
+      content: entry.content ?? '',
       description: entry.description,
       ...(entry.skill_dir ? { skill_dir: entry.skill_dir } : {}),
     }
@@ -970,6 +984,107 @@ export class SkillManager {
     this.skills.set(entry.id, updated)
     await this.save()
     return { entry: updated, was_overwrite: false }
+  }
+
+  /**
+   * 把一个完整的 skill 目录安装到 <data_dir>/skills/<id>/ 下。
+   *
+   * 行为：
+   * - 读 srcDir/SKILL.md 解析 name/description/version
+   * - 重名检测：is_builtin 拒绝；否则未 overwrite 抛 DuplicateSkillError；overwrite 走 swap
+   * - 覆盖前把旧目录 rename 成 .snapshots/<id>-<ts> 当 previous_snapshot
+   * - 用 tmp 目录复制 srcDir，最后 rename 到 targetDir，失败清理 tmp（原子写）
+   */
+  private async installSkillFromDirectory(
+    srcDir: string,
+    sourceMeta: {
+      source_type?: 'imported' | 'scanned'
+      source_package?: string
+      source_url?: string
+    },
+    overwrite?: boolean,
+  ): Promise<{ entry: SkillRegistryEntry; was_overwrite: boolean }> {
+    let content: string
+    try {
+      content = await fs.readFile(path.join(srcDir, 'SKILL.md'), 'utf-8')
+    } catch {
+      throw new Error(`${srcDir} 中未找到 SKILL.md 文件`)
+    }
+    const parsed = parseSkillMd(content)
+    if (!parsed.name) throw new Error('SKILL.md 缺少 name 字段')
+
+    const existing = this.findByName(parsed.name)
+    if (existing && !overwrite) {
+      if (existing.is_builtin) {
+        throw new Error(`Skill "${existing.name}" 是内置的，不可通过导入覆盖`)
+      }
+      throw new DuplicateSkillError(existing, {
+        name: parsed.name,
+        description: parsed.description,
+        version: parsed.version,
+      })
+    }
+    if (existing?.is_builtin) {
+      throw new Error(`Skill "${existing.name}" 是内置的，不可通过导入覆盖`)
+    }
+
+    const id = existing?.id ?? generateId()
+    const targetDir = path.join(this.skillsRoot, id)
+
+    await fs.mkdir(this.skillsRoot, { recursive: true })
+    const tmpDir = path.join(this.skillsRoot, `.tmp.${process.pid}.${Date.now()}.${randomBytes(4).toString('hex')}`)
+    try {
+      await copyDir(srcDir, tmpDir, ['.skill_dir', '.DS_Store'])
+
+      let previousSnapshotMeta: SkillRegistryEntry['previous_snapshot']
+      if (existing) {
+        const oldDirExists = await fs.access(targetDir).then(() => true).catch(() => false)
+        if (oldDirExists) {
+          const snapTs = isoCompactTs(generateTimestamp())
+          const snapRel = path.posix.join('.snapshots', `${id}-${snapTs}`)
+          const snapDir = path.join(this.skillsRoot, snapRel)
+          await fs.mkdir(path.dirname(snapDir), { recursive: true })
+          if (existing.previous_snapshot?.snapshot_dir) {
+            await fs.rm(path.join(this.skillsRoot, existing.previous_snapshot.snapshot_dir), { recursive: true, force: true })
+          }
+          await fs.rename(targetDir, snapDir)
+          previousSnapshotMeta = {
+            snapshot_dir: snapRel,
+            version: existing.version,
+            updated_at: existing.updated_at,
+            snapshotted_at: generateTimestamp(),
+          }
+        }
+      }
+      await fs.rename(tmpDir, targetDir)
+
+      const now = generateTimestamp()
+      const entry: SkillRegistryEntry = {
+        id,
+        name: parsed.name,
+        description: parsed.description,
+        version: parsed.version,
+        skill_dir: targetDir,
+        trigger_phrases: existing?.trigger_phrases,
+        source_type: sourceMeta.source_type ?? 'imported',
+        is_builtin: false,
+        is_essential: existing?.is_essential ?? false,
+        can_disable: true,
+        source_market: existing?.source_market,
+        source_package: sourceMeta.source_package ?? existing?.source_package,
+        source_url: sourceMeta.source_url ?? existing?.source_url,
+        enabled: existing?.enabled ?? true,
+        created_at: existing?.created_at ?? now,
+        updated_at: now,
+        previous_snapshot: previousSnapshotMeta ?? existing?.previous_snapshot,
+      }
+      this.skills.set(id, entry)
+      await this.save()
+      return { entry, was_overwrite: !!existing }
+    } catch (err) {
+      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
+      throw err
+    }
   }
 
   /**
@@ -1352,6 +1467,31 @@ async function cleanupExtraFiles(
       if (!keepSet.has(relPath)) {
         await fs.unlink(fullPath)
       }
+    }
+  }
+}
+
+/**
+ * 把 ISO 时间戳里的 `:` 和 `.` 替换成 `-`，用于做安全的目录名（Windows 不接受 `:`）
+ */
+function isoCompactTs(iso: string): string {
+  return iso.replace(/[:.]/g, '-')
+}
+
+/**
+ * 递归复制目录到目标位置。skipNames 中列出的文件/目录名直接跳过（如 .skill_dir, .DS_Store）。
+ */
+async function copyDir(src: string, dst: string, skipNames: string[] = []): Promise<void> {
+  await fs.mkdir(dst, { recursive: true })
+  const entries = await fs.readdir(src, { withFileTypes: true })
+  for (const ent of entries) {
+    if (skipNames.includes(ent.name)) continue
+    const s = path.join(src, ent.name)
+    const d = path.join(dst, ent.name)
+    if (ent.isDirectory()) {
+      await copyDir(s, d, skipNames)
+    } else if (ent.isFile()) {
+      await fs.copyFile(s, d)
     }
   }
 }
