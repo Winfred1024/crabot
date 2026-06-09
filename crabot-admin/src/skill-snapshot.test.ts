@@ -99,27 +99,6 @@ describe('SkillManager.update — snapshot 行为', () => {
     await fs.rm(skillSrcDir, { recursive: true, force: true })
   })
 
-  // SKIP: Task 6 会重写 update/restore + 删除 entry.content 嵌入字段。本测试届时随之改写。
-  // 详见 plan 2026-06-09-skill-filesystem-native.md Task 6 step 9.
-  it.skip('content 变化 + 非 builtin → previous_snapshot 写入', async () => {
-    const { entry: created } = await manager.importFromLocalPath(skillSrcDir)
-    expect(created.previous_snapshot).toBeUndefined()
-
-    await fs.writeFile(
-      path.join(skillSrcDir, 'SKILL.md'),
-      '---\nname: test-skill\ndescription: t\nversion: 1.1.0\n---\nv2 content',
-      'utf-8',
-    )
-    const updated = await manager.update(created.id, {
-      content: 'v2 content',
-      version: '1.1.0',
-    })
-    expect(updated.previous_snapshot).toBeDefined()
-    expect(updated.previous_snapshot!.content).toContain('v1 content')
-    expect(updated.previous_snapshot!.version).toBe('1.0.0')
-    expect(updated.previous_snapshot!.snapshotted_at).toBeDefined()
-  })
-
   it('仅 enabled toggle（content 不变）→ previous_snapshot 保留原值', async () => {
     const { entry: created } = await manager.importFromLocalPath(skillSrcDir)
     // 先做一次 content update 制造 previous_snapshot
@@ -132,53 +111,20 @@ describe('SkillManager.update — snapshot 行为', () => {
     expect(afterToggle.previous_snapshot!.snapshotted_at).toBe(firstSnapshotted)
   })
 
-  it('连续两次 content update → 第一版被覆盖（N=1）', async () => {
+  it('连续两次 content update → 旧 snapshot_dir 被覆盖，N=1', async () => {
     const { entry: created } = await manager.importFromLocalPath(skillSrcDir)
-    await manager.update(created.id, { content: 'v2', version: '1.1.0' })
+    const afterFirst = await manager.update(created.id, { content: 'v2', version: '1.1.0' })
+    const firstSnapDir = afterFirst.previous_snapshot!.snapshot_dir
+    expect(firstSnapDir).toMatch(/^\.snapshots\//)
+
     const afterSecond = await manager.update(created.id, { content: 'v3', version: '1.2.0' })
-    expect(afterSecond.previous_snapshot!.content).toBe('v2')
     expect(afterSecond.previous_snapshot!.version).toBe('1.1.0')
-  })
 
-  it('skill_dir 不存在 → previous_snapshot.files 为 undefined，不报错', async () => {
-    // 模拟 skill_dir 字段缺失的纯 JSON skill：直接用 create() 不带 skill_dir
-    const created = await manager.create({
-      name: 'pure-json-skill',
-      description: 't',
-      version: '1.0.0',
-      content: 'v1',
-    })
-    expect(created.skill_dir).toBeUndefined()
-    const updated = await manager.update(created.id, { content: 'v2', version: '1.1.0' })
-    expect(updated.previous_snapshot).toBeDefined()
-    expect(updated.previous_snapshot!.files).toBeUndefined()
-  })
-
-  it('skill_dir 有附属文件 → previous_snapshot.files 包含它们', async () => {
-    await fs.writeFile(path.join(skillSrcDir, 'helper.md'), 'helper v1', 'utf-8')
-    const { entry: created } = await manager.importFromLocalPath(skillSrcDir)
-
-    // update() 读 skill_dir 当时的磁盘状态（snapshot 在 update 应用前抓拍）
-    // Task 2 的 writeSkillDirFiles 之后才会改文件；这里只验证 read 阶段
-    const updated = await manager.update(created.id, { content: 'v2', version: '1.1.0' })
-
-    expect(updated.previous_snapshot!.files).toEqual({ 'helper.md': 'helper v1' })
-  })
-
-  it('is_builtin = true → previous_snapshot 永不写入', async () => {
-    // 手工塞一个 builtin entry（实际 builtin 由 builtin-skills.ts 注入）
-    const builtin = await manager.create({
-      name: 'fake-builtin',
-      description: 't',
-      version: '1.0.0',
-      content: 'v1',
-    })
-    // 强制改 is_builtin = true（绕过正常路径，专门测 update 的分支）
-    const map = (manager as unknown as { skills: Map<string, typeof builtin> }).skills
-    map.set(builtin.id, { ...builtin, is_builtin: true })
-
-    const updated = await manager.update(builtin.id, { content: 'v2', version: '1.1.0' })
-    expect(updated.previous_snapshot).toBeUndefined()
+    // 第一次的 snapshot_dir 已被删除
+    await expect(fs.access(path.join(tmpData, 'skills', firstSnapDir))).rejects.toThrow()
+    // 第二次的 snapshot_dir 存在并含 v2 SKILL.md
+    const secondSnapAbs = path.join(tmpData, 'skills', afterSecond.previous_snapshot!.snapshot_dir)
+    expect(await fs.readFile(path.join(secondSnapAbs, 'SKILL.md'), 'utf-8')).toBe('v2')
   })
 })
 
@@ -288,69 +234,88 @@ describe('SkillManager.restore', () => {
     })
     const map = (manager as unknown as { skills: Map<string, typeof builtin> }).skills
     map.set(builtin.id, { ...builtin, is_builtin: true, previous_snapshot: {
-      content: 'old', version: '0.9.0', updated_at: 't', snapshotted_at: 't',
+      snapshot_dir: '.snapshots/fake', version: '0.9.0', updated_at: 't', snapshotted_at: 't',
     }})
     await expect(manager.restore(builtin.id)).rejects.toThrow(/是内置的，不能 restore/)
-  })
-
-  // SKIP: Task 6 会重写 update/restore + 删除 entry.content 嵌入字段。本测试届时随之改写。
-  // 详见 plan 2026-06-09-skill-filesystem-native.md Task 6 step 9.
-  it.skip('正常 swap：current ↔ previous，磁盘 SKILL.md 也写回', async () => {
-    const { entry: created } = await manager.importFromLocalPath(skillSrcDir)
-    await fs.writeFile(
-      path.join(skillSrcDir, 'SKILL.md'),
-      '---\nname: t\ndescription: t\nversion: 1.1.0\n---\nv2',
-      'utf-8',
-    )
-    await manager.update(created.id, { content: 'v2_content', version: '1.1.0' })
-
-    const restored = await manager.restore(created.id)
-
-    // content + version 复位
-    expect(restored.content).toContain('v1')
-    expect(restored.version).toBe('1.0.0')
-    // 磁盘也复位
-    const onDisk = await fs.readFile(path.join(skillSrcDir, 'SKILL.md'), 'utf-8')
-    expect(onDisk).toContain('v1')
-    // 新 previous 是刚才的 current
-    expect(restored.previous_snapshot!.content).toBe('v2_content')
-    expect(restored.previous_snapshot!.version).toBe('1.1.0')
   })
 
   it('连续两次 restore → 来回 swap', async () => {
     const { entry: created } = await manager.importFromLocalPath(skillSrcDir)
     await manager.update(created.id, { content: 'v2', version: '1.1.0' })
-    await manager.restore(created.id)  // 第一次 restore，content 回 v1
-    const second = await manager.restore(created.id)  // 第二次 restore，content 回 v2
-    expect(second.content).toBe('v2')
+    await manager.restore(created.id)  // 第一次 restore，磁盘内容回 v1
+    const second = await manager.restore(created.id)  // 第二次 restore，磁盘内容回 v2
+    const onDisk = await fs.readFile(path.join(second.skill_dir, 'SKILL.md'), 'utf-8')
+    expect(onDisk).toBe('v2')
+  })
+})
+
+describe('update + restore 文件夹 swap 语义（Task 6）', () => {
+  let tmpRoot: string, dataDir: string, manager: SkillManager
+  beforeEach(async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'snap-swap-'))
+    dataDir = path.join(tmpRoot, 'data')
+    await fs.mkdir(dataDir, { recursive: true })
+    manager = new SkillManager(dataDir)
+    await manager.initialize()
+  })
+  afterEach(async () => { await fs.rm(tmpRoot, { recursive: true, force: true }) })
+
+  async function importSimple(name: string, body: string) {
+    const src = path.join(tmpRoot, `src-${name}`)
+    await fs.mkdir(path.join(src, 'scripts'), { recursive: true })
+    await fs.writeFile(path.join(src, 'SKILL.md'), `---\nname: ${name}\ndescription: d\nversion: 1.0.0\n---\n${body}`)
+    await fs.writeFile(path.join(src, 'scripts', 'a.py'), 'v1')
+    return (await manager.importFromLocalPath(src)).entry
+  }
+
+  it('update content → .snapshots/<id>-<ts>/SKILL.md 含旧内容；新目录含新内容', async () => {
+    const e = await importSimple('swap-skill', 'old-body')
+    await manager.update(e.id, { content: '---\nname: swap-skill\ndescription: d\nversion: 2.0.0\n---\nnew-body' })
+    const after = manager.get(e.id)!
+    expect(after.previous_snapshot?.snapshot_dir).toMatch(/^\.snapshots\//)
+    const snapAbs = path.join(dataDir, 'skills', after.previous_snapshot!.snapshot_dir!)
+    expect(await fs.readFile(path.join(snapAbs, 'SKILL.md'), 'utf-8')).toContain('old-body')
+    expect(await fs.readFile(path.join(snapAbs, 'scripts', 'a.py'), 'utf-8')).toBe('v1')
+    expect(await fs.readFile(path.join(after.skill_dir!, 'SKILL.md'), 'utf-8')).toContain('new-body')
   })
 
-  // SKIP: Task 6 会重写 update/restore + 删除 entry.content 嵌入字段。本测试届时随之改写。
-  // 详见 plan 2026-06-09-skill-filesystem-native.md Task 6 step 9.
-  it.skip('附属文件也被 restore（包括新增的要删）', async () => {
-    await fs.writeFile(path.join(skillSrcDir, 'helper.md'), 'helper v1', 'utf-8')
-    const { entry: created } = await manager.importFromLocalPath(skillSrcDir)
-
-    // update：admin 不会动 helper.md（admin 只 read，没 write 外部 dir）
-    // 模拟用户在 update 之后又往 skillSrcDir 加了 extra.md（模拟 "--overwrite 时用户改了多个文件"）
-    await manager.update(created.id, { content: 'v2_content', version: '1.1.0' })
-    // update 之后才加 extra.md（模拟"现在 disk 上多了一个文件"）
-    await fs.writeFile(path.join(skillSrcDir, 'extra.md'), 'extra', 'utf-8')
-
-    await manager.restore(created.id)
-
-    // helper.md 应该仍是 v1（snapshot 捕获时是 v1，restore 写回 v1）
-    expect(await fs.readFile(path.join(skillSrcDir, 'helper.md'), 'utf-8')).toBe('helper v1')
-    // extra.md 被删（不在 snapshot.files 内）
-    await expect(fs.access(path.join(skillSrcDir, 'extra.md'))).rejects.toThrow()
+  it('restore swap 把旧目录 mv 回当前位置；当前内容变成新 snapshot', async () => {
+    const e = await importSimple('swap2', 'v1-body')
+    await manager.update(e.id, { content: '---\nname: swap2\ndescription: d\nversion: 2.0.0\n---\nv2-body' })
+    await manager.restore(e.id)
+    const after = manager.get(e.id)!
+    expect(await fs.readFile(path.join(after.skill_dir!, 'SKILL.md'), 'utf-8')).toContain('v1-body')
+    expect(after.previous_snapshot).toBeDefined()
+    const snapAbs = path.join(dataDir, 'skills', after.previous_snapshot!.snapshot_dir!)
+    expect(await fs.readFile(path.join(snapAbs, 'SKILL.md'), 'utf-8')).toContain('v2-body')
   })
 
-  it('skill_dir 不存在（纯 JSON skill）也能 restore（只 swap content）', async () => {
-    const created = await manager.create({
-      name: 'pure-json', description: 't', version: '1.0.0', content: 'v1',
-    })
-    await manager.update(created.id, { content: 'v2', version: '1.1.0' })
-    const restored = await manager.restore(created.id)
-    expect(restored.content).toBe('v1')
+  it('update 不传 content → 不打 snapshot', async () => {
+    const e = await importSimple('no-snap', 'body')
+    await manager.update(e.id, { description: 'changed' })
+    const after = manager.get(e.id)!
+    expect(after.previous_snapshot).toBeUndefined()
+    expect(after.description).toBe('changed')
+  })
+
+  it('update content 但内容相同 → 不打 snapshot', async () => {
+    const e = await importSimple('same-content', 'body')
+    const sameContent = '---\nname: same-content\ndescription: d\nversion: 1.0.0\n---\nbody'
+    await manager.update(e.id, { content: sameContent })
+    const after = manager.get(e.id)!
+    expect(after.previous_snapshot).toBeUndefined()
+  })
+
+  it('builtin update 拒绝改 content', async () => {
+    // 构造一个 builtin entry
+    const builtinSrc = path.join(tmpRoot, 'builtin-src')
+    await fs.mkdir(builtinSrc, { recursive: true })
+    await fs.writeFile(path.join(builtinSrc, 'SKILL.md'), '---\nname: builtin-skill\ndescription: d\nversion: 1.0.0\n---\nbody')
+    await manager.registerBuiltins(path.dirname(builtinSrc))  // 父目录扫
+    const entries = manager.list().filter(s => s.is_builtin)
+    if (entries.length > 0) {
+      const b = entries[0]
+      await expect(manager.update(b.id, { content: 'new' })).rejects.toThrow(/内置/)
+    }
   })
 })

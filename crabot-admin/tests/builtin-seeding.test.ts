@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { SkillManager } from '../src/mcp-skill-manager.js'
@@ -15,7 +15,8 @@ function makeEntry(id: string, name: string): SkillRegistryEntry {
     name,
     description: `desc ${name}`,
     version: '1.0.0',
-    content: `# ${name}\n\ncontent ${name}`,
+    skill_dir: `/tmp/fake-skill-dir/${name}`,
+    source_type: 'builtin',
     is_builtin: true,
     is_essential: false,
     can_disable: true,
@@ -69,10 +70,12 @@ describe('getBuiltinSkills', () => {
     ].sort())
   })
 
-  it('content 字段非空且含 attribution header', () => {
+  it('skill_dir 指向真实目录且 SKILL.md 含 attribution header', () => {
     for (const s of getBuiltinSkills()) {
-      expect(s.content.length).toBeGreaterThan(100)
-      expect(s.content).toContain('Source: superpowers v5.0.7')
+      expect(s.skill_dir).toBeTruthy()
+      const skillMd = readFileSync(join(s.skill_dir, 'SKILL.md'), 'utf-8')
+      expect(skillMd.length).toBeGreaterThan(100)
+      expect(skillMd).toContain('Source: superpowers v5.0.7')
     }
   })
 

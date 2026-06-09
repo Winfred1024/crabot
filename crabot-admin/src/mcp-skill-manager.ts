@@ -112,15 +112,8 @@ export interface SkillRegistryEntry {
   name: string
   description: string
   version: string
-  /**
-   * SKILL.md 格式的提示词内容
-   *
-   * 过渡阶段：Task 1 起新建条目不再写入此字段，但旧条目仍可能存在。
-   * Task 6 会彻底删除。
-   */
-  content?: string
-  /** skill 所在目录的绝对路径（目录型 skill） */
-  skill_dir?: string
+  /** Skill 目录绝对路径（builtin 指向 builtins/skills/<name>，其它指向 <data_dir>/skills/<id>） */
+  skill_dir: string
   /** 触发短语（用于 LLM 匹配） */
   trigger_phrases?: string[]
   source_type: 'builtin' | 'imported' | 'scanned'
@@ -143,13 +136,9 @@ export interface SkillRegistryEntry {
    * 详见 spec 2026-06-07-skill-previous-version-and-diff-design.md §4.1。
    */
   previous_snapshot?: {
-    /** legacy 字段，Task 6 删 */
-    content?: string
+    /** 快照目录的相对路径（相对 skillsRoot），形如 .snapshots/<id>-<ts> */
+    snapshot_dir: string
     version: string
-    /** legacy 字段，Task 6 删；key=skill_dir 相对路径，value=文本或 'base64:<encoded>' */
-    files?: Record<string, string>
-    /** 新增：快照目录的相对路径（相对 skillsRoot） */
-    snapshot_dir?: string
     updated_at: string
     snapshotted_at: string
   }
@@ -540,13 +529,18 @@ export class SkillManager {
     source_package?: string
     source_type?: 'builtin' | 'imported' | 'scanned'
   }): Promise<SkillRegistryEntry> {
+    const id = generateId()
+    const skillDir = path.join(this.skillsRoot, id)
+    await fs.mkdir(skillDir, { recursive: true })
+    await atomicWriteFileBuf(path.join(skillDir, 'SKILL.md'), Buffer.from(params.content, 'utf-8'))
+
     const now = generateTimestamp()
     const entry: SkillRegistryEntry = {
-      id: generateId(),
+      id,
       name: params.name,
       description: params.description,
       version: params.version ?? '1.0.0',
-      content: params.content,
+      skill_dir: skillDir,
       trigger_phrases: params.trigger_phrases,
       source_type: params.source_type ?? 'imported',
       is_builtin: false,
@@ -565,36 +559,49 @@ export class SkillManager {
 
   async update(
     id: string,
-    params: Partial<
-      Pick<
-        SkillRegistryEntry,
-        'name' | 'description' | 'content' | 'version' | 'trigger_phrases' | 'skill_dir' | 'is_essential' | 'enabled'
-      >
-    >
+    params: Partial<Pick<SkillRegistryEntry, 'name' | 'description' | 'version' | 'trigger_phrases' | 'is_essential' | 'enabled'>>
+      & { content?: string },
   ): Promise<SkillRegistryEntry> {
     const entry = this.skills.get(id)
     if (!entry) throw new Error(`Skill not found: ${id}`)
     if (!entry.can_disable && params.enabled === false) {
       throw new Error(`Skill "${entry.name}" cannot be disabled`)
     }
+    if (params.content !== undefined && entry.is_builtin) {
+      throw new Error(`Skill "${entry.name}" 是内置的，不能修改 content`)
+    }
 
-    // 仅 content 真实变化（且非 builtin）才打 snapshot
-    // toggle enabled / is_essential 不触发，避免无谓覆盖既有 previous_snapshot
-    const contentChanged = params.content !== undefined && params.content !== entry.content
-    const previousSnapshot: SkillRegistryEntry['previous_snapshot'] | undefined =
-      contentChanged && !entry.is_builtin
-        ? {
-            content: entry.content,
-            version: entry.version,
-            files: entry.skill_dir ? await readSkillDirFiles(entry.skill_dir) : undefined,
-            updated_at: entry.updated_at,
-            snapshotted_at: generateTimestamp(),
-          }
-        : entry.previous_snapshot
+    let previousSnapshot = entry.previous_snapshot
+    if (params.content !== undefined && !entry.is_builtin) {
+      const skillMdPath = path.join(entry.skill_dir, 'SKILL.md')
+      const oldContent = await fs.readFile(skillMdPath, 'utf-8').catch(() => '')
+      if (oldContent !== params.content) {
+        const snapTs = isoCompactTs(generateTimestamp())
+        const snapRel = path.posix.join('.snapshots', `${id}-${snapTs}`)
+        const snapDir = path.join(this.skillsRoot, snapRel)
+        if (entry.previous_snapshot) {
+          await fs.rm(path.join(this.skillsRoot, entry.previous_snapshot.snapshot_dir), { recursive: true, force: true })
+        }
+        await fs.mkdir(path.dirname(snapDir), { recursive: true })
+        await copyDir(entry.skill_dir, snapDir)
+        await atomicWriteFileBuf(skillMdPath, Buffer.from(params.content, 'utf-8'))
+        previousSnapshot = {
+          snapshot_dir: snapRel,
+          version: entry.version,
+          updated_at: entry.updated_at,
+          snapshotted_at: generateTimestamp(),
+        }
+      }
+    }
 
     const updated: SkillRegistryEntry = {
       ...entry,
-      ...params,
+      name: params.name ?? entry.name,
+      description: params.description ?? entry.description,
+      version: params.version ?? entry.version,
+      trigger_phrases: params.trigger_phrases ?? entry.trigger_phrases,
+      is_essential: params.is_essential ?? entry.is_essential,
+      enabled: params.enabled ?? entry.enabled,
       previous_snapshot: previousSnapshot,
       updated_at: generateTimestamp(),
     }
@@ -609,27 +616,38 @@ export class SkillManager {
     if (entry.is_builtin) throw new Error(`Skill "${entry.name}" 是内置的，不能 restore`)
     if (!entry.previous_snapshot) throw new Error(`Skill "${entry.name}" 没有上一版可恢复`)
 
-    const snap = entry.previous_snapshot
+    const oldSnapRel = entry.previous_snapshot.snapshot_dir
+    const oldSnapDir = path.join(this.skillsRoot, oldSnapRel)
+    const newSnapTs = isoCompactTs(generateTimestamp())
+    const newSnapRel = path.posix.join('.snapshots', `${id}-${newSnapTs}`)
+    const newSnapDir = path.join(this.skillsRoot, newSnapRel)
+    await fs.mkdir(path.dirname(newSnapDir), { recursive: true })
 
-    // 生成新 previous（当前 current 作为新的"上一版"），实现 swap 语义
-    const newSnapshot: SkillRegistryEntry['previous_snapshot'] = {
-      content: entry.content,
-      version: entry.version,
-      files: entry.skill_dir ? await readSkillDirFiles(entry.skill_dir) : undefined,
-      updated_at: entry.updated_at,
-      snapshotted_at: generateTimestamp(),
+    // 三段 swap：当前→stash，旧→当前，stash→新
+    const tempStash = path.join(this.skillsRoot, `.swap.${process.pid}.${Date.now()}.${randomBytes(4).toString('hex')}`)
+    await fs.rename(entry.skill_dir, tempStash)
+    try {
+      await fs.rename(oldSnapDir, entry.skill_dir)
+      await fs.rename(tempStash, newSnapDir)
+    } catch (err) {
+      // 尽量回滚
+      await fs.rename(tempStash, entry.skill_dir).catch(() => {})
+      throw err
     }
 
-    // 先写磁盘（atomic），失败 throw 不更新 json，保证 json + 磁盘一致
-    if (entry.skill_dir) {
-      await writeSkillDirFiles(entry.skill_dir, snap.content ?? '', snap.files)
-    }
+    const newContent = await fs.readFile(path.join(entry.skill_dir, 'SKILL.md'), 'utf-8')
+    const parsed = parseSkillMd(newContent)
 
     const updated: SkillRegistryEntry = {
       ...entry,
-      content: snap.content,
-      version: snap.version,
-      previous_snapshot: newSnapshot,
+      description: parsed.description,
+      version: parsed.version,
+      previous_snapshot: {
+        snapshot_dir: newSnapRel,
+        version: entry.version,
+        updated_at: entry.updated_at,
+        snapshotted_at: generateTimestamp(),
+      },
       updated_at: generateTimestamp(),
     }
     this.skills.set(id, updated)
@@ -692,20 +710,18 @@ export class SkillManager {
       if (!parsed.name) continue
 
       if (existingNames.has(parsed.name)) {
-        // 已注册：用 SKILL.md 当前内容 + frontmatter 同步条目
-        // （项目目录、文件内容、frontmatter 里的 description / version 都可能变更）
+        // 已注册：用 SKILL.md 当前 frontmatter 同步条目
+        // （项目目录、frontmatter 里的 description / version 都可能变更）
         for (const [id, existing] of this.skills) {
           if (existing.name === parsed.name && existing.is_builtin) {
             if (
               existing.skill_dir !== skillDir ||
-              existing.content !== content ||
               existing.description !== parsed.description ||
               existing.version !== parsed.version
             ) {
               this.skills.set(id, {
                 ...existing,
                 skill_dir: skillDir,
-                content,
                 description: parsed.description,
                 version: parsed.version,
                 updated_at: generateTimestamp(),
@@ -724,7 +740,6 @@ export class SkillManager {
         name: parsed.name,
         description: parsed.description,
         version: parsed.version,
-        content,
         skill_dir: skillDir,
         source_type: 'builtin',
         is_builtin: true,
@@ -784,7 +799,6 @@ export class SkillManager {
         name: parsed.name,
         description: parsed.description,
         version: parsed.version,
-        content: result.content,
         skill_dir: result.skillDir,
         source_type: 'scanned',
         is_builtin: false,
@@ -806,16 +820,14 @@ export class SkillManager {
   toAgentConfig(entry: SkillRegistryEntry): {
     id: string
     name: string
-    content: string
-    description?: string
-    skill_dir?: string
+    description: string
+    skill_dir: string
   } {
     return {
       id: entry.id,
       name: entry.name,
-      content: entry.content ?? '',
       description: entry.description,
-      ...(entry.skill_dir ? { skill_dir: entry.skill_dir } : {}),
+      skill_dir: entry.skill_dir,
     }
   }
 
@@ -1419,6 +1431,12 @@ async function atomicWrite(filePath: string, buf: Buffer): Promise<void> {
   const tmpPath = `${filePath}.tmp.${process.pid}.${Date.now()}`
   await fs.writeFile(tmpPath, buf)
   await fs.rename(tmpPath, filePath)
+}
+
+async function atomicWriteFileBuf(filePath: string, buf: Buffer): Promise<void> {
+  const tmp = `${filePath}.tmp.${process.pid}.${Date.now()}`
+  await fs.writeFile(tmp, buf)
+  await fs.rename(tmp, filePath)
 }
 
 async function cleanupExtraFiles(
