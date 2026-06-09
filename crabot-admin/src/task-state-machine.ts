@@ -158,5 +158,46 @@ export function repairTaskInvariants(input: Task): { task: Task; fixes: string[]
     fix('pending_question', (t) => { t.pending_question = undefined })
   }
 
+  // MIG-1：TaskMessage 老格式（含 type 字段）转新格式（role 字段）
+  // 旧：{ id, type: 'user_input'|'agent_output'|..., content, timestamp, metadata? }
+  // 新：{ id, role: 'human'|'agent', content, timestamp, source?, agent_intent? }
+  // spec 2026-06-09-task-trace-tool-unification.md §4.2
+  const hasLegacyMessage = task.messages.some((m) => {
+    const legacy = m as unknown as { type?: unknown; role?: unknown }
+    return legacy.type !== undefined && legacy.role === undefined
+  })
+  if (hasLegacyMessage) {
+    fix('messages_legacy_role', (t) => {
+      t.messages = t.messages.map((m) => {
+        const legacy = m as unknown as { type?: string; role?: string }
+        if (legacy.role !== undefined) return m
+        return {
+          id: m.id,
+          // 老 type 仅 'user_input' 对应人类输入；其他全部视为 agent 输出
+          role: legacy.type === 'user_input' ? 'human' : 'agent',
+          content: m.content,
+          timestamp: m.timestamp,
+        }
+      })
+    })
+  }
+
+  // MIG-2：老 task.description 字段（已删）转 messages[0]（仅当 messages 为空时）
+  // spec 2026-06-09-task-trace-tool-unification.md §4.2: description 已死字段，
+  // 历史磁盘数据可能仍有；为不丢上下文，转成 role='human' 的 messages[0]。
+  const legacyDescription = (input as unknown as { description?: unknown }).description
+  if (typeof legacyDescription === 'string' && legacyDescription.length > 0 && task.messages.length === 0) {
+    fix('description_to_messages', (t) => {
+      t.messages = [{
+        id: `legacy-desc-${t.id}`,
+        role: 'human',
+        content: legacyDescription,
+        timestamp: t.created_at,
+      }]
+      // 显式删 description 字段，避免下次持久化时重新出现
+      delete (t as unknown as { description?: unknown }).description
+    })
+  }
+
   return { task, fixes }
 }

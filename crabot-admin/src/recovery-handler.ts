@@ -93,7 +93,7 @@ export function buildRecoveryTask(
     return `- ${t.id}: ${t.title} (started ${startedAt})`
   })
 
-  const description = [
+  const initialMessageContent = [
     `[重启时间：${nowISO}]`,
     '',
     `你刚刚因故重启了。重启前有以下 ${interrupted.length} 条任务正在执行但被强制中断：`,
@@ -111,7 +111,7 @@ export function buildRecoveryTask(
 
   return {
     title: `处理 agent 重启遗留的中断任务（${interrupted.length} 条）`,
-    description,
+    initial_message: { content: initialMessageContent },
     priority: 'high',
     source: {
       origin: 'system',

@@ -643,18 +643,35 @@ export interface TaskResult {
   process_highlights?: string[]
 }
 
-/** 任务消息 */
+/**
+ * Task 维度的人机对话流真值记录。
+ *
+ * spec 2026-06-09-task-trace-tool-unification.md §4.2 定义。
+ * - role='human': dispatcher 收到 IM 消息且决策出 trigger_task / supplement 时 push（reply / silent / forward_to_existing 不写）
+ * - role='agent': 由 spec 2026-06-07-goal-audit-async-buffered-info-design.md §4.13.6 的 dispatch 钩子点（invariant #1+#2）统一驱动；
+ *   真正 flush 到 channel 成功后才追加；audit fail drop / dispatch fail 等场景均不追加
+ *
+ * find_task 工具的 search 在 messages[].content 上匹配，是"按聊天细节词查找已结束 task"的命中字段。
+ */
 export interface TaskMessage {
   /** 消息 ID */
   id: string
-  /** 消息类型 */
-  type: 'info' | 'warning' | 'error' | 'debug' | 'user_input' | 'agent_output'
-  /** 消息内容 */
+  /** 消息角色 */
+  role: 'human' | 'agent'
+  /** 消息内容（纯文本；非文本消息由调用方序列化为可读字符串） */
   content: string
-  /** 时间戳 */
+  /** 时间戳 ISO 8601 */
   timestamp: string
-  /** 附加数据 */
-  metadata?: Record<string, unknown>
+  /** 平台来源（用于 quote / 引用回溯） */
+  source?: {
+    channel_id?: ModuleId
+    session_id?: SessionId
+    friend_id?: FriendId
+    /** 平台原 msg_id；agent 出站时为 sendMessage 返回的 platform_message_id */
+    platform_message_id?: string
+  }
+  /** role='agent' 时的 send_message intent。其他 role 此字段 undefined */
+  agent_intent?: 'info' | 'ask_human'
 }
 
 /** 任务 */
@@ -667,8 +684,6 @@ export interface Task {
   priority: TaskPriority
   /** 任务标题 */
   title: string
-  /** 任务描述 */
-  description?: string
   /** 任务来源 */
   source: TaskSource
   /** 分配的 Worker Agent 模块 ID */
@@ -839,11 +854,23 @@ export interface CreateTaskParams {
   id?: string
   priority?: TaskPriority
   title: string
-  description?: string
   source: TaskSource
   input?: Record<string, unknown>
   tags?: string[]
   expires_at?: string
+  /**
+   * 创建 task 同时写入 messages[0]（"启动指令" / 首条对话）。
+   *
+   * spec 2026-06-09-task-trace-tool-unification.md §4.2：统一 task 创建路径的对话首条入口。
+   * 旧的 task.description 字段已删，所有 caller（dispatcher trigger_task / recovery / schedule cron）
+   * 用本字段携带"agent 启动时该看的指令"。admin handleCreateTask 把它转成 messages[0]。
+   */
+  initial_message?: {
+    content: string
+    /** 默认 'human' */
+    role?: TaskMessage['role']
+    source?: TaskMessage['source']
+  }
 }
 
 export interface CreateTaskResult {
@@ -930,9 +957,10 @@ export interface UpdatePlanResult {
 // 追加消息
 export interface AppendMessageParams {
   task_id: TaskId
-  type: TaskMessage['type']
+  role: TaskMessage['role']
   content: string
-  metadata?: Record<string, unknown>
+  source?: TaskMessage['source']
+  agent_intent?: TaskMessage['agent_intent']
 }
 
 export interface AppendMessageResult {
@@ -942,7 +970,7 @@ export interface AppendMessageResult {
 // 获取任务消息
 export interface GetTaskMessagesParams extends PaginationParams {
   task_id: TaskId
-  type?: TaskMessage['type'][]
+  role?: TaskMessage['role'][]
 }
 
 export type GetTaskMessagesResult = PaginatedResult<TaskMessage>
@@ -1163,6 +1191,9 @@ export interface GlobalModelConfig {
   /**
    * 自动清理 trace 的保留条数；null/undefined = 不按条清理。
    * 按文件粒度近似：找出第 N 条对应日期，比该日期老的整个 traces-*.jsonl 文件删除，实际保留条数 ≥ N。
+   *
+   * spec 2026-06-09-task-trace-tool-unification.md §4.4 计划改成 task_retention_count（按 task 个数计），
+   * 但 PR-2 Phase 3 才动；当前 Phase 1 保持旧字段名不变。
    */
   trace_retention_count?: number | null
 }

@@ -4056,19 +4056,28 @@ export class AdminModule extends ModuleBase {
     if (params.id && this.tasks.has(params.id)) {
       throw new Error(AdminErrorCode.TASK_ALREADY_EXISTS)
     }
+    const initialMessages: TaskMessage[] = params.initial_message
+      ? [{
+          id: generateId(),
+          role: params.initial_message.role ?? 'human',
+          content: params.initial_message.content,
+          timestamp: now,
+          ...(params.initial_message.source ? { source: params.initial_message.source } : {}),
+        }]
+      : []
+
     const task: Task = {
       id: taskId,
       status: 'pending',
       priority: params.priority ?? 'normal',
       title: params.title,
-      description: params.description,
       source: params.source,
       worker_agent_id: undefined,
       plan: undefined,
       input: params.input,
       output: undefined,
       error: undefined,
-      messages: [],
+      messages: initialMessages,
       tags: params.tags ?? [],
       created_at: now,
       updated_at: now,
@@ -4430,10 +4439,13 @@ export class AdminModule extends ModuleBase {
       }
       if (filter.search) {
         const searchLower = filter.search.toLowerCase()
+        // spec 2026-06-09-task-trace-tool-unification.md §4.2:
+        // 旧字段 t.description 已删；改匹 title + task.messages[].content
+        // （"按聊天细节词查找已结束 task"的命中字段）
         tasks = tasks.filter(
           (t) =>
             t.title.toLowerCase().includes(searchLower) ||
-            (t.description?.toLowerCase().includes(searchLower) ?? false)
+            t.messages.some((m) => m.content.toLowerCase().includes(searchLower))
         )
       }
       if (filter.created_after) {
@@ -4651,10 +4663,11 @@ export class AdminModule extends ModuleBase {
 
     const message: TaskMessage = {
       id: generateId(),
-      type: params.type,
+      role: params.role,
       content: params.content,
       timestamp: generateTimestamp(),
-      metadata: params.metadata,
+      ...(params.source ? { source: params.source } : {}),
+      ...(params.agent_intent ? { agent_intent: params.agent_intent } : {}),
     }
 
     task.messages.push(message)
@@ -4673,9 +4686,9 @@ export class AdminModule extends ModuleBase {
 
     let messages = [...task.messages]
 
-    // 过滤消息类型
-    if (params.type && params.type.length > 0) {
-      messages = messages.filter((m) => params.type!.includes(m.type))
+    // 过滤消息角色
+    if (params.role && params.role.length > 0) {
+      messages = messages.filter((m) => params.role!.includes(m.role))
     }
 
     // 分页

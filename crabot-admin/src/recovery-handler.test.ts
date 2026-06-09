@@ -9,7 +9,6 @@ function fakeTask(overrides: Partial<Task>): Task {
     status: 'executing',
     priority: 'normal',
     title: 't',
-    description: 'd',
     source: { trigger_type: 'manual', origin: 'human' },
     messages: [],
     tags: [],
@@ -48,11 +47,11 @@ describe('buildRecoveryTask', () => {
     expect(r!.source.origin).toBe('system')
     expect(r!.source.trigger_type).toBe('auto')
     expect(r!.title).toContain('2 条')
-    expect(r!.description).toContain('aaa')
-    expect(r!.description).toContain('first task')
-    expect(r!.description).toContain('ccc')
-    expect(r!.description).toContain('third task')
-    expect(r!.description).not.toContain('bbb') // 防雪崩
+    expect(r!.initial_message?.content).toContain('aaa')
+    expect(r!.initial_message?.content).toContain('first task')
+    expect(r!.initial_message?.content).toContain('ccc')
+    expect(r!.initial_message?.content).toContain('third task')
+    expect(r!.initial_message?.content).not.toContain('bbb') // 防雪崩
   })
 
   it('returns null on first start (restart_count = 0)', () => {

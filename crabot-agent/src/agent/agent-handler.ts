@@ -1767,6 +1767,10 @@ export class AgentHandler {
         channelId,
         sessionId,
         senderFriendId: senderFriend.id,
+        // spec 2026-06-09 §4.2: messages[0] 用触发消息原文（不截断），是 find_task 按
+        // 聊天细节词命中的关键字段；跟 taskTitle 取自 dispatcher LLM 抽象描述形成互补。
+        triggerMessageContent: lastMsgText,
+        ...(lastMsg?.platform_message_id ? { triggerPlatformMessageId: lastMsg.platform_message_id } : {}),
       })
       registered = true
     } catch (err) {
@@ -2067,6 +2071,14 @@ export class AgentHandler {
     channelId: string
     sessionId: string
     senderFriendId: string
+    /**
+     * 触发消息的原文。admin handleCreateTask 把它写入 task.messages[0]（role='human'）。
+     * spec 2026-06-09-task-trace-tool-unification.md §4.2: 替代旧 task.description 字段，
+     * 作为"按聊天细节词查找已结束 task"的命中字段；同时给 worker 启动时提供完整 context。
+     */
+    triggerMessageContent: string
+    /** 触发消息的平台 msg_id，写入 messages[0].source.platform_message_id，便于回溯。 */
+    triggerPlatformMessageId?: string
   }): Promise<void> {
     if (!this.deps?.getAdminPort || !this.deps.rpcClient) {
       log(`registerTriggerTaskToAdmin: deps missing, skipping`)
@@ -2084,6 +2096,16 @@ export class AgentHandler {
         trigger_type: 'message',
       },
       priority: 'normal',
+      initial_message: {
+        content: params.triggerMessageContent,
+        role: 'human',
+        source: {
+          channel_id: params.channelId,
+          session_id: params.sessionId,
+          friend_id: params.senderFriendId,
+          ...(params.triggerPlatformMessageId ? { platform_message_id: params.triggerPlatformMessageId } : {}),
+        },
+      },
     }, this.deps.moduleId)
 
     // create_task 默认建在 pending；trigger 路径必须立即推到 executing 与 worker 内存状态对齐：
@@ -2363,6 +2385,37 @@ export class AgentHandler {
     // Also store in pendingHumanMessages for backward compat with task state
     taskState.pendingHumanMessages.push(...messages)
     taskState.status = 'executing'
+
+    // spec 2026-06-09-task-trace-tool-unification.md §4.2:
+    // 把人类对话流真值写入 admin task.messages（role='human'）。
+    // fire-and-forget：humanQueue 已 push 是主路径；admin RPC 写失败只 log，不影响 supplement 投递。
+    // 数据一致性影响：失败时 find_task 搜不到这条 supplement 内容，无 invariant 破坏。
+    if (this.deps?.getAdminPort && this.deps.rpcClient) {
+      const moduleId = this.deps.moduleId
+      const getAdminPortFn = this.deps.getAdminPort
+      const rpcClient = this.deps.rpcClient
+      void (async () => {
+        try {
+          const adminPort = await getAdminPortFn()
+          for (const m of messages) {
+            const content = m.content.type === 'text' ? (m.content.text ?? '') : '[非文本]'
+            await rpcClient.call(adminPort, 'append_message', {
+              task_id: taskId,
+              role: 'human',
+              content,
+              source: {
+                channel_id: m.session.channel_id,
+                session_id: m.session.session_id,
+                ...(m.sender.friend_id ? { friend_id: m.sender.friend_id } : {}),
+                platform_message_id: m.platform_message_id,
+              },
+            }, moduleId)
+          }
+        } catch (err) {
+          log(`[supplement] append_message admin RPC failed (non-fatal) task=${taskId}: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      })()
+    }
   }
 
   cancelTask(taskId: TaskId, _reason: string): void {

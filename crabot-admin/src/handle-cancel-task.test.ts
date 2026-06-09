@@ -53,7 +53,7 @@ describe('handleCancelTask through applyStatusTransition', () => {
 
   it('cancels pending task', async () => {
     const { task } = await (admin as any).handleCreateTask({
-      title: 't', description: 'd', priority: 'normal',
+      title: 't', priority: 'normal',
       source: { trigger_type: 'manual', origin: 'human' },
     })
     const r = await (admin as any).handleCancelTask({ task_id: task.id, reason: 'user-canceled' })
@@ -65,7 +65,7 @@ describe('handleCancelTask through applyStatusTransition', () => {
 
   it('cancels waiting_human task and clears derived fields', async () => {
     const { task } = await (admin as any).handleCreateTask({
-      title: 't', description: 'd', priority: 'normal',
+      title: 't', priority: 'normal',
       source: { trigger_type: 'manual', origin: 'human' },
     })
     await (admin as any).handleUpdateTaskStatus({ task_id: task.id, status: 'planning' })
@@ -85,7 +85,7 @@ describe('handleCancelTask through applyStatusTransition', () => {
 
   it('rejects cancel on terminal status', async () => {
     const { task } = await (admin as any).handleCreateTask({
-      title: 't', description: 'd', priority: 'normal',
+      title: 't', priority: 'normal',
       source: { trigger_type: 'manual', origin: 'human' },
     })
     await (admin as any).handleUpdateTaskStatus({ task_id: task.id, status: 'planning' })
