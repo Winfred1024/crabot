@@ -1,9 +1,12 @@
-import React, { createContext, useContext, useState, useEffect } from 'react'
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react'
 import { authService } from '../services/auth'
 
 interface AuthContextType {
   isAuthenticated: boolean
+  isTemp: boolean | null
   login: (password: string) => Promise<void>
+  refreshMe: () => Promise<void>
+  markPasswordChanged: () => void
   logout: () => void
 }
 
@@ -11,23 +14,45 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined)
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [isAuthenticated, setIsAuthenticated] = useState(authService.isAuthenticated())
+  const [isTemp, setIsTemp] = useState<boolean | null>(null)
+
+  const refreshMe = useCallback(async () => {
+    if (!authService.isAuthenticated()) {
+      setIsTemp(null)
+      return
+    }
+    try {
+      const me = await authService.getMe()
+      setIsTemp(me.is_temp)
+    } catch (e) {
+      // api.ts 已经在 401 时自动 logout 跳 /login；这里只兜底网络/5xx
+      setIsTemp(null)
+    }
+  }, [])
 
   useEffect(() => {
     setIsAuthenticated(authService.isAuthenticated())
-  }, [])
+    void refreshMe()
+  }, [refreshMe])
 
   const login = async (password: string) => {
-    await authService.login(password)
+    const resp = await authService.login(password)
     setIsAuthenticated(true)
+    setIsTemp(resp.is_temp)
+  }
+
+  const markPasswordChanged = () => {
+    setIsTemp(false)
   }
 
   const logout = () => {
     authService.logout()
     setIsAuthenticated(false)
+    setIsTemp(null)
   }
 
   return (
-    <AuthContext.Provider value={{ isAuthenticated, login, logout }}>
+    <AuthContext.Provider value={{ isAuthenticated, isTemp, login, refreshMe, markPasswordChanged, logout }}>
       {children}
     </AuthContext.Provider>
   )
