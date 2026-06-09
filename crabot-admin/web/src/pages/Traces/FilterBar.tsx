@@ -1,3 +1,4 @@
+import { Tooltip } from '../../components/Common/Tooltip'
 import { type FilterState } from './utils'
 
 // ============================================================================
@@ -43,17 +44,18 @@ export function FilterBar({
             color: 'var(--primary-light)',
             borderRadius: 4,
             fontSize: 12,
-            fontFamily: 'monospace',
+            fontFamily: 'var(--font-mono)',
           }}
         >
           🔗 task: {filter.taskId.slice(0, 12)}
-          <button
-            onClick={() => onChange({ ...filter, taskId: '' })}
-            title="移除任务筛选"
-            style={{ marginLeft: 4, background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--primary-light)', fontSize: 14, lineHeight: 1, padding: 0 }}
-          >
-            ×
-          </button>
+          <Tooltip content="移除任务筛选">
+            <button
+              onClick={() => onChange({ ...filter, taskId: '' })}
+              style={{ marginLeft: 4, background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--primary-light)', fontSize: 14, lineHeight: 1, padding: 0 }}
+            >
+              ×
+            </button>
+          </Tooltip>
         </span>
       )}
       <input

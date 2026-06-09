@@ -134,7 +134,7 @@ function renderDetail(item: ModuleItem): React.ReactNode {
     case 'channel':
       return (
         <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-          <p>平台: {detail.platform === '*' ? '通用 (OpenClaw Host)' : detail.platform}</p>
+          <p>平台: {detail.platform}</p>
           {detail.module_path && <p>模块路径: {detail.module_path}</p>}
         </div>
       )
@@ -366,7 +366,7 @@ export const ModuleList: React.FC = () => {
                       className="badge"
                       style={{
                         backgroundColor: TYPE_COLORS[item.module_type],
-                        color: '#fff',
+                        color: 'var(--text-on-primary)',
                         padding: '2px 8px',
                         borderRadius: '4px',
                         fontSize: '0.75rem',

@@ -22,27 +22,24 @@ export const StatusBar: React.FC<Props> = ({ onOpenManualCleanup, onOpenAutoClea
   }, [refreshKey])
 
   return (
-    <div style={{
-      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-      padding: '10px 16px', background: '#f8f9fa', borderRadius: 4, marginBottom: 12,
-    }}>
-      <div style={{ color: '#555' }}>
+    <div className="trace-status-bar">
+      <div className="trace-status-bar__info">
         {usage === null ? '加载中…' : (
           <>
             占用 <strong>{formatBytes(usage.total_bytes)}</strong>
-            <span style={{ margin: '0 6px' }}>·</span>
+            <span className="trace-status-bar__sep">·</span>
             共 <strong>{usage.trace_count.toLocaleString()}</strong> 条 trace
             {usage.oldest_iso && (
-              <span style={{ marginLeft: 12, color: '#888' }}>
+              <span className="trace-status-bar__oldest">
                 最早 {usage.oldest_iso.slice(0, 16).replace('T', ' ')}
               </span>
             )}
           </>
         )}
       </div>
-      <div style={{ display: 'flex', gap: 8 }}>
-        <Button variant="secondary" onClick={onOpenManualCleanup}>手动清理</Button>
-        <Button variant="secondary" onClick={onOpenAutoCleanupSettings}>自动清理设置</Button>
+      <div className="trace-status-bar__actions">
+        <Button variant="secondary" size="sm" onClick={onOpenManualCleanup}>手动清理</Button>
+        <Button variant="secondary" size="sm" onClick={onOpenAutoCleanupSettings}>自动清理设置</Button>
       </div>
     </div>
   )

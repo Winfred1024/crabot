@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { providerService } from '../../services/provider'
 import { Button } from '../../components/Common/Button'
 import { StatusBadge } from '../../components/Common/StatusBadge'
+import { Tooltip } from '../../components/Common/Tooltip'
 import { useToast } from '../../contexts/ToastContext'
 import type { ModelProvider } from '../../types'
 import { ProviderTestBadge, type ProviderTestState } from './ProviderTestBadge'
@@ -163,12 +164,9 @@ export const ProviderDrawerDetail: React.FC<ProviderDrawerDetailProps> = ({
           <div className="model-table-header">
             <span className="model-table-col-id">模型 ID</span>
             <span className="model-table-col-type">类型</span>
-            <span
-              className="model-table-col-test"
-              title="实战测速：和 Agent/Memory 实际调用一致的 payload 形态（带 system + tools + 真实 max_tokens）+ stream 拉首字节，能复现「中转不吃 tools / 大 max_tokens」等典型坑"
-            >
-              首字
-            </span>
+            <Tooltip content="实战测速：和 Agent/Memory 实际调用一致的 payload 形态（带 system + tools + 真实 max_tokens）+ stream 拉首字节，能复现「中转不吃 tools / 大 max_tokens」等典型坑" size="lg">
+              <span className="model-table-col-test">首字</span>
+            </Tooltip>
           </div>
           {provider.models.map(model => {
             const testResult = modelTestResults[model.model_id]
@@ -178,18 +176,19 @@ export const ProviderDrawerDetail: React.FC<ProviderDrawerDetailProps> = ({
                 <span className="model-table-col-type">
                   <span className="badge badge-success">LLM</span>
                   {model.type === 'llm' && (
-                    <span
-                      className={`badge ${model.supports_vision ? 'badge-info' : 'badge-muted'}`}
-                      title={model.supports_vision ? '支持视觉/图片理解（点击关闭）' : '不支持视觉（点击启用）'}
-                      style={{
-                        marginLeft: '0.25rem',
-                        cursor: togglingVision === model.model_id ? 'wait' : 'pointer',
-                        opacity: model.supports_vision ? 1 : 0.4,
-                      }}
-                      onClick={() => !togglingVision && handleToggleVision(model.model_id, !!model.supports_vision)}
-                    >
-                      VLM
-                    </span>
+                    <Tooltip content={model.supports_vision ? '支持视觉/图片理解（点击关闭）' : '不支持视觉（点击启用）'}>
+                      <span
+                        className={`badge ${model.supports_vision ? 'badge-info' : 'badge-muted'}`}
+                        style={{
+                          marginLeft: '0.25rem',
+                          cursor: togglingVision === model.model_id ? 'wait' : 'pointer',
+                          opacity: model.supports_vision ? 1 : 0.4,
+                        }}
+                        onClick={() => !togglingVision && handleToggleVision(model.model_id, !!model.supports_vision)}
+                      >
+                        VLM
+                      </span>
+                    </Tooltip>
                   )}
                 </span>
                 <span className="model-table-col-test">
@@ -198,14 +197,15 @@ export const ProviderDrawerDetail: React.FC<ProviderDrawerDetailProps> = ({
                     successTooltip="首字到达耗时（TTFT）。payload 形态对齐生产 adapter（system + tools + 真实 max_tokens），中转兼容性问题在这里就会暴露"
                     showErrorText
                     idleButton={
-                      <button
-                        className="btn btn-secondary"
-                        style={{ padding: '0.15rem 0.5rem', fontSize: '0.75rem' }}
-                        onClick={() => handleTestModel(model.model_id)}
-                        title="按生产 adapter 的 payload 形态打一次 stream，记录首字到达时间"
-                      >
-                        首字测速
-                      </button>
+                      <Tooltip content="按生产 adapter 的 payload 形态打一次 stream，记录首字到达时间">
+                        <button
+                          className="btn btn-secondary"
+                          style={{ padding: '0.15rem 0.5rem', fontSize: '0.75rem' }}
+                          onClick={() => handleTestModel(model.model_id)}
+                        >
+                          首字测速
+                        </button>
+                      </Tooltip>
                     }
                   />
                 </span>

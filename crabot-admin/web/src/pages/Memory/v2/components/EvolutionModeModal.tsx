@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import type { EvolutionMode } from '../../../../services/memoryV2'
 
 const MODES: Array<{ value: EvolutionMode; label: string; tooltip: string }> = [
@@ -20,6 +20,17 @@ export const EvolutionModeModal: React.FC<EvolutionModeModalProps> = ({ open, cu
   const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
+  const firstOptionRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !busy) onClose()
+    }
+    document.addEventListener('keydown', handleKey)
+    firstOptionRef.current?.focus()
+    return () => document.removeEventListener('keydown', handleKey)
+  }, [open, busy, onClose])
 
   if (!open) return null
 
@@ -40,9 +51,10 @@ export const EvolutionModeModal: React.FC<EvolutionModeModalProps> = ({ open, cu
       <div className="mem-modal" role="dialog" aria-modal="true">
         <h3 className="mem-modal__title">演化模式</h3>
         <div className="mem-evo-modal__list">
-          {MODES.map(m => (
+          {MODES.map((m, i) => (
             <label key={m.value} className={`mem-evo-modal__option${mode === m.value ? ' mem-evo-modal__option--active' : ''}`}>
               <input
+                ref={i === 0 ? firstOptionRef : undefined}
                 type="radio"
                 aria-label={m.label}
                 checked={mode === m.value}

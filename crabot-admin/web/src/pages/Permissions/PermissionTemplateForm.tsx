@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { Button } from '../../components/Common/Button'
+import { Tooltip } from '../../components/Common/Tooltip'
 import { useToast } from '../../contexts/ToastContext'
 import { permissionTemplateService } from '../../services/permission-template'
 import type { PermissionTemplate, ToolCategory, ToolAccessConfig, CliDomain, CliPerm, CliAccessConfig, StoragePermission } from '../../types'
@@ -158,10 +159,11 @@ export const PermissionTemplateForm: React.FC<PermissionTemplateFormProps> = ({
       {isSystem && (
         <div style={{
           padding: '0.5rem 0.75rem',
-          background: 'rgba(234, 179, 8, 0.1)',
+          background: 'var(--warning-bg)',
+          border: '1px solid var(--warning-border)',
           borderRadius: '6px',
           fontSize: '0.85rem',
-          color: '#ca8a04',
+          color: 'var(--warning-text)',
         }}>
           系统模板不可编辑
         </div>
@@ -205,13 +207,12 @@ export const PermissionTemplateForm: React.FC<PermissionTemplateFormProps> = ({
             const isDesktop = cat === 'desktop'
             const isMasterPrivate = template?.id === 'master_private'
             const disabled = isSystem || (isDesktop && !isMasterPrivate)
-            const title = isDesktop && !isMasterPrivate
+            const hint = isDesktop && !isMasterPrivate
               ? '桌面控制（computer-use）仅 Master 私聊可开启'
               : undefined
             return (
+              <Tooltip key={cat} content={hint}>
               <label
-                key={cat}
-                title={title}
                 style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -233,6 +234,7 @@ export const PermissionTemplateForm: React.FC<PermissionTemplateFormProps> = ({
                 />
                 {TOOL_CATEGORY_LABELS[cat]}
               </label>
+              </Tooltip>
             )
           })}
         </div>

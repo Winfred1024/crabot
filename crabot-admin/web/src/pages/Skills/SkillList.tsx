@@ -3,6 +3,7 @@ import { skillService, type GitSkillItem, isDuplicateSkillError, type DuplicateS
 import { MainLayout } from '../../components/Layout/MainLayout'
 import { Card } from '../../components/Common/Card'
 import { Button } from '../../components/Common/Button'
+import { Input } from '../../components/Common/Input'
 import { Loading } from '../../components/Common/Loading'
 import { StatusBadge } from '../../components/Common/StatusBadge'
 import type { SkillRegistryEntry } from '../../types'
@@ -49,13 +50,9 @@ function parseSkillMdFrontmatter(content: string): { name?: string; version?: st
 
 type CreateTab = 'git' | 'local' | 'upload'
 
-/**
- * 弹出确认对话框询问用户是否覆盖同名 Skill
- */
 function confirmOverwrite(body: DuplicateSkillErrorBody): boolean {
   const { existing, incoming } = body
   if (existing.is_builtin) {
-    // 内置 skill 不可覆盖（后端会再次拒绝），这里直接告知用户
     alert(`"${existing.name}" 是内置 Skill，不可通过导入覆盖。`)
     return false
   }
@@ -66,9 +63,6 @@ function confirmOverwrite(body: DuplicateSkillErrorBody): boolean {
   )
 }
 
-/**
- * 执行导入，若遇到同名冲突则询问用户；用户拒绝则返回 null。
- */
 async function importWithOverwritePrompt<T>(
   runImport: (overwrite?: boolean) => Promise<T>
 ): Promise<T | null> {
@@ -91,17 +85,13 @@ export const SkillList: React.FC = () => {
   const [saving, setSaving] = useState(false)
   const [previewId, setPreviewId] = useState<string | null>(null)
   const [createTab, setCreateTab] = useState<CreateTab>('git')
-  // Git import state
   const [gitUrl, setGitUrl] = useState('')
   const [gitScanning, setGitScanning] = useState(false)
   const [gitSkills, setGitSkills] = useState<GitSkillItem[] | null>(null)
   const [gitSelected, setGitSelected] = useState<Set<string>>(new Set())
   const [gitInstalling, setGitInstalling] = useState(false)
-  // Local import state
   const [localPath, setLocalPath] = useState('')
-  // Upload state
   const fileInputRef = useRef<HTMLInputElement>(null)
-  // 上一版对比 modal + 恢复中状态
   const [diffSkill, setDiffSkill] = useState<SkillRegistryEntry | null>(null)
   const [restoringId, setRestoringId] = useState<string | null>(null)
 
@@ -256,7 +246,6 @@ export const SkillList: React.FC = () => {
         const reader = new FileReader()
         reader.onload = () => {
           const result = reader.result as string
-          // data:application/zip;base64,XXXXX -> 提取 base64 部分
           resolve(result.split(',')[1] ?? '')
         }
         reader.onerror = () => reject(new Error('文件读取失败'))
@@ -342,294 +331,285 @@ export const SkillList: React.FC = () => {
 
   if (loading) return <MainLayout><Loading /></MainLayout>
 
-  const tabStyle = (active: boolean): React.CSSProperties => ({
-    padding: '0.4rem 1rem',
-    border: 'none',
-    borderBottom: active ? '2px solid var(--primary)' : '2px solid transparent',
-    background: 'transparent',
-    color: active ? 'var(--primary)' : 'var(--text-secondary)',
-    cursor: 'pointer',
-    fontWeight: active ? 600 : 400,
-    fontSize: '0.9rem',
-  })
-
   return (
     <MainLayout>
-      <div style={{ marginBottom: '2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h1 style={{ fontSize: '2rem', fontWeight: 700 }}>Skills</h1>
-        <div style={{ display: 'flex', gap: '0.5rem' }}>
+      <header className="page-header">
+        <h1 className="page-header__title">Skills</h1>
+        <div className="page-header__actions">
           <Button variant="secondary" onClick={handleRescan}>重新扫描</Button>
           <Button variant="primary" onClick={openCreate}>添加 Skill</Button>
         </div>
-      </div>
+      </header>
 
       {showForm && (
-        <div style={{ marginBottom: '1.5rem' }}>
-        <Card>
-          <h3 style={{ marginBottom: '1rem', fontWeight: 600 }}>
-            {editingId ? '编辑 Skill' : '添加 Skill'}
-          </h3>
+        <div className="skill-form-wrapper">
+          <Card>
+            <h3 className="skill-form__title">
+              {editingId ? '编辑 Skill' : '添加 Skill'}
+            </h3>
 
-          {editingId ? (
-            <div style={{ display: 'grid', gap: '0.75rem' }}>
-              <div>
-                <label style={{ display: 'block', marginBottom: '0.25rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>名称</label>
-                <input className="input" value={form.name} onChange={e => setForm(prev => ({ ...prev, name: e.target.value }))} />
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-                <div>
-                  <label style={{ display: 'block', marginBottom: '0.25rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>版本</label>
-                  <input className="input" value={form.version} onChange={e => setForm(prev => ({ ...prev, version: e.target.value }))} />
-                </div>
-                <div>
-                  <label style={{ display: 'block', marginBottom: '0.25rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>触发词（逗号分隔）</label>
-                  <input className="input" value={form.trigger_phrases} onChange={e => setForm(prev => ({ ...prev, trigger_phrases: e.target.value }))} placeholder="例: 代码审查, review" />
-                </div>
-              </div>
-              <div>
-                <label style={{ display: 'block', marginBottom: '0.25rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>描述</label>
-                <input className="input" value={form.description} onChange={e => setForm(prev => ({ ...prev, description: e.target.value }))} />
-              </div>
-              <div>
-                <label style={{ display: 'block', marginBottom: '0.25rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>内容（Markdown）</label>
-                <textarea
-                  className="input"
-                  value={form.content}
-                  onChange={e => handleContentChange(e.target.value)}
-                  rows={12}
-                  style={{ fontFamily: 'monospace', fontSize: '0.85rem', resize: 'vertical' }}
+            {editingId ? (
+              <div className="skill-form__grid">
+                <Input
+                  label="名称"
+                  value={form.name}
+                  onChange={(e) => setForm(prev => ({ ...prev, name: e.target.value }))}
                 />
-              </div>
-              <div style={{ display: 'flex', gap: '0.75rem' }}>
-                <Button variant="primary" onClick={handleSave} disabled={saving}>{saving ? '保存中...' : '保存'}</Button>
-                <Button variant="secondary" onClick={() => { setShowForm(false); setEditingId(null) }}>取消</Button>
-              </div>
-            </div>
-          ) : (
-            <>
-            <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', marginBottom: '1rem', flexWrap: 'wrap' }}>
-              <button style={tabStyle(createTab === 'git')} onClick={() => setCreateTab('git')}>从 Git 仓库</button>
-              <button style={tabStyle(createTab === 'local')} onClick={() => setCreateTab('local')}>本地路径</button>
-              <button style={tabStyle(createTab === 'upload')} onClick={() => setCreateTab('upload')}>上传文件</button>
-            </div>
-
-          {createTab === 'git' && (
-            <div style={{ display: 'grid', gap: '0.75rem' }}>
-              <div>
-                <label style={{ display: 'block', marginBottom: '0.25rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>GitHub 仓库 URL</label>
-                <div style={{ display: 'flex', gap: '0.5rem' }}>
-                  <input
-                    className="input"
-                    value={gitUrl}
-                    onChange={e => { setGitUrl(e.target.value); setGitSkills(null) }}
-                    placeholder="https://github.com/user/repo 或 https://github.com/user/repo/tree/main/skills"
-                    style={{ flex: 1 }}
+                <div className="skill-form__two-col">
+                  <Input
+                    label="版本"
+                    value={form.version}
+                    onChange={(e) => setForm(prev => ({ ...prev, version: e.target.value }))}
                   />
-                  <Button variant="secondary" onClick={handleScanGit} disabled={gitScanning}>
-                    {gitScanning ? '扫描中...' : '扫描'}
+                  <Input
+                    label="触发词（逗号分隔）"
+                    value={form.trigger_phrases}
+                    onChange={(e) => setForm(prev => ({ ...prev, trigger_phrases: e.target.value }))}
+                    placeholder="例：代码审查, review"
+                  />
+                </div>
+                <Input
+                  label="描述"
+                  value={form.description}
+                  onChange={(e) => setForm(prev => ({ ...prev, description: e.target.value }))}
+                />
+                <div className="form-group">
+                  <label className="form-label" htmlFor="skill-content">内容（Markdown）</label>
+                  <textarea
+                    id="skill-content"
+                    className="input skill-form__content"
+                    value={form.content}
+                    onChange={(e) => handleContentChange(e.target.value)}
+                    rows={12}
+                  />
+                </div>
+                <div className="skill-form__actions">
+                  <Button variant="primary" onClick={handleSave} disabled={saving}>
+                    {saving ? '保存中…' : '保存'}
                   </Button>
+                  <Button variant="secondary" onClick={() => { setShowForm(false); setEditingId(null) }}>取消</Button>
                 </div>
               </div>
-              {gitSkills !== null && (
-                <div>
-                  {gitSkills.length === 0 ? (
-                    <div style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>未找到 Skill（仓库中没有 SKILL.md 文件）</div>
-                  ) : (
-                    <>
-                      <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-                        找到 {gitSkills.length} 个 Skill，选择要安装的：
+            ) : (
+              <>
+                <div className="tabs-strip" role="tablist">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={createTab === 'git'}
+                    className={`tabs-strip__tab${createTab === 'git' ? ' tabs-strip__tab--active' : ''}`}
+                    onClick={() => setCreateTab('git')}
+                  >从 Git 仓库</button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={createTab === 'local'}
+                    className={`tabs-strip__tab${createTab === 'local' ? ' tabs-strip__tab--active' : ''}`}
+                    onClick={() => setCreateTab('local')}
+                  >本地路径</button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={createTab === 'upload'}
+                    className={`tabs-strip__tab${createTab === 'upload' ? ' tabs-strip__tab--active' : ''}`}
+                    onClick={() => setCreateTab('upload')}
+                  >上传文件</button>
+                </div>
+
+                {createTab === 'git' && (
+                  <div className="skill-form__grid">
+                    <div className="form-group">
+                      <label className="form-label" htmlFor="skill-git-url">GitHub 仓库 URL</label>
+                      <div className="skill-form__inline">
+                        <input
+                          id="skill-git-url"
+                          className="input"
+                          value={gitUrl}
+                          onChange={(e) => { setGitUrl(e.target.value); setGitSkills(null) }}
+                          placeholder="https://github.com/user/repo 或 https://github.com/user/repo/tree/main/skills"
+                        />
+                        <Button variant="secondary" onClick={handleScanGit} disabled={gitScanning}>
+                          {gitScanning ? '扫描中…' : '扫描'}
+                        </Button>
                       </div>
-                      <div style={{ maxHeight: '300px', overflow: 'auto', border: '1px solid var(--border)', borderRadius: '6px' }}>
-                        {gitSkills.map(skill => (
-                          <label key={skill.skill_md_url} style={{
-                            display: 'flex', alignItems: 'start', gap: '0.75rem',
-                            padding: '0.75rem', borderBottom: '1px solid var(--border)',
-                            cursor: 'pointer',
-                          }}>
-                            <input
-                              type="checkbox"
-                              checked={gitSelected.has(skill.skill_md_url)}
-                              onChange={e => {
-                                const next = new Set(gitSelected)
-                                if (e.target.checked) next.add(skill.skill_md_url)
-                                else next.delete(skill.skill_md_url)
-                                setGitSelected(next)
-                              }}
-                              style={{ marginTop: '0.2rem' }}
-                            />
-                            <div>
-                              <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>{skill.name}</div>
-                              {skill.description && <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{skill.description}</div>}
+                    </div>
+                    {gitSkills !== null && (
+                      <div>
+                        {gitSkills.length === 0 ? (
+                          <div className="skill-form__hint">未找到 Skill（仓库中没有 SKILL.md 文件）</div>
+                        ) : (
+                          <>
+                            <div className="skill-form__hint">
+                              找到 {gitSkills.length} 个 Skill，选择要安装的：
                             </div>
-                          </label>
-                        ))}
+                            <div className="skill-pick-list">
+                              {gitSkills.map(skill => (
+                                <label key={skill.skill_md_url} className="skill-pick-list__row">
+                                  <input
+                                    type="checkbox"
+                                    checked={gitSelected.has(skill.skill_md_url)}
+                                    onChange={(e) => {
+                                      const next = new Set(gitSelected)
+                                      if (e.target.checked) next.add(skill.skill_md_url)
+                                      else next.delete(skill.skill_md_url)
+                                      setGitSelected(next)
+                                    }}
+                                  />
+                                  <div>
+                                    <div className="skill-pick-list__name">{skill.name}</div>
+                                    {skill.description && (
+                                      <div className="skill-pick-list__desc">{skill.description}</div>
+                                    )}
+                                  </div>
+                                </label>
+                              ))}
+                            </div>
+                            <div className="skill-pick-list__quickactions">
+                              <button
+                                type="button"
+                                className="link-button link-button--primary"
+                                onClick={() => setGitSelected(new Set(gitSkills.map(s => s.skill_md_url)))}
+                              >全选</button>
+                              <button
+                                type="button"
+                                className="link-button"
+                                onClick={() => setGitSelected(new Set())}
+                              >取消全选</button>
+                            </div>
+                          </>
+                        )}
                       </div>
-                      <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem', fontSize: '0.8rem' }}>
-                        <button style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer' }}
-                          onClick={() => setGitSelected(new Set(gitSkills.map(s => s.skill_md_url)))}>全选</button>
-                        <button style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer' }}
-                          onClick={() => setGitSelected(new Set())}>取消全选</button>
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
-              <div style={{ display: 'flex', gap: '0.75rem' }}>
-                <Button variant="primary" onClick={handleInstallGit} disabled={gitInstalling || gitSelected.size === 0}>
-                  {gitInstalling ? '安装中...' : `安装选中 (${gitSelected.size})`}
-                </Button>
-                <Button variant="secondary" onClick={() => setShowForm(false)}>取消</Button>
-              </div>
-            </div>
-          )}
+                    )}
+                    <div className="skill-form__actions">
+                      <Button
+                        variant="primary"
+                        onClick={handleInstallGit}
+                        disabled={gitInstalling || gitSelected.size === 0}
+                      >
+                        {gitInstalling ? '安装中…' : `安装选中 (${gitSelected.size})`}
+                      </Button>
+                      <Button variant="secondary" onClick={() => setShowForm(false)}>取消</Button>
+                    </div>
+                  </div>
+                )}
 
-          {createTab === 'local' && (
-            <div style={{ display: 'grid', gap: '0.75rem' }}>
-              <div>
-                <label style={{ display: 'block', marginBottom: '0.25rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>本地目录路径（包含 SKILL.md 的目录）</label>
-                <input
-                  className="input"
-                  value={localPath}
-                  onChange={e => setLocalPath(e.target.value)}
-                  placeholder="/path/to/my-skill"
-                />
-              </div>
-              <div style={{ display: 'flex', gap: '0.75rem' }}>
-                <Button variant="primary" onClick={handleImportLocal} disabled={saving}>{saving ? '导入中...' : '导入'}</Button>
-                <Button variant="secondary" onClick={() => setShowForm(false)}>取消</Button>
-              </div>
-            </div>
-          )}
+                {createTab === 'local' && (
+                  <div className="skill-form__grid">
+                    <Input
+                      label="本地目录路径（包含 SKILL.md 的目录）"
+                      value={localPath}
+                      onChange={(e) => setLocalPath(e.target.value)}
+                      placeholder="/path/to/my-skill"
+                    />
+                    <div className="skill-form__actions">
+                      <Button variant="primary" onClick={handleImportLocal} disabled={saving}>
+                        {saving ? '导入中…' : '导入'}
+                      </Button>
+                      <Button variant="secondary" onClick={() => setShowForm(false)}>取消</Button>
+                    </div>
+                  </div>
+                )}
 
-          {createTab === 'upload' && (
-            <div style={{ display: 'grid', gap: '0.75rem' }}>
-              <div>
-                <label style={{ display: 'block', marginBottom: '0.25rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>上传 .zip 或 .skill 文件</label>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".zip,.skill"
-                  onChange={handleFileUpload}
-                  disabled={saving}
-                  style={{ display: 'block', padding: '0.5rem 0' }}
-                />
-                {saving && <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>上传中...</div>}
-              </div>
-              <div>
-                <Button variant="secondary" onClick={() => setShowForm(false)}>取消</Button>
-              </div>
-            </div>
-          )}
-          </>
-          )}
-        </Card>
+                {createTab === 'upload' && (
+                  <div className="skill-form__grid">
+                    <div className="form-group">
+                      <label className="form-label" htmlFor="skill-file">上传 .zip 或 .skill 文件</label>
+                      <input
+                        id="skill-file"
+                        ref={fileInputRef}
+                        type="file"
+                        accept=".zip,.skill"
+                        onChange={handleFileUpload}
+                        disabled={saving}
+                        className="skill-form__file"
+                      />
+                      {saving && <div className="skill-form__hint">上传中…</div>}
+                    </div>
+                    <div className="skill-form__actions">
+                      <Button variant="secondary" onClick={() => setShowForm(false)}>取消</Button>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </Card>
         </div>
       )}
 
       {skills.length === 0 ? (
         <Card>
-          <p style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>
-            暂无 Skill，点击"添加"创建一个
-          </p>
+          <p className="empty-state__text">暂无 Skill，点击「添加」创建一个</p>
         </Card>
       ) : (
-        <div style={{ display: 'grid', gap: '0.75rem' }}>
+        <div className="skill-list">
           {skills.map(s => (
             <Card key={s.id}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.25rem' }}>
-                    <span style={{ fontWeight: 600, fontSize: '1rem' }}>{s.name}</span>
-                    <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>v{s.version}</span>
+              <div className="skill-row">
+                <div className="skill-row__info">
+                  <div className="skill-row__header">
+                    <span className="skill-row__name">{s.name}</span>
+                    <span className="skill-row__version">v{s.version}</span>
                     {s.previous_snapshot && (
-                      <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', opacity: 0.7 }}>
-                        (上一版 v{s.previous_snapshot.version})
-                      </span>
+                      <span className="skill-row__prev">(上一版 v{s.previous_snapshot.version})</span>
                     )}
-                    {s.is_builtin && (
-                      <span style={{ fontSize: '0.75rem', padding: '0.1rem 0.5rem', background: 'rgba(139,92,246,0.15)', color: '#8b5cf6', borderRadius: '4px' }}>内置</span>
-                    )}
-                    {s.source_type === 'scanned' && (
-                      <span style={{ fontSize: '0.75rem', padding: '0.1rem 0.5rem', background: 'rgba(249,115,22,0.15)', color: '#f97316', borderRadius: '4px' }}>扫描发现</span>
-                    )}
-                    {s.is_essential && (
-                      <span style={{ fontSize: '0.75rem', padding: '0.1rem 0.5rem', background: 'rgba(59,130,246,0.15)', color: '#3b82f6', borderRadius: '4px' }}>必要</span>
-                    )}
+                    {s.is_builtin && <span className="tag tag--info">内置</span>}
+                    {s.source_type === 'scanned' && <span className="tag tag--warning">扫描发现</span>}
+                    {s.is_essential && <span className="tag tag--primary">必要</span>}
                     <StatusBadge status={s.enabled ? 'active' : 'inactive'}>
                       {s.enabled ? '已启用' : '已禁用'}
                     </StatusBadge>
                   </div>
                   {s.description && (
-                    <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>{s.description}</div>
+                    <div className="skill-row__desc">{s.description}</div>
                   )}
                   {s.trigger_phrases?.length ? (
-                    <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                      触发词: {s.trigger_phrases.join(', ')}
+                    <div className="skill-row__triggers">
+                      触发词：{s.trigger_phrases.join(', ')}
                     </div>
                   ) : null}
                   {previewId === s.id && (
-                    <pre style={{
-                      marginTop: '0.75rem', padding: '0.75rem',
-                      background: 'var(--bg-secondary)', borderRadius: '6px',
-                      fontSize: '0.8rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                      maxHeight: '200px', overflow: 'auto',
-                    }}>
-                      {s.content}
-                    </pre>
+                    <pre className="skill-row__preview">{s.content}</pre>
                   )}
                   {!s.is_builtin && s.previous_snapshot && (
-                    <div style={{
-                      marginTop: '0.75rem',
-                      padding: '0.6rem 0.75rem',
-                      border: '1px solid var(--border-color, #3a3a3e)',
-                      borderRadius: '6px',
-                      display: 'flex',
-                      flexWrap: 'wrap',
-                      alignItems: 'center',
-                      gap: '0.75rem',
-                    }}>
-                      <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>上一版</span>
-                      <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                    <div className="skill-snapshot">
+                      <span className="skill-snapshot__label">上一版</span>
+                      <span className="skill-snapshot__meta">
                         v{s.previous_snapshot.version}
                         （快照于 {new Date(s.previous_snapshot.snapshotted_at).toLocaleString()}）
                       </span>
-                      <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.4rem' }}>
-                        <Button
-                          variant="secondary"
-                          onClick={() => setDiffSkill(s)}
-                          style={{ fontSize: '0.78rem', padding: '0.25rem 0.65rem' }}
-                        >
+                      <div className="skill-snapshot__actions">
+                        <Button variant="secondary" size="sm" onClick={() => setDiffSkill(s)}>
                           查看对比
                         </Button>
                         <Button
                           variant="secondary"
+                          size="sm"
                           onClick={() => handleRestore(s)}
                           disabled={restoringId === s.id}
-                          style={{ fontSize: '0.78rem', padding: '0.25rem 0.65rem' }}
                         >
-                          {restoringId === s.id ? '应用中...' : '应用上一版'}
+                          {restoringId === s.id ? '应用中…' : '应用上一版'}
                         </Button>
                       </div>
                     </div>
                   )}
                 </div>
-                <div style={{ display: 'flex', gap: '0.5rem', flexShrink: 0 }}>
+                <div className="skill-row__actions">
                   <Button
                     variant="secondary"
+                    size="sm"
                     onClick={() => setPreviewId(previewId === s.id ? null : s.id)}
-                    style={{ fontSize: '0.8rem', padding: '0.3rem 0.75rem' }}
                   >
                     {previewId === s.id ? '收起' : '预览'}
                   </Button>
                   {s.can_disable && (
-                    <Button variant="secondary" onClick={() => handleToggle(s)} style={{ fontSize: '0.8rem', padding: '0.3rem 0.75rem' }}>
+                    <Button variant="secondary" size="sm" onClick={() => handleToggle(s)}>
                       {s.enabled ? '禁用' : '启用'}
                     </Button>
                   )}
                   {!s.is_builtin && (
                     <>
-                      <Button variant="secondary" onClick={() => openEdit(s)} style={{ fontSize: '0.8rem', padding: '0.3rem 0.75rem' }}>编辑</Button>
-                      <Button variant="danger" onClick={() => handleDelete(s)} style={{ fontSize: '0.8rem', padding: '0.3rem 0.75rem' }}>删除</Button>
+                      <Button variant="secondary" size="sm" onClick={() => openEdit(s)}>编辑</Button>
+                      <Button variant="danger" size="sm" onClick={() => handleDelete(s)}>删除</Button>
                     </>
                   )}
                 </div>
@@ -649,4 +629,3 @@ export const SkillList: React.FC = () => {
     </MainLayout>
   )
 }
-

@@ -455,7 +455,7 @@ export const ProviderDrawerCreate: React.FC<ProviderDrawerCreateProps> = ({
                           setAuthJsonText(e.target.value)
                           if (authJsonFileName) setAuthJsonFileName('')
                         }}
-                        style={{ fontSize: '0.75rem', fontFamily: 'monospace' }}
+                        style={{ fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}
                       />
 
                       <Button
@@ -592,7 +592,7 @@ export const ProviderDrawerCreate: React.FC<ProviderDrawerCreateProps> = ({
                 marginTop: '0.5rem',
                 whiteSpace: 'pre-wrap',
                 wordBreak: 'break-word',
-                fontFamily: 'monospace',
+                fontFamily: 'var(--font-mono)',
                 lineHeight: 1.5,
               }}
             >

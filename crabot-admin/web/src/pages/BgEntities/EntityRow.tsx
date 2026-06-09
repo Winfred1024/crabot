@@ -1,5 +1,6 @@
 import React from 'react'
 import { Button } from '../../components/Common/Button'
+import { Tooltip } from '../../components/Common/Tooltip'
 import type { BgEntity } from '../../services/bg-entities'
 
 // ============================================================================
@@ -92,7 +93,7 @@ export const EntityRow: React.FC<EntityRowProps> = ({ entity, onKill, onViewLog 
         <span
           style={{
             background: typeBg(entity.type),
-            color: '#fff',
+            color: 'var(--text-on-primary)',
             borderRadius: 3,
             padding: '2px 7px',
             fontSize: 11,
@@ -104,18 +105,19 @@ export const EntityRow: React.FC<EntityRowProps> = ({ entity, onKill, onViewLog 
       </td>
 
       {/* 实体 ID */}
-      <td
-        style={{
-          padding: '10px 12px',
-          fontFamily: 'monospace',
-          fontSize: 12,
-          color: 'var(--text-secondary)',
-          whiteSpace: 'nowrap',
-        }}
-        title={entity.entity_id}
-      >
-        {entity.entity_id.slice(0, 12)}...
-      </td>
+      <Tooltip content={entity.entity_id}>
+        <td
+          style={{
+            padding: '10px 12px',
+            fontFamily: 'var(--font-mono)',
+            fontSize: 12,
+            color: 'var(--text-secondary)',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {entity.entity_id.slice(0, 12)}...
+        </td>
+      </Tooltip>
 
       {/* 状态 */}
       <td style={{ padding: '10px 12px', whiteSpace: 'nowrap' }}>
@@ -134,20 +136,21 @@ export const EntityRow: React.FC<EntityRowProps> = ({ entity, onKill, onViewLog 
       </td>
 
       {/* 命令 / 任务 */}
-      <td
-        style={{
-          padding: '10px 12px',
-          fontSize: 12,
-          color: 'var(--text-primary)',
-          maxWidth: 280,
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}
-        title={entity.type === 'shell' ? entity.command : entity.task_description}
-      >
-        {descriptionText(entity)}
-      </td>
+      <Tooltip content={entity.type === 'shell' ? entity.command : entity.task_description}>
+        <td
+          style={{
+            padding: '10px 12px',
+            fontSize: 12,
+            color: 'var(--text-primary)',
+            maxWidth: 280,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {descriptionText(entity)}
+        </td>
+      </Tooltip>
 
       {/* 启动时间 */}
       <td style={{ padding: '10px 12px', fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
@@ -155,7 +158,7 @@ export const EntityRow: React.FC<EntityRowProps> = ({ entity, onKill, onViewLog 
       </td>
 
       {/* 已运行时长 */}
-      <td style={{ padding: '10px 12px', fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'nowrap', fontFamily: 'monospace' }}>
+      <td style={{ padding: '10px 12px', fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'nowrap', fontFamily: 'var(--font-mono)' }}>
         {formatRuntime(entity)}
       </td>
 

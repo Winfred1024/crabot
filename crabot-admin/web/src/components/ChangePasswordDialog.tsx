@@ -4,6 +4,7 @@ import { authService } from '../services/auth'
 import { useToast } from '../contexts/ToastContext'
 import { Button } from './Common/Button'
 import { Input } from './Common/Input'
+import { Modal } from './Common/Modal'
 
 interface Props {
   onClose: () => void
@@ -41,25 +42,67 @@ export const ChangePasswordDialog: React.FC<Props> = ({ onClose }) => {
   }
 
   return (
-    <div style={{
-      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
-    }}>
-      <div style={{ background: 'white', padding: 24, borderRadius: 8, width: 360 }}>
-        <h2 style={{ marginTop: 0 }}>修改密码</h2>
-        <form onSubmit={handleSubmit}>
-          {error && <div className="error-message">{error}</div>}
-          <Input type="password" label="旧密码" value={oldPwd} onChange={(e) => setOldPwd(e.target.value)} disabled={loading} required />
-          <Input type="password" label="新密码" placeholder="至少 4 位" value={newPwd} onChange={(e) => setNewPwd(e.target.value)} disabled={loading} required />
-          <Input type="password" label="确认新密码" value={confirmPwd} onChange={(e) => setConfirmPwd(e.target.value)} disabled={loading} required />
-          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-            <Button type="button" variant="secondary" onClick={onClose} disabled={loading} style={{ flex: 1 }}>取消</Button>
-            <Button type="submit" variant="primary" disabled={loading || !oldPwd || !newPwd || !confirmPwd} style={{ flex: 1 }}>
-              {loading ? '提交中...' : '确定'}
-            </Button>
+    <Modal
+      open
+      onClose={loading ? () => {} : onClose}
+      title="修改密码"
+      description="为保护账号安全，修改成功后将自动登出，请用新密码重新登录。"
+      dismissOnBackdrop={!loading}
+      dismissOnEscape={!loading}
+      hideCloseButton={loading}
+    >
+      <form onSubmit={handleSubmit} className="change-pwd-form">
+        <Input
+          type="password"
+          label="旧密码"
+          autoComplete="current-password"
+          value={oldPwd}
+          onChange={(e) => setOldPwd(e.target.value)}
+          disabled={loading}
+          required
+        />
+        <Input
+          type="password"
+          label="新密码"
+          autoComplete="new-password"
+          placeholder="至少 4 位"
+          value={newPwd}
+          onChange={(e) => setNewPwd(e.target.value)}
+          disabled={loading}
+          required
+        />
+        <Input
+          type="password"
+          label="确认新密码"
+          autoComplete="new-password"
+          value={confirmPwd}
+          onChange={(e) => setConfirmPwd(e.target.value)}
+          disabled={loading}
+          required
+        />
+        {error && (
+          <div className="change-pwd-error" role="alert">
+            {error}
           </div>
-        </form>
-      </div>
-    </div>
+        )}
+        <div className="modal-actions">
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={onClose}
+            disabled={loading}
+          >
+            取消
+          </Button>
+          <Button
+            type="submit"
+            variant="primary"
+            disabled={loading || !oldPwd || !newPwd || !confirmPwd}
+          >
+            {loading ? '提交中…' : '确定'}
+          </Button>
+        </div>
+      </form>
+    </Modal>
   )
 }

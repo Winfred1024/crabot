@@ -3,6 +3,7 @@ import { MainLayout } from '../../components/Layout/MainLayout'
 import { Card } from '../../components/Common/Card'
 import { Button } from '../../components/Common/Button'
 import { Loading } from '../../components/Common/Loading'
+import { Tooltip } from '../../components/Common/Tooltip'
 import { subagentService } from '../../services/subagent'
 import type { SubAgentRegistryEntry } from '../../types'
 import { useToast } from '../../contexts/ToastContext'
@@ -64,7 +65,7 @@ export const SubagentList: React.FC = () => {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
           <div>
             <h2 style={{ margin: 0 }}>Subagent 管理</h2>
-            <div style={{ color: '#888', fontSize: 13, marginTop: 4 }}>
+            <div style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 4 }}>
               管理可被 main agent 委派的 subagent；内置项可编辑可禁用但不可删除
             </div>
           </div>
@@ -83,13 +84,17 @@ export const SubagentList: React.FC = () => {
           </thead>
           <tbody>
             {entries.map((entry) => (
-              <tr key={entry.id} style={{ borderBottom: '1px solid #f5f5f5' }}>
-                <td style={{ padding: '8px 6px', fontFamily: 'monospace' }}>
-                  <span title={`delegate_task(subagent_type="${entry.name}")`}>{entry.name}</span>
+              <tr key={entry.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                <td style={{ padding: '8px 6px', fontFamily: 'var(--font-mono)' }}>
+                  <Tooltip content={`delegate_task(subagent_type="${entry.name}")`}>
+                    <span>{entry.name}</span>
+                  </Tooltip>
                 </td>
-                <td style={{ padding: '8px 6px', color: '#555', maxWidth: 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={entry.description}>
-                  {entry.description}
-                </td>
+                <Tooltip content={entry.description}>
+                  <td style={{ padding: '8px 6px', color: 'var(--text-secondary)', maxWidth: 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {entry.description}
+                  </td>
+                </Tooltip>
                 <td style={{ padding: '8px 6px' }}>
                   <span style={{
                     display: 'inline-block',
@@ -118,15 +123,17 @@ export const SubagentList: React.FC = () => {
                   >
                     编辑
                   </Button>
-                  <Button
-                    variant="danger"
-                    onClick={() => void handleDelete(entry)}
-                    disabled={entry.is_builtin}
-                    title={entry.is_builtin ? '内置 subagent 不可删除，可禁用' : '删除此 subagent'}
-                    style={{ marginLeft: 6, fontSize: '0.8rem', padding: '0.3rem 0.75rem' }}
-                  >
-                    删除
-                  </Button>
+                  <Tooltip content={entry.is_builtin ? '内置 subagent 不可删除，可禁用' : '删除此 subagent'}>
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      onClick={() => void handleDelete(entry)}
+                      disabled={entry.is_builtin}
+                      style={{ marginLeft: 6 }}
+                    >
+                      删除
+                    </Button>
+                  </Tooltip>
                 </td>
               </tr>
             ))}
@@ -134,7 +141,7 @@ export const SubagentList: React.FC = () => {
         </table>
 
         {entries.length === 0 && (
-          <div style={{ textAlign: 'center', color: '#888', padding: '40px 0' }}>
+          <div style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '40px 0' }}>
             还没有 subagent。点击右上角「+ 新建」创建第一个。
           </div>
         )}

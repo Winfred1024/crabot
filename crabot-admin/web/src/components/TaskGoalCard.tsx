@@ -84,7 +84,7 @@ export const TaskGoalCard: React.FC<TaskGoalCardProps> = ({ goal }) => {
             验收条件（{goal.acceptance_criteria.length} 条）
           </strong>
           {goal.acceptance_criteria.length === 0 ? (
-            <div style={{ marginTop: 4, fontSize: 12, color: '#9ca3af' }}>
+            <div style={{ marginTop: 4, fontSize: 12, color: 'var(--text-muted)' }}>
               （无）
             </div>
           ) : (
@@ -92,10 +92,10 @@ export const TaskGoalCard: React.FC<TaskGoalCardProps> = ({ goal }) => {
               {goal.acceptance_criteria.map((c) => (
                 <li key={c.id} style={{ marginBottom: 4 }}>
                   <code style={{ fontSize: 11 }}>{c.id}</code>
-                  <span style={{ color: '#6b7280' }}> ({c.kind}): </span>
+                  <span style={{ color: 'var(--text-muted)' }}> ({c.kind}): </span>
                   <span style={{ whiteSpace: 'pre-wrap' }}>{c.spec}</span>
                   {c.rationale && (
-                    <div style={{ color: '#888', fontStyle: 'italic', marginTop: 2 }}>
+                    <div style={{ color: 'var(--text-muted)', fontStyle: 'italic', marginTop: 2 }}>
                       — {c.rationale}
                     </div>
                   )}
@@ -114,9 +114,9 @@ export const TaskGoalCard: React.FC<TaskGoalCardProps> = ({ goal }) => {
               {recentAudits.map((h, i) => (
                 <li
                   key={`${h.at}-${i}`}
-                  style={{ color: h.pass ? '#10b981' : '#ef4444', marginBottom: 2 }}
+                  style={{ color: h.pass ? 'var(--success)' : 'var(--error)', marginBottom: 2 }}
                 >
-                  <span style={{ fontFamily: 'monospace', fontSize: 11, color: '#6b7280' }}>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)' }}>
                     {h.at}
                   </span>
                   {': '}

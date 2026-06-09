@@ -4,8 +4,16 @@ import { Button } from '../../components/Common/Button'
 import { useToast } from '../../contexts/ToastContext'
 import { proxyService, type ProxyConfig } from '../../services/proxy'
 
+type ProxyMode = ProxyConfig['mode']
+
+const MODES: ReadonlyArray<{ value: ProxyMode; title: string; hint: string }> = [
+  { value: 'system', title: '系统代理', hint: '读取环境变量 HTTPS_PROXY / HTTP_PROXY' },
+  { value: 'custom', title: '自定义代理', hint: '指定代理服务器地址' },
+  { value: 'none', title: '不使用代理', hint: '直接连接' },
+]
+
 export const ProxyConfigCard: React.FC = () => {
-  const [mode, setMode] = useState<ProxyConfig['mode']>('system')
+  const [mode, setMode] = useState<ProxyMode>('system')
   const [customUrl, setCustomUrl] = useState('')
   const [systemProxyUrl, setSystemProxyUrl] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -54,102 +62,57 @@ export const ProxyConfigCard: React.FC = () => {
   if (loading) {
     return (
       <Card title="网络代理">
-        <p style={{ color: 'var(--text-secondary)' }}>加载中...</p>
+        <p className="proxy-config__status">加载中…</p>
       </Card>
     )
   }
 
   return (
     <Card title="网络代理">
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-        <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', cursor: 'pointer' }}>
-          <input
-            type="radio"
-            name="proxy_mode"
-            value="system"
-            checked={mode === 'system'}
-            onChange={() => setMode('system')}
-            style={{ marginTop: '0.2rem' }}
-          />
-          <div>
-            <div style={{ fontWeight: 500 }}>系统代理</div>
-            <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-              读取环境变量 HTTPS_PROXY / HTTP_PROXY
-            </div>
-          </div>
-        </label>
+      <div className="proxy-config" role="radiogroup" aria-label="代理模式">
+        {MODES.map((m) => (
+          <React.Fragment key={m.value}>
+            <label className={`proxy-config__option${mode === m.value ? ' proxy-config__option--active' : ''}`}>
+              <input
+                type="radio"
+                name="proxy_mode"
+                value={m.value}
+                checked={mode === m.value}
+                onChange={() => setMode(m.value)}
+                className="proxy-config__radio"
+              />
+              <div className="proxy-config__option-body">
+                <div className="proxy-config__option-title">{m.title}</div>
+                <div className="proxy-config__option-hint">{m.hint}</div>
+              </div>
+            </label>
 
-        {mode === 'system' && (
-          <div style={{
-            marginLeft: '1.5rem',
-            padding: '0.5rem 0.75rem',
-            backgroundColor: 'var(--bg-secondary, #f8f9fa)',
-            borderRadius: '4px',
-            fontSize: '0.85rem',
-            color: 'var(--text-secondary)',
-          }}>
-            {systemProxyUrl
-              ? <><span>当前系统代理：</span><code>{systemProxyUrl}</code></>
-              : '未检测到系统代理环境变量'}
-          </div>
-        )}
+            {m.value === 'system' && mode === 'system' && (
+              <div className="proxy-config__detail">
+                {systemProxyUrl
+                  ? <>当前系统代理：<code>{systemProxyUrl}</code></>
+                  : '未检测到系统代理环境变量'}
+              </div>
+            )}
 
-        <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', cursor: 'pointer' }}>
-          <input
-            type="radio"
-            name="proxy_mode"
-            value="custom"
-            checked={mode === 'custom'}
-            onChange={() => setMode('custom')}
-            style={{ marginTop: '0.2rem' }}
-          />
-          <div>
-            <div style={{ fontWeight: 500 }}>自定义代理</div>
-            <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-              指定代理服务器地址
-            </div>
-          </div>
-        </label>
+            {m.value === 'custom' && mode === 'custom' && (
+              <div className="proxy-config__detail">
+                <input
+                  type="text"
+                  className="input proxy-config__input"
+                  value={customUrl}
+                  onChange={(e) => setCustomUrl(e.target.value)}
+                  placeholder="http://127.0.0.1:7890"
+                  aria-label="代理服务器地址"
+                />
+              </div>
+            )}
+          </React.Fragment>
+        ))}
 
-        {mode === 'custom' && (
-          <div style={{ marginLeft: '1.5rem' }}>
-            <input
-              type="text"
-              value={customUrl}
-              onChange={e => setCustomUrl(e.target.value)}
-              placeholder="http://127.0.0.1:7890"
-              style={{
-                width: '100%',
-                maxWidth: '400px',
-                padding: '0.5rem 0.75rem',
-                border: '1px solid var(--border-color, #dee2e6)',
-                borderRadius: '4px',
-                fontSize: '0.9rem',
-              }}
-            />
-          </div>
-        )}
-
-        <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', cursor: 'pointer' }}>
-          <input
-            type="radio"
-            name="proxy_mode"
-            value="none"
-            checked={mode === 'none'}
-            onChange={() => setMode('none')}
-            style={{ marginTop: '0.2rem' }}
-          />
-          <div>
-            <div style={{ fontWeight: 500 }}>不使用代理</div>
-            <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-              直接连接
-            </div>
-          </div>
-        </label>
-
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.5rem' }}>
+        <div className="proxy-config__actions">
           <Button onClick={handleSave} disabled={saving}>
-            {saving ? '保存中...' : '保存'}
+            {saving ? '保存中…' : '保存'}
           </Button>
         </div>
       </div>

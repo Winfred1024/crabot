@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Tooltip } from '../../components/Common/Tooltip'
 import {
   type TraceIndexEntry,
   type TokenUsage,
@@ -21,7 +22,7 @@ import {
 
 export function TokenUsageCell({ usage }: { usage?: TokenUsage }) {
   if (!usage || (usage.input_tokens === 0 && usage.output_tokens === 0 && !usage.cache_read_tokens && !usage.cache_creation_tokens)) {
-    return <span style={{ color: '#9ca3af' }}>-</span>
+    return <span style={{ color: 'var(--text-muted)' }}>-</span>
   }
   const cacheRead = usage.cache_read_tokens ?? 0
   const cacheCreate = usage.cache_creation_tokens ?? 0
@@ -31,28 +32,28 @@ export function TokenUsageCell({ usage }: { usage?: TokenUsage }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 1, lineHeight: 1.25 }}>
-      <div
-        style={{ fontSize: 12, color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}
-        title={`未命中输入 ${usage.input_tokens} → 输出 ${usage.output_tokens}`}
-      >
-        <span>{formatTokens(usage.input_tokens)}</span>
-        <span style={{ color: '#9ca3af', margin: '0 3px' }}>→</span>
-        <span>{formatTokens(usage.output_tokens)}</span>
-      </div>
+      <Tooltip content={`未命中输入 ${usage.input_tokens} → 输出 ${usage.output_tokens}`}>
+        <div style={{ fontSize: 12, color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}>
+          <span>{formatTokens(usage.input_tokens)}</span>
+          <span style={{ color: 'var(--text-muted)', margin: '0 3px' }}>→</span>
+          <span>{formatTokens(usage.output_tokens)}</span>
+        </div>
+      </Tooltip>
       {hasCache ? (
-        <div
-          style={{ fontSize: 10, color: '#10b981', fontVariantNumeric: 'tabular-nums', display: 'flex', gap: 4, alignItems: 'center' }}
-          title={`全量 prompt ${promptTotal}，缓存命中率 ${(hitRate * 100).toFixed(0)}%`}
-        >
-          <span>●</span>
-          {cacheRead > 0 && <span>命中 {formatTokens(cacheRead)} ({(hitRate * 100).toFixed(0)}%)</span>}
-          {cacheRead === 0 && cacheCreate > 0 && <span>写入 {formatTokens(cacheCreate)}</span>}
-          {cacheRead > 0 && cacheCreate > 0 && <span style={{ color: '#0ea5e9' }}>+ 写入 {formatTokens(cacheCreate)}</span>}
-        </div>
+        <Tooltip content={`全量 prompt ${promptTotal}，缓存命中率 ${(hitRate * 100).toFixed(0)}%`}>
+          <div style={{ fontSize: 10, color: 'var(--success)', fontVariantNumeric: 'tabular-nums', display: 'flex', gap: 4, alignItems: 'center' }}>
+            <span>●</span>
+            {cacheRead > 0 && <span>命中 {formatTokens(cacheRead)} ({(hitRate * 100).toFixed(0)}%)</span>}
+            {cacheRead === 0 && cacheCreate > 0 && <span>写入 {formatTokens(cacheCreate)}</span>}
+            {cacheRead > 0 && cacheCreate > 0 && <span style={{ color: 'var(--info)' }}>+ 写入 {formatTokens(cacheCreate)}</span>}
+          </div>
+        </Tooltip>
       ) : (
-        <div style={{ fontSize: 10, color: '#9ca3af' }} title="无缓存命中">
-          <span>○ 无缓存</span>
-        </div>
+        <Tooltip content="无缓存命中">
+          <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+            <span>○ 无缓存</span>
+          </div>
+        </Tooltip>
       )}
     </div>
   )
@@ -88,7 +89,7 @@ export function TriggerBadge({ type }: { type: string }) {
     <span
       style={{
         background: color,
-        color: '#fff',
+        color: 'var(--text-on-primary)',
         fontSize: 10,
         padding: '1px 6px',
         borderRadius: 3,
@@ -110,22 +111,23 @@ export function TriggerBadge({ type }: { type: string }) {
 export function AuditBadge({ taskType }: { taskType?: string }) {
   if (taskType !== 'goal_audit') return null
   return (
-    <span
-      title="Goal audit subagent 调用（spec §8.2）"
-      style={{
-        background: '#fef3c7',
-        color: '#92400e',
-        fontSize: 10,
-        padding: '1px 6px',
-        borderRadius: 3,
-        fontWeight: 600,
-        letterSpacing: 0.2,
-        flexShrink: 0,
-        border: '1px solid #fcd34d',
-      }}
-    >
-      审计
-    </span>
+    <Tooltip content="Goal audit subagent 调用（spec §8.2）">
+      <span
+        style={{
+          background: 'var(--warning-bg)',
+          color: 'var(--warning-text)',
+          fontSize: 10,
+          padding: '1px 6px',
+          borderRadius: 3,
+          fontWeight: 600,
+          letterSpacing: 0.2,
+          flexShrink: 0,
+          border: '1px solid var(--warning-border)',
+        }}
+      >
+        审计
+      </span>
+    </Tooltip>
   )
 }
 
@@ -189,53 +191,56 @@ export function TraceTableRow({
           <AuditBadge taskType={entry.trigger_task_type} />
         </div>
       </td>
-      <td
-        style={{
-          padding: '8px 10px',
-          maxWidth: 320,
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-          fontSize: 13,
-        }}
-        title={entry.trigger_summary}
-      >
-        {entry.trigger_summary || <span style={{ color: '#9ca3af' }}>(空)</span>}
-      </td>
+      <Tooltip content={entry.trigger_summary}>
+        <td
+          style={{
+            padding: '8px 10px',
+            maxWidth: 320,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            fontSize: 13,
+          }}
+        >
+          {entry.trigger_summary || <span style={{ color: 'var(--text-muted)' }}>(空)</span>}
+        </td>
+      </Tooltip>
       <td style={{ padding: '8px 6px', whiteSpace: 'nowrap' }}>
         <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
           {taskId && onFilterByTask && (
-            <span
-              onClick={(e) => { e.stopPropagation(); onFilterByTask(taskId) }}
-              title={`属于任务 ${taskId}\n点击：仅看此任务的所有 trace`}
-              style={{
-                fontSize: 10,
-                padding: '1px 5px',
-                background: 'rgba(99,102,241,0.12)',
-                color: '#6366f1',
-                borderRadius: 3,
-                fontFamily: 'monospace',
-                cursor: 'pointer',
-              }}
-            >
-              🔗 {taskId.slice(0, 6)}
-            </span>
+            <Tooltip content={`属于任务 ${taskId} · 点击仅看此任务的所有 trace`}>
+              <span
+                onClick={(e) => { e.stopPropagation(); onFilterByTask(taskId) }}
+                style={{
+                  fontSize: 10,
+                  padding: '1px 5px',
+                  background: 'rgba(99,102,241,0.12)',
+                  color: '#6366f1',
+                  borderRadius: 3,
+                  fontFamily: 'var(--font-mono)',
+                  cursor: 'pointer',
+                }}
+              >
+                🔗 {taskId.slice(0, 6)}
+              </span>
+            </Tooltip>
           )}
           {parentTraceId && onJumpToTrace && (
-            <span
-              onClick={(e) => { e.stopPropagation(); onJumpToTrace(parentTraceId) }}
-              title={`父 trace ${parentTraceId}\n点击：跳转到父 trace`}
-              style={{
-                fontSize: 10,
-                padding: '1px 5px',
-                background: 'rgba(236,72,153,0.12)',
-                color: '#ec4899',
-                borderRadius: 3,
-                cursor: 'pointer',
-              }}
-            >
-              ↑ parent
-            </span>
+            <Tooltip content={`父 trace ${parentTraceId} · 点击跳转到父 trace`}>
+              <span
+                onClick={(e) => { e.stopPropagation(); onJumpToTrace(parentTraceId) }}
+                style={{
+                  fontSize: 10,
+                  padding: '1px 5px',
+                  background: 'rgba(236,72,153,0.12)',
+                  color: '#ec4899',
+                  borderRadius: 3,
+                  cursor: 'pointer',
+                }}
+              >
+                ↑ parent
+              </span>
+            </Tooltip>
           )}
         </div>
       </td>
@@ -315,7 +320,7 @@ export function GroupedTableRow({
               fontSize: 10,
               padding: '1px 6px',
               background: '#6366f1',
-              color: '#fff',
+              color: 'var(--text-on-primary)',
               borderRadius: 3,
               fontWeight: 600,
               letterSpacing: 0.3,
@@ -324,37 +329,39 @@ export function GroupedTableRow({
             TASK · {group.members.length}
           </span>
         </td>
-        <td
-          style={{
-            padding: '8px 10px',
-            maxWidth: 320,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            fontSize: 13,
-            fontWeight: 500,
-          }}
-          title={group.primary.trigger_summary}
-        >
-          {group.primary.trigger_summary || <span style={{ color: '#9ca3af' }}>(空)</span>}
-        </td>
+        <Tooltip content={group.primary.trigger_summary}>
+          <td
+            style={{
+              padding: '8px 10px',
+              maxWidth: 320,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              fontSize: 13,
+              fontWeight: 500,
+            }}
+          >
+            {group.primary.trigger_summary || <span style={{ color: 'var(--text-muted)' }}>(空)</span>}
+          </td>
+        </Tooltip>
         <td style={{ padding: '8px 6px', whiteSpace: 'nowrap' }}>
           {group.taskId && (
-            <span
-              onClick={(e) => { e.stopPropagation(); onFilterByTask(group.taskId!) }}
-              title={`仅看此任务`}
-              style={{
-                fontSize: 10,
-                padding: '1px 5px',
-                background: 'rgba(99,102,241,0.12)',
-                color: '#6366f1',
-                borderRadius: 3,
-                fontFamily: 'monospace',
-                cursor: 'pointer',
-              }}
-            >
-              🔗 {group.taskId.slice(0, 6)}
-            </span>
+            <Tooltip content="仅看此任务">
+              <span
+                onClick={(e) => { e.stopPropagation(); onFilterByTask(group.taskId!) }}
+                style={{
+                  fontSize: 10,
+                  padding: '1px 5px',
+                  background: 'rgba(99,102,241,0.12)',
+                  color: '#6366f1',
+                  borderRadius: 3,
+                  fontFamily: 'var(--font-mono)',
+                  cursor: 'pointer',
+                }}
+              >
+                🔗 {group.taskId.slice(0, 6)}
+              </span>
+            </Tooltip>
           )}
         </td>
         <td style={{ padding: '8px 10px', fontSize: 12, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
@@ -386,12 +393,11 @@ export function GroupedTableRow({
           }}
         >
           <td style={{ padding: '6px 10px', paddingLeft: indentPx, whiteSpace: 'nowrap' }}>
-            <span
-              style={{ color: isSubAgent ? '#ec4899' : '#9ca3af', marginRight: 4 }}
-              title={prefixTitle}
-            >
-              {prefix}
-            </span>
+            <Tooltip content={prefixTitle}>
+              <span style={{ color: isSubAgent ? '#ec4899' : 'var(--text-muted)', marginRight: 4 }}>
+                {prefix}
+              </span>
+            </Tooltip>
             <StatusDot status={m.status} />
           </td>
           <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>
@@ -400,48 +406,50 @@ export function GroupedTableRow({
               <AuditBadge taskType={m.trigger_task_type} />
             </div>
           </td>
-          <td
-            style={{
-              padding: '6px 10px',
-              maxWidth: 320,
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              fontSize: 12,
-              color: 'var(--text-secondary)',
-            }}
-            title={m.trigger_summary}
-          >
-            {m.trigger_summary || <span style={{ color: '#9ca3af' }}>(空)</span>}
-          </td>
+          <Tooltip content={m.trigger_summary}>
+            <td
+              style={{
+                padding: '6px 10px',
+                maxWidth: 320,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                fontSize: 12,
+                color: 'var(--text-secondary)',
+              }}
+            >
+              {m.trigger_summary || <span style={{ color: 'var(--text-muted)' }}>(空)</span>}
+            </td>
+          </Tooltip>
           <td style={{ padding: '6px 6px', whiteSpace: 'nowrap' }}>
             {m.parent_trace_id && (
-              <span
-                onClick={(e) => { e.stopPropagation(); onJumpToTrace(m.parent_trace_id!) }}
-                title={`父 trace ${m.parent_trace_id}`}
-                style={{
-                  fontSize: 10,
-                  padding: '1px 5px',
-                  background: 'rgba(236,72,153,0.12)',
-                  color: '#ec4899',
-                  borderRadius: 3,
-                  cursor: 'pointer',
-                }}
-              >
-                ↑ parent
-              </span>
+              <Tooltip content={`父 trace ${m.parent_trace_id}`}>
+                <span
+                  onClick={(e) => { e.stopPropagation(); onJumpToTrace(m.parent_trace_id!) }}
+                  style={{
+                    fontSize: 10,
+                    padding: '1px 5px',
+                    background: 'rgba(236,72,153,0.12)',
+                    color: '#ec4899',
+                    borderRadius: 3,
+                    cursor: 'pointer',
+                  }}
+                >
+                  ↑ parent
+                </span>
+              </Tooltip>
             )}
           </td>
-          <td style={{ padding: '6px 10px', fontSize: 11, color: '#9ca3af', whiteSpace: 'nowrap' }}>
+          <td style={{ padding: '6px 10px', fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
             {formatTime(m.started_at)}
           </td>
-          <td style={{ padding: '6px 10px', fontSize: 11, color: '#9ca3af', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+          <td style={{ padding: '6px 10px', fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
             {formatDuration(m.duration_ms)}
           </td>
           <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>
             <TokenUsageCell usage={m.total_usage} />
           </td>
-          <td style={{ padding: '6px 10px', fontSize: 11, color: '#9ca3af', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+          <td style={{ padding: '6px 10px', fontSize: 11, color: 'var(--text-muted)', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
             {m.span_count}
           </td>
         </tr>
@@ -465,9 +473,9 @@ export function TraceChip({
   onClick: () => void
 }) {
   return (
+    <Tooltip content={`${entry.trigger_summary || '(空)'} · 状态 ${entry.status} · ${entry.trace_id}`}>
     <span
       onClick={current ? undefined : onClick}
-      title={`${entry.trigger_summary || '(空)'}\n状态：${entry.status}\n${entry.trace_id}`}
       style={{
         display: 'inline-flex',
         alignItems: 'center',
@@ -478,7 +486,7 @@ export function TraceChip({
         border: `1px solid ${statusColor(entry.status)}`,
         borderRadius: 10,
         fontSize: 11,
-        fontFamily: 'monospace',
+        fontFamily: 'var(--font-mono)',
         cursor: current ? 'default' : 'pointer',
         fontWeight: current ? 600 : 500,
       }}
@@ -486,5 +494,6 @@ export function TraceChip({
       {entry.trace_id.slice(0, 6)}
       {current && <span style={{ fontSize: 9 }}>● 当前</span>}
     </span>
+    </Tooltip>
   )
 }

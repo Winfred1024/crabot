@@ -289,13 +289,18 @@ export const NewChannelOnboarding: React.FC = () => {
           <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8, padding: '1.25rem' }}>
             {/* qrcode mode */}
             {status.begin?.ui_mode === 'qrcode' && (
-              <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: '1.5rem' }}>
-                <div style={{ background: 'white', padding: 12, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  {status.qrSvg ? (
-                    <div dangerouslySetInnerHTML={{ __html: status.qrSvg }} style={{ width: 240, height: 240 }} />
-                  ) : (
-                    <Loading />
-                  )}
+              <div className="onboarding-qr-layout">
+                <div className="onboarding-qr-card">
+                  <div className="onboarding-qr-frame">
+                    {status.qrSvg ? (
+                      <div
+                        className="onboarding-qr-svg"
+                        dangerouslySetInnerHTML={{ __html: status.qrSvg }}
+                      />
+                    ) : (
+                      <Loading />
+                    )}
+                  </div>
                 </div>
                 <OnboardingStatusPanel
                   display={status.begin?.display}

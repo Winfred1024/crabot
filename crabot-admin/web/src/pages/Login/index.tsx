@@ -54,9 +54,8 @@ export const Login: React.FC = () => {
               type="submit"
               variant="primary"
               disabled={loading || !password}
-              style={{ width: '100%' }}
             >
-              {loading ? '验证中...' : '进入系统'}
+              {loading ? '验证中…' : '进入系统'}
             </Button>
           </form>
         </div>

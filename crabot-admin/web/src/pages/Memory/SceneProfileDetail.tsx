@@ -331,7 +331,7 @@ export const SceneProfileDetail: React.FC = () => {
 
         <div style={{ marginBottom: '0.75rem' }}>
           <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>原始 scene：</span>
-          <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginLeft: '0.5rem', fontFamily: 'monospace' }}>
+          <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginLeft: '0.5rem', fontFamily: 'var(--font-mono)' }}>
             {JSON.stringify(activeProfile.scene)}
           </span>
         </div>

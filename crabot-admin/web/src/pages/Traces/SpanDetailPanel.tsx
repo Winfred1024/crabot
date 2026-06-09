@@ -5,6 +5,7 @@ import {
   totalPromptTokens,
   cacheHitRate,
 } from '../../services/trace'
+import { Tooltip } from '../../components/Common/Tooltip'
 import { formatDateTimeLocal, formatDuration, formatTokens, agentLoopLabel } from './utils'
 import { TraceLink } from './TraceTable'
 
@@ -54,25 +55,29 @@ export const SpanDetailPanel: React.FC<{
       rows.push({
         label: 'Tokens',
         value: (
-          <div style={{ fontFamily: 'monospace', fontSize: 12, lineHeight: 1.6 }}>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: 1.6 }}>
             <div>
-              <span title="未命中输入">{formatTokens(usage.input_tokens)}</span>
+              <Tooltip content="未命中输入"><span>{formatTokens(usage.input_tokens)}</span></Tooltip>
               <span style={{ color: 'var(--text-muted)', margin: '0 4px' }}>未命中 in →</span>
-              <span title="输出">{formatTokens(usage.output_tokens)}</span>
+              <Tooltip content="输出"><span>{formatTokens(usage.output_tokens)}</span></Tooltip>
               <span style={{ color: 'var(--text-muted)', marginLeft: 4 }}>out</span>
             </div>
             {(cacheRead > 0 || cacheCreate > 0) && (
               <div style={{ color: 'var(--text-secondary)' }}>
                 {cacheRead > 0 && (
-                  <span style={{ color: 'var(--success)' }} title="缓存命中（享受折扣）">
-                    cache 命中 {formatTokens(cacheRead)}
-                  </span>
+                  <Tooltip content="缓存命中（享受折扣）">
+                    <span style={{ color: 'var(--success)' }}>
+                      cache 命中 {formatTokens(cacheRead)}
+                    </span>
+                  </Tooltip>
                 )}
                 {cacheRead > 0 && cacheCreate > 0 && <span> · </span>}
                 {cacheCreate > 0 && (
-                  <span style={{ color: 'var(--primary-light)' }} title="本次写入缓存">
-                    写入 {formatTokens(cacheCreate)}
-                  </span>
+                  <Tooltip content="本次写入缓存">
+                    <span style={{ color: 'var(--primary-light)' }}>
+                      写入 {formatTokens(cacheCreate)}
+                    </span>
+                  </Tooltip>
                 )}
                 <span style={{ marginLeft: 8, color: 'var(--text-muted)' }}>
                   全量 {formatTokens(total)}

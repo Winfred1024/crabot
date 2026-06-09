@@ -57,16 +57,14 @@ function SchemaField({ propKey, prop, value, required, onChange }: {
   const isReadOnly = prop.readOnly === true
 
   return (
-    <div className="form-group" style={{ marginBottom: 0 }}>
-      <label style={{ fontSize: '0.8125rem', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '0.375rem', display: 'block' }}>
+    <div className="form-group schema-field">
+      <label className="form-label schema-field__label">
         {prop.title ?? propKey}
-        {required && <span style={{ color: 'var(--error, #ef4444)', marginLeft: '0.25rem' }}>*</span>}
-        {isReadOnly && <span style={{ color: 'var(--text-muted)', marginLeft: '0.375rem', fontSize: '0.7rem', fontWeight: 400 }}>（只读）</span>}
+        {required && <span className="schema-field__required">*</span>}
+        {isReadOnly && <span className="schema-field__readonly">（只读）</span>}
       </label>
       {prop.description && (
-        <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '0.375rem', lineHeight: 1.4 }}>
-          {prop.description}
-        </p>
+        <p className="schema-field__desc">{prop.description}</p>
       )}
       {prop.enum ? (
         <select
@@ -84,7 +82,7 @@ function SchemaField({ propKey, prop, value, required, onChange }: {
           })}
         </select>
       ) : prop.type === 'boolean' ? (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.625rem' }}>
+        <div className="schema-field__bool">
           <label className="toggle-switch">
             <input
               type="checkbox"
@@ -94,7 +92,7 @@ function SchemaField({ propKey, prop, value, required, onChange }: {
             />
             <span className="toggle-track" />
           </label>
-          <span style={{ fontSize: '0.8125rem', color: value === 'true' ? 'var(--success)' : 'var(--text-muted)' }}>
+          <span className={`schema-field__bool-label${value === 'true' ? ' schema-field__bool-label--on' : ''}`}>
             {value === 'true' ? '已启用' : '已禁用'}
           </span>
         </div>
@@ -588,11 +586,9 @@ export const ChannelConfig: React.FC = () => {
         {/* Create Form */}
         {showCreateForm && (
           <div className="channel-create-panel">
-            <h2 style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '0.1em', textTransform: 'uppercase', fontFamily: 'var(--font-mono)', marginBottom: '1.125rem' }}>
-              新建 Channel 实例
-            </h2>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-              <div className="form-group" style={{ marginBottom: 0 }}>
+            <h2 className="channel-create-panel__title">新建 Channel 实例</h2>
+            <div className="channel-create-grid">
+              <div className="form-group form-group--flush">
                 <label className="form-label">实现（Implementation）</label>
                 <select className="select" value={createImplId} onChange={(e) => handleImplChange(e.target.value)}>
                   {implementations.map((impl) => (
@@ -600,11 +596,11 @@ export const ChannelConfig: React.FC = () => {
                   ))}
                 </select>
               </div>
-              <div className="form-group" style={{ marginBottom: 0 }}>
+              <div className="form-group form-group--flush">
                 <label className="form-label">实例名称</label>
                 <input className="input" type="text" value={createName} onChange={(e) => setCreateName(e.target.value)} placeholder="如：飞书工作群" />
               </div>
-              <div className="form-group" style={{ marginBottom: 0 }}>
+              <div className="form-group form-group--flush">
                 <label className="form-label">平台</label>
                 <input
                   className="input"
@@ -617,12 +613,9 @@ export const ChannelConfig: React.FC = () => {
               </div>
             </div>
 
-            {/* 根据 config_schema 动态渲染配置字段 */}
             {createSchema && Object.keys(createSchema.properties ?? {}).length > 0 && (
-              <div style={{ marginTop: '1.25rem', paddingTop: '1rem', borderTop: '1px solid var(--border)' }}>
-                <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
-                  模块配置
-                </p>
+              <div className="channel-create-panel__schema">
+                <p className="channel-create-panel__schema-label">模块配置</p>
                 <SchemaForm
                   schema={createSchema}
                   values={createEnv}
@@ -631,10 +624,10 @@ export const ChannelConfig: React.FC = () => {
               </div>
             )}
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.625rem', marginTop: '1.25rem' }}>
+            <div className="channel-create-panel__actions">
               <Button variant="secondary" onClick={() => setShowCreateForm(false)}>取消</Button>
               <Button variant="primary" onClick={handleCreate} disabled={creating}>
-                {creating ? '创建中...' : '创建实例'}
+                {creating ? '创建中…' : '创建实例'}
               </Button>
             </div>
           </div>
@@ -687,15 +680,6 @@ export const ChannelConfig: React.FC = () => {
                           </span>
                         )}
                       </div>
-
-                      {instance.state_dir && (
-                        <p
-                          style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginTop: '0.375rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '480px' }}
-                          title={instance.state_dir}
-                        >
-                          {instance.state_dir}
-                        </p>
-                      )}
 
                       {/* Auto-start toggle */}
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.75rem' }}>

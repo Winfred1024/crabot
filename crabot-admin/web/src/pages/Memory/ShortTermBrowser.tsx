@@ -372,7 +372,7 @@ const ShortTermList: React.FC<ShortTermListProps> = ({
                 display: 'flex',
                 gap: '0.75rem',
               }}>
-                <span style={{ fontFamily: 'monospace', opacity: 0.6 }}>{entry.id}</span>
+                <span style={{ fontFamily: 'var(--font-mono)', opacity: 0.6 }}>{entry.id}</span>
                 <span>{new Date(entry.event_time).toLocaleString('zh-CN')}</span>
                 {entry.topic && <span style={{ color: 'var(--primary)' }}>{entry.topic}</span>}
               </div>

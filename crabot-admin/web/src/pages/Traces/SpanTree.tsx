@@ -1,5 +1,6 @@
 import React, { useState, useCallback } from 'react'
 import { traceService, type AgentSpan, type TokenUsage } from '../../services/trace'
+import { Tooltip } from '../../components/Common/Tooltip'
 import { spanTypeBg, spanTypeLabel, statusColor, formatDuration, formatTokens, detailSummary } from './utils'
 import { SpanDetailPanel } from './SpanDetailPanel'
 
@@ -91,13 +92,13 @@ export const SpanRow: React.FC<SpanRowProps> = ({ span, spans, depth, expandedDe
           paddingLeft: `${depth * 18 + 8}px`,
           borderBottom: '1px solid var(--border)',
           fontSize: 12,
-          fontFamily: 'monospace',
+          fontFamily: 'var(--font-mono)',
         }}
       >
         <span
           style={{
             width: 14,
-            color: '#9ca3af',
+            color: 'var(--text-muted)',
             marginRight: 4,
             cursor: hasChildren ? 'pointer' : 'default',
             userSelect: 'none',
@@ -109,7 +110,7 @@ export const SpanRow: React.FC<SpanRowProps> = ({ span, spans, depth, expandedDe
         <span
           style={{
             background: spanTypeBg(span.type),
-            color: '#fff',
+            color: 'var(--text-on-primary)',
             borderRadius: 3,
             padding: '1px 5px',
             fontSize: 10,
@@ -131,16 +132,15 @@ export const SpanRow: React.FC<SpanRowProps> = ({ span, spans, depth, expandedDe
             cursor: 'pointer',
           }}
           onClick={(e) => { e.stopPropagation(); toggleDetail(span.span_id) }}
-          title="点击查看详情"
         >
           {detailSummary(span)}
-          {showDetail && <span style={{ marginLeft: 6, color: '#9ca3af' }}>▲ 收起</span>}
+          {showDetail && <span style={{ marginLeft: 6, color: 'var(--text-muted)' }}>▲ 收起</span>}
         </span>
         {showExpandButton && (
+          <Tooltip content={childTraceId ? '展开子 trace span 树' : '无子 trace 数据'}>
           <button
             aria-label="展开子 trace"
             disabled={!childTraceId}
-            title={childTraceId ? '展开子 trace span 树' : '无子 trace 数据'}
             onClick={(e) => {
               e.stopPropagation()
               void toggleChildTrace()
@@ -158,16 +158,17 @@ export const SpanRow: React.FC<SpanRowProps> = ({ span, spans, depth, expandedDe
           >
             {childTraceExpanded ? '▼' : '▶'} 展开子 trace
           </button>
+          </Tooltip>
         )}
         {usage && (
-          <span style={{ marginLeft: 8, fontSize: 10, color: '#6b7280', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
+          <span style={{ marginLeft: 8, fontSize: 10, color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
             {formatTokens(usage.input_tokens)}↦{formatTokens(usage.output_tokens)}
           </span>
         )}
         <span
           style={{
             marginLeft: 8,
-            color: span.duration_ms === undefined ? '#9ca3af' : 'var(--text-secondary)',
+            color: span.duration_ms === undefined ? 'var(--text-muted)' : 'var(--text-secondary)',
             fontVariantNumeric: 'tabular-nums',
             flexShrink: 0,
             minWidth: 50,
@@ -199,12 +200,12 @@ export const SpanRow: React.FC<SpanRowProps> = ({ span, spans, depth, expandedDe
         />
       )}
       {childTrace.status === 'loading' && (
-        <div style={{ paddingLeft: (depth + 1) * 18 + 8, color: '#888', fontSize: 11, paddingTop: 4, paddingBottom: 4, paddingRight: 8 }}>
+        <div style={{ paddingLeft: (depth + 1) * 18 + 8, color: 'var(--text-muted)', fontSize: 11, paddingTop: 4, paddingBottom: 4, paddingRight: 8 }}>
           加载子 trace…
         </div>
       )}
       {childTrace.status === 'error' && (
-        <div style={{ paddingLeft: (depth + 1) * 18 + 8, color: '#cf1322', fontSize: 11, paddingTop: 4, paddingBottom: 4, paddingRight: 8 }}>
+        <div style={{ paddingLeft: (depth + 1) * 18 + 8, color: 'var(--error)', fontSize: 11, paddingTop: 4, paddingBottom: 4, paddingRight: 8 }}>
           子 trace 加载失败：{childTrace.error}
         </div>
       )}
@@ -214,12 +215,12 @@ export const SpanRow: React.FC<SpanRowProps> = ({ span, spans, depth, expandedDe
             data-testid="child-trace-banner"
             style={{
               paddingLeft: (depth + 1) * 18 + 8,
-              background: '#fafafa',
+              background: 'var(--surface)',
               paddingTop: 6,
               paddingBottom: 6,
               paddingRight: 12,
               fontSize: 12,
-              color: '#555',
+              color: 'var(--text-secondary)',
               borderBottom: '1px solid var(--border)',
             }}
           >

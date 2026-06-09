@@ -106,7 +106,7 @@ export const ProviderDrawerEdit: React.FC<ProviderDrawerEditProps> = ({
                 color: 'var(--text-secondary)',
                 fontSize: '0.85rem',
               }}
-              title={showApiKey ? '隐藏' : '显示'}
+              aria-label={showApiKey ? '隐藏 API Key' : '显示 API Key'}
             >
               {showApiKey ? '隐藏' : '显示'}
             </button>

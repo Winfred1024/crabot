@@ -1,4 +1,5 @@
 import React from 'react'
+import { Tooltip } from '../../../../components/Common/Tooltip'
 
 export interface TrashRowActionsProps {
   ingestionTime: string
@@ -26,16 +27,17 @@ export const TrashRowActions: React.FC<TrashRowActionsProps> = ({
     : `恢复到 inbox`
 
   return (
+    <Tooltip content={tooltip}>
     <button
       type="button"
       data-role="trash-restore"
       data-expired={expired ? 'true' : 'false'}
-      title={tooltip}
       disabled={expired}
       onClick={() => { if (!expired) void onRestore() }}
       className={'mem-trash-restore' + (expired ? ' mem-trash-restore--expired' : '')}
     >
       Restore
     </button>
+    </Tooltip>
   )
 }

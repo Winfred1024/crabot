@@ -6,6 +6,7 @@ import { MainLayout } from '../../components/Layout/MainLayout'
 import { Button } from '../../components/Common/Button'
 import { Loading } from '../../components/Common/Loading'
 import { ConfirmModal } from '../../components/Common/ConfirmModal'
+import { Tooltip } from '../../components/Common/Tooltip'
 import type {
   Schedule,
   ScheduleTrigger,
@@ -789,36 +790,44 @@ export const ScheduleList: React.FC = () => {
                     )}
                   </div>
                   <div className="sched-card-actions">
+                    <Tooltip content={s.enabled ? '禁用' : '启用'}>
                     <button
                       className="sched-action-btn"
-                      title={s.enabled ? '禁用' : '启用'}
+                      aria-label={s.enabled ? '禁用计划' : '启用计划'}
                       onClick={() => handleToggleEnabled(s)}
                     >
                       {s.enabled ? '||' : '\u25B6'}
-                    </button>
-                    <button
-                      className="sched-action-btn trigger"
-                      title="立即触发"
-                      disabled={triggering === s.id}
-                      onClick={() => handleTriggerNow(s)}
-                    >
+                      </button>
+                    </Tooltip>
+                    <Tooltip content="立即触发">
+                      <button
+                        className="sched-action-btn trigger"
+                        aria-label="立即触发计划"
+                        disabled={triggering === s.id}
+                        onClick={() => handleTriggerNow(s)}
+                      >
                       {triggering === s.id ? '...' : '\u26A1'}
                     </button>
-                    <button
-                      className="sched-action-btn"
-                      title="编辑"
-                      onClick={() => openEdit(s)}
-                    >
-                      &#9998;
-                    </button>
-                    {!s.is_builtin && (
+                    </Tooltip>
+                    <Tooltip content="编辑">
                       <button
-                        className="sched-action-btn danger"
-                        title="删除"
-                        onClick={() => setDeleteTarget(s)}
+                        className="sched-action-btn"
+                        aria-label="编辑计划"
+                        onClick={() => openEdit(s)}
                       >
-                        &times;
+                        &#9998;
                       </button>
+                    </Tooltip>
+                    {!s.is_builtin && (
+                      <Tooltip content="删除">
+                        <button
+                          className="sched-action-btn danger"
+                          aria-label="删除计划"
+                          onClick={() => setDeleteTarget(s)}
+                        >
+                          &times;
+                        </button>
+                      </Tooltip>
                     )}
                   </div>
                 </div>

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { memoryV2Service, type ObservationPendingItem } from '../../../../services/memoryV2'
+import { Tooltip } from '../../../../components/Common/Tooltip'
 
 const TYPE_LABEL: Record<string, string> = { fact: '事实', lesson: '经验', concept: '概念' }
 
@@ -67,13 +68,13 @@ export const ObservationPendingPanel: React.FC = () => {
                 <span aria-hidden="true">·</span>
                 <span>观察期剩余 <em>{left}</em> 天 / 共 {item.observation_window_days} 天</span>
                 <span aria-hidden="true">·</span>
-                <span title="用户在引用此记忆的任务上累计表达正向态度（pass）次数；strong_pass 计 2 次">
-                  正反馈 <em>{item.observation_pass_count ?? 0}</em>
-                </span>
+                <Tooltip content="用户在引用此记忆的任务上累计表达正向态度（pass）次数；strong_pass 计 2 次">
+                  <span>正反馈 <em>{item.observation_pass_count ?? 0}</em></span>
+                </Tooltip>
                 <span aria-hidden="true">·</span>
-                <span title="用户在引用此记忆的任务上累计表达负向态度（fail）次数；strong_fail 计 2 次">
-                  负反馈 <em>{item.observation_fail_count ?? 0}</em>
-                </span>
+                <Tooltip content="用户在引用此记忆的任务上累计表达负向态度（fail）次数；strong_fail 计 2 次">
+                  <span>负反馈 <em>{item.observation_fail_count ?? 0}</em></span>
+                </Tooltip>
               </div>
             </div>
             <div className="mem-observation-card__actions">

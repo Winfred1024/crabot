@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { MainLayout } from '../../components/Layout/MainLayout'
 import { Button } from '../../components/Common/Button'
 import { Loading } from '../../components/Common/Loading'
+import { Tooltip } from '../../components/Common/Tooltip'
 import { useToast } from '../../contexts/ToastContext'
 import {
   traceService,
@@ -141,7 +142,7 @@ function RelatedTraceTree({
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--primary-light)', fontWeight: 600 }}>
         <span>🔗 关联链路</span>
-        <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontFamily: 'monospace' }}>
+        <span style={{ color: 'var(--text-muted)', fontWeight: 400, fontFamily: 'var(--font-mono)' }}>
           task {taskId.slice(0, 12)}
         </span>
         <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>· 共 {total} trace</span>
@@ -171,7 +172,8 @@ function UsageStat({
   suffix?: string
 }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }} title={hint}>
+    <Tooltip content={hint}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
       <span style={{ fontSize: 10, color: 'var(--text-muted)', letterSpacing: 0.3 }}>
         {label}
       </span>
@@ -179,6 +181,7 @@ function UsageStat({
         {suffix ? `${value}${suffix}` : formatTokens(value)}
       </span>
     </div>
+    </Tooltip>
   )
 }
 
@@ -237,7 +240,7 @@ function TraceDetailPanel({
           <span
             style={{
               background: statusColor(trace.status),
-              color: '#fff',
+              color: 'var(--text-on-primary)',
               borderRadius: 3,
               padding: '2px 8px',
               fontSize: 11,
@@ -252,7 +255,7 @@ function TraceDetailPanel({
             {formatDateTimeLocal(trace.started_at)} · {formatDuration(trace.duration_ms)}
           </span>
           <span style={{ flex: 1 }} />
-          <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
             {trace.trace_id.slice(0, 8)}
           </span>
         </div>
@@ -291,7 +294,7 @@ function TraceDetailPanel({
               <strong>结果:</strong> {trace.outcome.summary}
             </div>
             {trace.outcome.error && (
-              <div style={{ marginTop: 4, fontFamily: 'monospace', fontSize: 11 }}>
+              <div style={{ marginTop: 4, fontFamily: 'var(--font-mono)', fontSize: 11 }}>
                 {trace.outcome.error}
               </div>
             )}
@@ -629,9 +632,10 @@ export const Traces: React.FC = () => {
                 cursor: 'pointer',
                 fontWeight: viewMode === 'grouped' ? 600 : 400,
               }}
-              title="按 task_id 把 fronts/worker/sub-agents 折叠成树（最近 100 条 trace）"
             >
-              🌳 按任务聚合
+              <Tooltip content="按 task_id 把 fronts/worker/sub-agents 折叠成树（最近 100 条 trace）">
+                <span>🌳 按任务聚合</span>
+              </Tooltip>
             </button>
             <button
               onClick={() => { setViewMode('flat'); setPage(1) }}
@@ -644,9 +648,10 @@ export const Traces: React.FC = () => {
                 borderLeft: '1px solid var(--border)',
                 fontWeight: viewMode === 'flat' ? 600 : 400,
               }}
-              title="按时间倒序的扁平 trace 列表，支持分页"
             >
-              📄 扁平 + 分页
+              <Tooltip content="按时间倒序的扁平 trace 列表，支持分页">
+                <span>📄 扁平 + 分页</span>
+              </Tooltip>
             </button>
           </div>
           <div style={{ flex: 1, minWidth: 240 }}>
@@ -658,8 +663,8 @@ export const Traces: React.FC = () => {
           <div
             style={{
               padding: '10px 16px',
-              background: '#fef2f2',
-              border: '1px solid #fca5a5',
+              background: 'var(--error-glow)',
+              border: '1px solid var(--error)',
               borderRadius: 6,
               color: 'var(--error)',
               fontSize: 13,

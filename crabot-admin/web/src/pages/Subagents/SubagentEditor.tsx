@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { Button } from '../../components/Common/Button'
+import { Modal } from '../../components/Common/Modal'
+import { Tooltip } from '../../components/Common/Tooltip'
 import { subagentService } from '../../services/subagent'
 import { providerService } from '../../services/provider'
 import { mcpService } from '../../services/mcp'
@@ -152,52 +154,43 @@ export const SubagentEditor: React.FC<SubagentEditorProps> = ({ mode, entry, onC
   }
 
   return (
-    <div
-      role="dialog"
-      style={{
-        position: 'fixed',
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        background: 'rgba(0,0,0,0.4)',
-        zIndex: 1000,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-      }}
+    <Modal
+      open
+      onClose={saving ? () => {} : onClose}
+      size="lg"
+      title={mode === 'create' ? '新建 subagent' : `编辑 subagent ${entry?.name ?? ''}`}
+      dismissOnBackdrop={!saving}
+      dismissOnEscape={!saving}
+      contentClassName="subagent-editor"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={saving}>取消</Button>
+          <Button
+            variant="primary"
+            onClick={() => void handleSave()}
+            disabled={saving || nameInvalid || form.name === ''}
+          >
+            {saving ? '保存中…' : '保存'}
+          </Button>
+        </>
+      }
     >
-      <div style={{
-        width: 800, maxHeight: '90vh', overflow: 'auto',
-        background: '#fff', borderRadius: 8, padding: 24,
-        boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
-      }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-          <h3 style={{ margin: 0 }}>
-            {mode === 'create' ? '新建 subagent' : `编辑 subagent ${entry?.name}`}
-          </h3>
-          <Button onClick={onClose}>×</Button>
-        </div>
+      <div className="subagent-editor__tabs" role="tablist">
+        {TABS.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.key}
+            className={`subagent-editor__tab${tab === t.key ? ' subagent-editor__tab--active' : ''}`}
+            onClick={() => setTab(t.key)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
 
-        <div style={{ display: 'flex', borderBottom: '1px solid #eee', marginBottom: 16 }}>
-          {TABS.map((t) => (
-            <button
-              key={t.key}
-              onClick={() => setTab(t.key)}
-              style={{
-                padding: '8px 16px',
-                background: 'none',
-                border: 'none',
-                borderBottom: tab === t.key ? '2px solid #1890ff' : '2px solid transparent',
-                color: tab === t.key ? '#1890ff' : '#555',
-                cursor: 'pointer',
-              }}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-
+      <div className="subagent-editor__panel">
         {tab === 'basic' && (
           <BasicTab
             form={form}
@@ -211,27 +204,8 @@ export const SubagentEditor: React.FC<SubagentEditorProps> = ({ mode, entry, onC
         {tab === 'model' && <ModelTab form={form} setForm={setForm} />}
         {tab === 'capabilities' && <CapabilitiesTab form={form} setForm={setForm} />}
         {tab === 'whitelist' && <WhitelistTab form={form} setForm={setForm} />}
-
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'flex-end',
-            gap: 8,
-            marginTop: 16,
-            paddingTop: 12,
-            borderTop: '1px solid #eee',
-          }}
-        >
-          <Button onClick={onClose} disabled={saving}>取消</Button>
-          <Button
-            onClick={() => void handleSave()}
-            disabled={saving || nameInvalid || form.name === ''}
-          >
-            保存
-          </Button>
-        </div>
       </div>
-    </div>
+    </Modal>
   )
 }
 
@@ -251,20 +225,20 @@ const BasicTab: React.FC<{
         type="text"
         value={form.name}
         onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-        style={{ width: '100%', padding: '6px 8px', fontFamily: 'monospace' }}
+        style={{ width: '100%', padding: '6px 8px', fontFamily: 'var(--font-mono)' }}
       />
       {nameInvalid && (
-        <div style={{ color: '#cf1322', fontSize: 12 }}>
+        <div style={{ color: 'var(--error)', fontSize: 12 }}>
           名称必须 snake_case（小写字母开头，可含数字下划线）
         </div>
       )}
       {builtinRenameWarning && (
-        <div style={{ color: '#d46b08', fontSize: 12, marginTop: 4 }}>
+        <div style={{ color: 'var(--warning-text)', fontSize: 12, marginTop: 4 }}>
           ⚠ builtin 改名后将被自动 prune 重置；如需改名建议复制成自定义项
         </div>
       )}
       {form.name && !nameInvalid && (
-        <div style={{ fontFamily: 'monospace', color: '#888', fontSize: 12, marginTop: 4 }}>
+        <div style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', fontSize: 12, marginTop: 4 }}>
           {`delegate_task(subagent_type="${form.name}")`}
         </div>
       )}
@@ -313,7 +287,7 @@ const WhenToUseTab: React.FC<{
       aria-label="when_to_use"
       value={form.when_to_use}
       onChange={(e) => setForm((f) => ({ ...f, when_to_use: e.target.value }))}
-      style={{ width: '100%', height: 200, fontFamily: 'monospace', padding: 8 }}
+      style={{ width: '100%', height: 200, fontFamily: 'var(--font-mono)', padding: 8 }}
     />
   </div>
 )
@@ -342,28 +316,28 @@ const WorkflowTab: React.FC<{
       aria-label="role"
       value={form.role}
       onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))}
-      style={{ width: '100%', height: 100, fontFamily: 'monospace', padding: 8, marginBottom: 12 }}
+      style={{ width: '100%', height: 100, fontFamily: 'var(--font-mono)', padding: 8, marginBottom: 12 }}
     />
     <div>workflow（工作流步骤）</div>
     <textarea
       aria-label="workflow"
       value={form.workflow}
       onChange={(e) => setForm((f) => ({ ...f, workflow: e.target.value }))}
-      style={{ width: '100%', height: 150, fontFamily: 'monospace', padding: 8, marginBottom: 12 }}
+      style={{ width: '100%', height: 150, fontFamily: 'var(--font-mono)', padding: 8, marginBottom: 12 }}
     />
     <div>deliverables（交付物格式）</div>
     <textarea
       aria-label="deliverables"
       value={form.deliverables}
       onChange={(e) => setForm((f) => ({ ...f, deliverables: e.target.value }))}
-      style={{ width: '100%', height: 100, fontFamily: 'monospace', padding: 8, marginBottom: 12 }}
+      style={{ width: '100%', height: 100, fontFamily: 'var(--font-mono)', padding: 8, marginBottom: 12 }}
     />
     <div>verification（完成前自检，可选但推荐）</div>
     <textarea
       aria-label="verification"
       value={form.verification}
       onChange={(e) => setForm((f) => ({ ...f, verification: e.target.value }))}
-      style={{ width: '100%', height: 100, fontFamily: 'monospace', padding: 8 }}
+      style={{ width: '100%', height: 100, fontFamily: 'var(--font-mono)', padding: 8 }}
     />
   </div>
 )
@@ -410,7 +384,7 @@ const ModelTab: React.FC<{
               <option value="cost_effective">cost_effective（性价比）</option>
               <option value="vision">vision（视觉）</option>
             </select>
-            <span style={{ color: '#888', marginLeft: 12, fontSize: 12 }}>
+            <span style={{ color: 'var(--text-muted)', marginLeft: 12, fontSize: 12 }}>
               实际指向取决于该 agent 实例的 model_config[role]
             </span>
           </div>
@@ -488,7 +462,7 @@ const CapabilitiesTab: React.FC<{
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
       <div>
-        <div style={{ color: '#888', marginBottom: 8, fontSize: 12 }}>常用（默认 on）</div>
+        <div style={{ color: 'var(--text-muted)', marginBottom: 8, fontSize: 12 }}>常用（默认 on）</div>
         {(['file_system', 'shell', 'task_intel', 'crab_memory'] as const).map((key) => (
           <label
             key={key}
@@ -500,14 +474,14 @@ const CapabilitiesTab: React.FC<{
               checked={form.builtin_capabilities[key]}
               onChange={() => toggle(key)}
             />
-            <span title={CAPABILITY_TOOLS[key]} style={{ fontFamily: 'monospace' }}>
-              {key}
-            </span>
+            <Tooltip content={CAPABILITY_TOOLS[key]}>
+              <span style={{ fontFamily: 'var(--font-mono)' }}>{key}</span>
+            </Tooltip>
           </label>
         ))}
       </div>
       <div>
-        <div style={{ color: '#888', marginBottom: 8, fontSize: 12 }}>敏感（默认 off）</div>
+        <div style={{ color: 'var(--text-muted)', marginBottom: 8, fontSize: 12 }}>敏感（默认 off）</div>
         <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <input
             type="checkbox"
@@ -515,9 +489,9 @@ const CapabilitiesTab: React.FC<{
             checked={form.builtin_capabilities.crab_messaging}
             onChange={() => toggle('crab_messaging')}
           />
-          <span title={CAPABILITY_TOOLS.crab_messaging} style={{ fontFamily: 'monospace' }}>
-            crab_messaging
-          </span>
+          <Tooltip content={CAPABILITY_TOOLS.crab_messaging}>
+            <span style={{ fontFamily: 'var(--font-mono)' }}>crab_messaging</span>
+          </Tooltip>
         </label>
       </div>
     </div>
@@ -561,7 +535,7 @@ const WhitelistTab: React.FC<{
       <div style={{ marginBottom: 16 }}>
         <div style={{ marginBottom: 4 }}>MCP 服务白名单</div>
         {mcpOptions.length === 0 && (
-          <div style={{ color: '#888', fontSize: 12 }}>暂无 enabled 的 MCP server</div>
+          <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>暂无 enabled 的 MCP server</div>
         )}
         {mcpOptions.map((m) => (
           <label
@@ -580,7 +554,7 @@ const WhitelistTab: React.FC<{
       <div style={{ marginBottom: 16 }}>
         <div style={{ marginBottom: 4 }}>Skill 白名单</div>
         {skillOptions.length === 0 && (
-          <div style={{ color: '#888', fontSize: 12 }}>未勾选 skill，Skill 加载工具不可用</div>
+          <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>未勾选 skill，Skill 加载工具不可用</div>
         )}
         {skillOptions.map((s) => (
           <label
@@ -596,7 +570,7 @@ const WhitelistTab: React.FC<{
           </label>
         ))}
         {form.allowed_skill_ids.length === 0 && skillOptions.length > 0 && (
-          <div style={{ color: '#d46b08', fontSize: 12, marginTop: 4 }}>
+          <div style={{ color: 'var(--warning-text)', fontSize: 12, marginTop: 4 }}>
             未勾选 skill，Skill 加载工具不可用
           </div>
         )}

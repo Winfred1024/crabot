@@ -40,7 +40,7 @@ export const GlobalSettings: React.FC = () => {
     browserService.getConfig()
       .then(setBrowser)
       .catch(() => {
-        toast.error('Failed to load browser config')
+        toast.error('加载浏览器配置失败')
       })
       .finally(() => setBrowserLoading(false))
   }, [toast])
@@ -92,169 +92,122 @@ export const GlobalSettings: React.FC = () => {
 
   return (
     <MainLayout>
-      <div style={{ marginBottom: '2rem' }}>
-        <h1 style={{ fontSize: '2rem', fontWeight: 700 }}>全局设置</h1>
-      </div>
+      <header className="settings-page__header">
+        <h1 className="settings-page__title">全局设置</h1>
+        <p className="settings-page__subtitle">默认模型、浏览器和网络代理的配置。</p>
+      </header>
 
       {status && !status.configured && (
-        <div style={{
-          backgroundColor: 'var(--warning-bg, #fff3cd)',
-          border: '1px solid var(--warning-border, #ffc107)',
-          borderRadius: '4px',
-          padding: '1rem',
-          marginBottom: '1.5rem',
-        }}>
-          <h3 style={{ margin: '0 0 0.5rem 0', fontSize: '1.1rem', fontWeight: 600 }}>配置清单</h3>
-          <ul style={{ margin: '0.5rem 0', paddingLeft: '1.5rem' }}>
+        <Card variant="outlined" className="settings-warning-card">
+          <div className="settings-warning__title">配置清单</div>
+          <ul className="settings-warning__list">
             {(status.missing ?? []).map(msg => (
-              <li key={msg} style={{ color: 'var(--error-color, #dc3545)' }}>❌ {msg}</li>
+              <li key={msg} className="settings-warning__item settings-warning__item--error">
+                ❌ {msg}
+              </li>
             ))}
             {(status.warnings ?? []).map(msg => (
-              <li key={msg} style={{ color: 'var(--warning-color, #ffc107)' }}>⚠️ {msg}</li>
+              <li key={msg} className="settings-warning__item settings-warning__item--warn">
+                ⚠️ {msg}
+              </li>
             ))}
           </ul>
-        </div>
+        </Card>
       )}
 
-      <Card>
-        <p style={{ color: 'var(--text-secondary)' }}>
-          默认模型配置已移至"模型供应商"页面顶部。
+      <Card className="settings-card">
+        <p className="settings-card__hint">
+          默认模型配置已移至「模型供应商」页面顶部。
         </p>
       </Card>
 
-      <div style={{ marginTop: '1.5rem' }}>
-        <Card title="浏览器管理">
-          {browserLoading ? (
-            <Loading />
-          ) : browser ? (
-            <div>
-              {/* Profile mode selection */}
-              <div style={{ marginBottom: '1.5rem' }}>
-                <label style={{
-                  display: 'block',
-                  fontWeight: 600,
-                  marginBottom: '0.75rem',
-                  fontSize: '0.95rem',
-                }}>
-                  Profile 模式
-                </label>
+      <Card title="浏览器管理" className="settings-card">
+        {browserLoading ? (
+          <Loading />
+        ) : browser ? (
+          <div className="browser-settings">
+            <fieldset className="browser-settings__group">
+              <legend className="browser-settings__group-title">Profile 模式</legend>
 
-                <label style={{
-                  display: 'flex',
-                  alignItems: 'flex-start',
-                  gap: '0.5rem',
-                  cursor: 'pointer',
-                  marginBottom: '0.75rem',
-                }}>
-                  <input
-                    type="radio"
-                    name="profile_mode"
-                    value="isolated"
-                    checked={browser.profile_mode === 'isolated'}
-                    onChange={() => handleProfileModeChange('isolated')}
-                    style={{ marginTop: '0.2rem' }}
-                  />
-                  <div>
-                    <div style={{ fontWeight: 500 }}>独立 Profile</div>
-                    <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-                      Crabot 专属浏览器配置，不影响日常使用的 Chrome
-                    </div>
+              <label className="browser-settings__option">
+                <input
+                  type="radio"
+                  name="profile_mode"
+                  value="isolated"
+                  checked={browser.profile_mode === 'isolated'}
+                  onChange={() => handleProfileModeChange('isolated')}
+                />
+                <div className="browser-settings__option-body">
+                  <div className="browser-settings__option-title">独立 Profile</div>
+                  <div className="browser-settings__option-hint">
+                    Crabot 专属浏览器配置，不影响日常使用的 Chrome
                   </div>
-                </label>
+                </div>
+              </label>
 
-                <label style={{
-                  display: 'flex',
-                  alignItems: 'flex-start',
-                  gap: '0.5rem',
-                  cursor: 'pointer',
-                  marginBottom: '0.75rem',
-                }}>
-                  <input
-                    type="radio"
-                    name="profile_mode"
-                    value="user"
-                    checked={browser.profile_mode === 'user'}
-                    onChange={() => handleProfileModeChange('user')}
-                    style={{ marginTop: '0.2rem' }}
-                  />
-                  <div>
-                    <div style={{ fontWeight: 500 }}>复用用户 Profile</div>
-                    <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-                      使用系统 Chrome 的登录状态和配置
-                    </div>
+              <label className="browser-settings__option">
+                <input
+                  type="radio"
+                  name="profile_mode"
+                  value="user"
+                  checked={browser.profile_mode === 'user'}
+                  onChange={() => handleProfileModeChange('user')}
+                />
+                <div className="browser-settings__option-body">
+                  <div className="browser-settings__option-title">复用用户 Profile</div>
+                  <div className="browser-settings__option-hint">
+                    使用系统 Chrome 的登录状态和配置
                   </div>
-                </label>
+                </div>
+              </label>
 
-                {browser.profile_mode === 'user' && (
-                  <div style={{
-                    backgroundColor: 'var(--warning-bg, #fff3cd)',
-                    border: '1px solid var(--warning-border, #ffc107)',
-                    borderRadius: '4px',
-                    padding: '0.75rem 1rem',
-                    fontSize: '0.85rem',
-                    lineHeight: 1.5,
-                    marginTop: '0.5rem',
-                  }}>
-                    ⚠️ 启用复用模式后，Crabot 启动浏览器时会关闭当前正在运行的 Chrome。未保存的标签页和表单数据将丢失。
-                  </div>
+              {browser.profile_mode === 'user' && (
+                <div className="browser-settings__warning" role="alert">
+                  ⚠️ 启用复用模式后，Crabot 启动浏览器时会关闭当前正在运行的 Chrome。未保存的标签页和表单数据将丢失。
+                </div>
+              )}
+            </fieldset>
+
+            <div className="browser-settings__status-row">
+              <div className="browser-settings__status">
+                <span
+                  className={`browser-settings__dot${browser.is_running ? ' browser-settings__dot--running' : ''}`}
+                  aria-hidden="true"
+                />
+                <span>
+                  {browser.is_running
+                    ? `运行中（CDP port ${browser.cdp_port}）`
+                    : '已停止'}
+                </span>
+              </div>
+
+              <div className="browser-settings__actions">
+                {browser.is_running ? (
+                  <Button
+                    variant="danger"
+                    onClick={handleBrowserStop}
+                    disabled={browserActionLoading}
+                  >
+                    {browserActionLoading ? '停止中…' : '停止浏览器'}
+                  </Button>
+                ) : (
+                  <Button
+                    variant="success"
+                    onClick={handleBrowserStart}
+                    disabled={browserActionLoading}
+                  >
+                    {browserActionLoading ? '启动中…' : '启动浏览器'}
+                  </Button>
                 )}
               </div>
-
-              {/* Status and controls */}
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                borderTop: '1px solid var(--border-color, #e0e0e0)',
-                paddingTop: '1rem',
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{
-                    display: 'inline-block',
-                    width: '8px',
-                    height: '8px',
-                    borderRadius: '50%',
-                    backgroundColor: browser.is_running
-                      ? 'var(--success-color, #28a745)'
-                      : 'var(--text-secondary, #6c757d)',
-                  }} />
-                  <span style={{ fontSize: '0.9rem' }}>
-                    {browser.is_running
-                      ? `运行中 (CDP port: ${browser.cdp_port})`
-                      : '已停止'}
-                  </span>
-                </div>
-
-                <div style={{ display: 'flex', gap: '0.5rem' }}>
-                  {browser.is_running ? (
-                    <Button
-                      variant="danger"
-                      onClick={handleBrowserStop}
-                      disabled={browserActionLoading}
-                    >
-                      {browserActionLoading ? '停止中...' : '停止浏览器'}
-                    </Button>
-                  ) : (
-                    <Button
-                      variant="success"
-                      onClick={handleBrowserStart}
-                      disabled={browserActionLoading}
-                    >
-                      {browserActionLoading ? '启动中...' : '启动浏览器'}
-                    </Button>
-                  )}
-                </div>
-              </div>
             </div>
-          ) : (
-            <p style={{ color: 'var(--text-secondary)' }}>
-              无法加载浏览器配置
-            </p>
-          )}
-        </Card>
-      </div>
+          </div>
+        ) : (
+          <p className="settings-card__hint">无法加载浏览器配置</p>
+        )}
+      </Card>
 
-      <div style={{ marginTop: '1.5rem' }}>
+      <div className="settings-card">
         <ProxyConfigCard />
       </div>
     </MainLayout>

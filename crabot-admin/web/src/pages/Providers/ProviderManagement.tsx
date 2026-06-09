@@ -3,6 +3,7 @@ import { providerService } from '../../services/provider'
 import { MainLayout } from '../../components/Layout/MainLayout'
 import { Drawer } from '../../components/Common/Drawer'
 import { ConfirmModal } from '../../components/Common/ConfirmModal'
+import { Tooltip } from '../../components/Common/Tooltip'
 import { Button } from '../../components/Common/Button'
 import { Input } from '../../components/Common/Input'
 import { Select } from '../../components/Common/Select'
@@ -317,14 +318,15 @@ export const ProviderManagement: React.FC = () => {
                               successTooltip="base_url 测速：访问列表端点（GET /models 等），仅测连通性 + 鉴权"
                               showErrorText
                               idleButton={
-                                <Button
-                                  variant="secondary"
-                                  style={{ padding: '0.2rem 0.6rem', fontSize: '0.75rem' }}
-                                  onClick={e => handleTestProvider(e, provider.id)}
-                                  title="访问 base_url 的列表端点，测端点连通性"
-                                >
-                                  base_url 测速
-                                </Button>
+                                <Tooltip content="访问 base_url 的列表端点，测端点连通性">
+                                  <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    onClick={e => handleTestProvider(e, provider.id)}
+                                  >
+                                    base_url 测速
+                                  </Button>
+                                </Tooltip>
                               }
                             />
                           </div>
