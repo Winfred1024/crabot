@@ -1110,33 +1110,55 @@ export class SkillManager {
     const zip = new AdmZip(buffer)
     const entries = zip.getEntries()
 
-    // 找到 SKILL.md（支持根目录或一层子目录）
-    let skillMdEntry = entries.find(e => e.entryName === 'SKILL.md' || e.entryName.match(/^[^/]+\/SKILL\.md$/))
-    if (!skillMdEntry) {
-      throw new Error(`${filename} 中未找到 SKILL.md 文件`)
+    // 1. zip slip 防御：entry 名不能包含 ..
+    for (const e of entries) {
+      if (e.entryName.includes('..')) {
+        throw new Error(`zip 包含非法路径 ${e.entryName}（path traversal）`)
+      }
     }
 
-    const content = skillMdEntry.getData().toString('utf-8')
-    const parsed = parseSkillMd(content)
-    if (!parsed.name) throw new Error('SKILL.md 缺少 name 字段')
-    const existing = this.findByName(parsed.name)
-    if (existing) {
-      return this.handleDuplicateOnImport(existing, {
-        name: parsed.name,
-        description: parsed.description,
-        version: parsed.version,
-        content,
-        source_package: filename,
-      }, overwrite)
+    // 2. 找到 SKILL.md 决定是否需要 strip 一层 wrapper
+    const rootSkillMd = entries.find(e => e.entryName === 'SKILL.md')
+    let wrapperPrefix: string | null = null
+    if (!rootSkillMd) {
+      const wrappedSkillMd = entries.find(e => /^[^/]+\/SKILL\.md$/.test(e.entryName))
+      if (!wrappedSkillMd) {
+        throw new Error(`${filename} 中未找到 SKILL.md 文件`)
+      }
+      wrapperPrefix = wrappedSkillMd.entryName.replace(/SKILL\.md$/, '')
     }
-    const entry = await this.create({
-      name: parsed.name,
-      description: parsed.description,
-      version: parsed.version,
-      content,
-      source_package: filename,
-    })
-    return { entry, was_overwrite: false }
+
+    // 3. 解压到 tmp 目录
+    await fs.mkdir(this.skillsRoot, { recursive: true })
+    const tmpExtract = path.join(this.skillsRoot, `.extract.${process.pid}.${Date.now()}.${randomBytes(4).toString('hex')}`)
+    try {
+      await fs.mkdir(tmpExtract, { recursive: true })
+      for (const e of entries) {
+        if (e.isDirectory) continue
+        let rel = e.entryName
+        if (wrapperPrefix) {
+          if (!rel.startsWith(wrapperPrefix)) continue
+          rel = rel.slice(wrapperPrefix.length)
+        }
+        if (rel === '' || rel.startsWith('.snapshots/')) continue
+        const dst = path.join(tmpExtract, rel)
+        // 双重防御：resolve 后必须在 tmpExtract 内
+        const resolved = path.resolve(dst)
+        if (!resolved.startsWith(path.resolve(tmpExtract) + path.sep) && resolved !== path.resolve(tmpExtract)) {
+          throw new Error(`zip 包含非法路径 ${e.entryName}（path traversal）`)
+        }
+        await fs.mkdir(path.dirname(dst), { recursive: true })
+        await fs.writeFile(dst, e.getData())
+      }
+
+      return await this.installSkillFromDirectory(
+        tmpExtract,
+        { source_type: 'imported', source_package: filename },
+        overwrite,
+      )
+    } finally {
+      await fs.rm(tmpExtract, { recursive: true, force: true }).catch(() => {})
+    }
   }
 
   // --------------------------------------------------------------------------

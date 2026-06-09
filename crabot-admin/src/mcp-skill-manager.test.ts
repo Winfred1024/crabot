@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { promises as fs } from 'fs'
 import path from 'path'
 import os from 'os'
+import AdmZip from 'adm-zip'
 import { SkillManager } from './mcp-skill-manager.js'
 
 describe('installSkillFromDirectory', () => {
@@ -122,5 +123,59 @@ describe('installSkillFromDirectory', () => {
     const skillsRoot = path.join(dataDir, 'skills')
     const remaining = await fs.readdir(skillsRoot)
     expect(remaining.filter(n => n.startsWith('.tmp.'))).toEqual([])
+  })
+})
+
+describe('importFromZip 完整保留 scripts/references/assets', () => {
+  let tmpRoot: string
+  let dataDir: string
+  let manager: SkillManager
+
+  beforeEach(async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'skill-zip-'))
+    dataDir = path.join(tmpRoot, 'data')
+    await fs.mkdir(dataDir, { recursive: true })
+    manager = new SkillManager(dataDir)
+    await manager.initialize()
+  })
+  afterEach(async () => { await fs.rm(tmpRoot, { recursive: true, force: true }) })
+
+  function buildZipBase64(entries: Array<{ name: string; content: string }>): string {
+    const zip = new AdmZip()
+    for (const e of entries) zip.addFile(e.name, Buffer.from(e.content, 'utf-8'))
+    return zip.toBuffer().toString('base64')
+  }
+
+  it('zip 含 scripts/foo.py 上传后 scripts/foo.py 落到 <data_dir>/skills/<id>/', async () => {
+    const b64 = buildZipBase64([
+      { name: 'SKILL.md', content: '---\nname: zip-skill\ndescription: d\nversion: 1.0.0\n---\nbody' },
+      { name: 'scripts/foo.py', content: 'print(1)' },
+      { name: 'references/api.md', content: '# api' },
+    ])
+    const { entry } = await manager.importFromZip(b64, 'test.zip')
+    expect(await fs.readFile(path.join(entry.skill_dir, 'scripts', 'foo.py'), 'utf-8')).toBe('print(1)')
+    expect(await fs.readFile(path.join(entry.skill_dir, 'references', 'api.md'), 'utf-8')).toBe('# api')
+  })
+
+  it('zip 包了一层 wrapper 目录 my-skill/SKILL.md，能自动 strip', async () => {
+    const b64 = buildZipBase64([
+      { name: 'my-skill/SKILL.md', content: '---\nname: wrapped\ndescription: d\nversion: 1.0.0\n---\nbody' },
+      { name: 'my-skill/scripts/x.py', content: 'x' },
+    ])
+    const { entry } = await manager.importFromZip(b64, 'wrapped.zip')
+    expect(await fs.readFile(path.join(entry.skill_dir, 'SKILL.md'), 'utf-8')).toContain('body')
+    expect(await fs.readFile(path.join(entry.skill_dir, 'scripts', 'x.py'), 'utf-8')).toBe('x')
+  })
+
+  it('拒绝 zip slip：entry 名含 ../', async () => {
+    const zip = new AdmZip()
+    zip.addFile('SKILL.md', Buffer.from('---\nname: slip\ndescription: d\nversion: 1.0.0\n---\nbody'))
+    zip.addFile('evil.sh', Buffer.from('pwn'))
+    // adm-zip 的 addFile 会调用 canonical() 把 ../ 去掉；只能 add 后再回填 entryName 才能造出带 ../ 的恶意 zip
+    for (const e of zip.getEntries()) {
+      if (e.entryName === 'evil.sh') e.entryName = '../evil.sh'
+    }
+    const b64 = zip.toBuffer().toString('base64')
+    await expect(manager.importFromZip(b64, 'slip.zip')).rejects.toThrow(/path traversal|非法路径|invalid/i)
   })
 })
