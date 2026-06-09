@@ -71,6 +71,7 @@ export function FilterBar({
           borderRadius: 4,
           fontSize: 13,
           background: 'var(--bg-primary, #fff)',
+          color: 'var(--text-primary)',
         }}
       />
       <select
@@ -82,6 +83,7 @@ export function FilterBar({
           borderRadius: 4,
           fontSize: 13,
           background: 'var(--bg-primary, #fff)',
+          color: 'var(--text-primary)',
           cursor: 'pointer',
         }}
       >
@@ -99,6 +101,7 @@ export function FilterBar({
           borderRadius: 4,
           fontSize: 13,
           background: 'var(--bg-primary, #fff)',
+          color: 'var(--text-primary)',
           cursor: 'pointer',
         }}
       >
@@ -119,6 +122,8 @@ export function FilterBar({
               border: '1px solid var(--border)',
               borderRadius: 4,
               fontSize: 13,
+              background: 'var(--bg-primary, #fff)',
+              color: 'var(--text-primary)',
             }}
           />
           <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>至</span>
@@ -131,6 +136,8 @@ export function FilterBar({
               border: '1px solid var(--border)',
               borderRadius: 4,
               fontSize: 13,
+              background: 'var(--bg-primary, #fff)',
+              color: 'var(--text-primary)',
             }}
           />
         </>

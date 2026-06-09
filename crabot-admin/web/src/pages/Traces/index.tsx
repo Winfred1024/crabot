@@ -873,19 +873,45 @@ export const Traces: React.FC = () => {
   }, [units])
 
   // 批量删除
+  // 串行执行：admin handleDeleteTask 每次都全量 saveTasks 覆盖 tasks.json，
+  // 并发 Promise.all 会让多个 mutation 互相覆盖，晚到的 save 把已被删的 id 重新写回，
+  // 下一次请求拿到的 tasks.get(id) 是 stale 的 → 误报 TASK_NOT_FOUND。串行写消除 race。
   const handleBatchDelete = useCallback(async () => {
     if (selectedIds.size === 0) return
     if (!confirm(`确认永久删除选中的 ${selectedIds.size} 个任务？\n（trace 数据不受影响）`)) return
     setBatchDeleting(true)
     const ids = Array.from(selectedIds)
-    let ok = 0, fail = 0
-    await Promise.all(ids.map(async (id) => {
-      try { await traceService.deleteTask(id); ok++ } catch { fail++ }
-    }))
+    let ok = 0
+    let activeCount = 0
+    let notFoundCount = 0
+    const otherErrors: string[] = []
+    for (const id of ids) {
+      try {
+        await traceService.deleteTask(id)
+        ok++
+      } catch (err) {
+        const e = err as { body?: { error?: string }; status?: number; message?: string }
+        const code = e.body?.error ?? e.message ?? ''
+        if (code.includes('TASK_STILL_ACTIVE')) activeCount++
+        else if (code.includes('TASK_NOT_FOUND')) notFoundCount++
+        else otherErrors.push(code || `HTTP ${e.status ?? '?'}`)
+      }
+    }
     setBatchDeleting(false)
     setSelectedIds(new Set())
-    if (fail === 0) toast.success(`已删除 ${ok} 个任务`)
-    else toast.error(`成功 ${ok} / 失败 ${fail}（活跃 task 不能删）`)
+    if (ok === ids.length) {
+      toast.success(`已删除 ${ok} 个任务`)
+    } else {
+      const reasons: string[] = []
+      if (activeCount > 0) reasons.push(`活跃 task ${activeCount}`)
+      if (notFoundCount > 0) reasons.push(`已不存在 ${notFoundCount}`)
+      if (otherErrors.length > 0) {
+        // 列前 2 条原始错因，避免文案过长
+        const sample = otherErrors.slice(0, 2).join(' / ')
+        reasons.push(`其他 ${otherErrors.length}（${sample}）`)
+      }
+      toast.error(`成功 ${ok} / 失败 ${ids.length - ok} — ${reasons.join('，')}`)
+    }
     await loadList()
   }, [selectedIds, toast, loadList])
 
