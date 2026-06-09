@@ -199,9 +199,8 @@ export interface SkillRegistryEntry {
    * 详见 spec 2026-06-07-skill-previous-version-and-diff-design.md §4.1。
    */
   previous_snapshot?: {
-    content: string
+    snapshot_dir: string
     version: string
-    files?: Record<string, string>
     updated_at: string
     snapshotted_at: string
   }

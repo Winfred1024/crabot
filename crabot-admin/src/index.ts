@@ -1339,6 +1339,12 @@ export class AdminModule extends ModuleBase {
         return
       }
 
+      if (pathname.match(/^\/api\/skills\/[^/]+\/previous-content$/) && req.method === 'GET') {
+        const id = decodeURIComponent(pathname.split('/')[3])
+        await this.handleGetSkillPreviousContentApi(req, res, id)
+        return
+      }
+
       if (pathname.match(/^\/api\/skills\/[^/]+$/) && req.method === 'GET') {
         const id = pathname.split('/')[3]
         await this.handleGetSkillApi(req, res, id)
@@ -6586,6 +6592,21 @@ export class AdminModule extends ModuleBase {
     }
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify(await this.skillManager.toRestEntry(skill)))
+  }
+
+  private async handleGetSkillPreviousContentApi(
+    _req: IncomingMessage,
+    res: ServerResponse,
+    id: string,
+  ): Promise<void> {
+    const data = await this.skillManager.readPreviousContent(id)
+    if (!data) {
+      res.writeHead(404, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: '没有上一版' }))
+      return
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(data))
   }
 
   private async handleUpdateSkillApi(

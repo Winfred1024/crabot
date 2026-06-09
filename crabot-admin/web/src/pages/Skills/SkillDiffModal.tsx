@@ -1,8 +1,9 @@
-import React, { useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import ReactDiffViewer, { DiffMethod } from 'react-diff-viewer-continued'
 import { Button } from '../../components/Common/Button'
 import { Modal } from '../../components/Common/Modal'
 import { Tooltip } from '../../components/Common/Tooltip'
+import { skillService } from '../../services/skill'
 import type { SkillRegistryEntry } from '../../types'
 
 interface FileEntry {
@@ -20,9 +21,11 @@ function decodeFile(value: string): { text: string; isBinary: boolean } {
   return { text: value, isBinary: false }
 }
 
-function buildFileEntries(skill: SkillRegistryEntry): FileEntry[] {
-  const snap = skill.previous_snapshot!
-  const prev: Record<string, string> = { 'SKILL.md': snap.content, ...(snap.files ?? {}) }
+function buildFileEntries(
+  skill: SkillRegistryEntry,
+  prevSnap: { content: string; files: Record<string, string> },
+): FileEntry[] {
+  const prev: Record<string, string> = { 'SKILL.md': prevSnap.content, ...prevSnap.files }
   const curr: Record<string, string> = { 'SKILL.md': skill.content }
 
   const allPaths = new Set([...Object.keys(prev), ...Object.keys(curr)])
@@ -63,10 +66,23 @@ interface Props {
 export const SkillDiffModal: React.FC<Props> = ({ skill, open, onClose }) => {
   const [splitView, setSplitView] = useState(true)
   const [activePath, setActivePath] = useState<string>('SKILL.md')
+  const [prevSnap, setPrevSnap] = useState<{ content: string; files: Record<string, string> } | null>(null)
+  const [prevError, setPrevError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!open || !skill.previous_snapshot) return
+    let cancelled = false
+    setPrevSnap(null)
+    setPrevError(null)
+    skillService.getPreviousContent(skill.id)
+      .then(data => { if (!cancelled) setPrevSnap(data) })
+      .catch(err => { if (!cancelled) setPrevError(err instanceof Error ? err.message : '加载上一版失败') })
+    return () => { cancelled = true }
+  }, [skill.id, skill.previous_snapshot, open])
 
   const entries = useMemo(
-    () => (skill.previous_snapshot ? buildFileEntries(skill) : []),
-    [skill]
+    () => (skill.previous_snapshot && prevSnap ? buildFileEntries(skill, prevSnap) : []),
+    [skill, prevSnap]
   )
   const activeEntry = entries.find(e => e.path === activePath) ?? entries[0]
 
@@ -101,6 +117,11 @@ export const SkillDiffModal: React.FC<Props> = ({ skill, open, onClose }) => {
         </span>
       }
     >
+      {prevError ? (
+        <div className="skill-diff__notice">加载上一版失败：{prevError}</div>
+      ) : !prevSnap ? (
+        <div className="skill-diff__notice">加载上一版...</div>
+      ) : (
       <div className="skill-diff__layout">
         <aside className="skill-diff__filelist" aria-label="文件列表">
           {entries.map(e => (
@@ -163,6 +184,7 @@ export const SkillDiffModal: React.FC<Props> = ({ skill, open, onClose }) => {
           )}
         </section>
       </div>
+      )}
     </Modal>
   )
 }

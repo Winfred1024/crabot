@@ -862,6 +862,16 @@ export class SkillManager {
     return Promise.all(entries.map(e => this.toRestEntry(e)))
   }
 
+  /** 读取上一版 snapshot 的内容（diff modal 用） */
+  async readPreviousContent(id: string): Promise<{ content: string; files: Record<string, string> } | null> {
+    const entry = this.skills.get(id)
+    if (!entry?.previous_snapshot) return null
+    const dir = path.join(this.skillsRoot, entry.previous_snapshot.snapshot_dir)
+    const content = await fs.readFile(path.join(dir, 'SKILL.md'), 'utf-8').catch(() => '')
+    const files = (await readSkillDirFiles(dir)) ?? {}
+    return { content, files }
+  }
+
   // --------------------------------------------------------------------------
   // 导入方法
   // --------------------------------------------------------------------------

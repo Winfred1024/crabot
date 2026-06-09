@@ -58,6 +58,10 @@ export const skillService = {
   async restore(id: string): Promise<SkillRegistryEntry> {
     return api.post<SkillRegistryEntry>(`/skills/${id}/restore`, {})
   },
+
+  async getPreviousContent(id: string): Promise<{ content: string; files: Record<string, string> }> {
+    return api.get<{ content: string; files: Record<string, string> }>(`/skills/${id}/previous-content`)
+  },
 }
 
 /**
