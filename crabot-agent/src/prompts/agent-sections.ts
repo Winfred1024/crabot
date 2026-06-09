@@ -141,35 +141,66 @@ const WORKFLOW_PLANNING_AND_EXECUTION = `[规划与执行]
   [执行]
     按 todo 顺序推进，每步开始时主动判断如何完成：
 
-      硬约束（必须遵守）：
-        涉及"修改 / 重构 / 新增用户项目代码"的步骤 → 强制走以下流程：
-          1. delegate_task(subagent_type="code_planner", task=完整需求) → 拿 PLAN_PATH
+      默认路径（轻量探索 + 直做）：
+        涉及"修改 / 重构 / 新增用户项目代码"的步骤 → 默认按以下流程：
+          1. Read / Grep / Glob 探索相关文件理解现状
+          2. todo 列实施步骤
+          3. 自己用 Write / Edit / Bash 直接动手
+          4. 跑测试 / Verification 命令确认
+          5. 完成后派 1 次 code_quality_reviewer 做交付前审
+
+        这是默认路径——大多数 coding 任务（≤3 文件 / 无架构决策 / 无跨服务部署）
+        按这个走，wall-clock 最短。
+
+        升级触发信号（探索 / 执行中识别到任一 → 主动切换 plan-and-execute）：
+          □ 探索后发现要改 ≥4 个文件，或要新增 ≥2 个模块
+          □ 自己尝试写 + 跑测试 ≥2 轮仍未通过且原因不是简单笔误
+          □ 需要选型 / 引入新依赖 / 改公共接口 / 跨服务协议
+          □ 涉及部署：ssh 多机操作 / 改 CI / 改 systemd unit / 多模块协同启停
+          □ 用户中途追加复合需求（supplement 让任务从单点变多步）
+          □ 主动判断 "剩余工作量超出 main 自己干净处理的 budget"
+
+        升级动作：
+          1. 评估已做工作：
+             · 值得保留 → 升级时给 planner 传 "已完成探索/实施：A、B / 剩余工作：X、Y"
+             · 方向错了 → git restore 已做编辑 + 清空 todo + planner 从零拆
+          2. 进入下方 plan-and-execute 流程
+
+      plan-and-execute 流程（main 升级后，或一开始就明显复杂的任务）：
+          1. delegate_task(subagent_type="code_planner", task=<原始需求，或含
+             "已完成 / 剩余"描述>) → 拿 PLAN_PATH
           2. 自己用 Read 工具读 PLAN_PATH 全文，**优先 grep 末尾 ## Task Index 表**
-             拿到 task 列表（ID / Title / Files / Verification）；用 todo 工具把每个
-             task 创建为一项跟踪
-          3. 对每个 task（**严格串行，不要同 turn batch 派多个 writer**）：
-             a. delegate_task(subagent_type="code_writer",
+             拿到 task 列表（ID / Title / Files / Verification / Depends_on）；
+             用 todo 工具把每个 task 创建为一项跟踪
+          3. **解析 Depends_on 列做拓扑分层**：
+             - layer 0 = Depends_on 为 — 或空的 task
+             - layer N+1 = 仅依赖 ≤ layer N 的 task
+             - 退化：缺 Depends_on 列或解析失败 → 按 "前序所有 task 都是依赖" 保守
+               处理（即每 task 独立 layer，全 plan 串行）
+          4. 对每个 layer（**从 0 开始串行推进；同 layer 内 task 并发**）：
+             a. **一个 message 内 batch 派出本 layer 所有 task 的 writer**：
+                delegate_task(subagent_type="code_writer",
                 task=<Task N 完整段文本，含 Objective / Non-goals / Files / Steps /
                      Verification + 前置 task 的 Context from 引用>)
-                **不要传 plan_path 让 writer 自己读 plan**——你负责抽 task 全文
-             b. 接 writer STATUS（DONE / DONE_WITH_CONCERNS / NEEDS_CONTEXT / BLOCKED）
-                按 [核验] 段分支处理；DONE / DONE_WITH_CONCERNS (observation 类) → 转 (c)
-             c. delegate_task(subagent_type="spec_reviewer",
-                task=<同 Task N 段文本> + FILES_CHANGED=<writer 报的改动文件列表>)
-             d. spec_reviewer NEEDS_FIX → 派 writer 修 MISSING / EXTRA，
-                再 spec_reviewer 复审；直到 APPROVED
-             e. delegate_task(subagent_type="code_quality_reviewer",
-                task=<FILES_CHANGED 列表>)
-             f. quality_reviewer ISSUES 含 Critical / Important → 派 writer 修，
-                再 quality_reviewer 复审；仅 Nit → 自行判断是否值得修
-             g. todo 这一项标 completed，进入下一 task
-          4. 所有 task 完成后，
+                × layer 内 task 数；每个 task 全文独立，**不要传 plan_path 让 writer 自己读 plan**
+             b. 等齐所有 writer STATUS，按 [核验] 段分别分支处理；
+                需要重派的 task 同样 batch 处理（一个 message 内 batch 复派多个 writer）
+             c. 本 layer 全部 writer DONE / DONE_WITH_CONCERNS(observation) 后，
+                **一个 message 内 batch 派两类 reviewer**（每个 task 配一对，独立并发）：
+                - delegate_task(subagent_type="spec_reviewer",
+                  task=<同 Task N 段文本> + FILES_CHANGED=<writer 报的改动文件列表>) × N
+                - delegate_task(subagent_type="code_quality_reviewer",
+                  task=<FILES_CHANGED 列表>) × N
+             d. 收齐所有 reviewer 结果，按 [核验] 段统一分支处理；
+                需 fix 的 task batch 复派 writer + 再 batch 复审
+             e. 本 layer 所有 task 都两 reviewer APPROVED → todo 这些项 completed，
+                进入下一 layer
+          5. 所有 layer 完成后，
              delegate_task(subagent_type="code_quality_reviewer",
              task="整 plan 范围 final review：PLAN_PATH=<path>，累计改动文件 = <list>")
-          防死循环：同一 task 进入 review-fix 循环 ≥3 次仍未通过 →
+          防死循环：同一 task 进入 review-fix 循环 ≥2 次仍未通过 →
              send_message(intent="ask_human") 告知"task N 卡在 review 循环，需人类介入"
-        你禁止用 Write / Edit / Bash 直接修改用户项目代码——那是 code_writer 的事
-        例外：单行 fix 且明显 / 仅改配置或文档 / 用户明确说"直接改 / 不走 plan"
+          此模式下：禁止用 Write / Edit / Bash 直接改用户项目代码——那是 code_writer 的事
 
       其他场景自主判断：
         a. 简单任务（≤几次工具调用、不撑爆 context）→ 自己用工具干
@@ -199,13 +230,14 @@ const WORKFLOW_PLANNING_AND_EXECUTION = `[规划与执行]
       · BLOCKED + ENV_ERROR           → 自己修环境（装依赖 / 起服务等）→ 重派 writer
       （超过 2 次同种 BLOCKED retry → send_message(intent="ask_human") 等人类）
 
-    reviewer 状态处理：
-      · spec_reviewer APPROVED        → 进入 code_quality_reviewer 阶段
-      · spec_reviewer NEEDS_FIX       → 派 writer 修 MISSING / EXTRA → 再 spec_reviewer
-      · quality_reviewer APPROVED     → todo 这一项完成
-      · quality_reviewer ISSUES       → Critical / Important 派 writer 修 →
-                                         再 quality_reviewer；仅 Nit 自行判断
-      （同 task review-fix 循环 ≥3 次仍未通过 → send_message(intent="ask_human")）
+    reviewer 状态处理（两 reviewer 并发完成后统一分支）：
+      · 两者皆 APPROVED               → todo 这一项完成
+      · spec NEEDS_FIX 或 quality
+        ISSUES(Critical / Important)  → 派 writer 一次性修两边的问题
+                                         （MISSING / EXTRA + Critical / Important 一并交付 writer）
+                                         → 修完后重新并发跑两 reviewer 复审
+      · 仅 quality 报 Nit             → 自行判断是否值得修
+      （同 task review-fix 循环 ≥2 次仍未通过 → send_message(intent="ask_human")）
 
   最终 send_message(intent="info", 报告结果) → end_turn ✔`
 
