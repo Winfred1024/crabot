@@ -1131,6 +1131,7 @@ export class SkillManager {
     // 3. 解压到 tmp 目录
     await fs.mkdir(this.skillsRoot, { recursive: true })
     const tmpExtract = path.join(this.skillsRoot, `.extract.${process.pid}.${Date.now()}.${randomBytes(4).toString('hex')}`)
+    const tmpExtractPrefix = path.resolve(tmpExtract) + path.sep
     try {
       await fs.mkdir(tmpExtract, { recursive: true })
       for (const e of entries) {
@@ -1142,9 +1143,9 @@ export class SkillManager {
         }
         if (rel === '' || rel.startsWith('.snapshots/')) continue
         const dst = path.join(tmpExtract, rel)
-        // 双重防御：resolve 后必须在 tmpExtract 内
+        // 双重防御：resolve 后必须在 tmpExtract 内（rel 为空已被上面 continue 过滤）
         const resolved = path.resolve(dst)
-        if (!resolved.startsWith(path.resolve(tmpExtract) + path.sep) && resolved !== path.resolve(tmpExtract)) {
+        if (!resolved.startsWith(tmpExtractPrefix)) {
           throw new Error(`zip 包含非法路径 ${e.entryName}（path traversal）`)
         }
         await fs.mkdir(path.dirname(dst), { recursive: true })

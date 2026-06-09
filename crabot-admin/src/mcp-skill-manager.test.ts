@@ -153,8 +153,10 @@ describe('importFromZip 完整保留 scripts/references/assets', () => {
       { name: 'references/api.md', content: '# api' },
     ])
     const { entry } = await manager.importFromZip(b64, 'test.zip')
-    expect(await fs.readFile(path.join(entry.skill_dir, 'scripts', 'foo.py'), 'utf-8')).toBe('print(1)')
-    expect(await fs.readFile(path.join(entry.skill_dir, 'references', 'api.md'), 'utf-8')).toBe('# api')
+    expect(entry.skill_dir).toBeDefined()
+    const skillDir = entry.skill_dir!
+    expect(await fs.readFile(path.join(skillDir, 'scripts', 'foo.py'), 'utf-8')).toBe('print(1)')
+    expect(await fs.readFile(path.join(skillDir, 'references', 'api.md'), 'utf-8')).toBe('# api')
   })
 
   it('zip 包了一层 wrapper 目录 my-skill/SKILL.md，能自动 strip', async () => {
@@ -163,8 +165,10 @@ describe('importFromZip 完整保留 scripts/references/assets', () => {
       { name: 'my-skill/scripts/x.py', content: 'x' },
     ])
     const { entry } = await manager.importFromZip(b64, 'wrapped.zip')
-    expect(await fs.readFile(path.join(entry.skill_dir, 'SKILL.md'), 'utf-8')).toContain('body')
-    expect(await fs.readFile(path.join(entry.skill_dir, 'scripts', 'x.py'), 'utf-8')).toBe('x')
+    expect(entry.skill_dir).toBeDefined()
+    const skillDir = entry.skill_dir!
+    expect(await fs.readFile(path.join(skillDir, 'SKILL.md'), 'utf-8')).toContain('body')
+    expect(await fs.readFile(path.join(skillDir, 'scripts', 'x.py'), 'utf-8')).toBe('x')
   })
 
   it('拒绝 zip slip：entry 名含 ../', async () => {
@@ -177,5 +181,45 @@ describe('importFromZip 完整保留 scripts/references/assets', () => {
     }
     const b64 = zip.toBuffer().toString('base64')
     await expect(manager.importFromZip(b64, 'slip.zip')).rejects.toThrow(/path traversal|非法路径|invalid/i)
+  })
+
+  it('拒绝 zip slip：path.resolve 防御兜底（第二道防线）', async () => {
+    // 在 POSIX 上 path.join(absRoot, anything) 总会规范化到 absRoot 下，
+    // 第一道防御 (entryName.includes('..')) 已经覆盖了所有真实攻击样本。
+    // 这里通过 mock path.join 模拟一个"第一道漏过、第二道必须拦下"的场景，
+    // 验证 path.resolve 防御逻辑确实生效（防御深度，防止未来重构破坏不变量）。
+    const zip = new AdmZip()
+    zip.addFile('SKILL.md', Buffer.from('---\nname: defend\ndescription: d\nversion: 1.0.0\n---\nbody'))
+    zip.addFile('benign.txt', Buffer.from('pwn'))
+    const b64 = zip.toBuffer().toString('base64')
+
+    // 注意：entryName 不含 ..，第一道防御不会触发
+    // 但我们让 path.join 在处理 benign.txt 时返回一个解析后越界的路径
+    const origJoin = path.join.bind(path)
+    const spy = vi.spyOn(path, 'join').mockImplementation((...args: string[]) => {
+      const result = origJoin(...args)
+      // 只在拼接 benign.txt 这一次时改成越界路径，其他调用照常
+      if (args[args.length - 1] === 'benign.txt') {
+        return '/tmp/crabot-zipslip-evil-out-of-bounds'
+      }
+      return result
+    })
+
+    try {
+      await expect(manager.importFromZip(b64, 'defend.zip')).rejects.toThrow(/path traversal|非法路径|invalid/i)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('importFromZip 成功后 <skillsRoot> 不留 .extract.* 残留', async () => {
+    const b64 = buildZipBase64([
+      { name: 'SKILL.md', content: '---\nname: cleanup-test\ndescription: d\nversion: 1.0.0\n---\nbody' },
+      { name: 'scripts/x.py', content: 'x' },
+    ])
+    await manager.importFromZip(b64, 'cleanup.zip')
+    const skillsRoot = path.join(dataDir, 'skills')
+    const remaining = await fs.readdir(skillsRoot)
+    expect(remaining.filter(n => n.startsWith('.extract.'))).toEqual([])
   })
 })
