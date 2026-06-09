@@ -118,7 +118,6 @@ import { reflectStructuredOutcome } from '../orchestration/structured-outcome-re
 import * as fs from 'fs'
 import * as path from 'path'
 import { createHash, randomUUID } from 'crypto'
-import * as os from 'os'
 
 /**
  * 从 tool 输出 JSON 中提取 `child_trace_id`。
