@@ -4,18 +4,24 @@
 
 import './_preflight.mjs'
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { mkdirSync } from 'node:fs'
+import { resolve, dirname } from 'node:path'
 import { createInterface } from 'node:readline'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { resolveDataDir } from './lib/data-dir.mjs'
 
 const OFFSET = parseInt(process.env.CRABOT_PORT_OFFSET || '0', 10)
 const DATA_DIR = resolveDataDir({ envValue: process.env.DATA_DIR, offset: OFFSET })
 
 const adminDir = resolve(DATA_DIR, 'admin')
-const adminEnvPath = resolve(adminDir, '.env')
-
 mkdirSync(adminDir, { recursive: true })
+
+// 解析 credentials 模块路径（编译产物）
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const ROOT = resolve(__dirname, '..')
+const credModUrl = pathToFileURL(resolve(ROOT, 'crabot-admin/dist/credentials.js')).href
+const { readCredentials, writeCredentials, rotateCredentials, newCredentialsFromPassword } =
+  await import(credModUrl)
 
 // ── 读取密码 ──
 
@@ -92,18 +98,12 @@ if (password !== confirm) {
   process.exit(1)
 }
 
-// 更新 .env 文件
-let content = ''
-if (existsSync(adminEnvPath)) {
-  content = readFileSync(adminEnvPath, 'utf-8')
-  if (content.includes('CRABOT_ADMIN_PASSWORD=')) {
-    content = content.replace(/^CRABOT_ADMIN_PASSWORD=.*$/m, `CRABOT_ADMIN_PASSWORD=${password}`)
-  } else {
-    content = content.trimEnd() + `\nCRABOT_ADMIN_PASSWORD=${password}\n`
-  }
-} else {
-  content = `CRABOT_ADMIN_PASSWORD=${password}\n`
-}
+// 走 credentials 存储层（不依赖 admin 在跑）
+const existing = await readCredentials(adminDir)
+const newCred = existing
+  ? await rotateCredentials(existing, password, 'cli')
+  : await newCredentialsFromPassword(password, { is_temp: false, changed_via: 'cli' })
+await writeCredentials(adminDir, newCred)
 
-writeFileSync(adminEnvPath, content)
-console.log('[crabot] Password updated. Restart crabot for changes to take effect.')
+console.log('[crabot] Password updated. All existing login sessions are revoked.')
+console.log('[crabot] (admin process picks up the change on the next login — no restart needed.)')
