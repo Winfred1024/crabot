@@ -18,7 +18,7 @@ export const ChangePasswordDialog: React.FC<Props> = ({ onClose }) => {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
     setError('')
     if (newPwd.length < 4) { setError('新密码至少 4 位'); return }
