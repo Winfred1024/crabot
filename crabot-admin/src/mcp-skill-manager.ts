@@ -470,6 +470,7 @@ export class SkillManager {
 
   async initialize(): Promise<void> {
     await this.load()
+    await this.migrateLegacyEntries()
   }
 
   private async load(): Promise<void> {
@@ -484,6 +485,117 @@ export class SkillManager {
       this.skills = new Map(entries.map((e) => [e.id, e]))
     } catch {
       this.skills = new Map()
+    }
+  }
+
+  /**
+   * 启动期一次性把 legacy entry 迁移到 filesystem-native 布局：
+   * - 删除 entry.content 字段（content 改成存盘 SKILL.md 文件）
+   * - 把 importFromLocalPath 旧语义里 skill_dir 指向用户原目录的复制到 <data_dir>/skills/<id>/
+   * - previous_snapshot 由 {content, files, ...} 嵌入式改成 {snapshot_dir, ...} 文件夹引用
+   * - builtin / scanned 不动 skill_dir 引用，只清 content 字段
+   *
+   * 首次进入时写一个 skills.json.bak-<ts> 备份；幂等：无 legacy 字段时直接返回。
+   */
+  private async migrateLegacyEntries(): Promise<void> {
+    let needsMigrate = false
+    for (const e of this.skills.values()) {
+      const raw = e as SkillRegistryEntry & { content?: string }
+      const prev = raw.previous_snapshot as
+        | undefined
+        | { content?: string; files?: Record<string, string>; snapshot_dir?: string; version: string; updated_at: string; snapshotted_at: string }
+      if (raw.content !== undefined || (prev && prev.content !== undefined)) {
+        needsMigrate = true
+        break
+      }
+    }
+    if (!needsMigrate) return
+
+    // 备份 skills.json
+    const backupPath = `${this.filePath}.bak-${isoCompactTs(generateTimestamp())}`
+    try { await fs.copyFile(this.filePath, backupPath) } catch {}
+
+    let migrated = 0
+    for (const [id, raw] of this.skills) {
+      const entry = raw as SkillRegistryEntry & { content?: string }
+
+      // builtin 不迁移文件（registerBuiltins 会用磁盘 builtin 目录同步），只清 content 字段
+      if (entry.is_builtin) {
+        if (entry.content !== undefined) {
+          delete (entry as { content?: string }).content
+          migrated++
+        }
+        continue
+      }
+
+      // scanned：保留 skill_dir 引用，只清 content 字段
+      if (entry.source_type === 'scanned') {
+        if (entry.content !== undefined) {
+          delete (entry as { content?: string }).content
+          migrated++
+        }
+        continue
+      }
+
+      const newSkillDir = path.join(this.skillsRoot, id)
+      const newHasSkillMd = await fs.access(path.join(newSkillDir, 'SKILL.md')).then(() => true).catch(() => false)
+
+      if (!newHasSkillMd && entry.content !== undefined) {
+        // 1. 在 <skillsRoot>/<id>/ 写 SKILL.md
+        await fs.mkdir(newSkillDir, { recursive: true })
+        await atomicWriteFileBuf(path.join(newSkillDir, 'SKILL.md'), Buffer.from(entry.content, 'utf-8'))
+
+        // 2. 若旧 skill_dir 指向用户原目录（importFromLocalPath legacy 语义），复制附属文件
+        if (entry.skill_dir && entry.skill_dir !== newSkillDir) {
+          const oldExists = await fs.access(entry.skill_dir).then(() => true).catch(() => false)
+          if (oldExists) {
+            await copyDir(entry.skill_dir, newSkillDir, ['SKILL.md', '.skill_dir', '.DS_Store'])
+          } else {
+            console.warn(`[SkillManager] legacy skill "${entry.name}" 原目录 ${entry.skill_dir} 已不存在，仅迁移 SKILL.md（scripts/references/assets 丢失）`)
+          }
+        }
+        entry.skill_dir = newSkillDir
+      } else if (!entry.skill_dir) {
+        // 无 content 又无 skill_dir 的 zombie entry
+        console.warn(`[SkillManager] legacy entry "${entry.name}" 无 content 无 skill_dir，无法迁移`)
+        entry.skill_dir = newSkillDir
+      }
+
+      // 3. 迁移 previous_snapshot 嵌入式 → 文件夹
+      const prev = entry.previous_snapshot as
+        | undefined
+        | { content?: string; files?: Record<string, string>; snapshot_dir?: string; version: string; updated_at: string; snapshotted_at: string }
+      if (prev && prev.content !== undefined && !prev.snapshot_dir) {
+        const snapTs = isoCompactTs(prev.snapshotted_at)
+        const snapRel = path.posix.join('.snapshots', `${id}-${snapTs}`)
+        const snapAbs = path.join(this.skillsRoot, snapRel)
+        await fs.mkdir(snapAbs, { recursive: true })
+        await atomicWriteFileBuf(path.join(snapAbs, 'SKILL.md'), Buffer.from(prev.content, 'utf-8'))
+        if (prev.files) {
+          for (const [rel, val] of Object.entries(prev.files)) {
+            const dst = path.join(snapAbs, rel)
+            await fs.mkdir(path.dirname(dst), { recursive: true })
+            const buf = val.startsWith('base64:') ? Buffer.from(val.slice(7), 'base64') : Buffer.from(val, 'utf-8')
+            await atomicWriteFileBuf(dst, buf)
+          }
+        }
+        entry.previous_snapshot = {
+          snapshot_dir: snapRel,
+          version: prev.version,
+          updated_at: prev.updated_at,
+          snapshotted_at: prev.snapshotted_at,
+        }
+      }
+
+      // 4. 清 content 字段
+      if (entry.content !== undefined) {
+        delete (entry as { content?: string }).content
+      }
+      migrated++
+    }
+    if (migrated > 0) {
+      await this.save()
+      console.log(`[SkillManager] 迁移 ${migrated} 个 legacy skill 到 filesystem-native 布局`)
     }
   }
 

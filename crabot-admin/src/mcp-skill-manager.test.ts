@@ -376,3 +376,169 @@ describe('toRestEntry 即时附加 content 字段', () => {
     expect(rest.content).toBe('')
   })
 })
+
+describe('migrateLegacyEntries 自动迁移', () => {
+  let tmpRoot: string, dataDir: string
+
+  beforeEach(async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'migrate-'))
+    dataDir = path.join(tmpRoot, 'data')
+    await fs.mkdir(dataDir, { recursive: true })
+  })
+
+  afterEach(async () => {
+    await fs.rm(tmpRoot, { recursive: true, force: true })
+  })
+
+  it('legacy entry（含 content 字段、无 skill_dir 新目录）启动后被迁移到新布局', async () => {
+    const legacyEntries = [{
+      id: 'legacy-1',
+      name: 'legacy-skill',
+      description: 'd',
+      version: '1.0.0',
+      content: '---\nname: legacy-skill\ndescription: d\nversion: 1.0.0\n---\nold body',
+      source_type: 'imported',
+      is_builtin: false,
+      is_essential: false,
+      can_disable: true,
+      enabled: true,
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+    }]
+    await fs.writeFile(path.join(dataDir, 'skills.json'), JSON.stringify(legacyEntries))
+
+    const manager = new SkillManager(dataDir)
+    await manager.initialize()
+
+    const e = manager.get('legacy-1')!
+    expect(e.skill_dir).toBe(path.join(dataDir, 'skills', 'legacy-1'))
+    expect(await fs.readFile(path.join(e.skill_dir, 'SKILL.md'), 'utf-8')).toContain('old body')
+    expect('content' in e).toBe(false)
+    // 备份文件存在
+    const backups = (await fs.readdir(dataDir)).filter(n => n.startsWith('skills.json.bak-'))
+    expect(backups.length).toBeGreaterThan(0)
+  })
+
+  it('legacy importFromLocalPath 模式（skill_dir 指向用户原目录）→ 复制到新布局', async () => {
+    const userDir = path.join(tmpRoot, 'user-src')
+    await fs.mkdir(path.join(userDir, 'scripts'), { recursive: true })
+    await fs.writeFile(path.join(userDir, 'SKILL.md'), '---\nname: legacy-local\ndescription: d\nversion: 1.0.0\n---\nbody')
+    await fs.writeFile(path.join(userDir, 'scripts', 'a.py'), 'a')
+
+    const legacyEntries = [{
+      id: 'legacy-2',
+      name: 'legacy-local',
+      description: 'd',
+      version: '1.0.0',
+      content: '---\nname: legacy-local\ndescription: d\nversion: 1.0.0\n---\nbody',
+      skill_dir: userDir,
+      source_type: 'imported',
+      is_builtin: false,
+      is_essential: false,
+      can_disable: true,
+      enabled: true,
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+    }]
+    await fs.writeFile(path.join(dataDir, 'skills.json'), JSON.stringify(legacyEntries))
+
+    const manager = new SkillManager(dataDir)
+    await manager.initialize()
+
+    const e = manager.get('legacy-2')!
+    expect(e.skill_dir).toBe(path.join(dataDir, 'skills', 'legacy-2'))
+    expect(await fs.readFile(path.join(e.skill_dir, 'scripts', 'a.py'), 'utf-8')).toBe('a')
+    expect(await fs.readFile(path.join(e.skill_dir, 'SKILL.md'), 'utf-8')).toContain('body')
+  })
+
+  it('legacy previous_snapshot 嵌入式（content + files）→ 迁移到 .snapshots/<id>-<ts>/', async () => {
+    const legacyEntries = [{
+      id: 'legacy-3',
+      name: 'snapped-skill',
+      description: 'd',
+      version: '2.0.0',
+      content: '---\nname: snapped-skill\ndescription: d\nversion: 2.0.0\n---\nnew body',
+      source_type: 'imported',
+      is_builtin: false,
+      is_essential: false,
+      can_disable: true,
+      enabled: true,
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+      previous_snapshot: {
+        content: '---\nname: snapped-skill\ndescription: d\nversion: 1.0.0\n---\nold body',
+        version: '1.0.0',
+        files: { 'scripts/old.py': 'old' },
+        updated_at: '2026-01-01T00:00:00.000Z',
+        snapshotted_at: '2026-01-01T00:00:00.000Z',
+      },
+    }]
+    await fs.writeFile(path.join(dataDir, 'skills.json'), JSON.stringify(legacyEntries))
+
+    const manager = new SkillManager(dataDir)
+    await manager.initialize()
+
+    const e = manager.get('legacy-3')!
+    expect(e.previous_snapshot?.snapshot_dir).toMatch(/^\.snapshots\//)
+    const snapAbs = path.join(dataDir, 'skills', e.previous_snapshot!.snapshot_dir)
+    expect(await fs.readFile(path.join(snapAbs, 'SKILL.md'), 'utf-8')).toContain('old body')
+    expect(await fs.readFile(path.join(snapAbs, 'scripts', 'old.py'), 'utf-8')).toBe('old')
+    expect((e.previous_snapshot as any).content).toBeUndefined()
+    expect((e.previous_snapshot as any).files).toBeUndefined()
+  })
+
+  it('已新格式 entry 不重复迁移（幂等）', async () => {
+    // 提前手动建好新格式的 entry + 磁盘
+    const skillDir = path.join(dataDir, 'skills', 'modern-1')
+    await fs.mkdir(skillDir, { recursive: true })
+    await fs.writeFile(path.join(skillDir, 'SKILL.md'), '---\nname: modern\ndescription: d\nversion: 1.0.0\n---\nbody')
+    const modernEntries = [{
+      id: 'modern-1',
+      name: 'modern',
+      description: 'd',
+      version: '1.0.0',
+      skill_dir: skillDir,
+      source_type: 'imported',
+      is_builtin: false,
+      is_essential: false,
+      can_disable: true,
+      enabled: true,
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+    }]
+    await fs.writeFile(path.join(dataDir, 'skills.json'), JSON.stringify(modernEntries))
+
+    const manager = new SkillManager(dataDir)
+    await manager.initialize()
+    // 不应触发备份
+    const backups = (await fs.readdir(dataDir)).filter(n => n.startsWith('skills.json.bak-'))
+    expect(backups.length).toBe(0)
+  })
+
+  it('builtin entry 不迁移（content 留在原地，registerBuiltins 会同步）', async () => {
+    const legacyEntries = [{
+      id: 'builtin-1',
+      name: 'builtin-skill',
+      description: 'd',
+      version: '1.0.0',
+      content: '---\nname: builtin-skill\ndescription: d\nversion: 1.0.0\n---\nbody',
+      skill_dir: '/some/builtin/dir',
+      source_type: 'builtin',
+      is_builtin: true,
+      is_essential: false,
+      can_disable: true,
+      enabled: true,
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+    }]
+    await fs.writeFile(path.join(dataDir, 'skills.json'), JSON.stringify(legacyEntries))
+
+    const manager = new SkillManager(dataDir)
+    await manager.initialize()
+    const e = manager.get('builtin-1')!
+    // builtin 跳过迁移：skill_dir 保留原值
+    expect(e.skill_dir).toBe('/some/builtin/dir')
+    // content 仍删除（接口清理）
+    expect('content' in e).toBe(false)
+  })
+})
