@@ -1033,16 +1033,19 @@ export class SkillManager {
 
     await fs.mkdir(this.skillsRoot, { recursive: true })
     const tmpDir = path.join(this.skillsRoot, `.tmp.${process.pid}.${Date.now()}.${randomBytes(4).toString('hex')}`)
+    // 放在 try 外面：如果旧 targetDir 已被 rename 到 snapDir，catch 块需要回滚
+    let snapDir: string | undefined
+    let oldDirExists = false
     try {
       await copyDir(srcDir, tmpDir, ['.skill_dir', '.DS_Store'])
 
       let previousSnapshotMeta: SkillRegistryEntry['previous_snapshot']
       if (existing) {
-        const oldDirExists = await fs.access(targetDir).then(() => true).catch(() => false)
+        oldDirExists = await fs.access(targetDir).then(() => true).catch(() => false)
         if (oldDirExists) {
           const snapTs = isoCompactTs(generateTimestamp())
           const snapRel = path.posix.join('.snapshots', `${id}-${snapTs}`)
-          const snapDir = path.join(this.skillsRoot, snapRel)
+          snapDir = path.join(this.skillsRoot, snapRel)
           await fs.mkdir(path.dirname(snapDir), { recursive: true })
           if (existing.previous_snapshot?.snapshot_dir) {
             await fs.rm(path.join(this.skillsRoot, existing.previous_snapshot.snapshot_dir), { recursive: true, force: true })
@@ -1059,6 +1062,9 @@ export class SkillManager {
       await fs.rename(tmpDir, targetDir)
 
       const now = generateTimestamp()
+      // I2: 如果 entry 在 JSON 里但 on-disk 目录早就不在（drift），不要回退到 existing.previous_snapshot
+      // 否则会产生指向 orphan snapshot 的悬挂引用
+      const fallbackSnapshot = existing && !oldDirExists ? undefined : existing?.previous_snapshot
       const entry: SkillRegistryEntry = {
         id,
         name: parsed.name,
@@ -1076,12 +1082,17 @@ export class SkillManager {
         enabled: existing?.enabled ?? true,
         created_at: existing?.created_at ?? now,
         updated_at: now,
-        previous_snapshot: previousSnapshotMeta ?? existing?.previous_snapshot,
+        previous_snapshot: previousSnapshotMeta ?? fallbackSnapshot,
       }
       this.skills.set(id, entry)
       await this.save()
       return { entry, was_overwrite: !!existing }
     } catch (err) {
+      // I1: 如果 snapshot rename 已经发生但后续步骤失败 → 把 snapshot 搬回原 targetDir
+      // 避免出现"旧目录在 snapshot 里、新目录没就位、registry 还指向 targetDir"的中间态
+      if (snapDir) {
+        await fs.rename(snapDir, targetDir).catch(() => {})
+      }
       await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
       throw err
     }
