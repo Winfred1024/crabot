@@ -32,7 +32,6 @@ function fakeTask(overrides: Partial<Task> = {}): Task {
     status: 'pending',
     priority: 'normal',
     title: 't',
-    description: 'd',
     source: { trigger_type: 'manual', origin: 'human' },
     messages: [],
     tags: [],

@@ -2436,7 +2436,10 @@ export class AgentHandler {
         try {
           const adminPort = await getAdminPortFn()
           for (const m of messages) {
-            const content = m.content.type === 'text' ? (m.content.text ?? '') : '[非文本]'
+            // 用 formatMessageContent 保留媒体细节（[image: x.jpg] / [file: path] 等结构化字符串），
+            // 影响 find_task search 命中率。EMPTY_MESSAGE_PLACEHOLDER 跳过空 message 不写。
+            const content = formatMessageContent(m)
+            if (content === EMPTY_MESSAGE_PLACEHOLDER) continue
             await rpcClient.call(adminPort, 'append_message', {
               task_id: taskId,
               role: 'human',

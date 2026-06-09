@@ -299,19 +299,23 @@ describe('AdminModule - Task Management', () => {
 
       const taskId = createResponse.data.task.id
 
-      const response = await makeProtocolRequest<{ message: { id: string; type: string; content: string } }>(
+      // spec 2026-06-09-task-trace-tool-unification.md §4.2: TaskMessage type 字段已改成 role + agent_intent。
+      // 旧 type='info' 语义 = agent 出站 info 消息 → role='agent' + agent_intent='info'。
+      const response = await makeProtocolRequest<{ message: { id: string; role: string; agent_intent?: string; content: string } }>(
         TEST_PROTOCOL_PORT,
         'append_message',
         {
           task_id: taskId,
-          type: 'info',
+          role: 'agent',
+          agent_intent: 'info',
           content: 'Test message content',
         }
       )
 
       expect(response.success).toBe(true)
       expect(response.data.message.id).toBeDefined()
-      expect(response.data.message.type).toBe('info')
+      expect(response.data.message.role).toBe('agent')
+      expect(response.data.message.agent_intent).toBe('info')
       expect(response.data.message.content).toBe('Test message content')
     })
   })
@@ -333,7 +337,7 @@ describe('AdminModule - Task Management', () => {
 
       await makeProtocolRequest(TEST_PROTOCOL_PORT, 'append_message', {
         task_id: taskId,
-        role: 'assistant',
+        role: 'agent',
         content: 'Test message 1',
       })
 
