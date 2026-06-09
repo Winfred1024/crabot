@@ -1721,9 +1721,8 @@ export class AgentHandler {
       channelId, sessionId, frontContext, dispatchActionText } = params
 
     // Fallback 路径：dispatchActionText 缺省时从原始消息切片。
-    // 注意 caller 传进来的 messages 通常已经是 history + 当前 trigger 批次合并后的数组
-    // （worker 需要完整消息上下文），从头切容易切到历史最早的一条无关消息——所以这里
-    // **取最后一条**作为 trigger 摘要（最新一条 ≈ 当前触发批次的尾部，与历史无关）。
+    // messages 就是当前 trigger 批次（spec 2026-06-04 §3：单段时间线后，messages
+    // 不再 prepend baseHistory）；取最后一条作为 trigger 摘要 = 触发批次的尾部。
     const lastMsg = messages[messages.length - 1]
     const lastMsgText = lastMsg?.content.type === 'text' ? (lastMsg.content.text ?? '') : '[非文本]'
     const triggerSummary = lastMsgText.slice(0, 100)
@@ -1914,7 +1913,7 @@ export class AgentHandler {
    * - 不注入 supplement / silent 决策提示——dispatcher 在 spawn 前已做完
    */
   private async buildTriggerUserPrompt(params: ExecuteTriggerMessageParams, currentTaskId: TaskId): Promise<string> {
-    const { messages, activeTasks, isGroup, senderFriend, channelId, sessionId, frontContext } = params
+    const { messages: triggerMessages, activeTasks, isGroup, senderFriend, channelId, sessionId, frontContext } = params
     const parts: string[] = []
     const timezone = this.getTimezone()
     const now = new Date()
@@ -1927,11 +1926,25 @@ export class AgentHandler {
         crabDisplayName: frontContext.crab_display_name,
         isGroup,
       })
+
+    // 合并 recent + trigger 单段时间线（spec 2026-06-04 §3）。
+    // 协议语义：recent_messages 是触发前的本 session 历史；triggerMessages 是当前触发批次
+    // （含 dispatcher immediate_reply 已注入 recent_messages 末尾，时间线天然自洽）。
+    // dedupe by platform_message_id 防御重叠；稳定排序保证同 timestamp 时 recent 在前。
+    const seen = new Set<string>()
+    const allMessages: ChannelMessage[] = []
+    for (const m of [...recentMessages, ...triggerMessages]) {
+      if (seen.has(m.platform_message_id)) continue
+      seen.add(m.platform_message_id)
+      allMessages.push(m)
+    }
+    allMessages.sort((a, b) => (a.platform_timestamp ?? '').localeCompare(b.platform_timestamp ?? ''))
+
     // 引用消息预拉：避免 helper 同步无 I/O 限制。命中后嵌套渲染 <quoted_message>，
     // 未命中只输出 reply_to / quote 属性，agent 仍可调 get_message 兜底。
     const quotedMessages = this.deps
       ? await prefetchQuotedMessages(
-          [...messages, ...recentMessages],
+          allMessages,
           recentMessages,
           channelId,
           sessionId,
@@ -1951,7 +1964,7 @@ export class AgentHandler {
     // ── 对话场景 ──
     parts.push('## 对话场景')
     if (isGroup) {
-      const session = messages[0]?.session
+      const session = triggerMessages[0]?.session
       parts.push(`- 类型: 群聊`)
       parts.push(`- 对话对象: ${session?.session_id ?? sessionId}`)
       parts.push(`- 对话对象 ID: group:${session?.channel_id ?? channelId}:${session?.session_id ?? sessionId}`)
@@ -1975,34 +1988,35 @@ export class AgentHandler {
       parts.push(`- 你在该渠道的 @handle: ${frontContext.crab_self_handle}（消息正文里出现这个字符串才是 @ 你；其它 @xxx 是发给别人的）`)
     }
 
-    // ── 活跃任务（三分类）+ SELF marker + 历史查询提示
-    // 渲染逻辑全部抽到 renderActiveTasksSection，便于单测；保持 active_tasks 为空时
-    // 也会输出历史查询提示——agent 必须撞到"已结束 task 在另一入口"的事实
+    // ── 活跃任务（三分类）+ SELF marker
     parts.push(...renderActiveTasksSection({
       activeTasks,
       currentTaskId,
-      currentChannel: messages[0]?.session?.channel_id ?? channelId,
-      currentSession: messages[0]?.session?.session_id ?? sessionId,
+      currentChannel: triggerMessages[0]?.session?.channel_id ?? channelId,
+      currentSession: triggerMessages[0]?.session?.session_id ?? sessionId,
       isMaster: senderFriend.permission === 'master',
+      isGroup,
       timezone,
       now,
     }))
 
-    // ── 聊天历史（当前 session）──
+    // ── 会话历史（单段时间线：recent + trigger 合并按 timestamp 排序）──
     const recentHours = frontContext.time_windows.recent_messages_window_hours
     const recentSinceLabel = formatChannelMessageTime(
       new Date(now.getTime() - recentHours * 3600 * 1000).toISOString(),
       timezone,
       now,
     )
-    parts.push(`\n## 聊天历史（当前 session，最近 ${recentHours} 小时 = ${recentSinceLabel} 之后，${recentMessages.length} 条）`)
-    parts.push(`summary: ${recentSinceLabel} 之前的本会话历史不在此上下文里。`)
-    if (recentMessages.length > 0) {
-      const total = recentMessages.length
+    const triggerIds = new Set(triggerMessages.map(m => m.platform_message_id))
+    if (allMessages.length > 0) {
+      parts.push(`\n## 会话历史（共 ${allMessages.length} 条，含触发消息；当前 session 最近 ${recentHours} 小时 = ${recentSinceLabel} 之后）`)
+      const total = allMessages.length
       for (let i = 0; i < total; i++) {
+        // 阶梯式截断 + trigger 批次本身不截断（trigger 是当前消息，整条都要看到）
         const distFromEnd = total - 1 - i
-        const maxLen = distFromEnd < 3 ? 2000 : distFromEnd < 10 ? 600 : 300
-        const msg = recentMessages[i]
+        const msg = allMessages[i]
+        const isTrigger = triggerIds.has(msg.platform_message_id)
+        const maxLen = isTrigger ? 2000 : (distFromEnd < 3 ? 2000 : distFromEnd < 10 ? 600 : 300)
         parts.push(formatChannelMessageLine(msg, {
           timezone, now, maxLen,
           identity: identityResolver(msg),
@@ -2010,17 +2024,8 @@ export class AgentHandler {
         }))
       }
     } else {
-      parts.push(`此窗口（${recentSinceLabel} 之后）本会话无消息。`)
-    }
-
-    // ── 当前消息 ──
-    parts.push(`\n## 当前消息`)
-    for (const msg of messages) {
-      parts.push(formatChannelMessageLine(msg, {
-        timezone, now, maxLen: 2000,
-        identity: identityResolver(msg),
-        quotedMessages,
-      }))
+      parts.push(`\n## 会话历史`)
+      parts.push(`过去 ${recentHours} 小时本会话无消息。`)
     }
 
     // ── 行动提醒 ──

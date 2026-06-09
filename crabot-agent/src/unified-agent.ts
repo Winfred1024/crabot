@@ -675,12 +675,13 @@ export class UnifiedAgent extends ModuleBase {
         sendImmediateReply,
         reactToTriggerMessage: this.buildReactToTriggerMessage(session.channel_id, session.session_id),
         spawnAgentInstance: async (actionText: string, spawnOptions) => {
+          // params.messages 只放当前 trigger 批次；historic context（含 dispatcher
+          // immediate_reply）放 frontContext.recent_messages。buildTriggerUserPrompt
+          // 合并两者按 timestamp 单段渲染（spec 2026-06-04 §3）。
           const triggerIds = new Set(messages.map(m => m.platform_message_id))
           const baseHistory = (frontContext.recent_messages ?? []).filter(
             (m) => !triggerIds.has(m.platform_message_id)
           )
-          // dispatcher 已发的预回复只注入 frontContext.recent_messages（worker prompt 的"聊天历史"段），
-          // 不进 params.messages（"当前消息"段是触发批次，注进去会重复渲染）。
           const ackMessage = spawnOptions?.immediateReply
             ? this.buildDispatcherAckChannelMessage(
                 spawnOptions.immediateReply,
@@ -690,9 +691,8 @@ export class UnifiedAgent extends ModuleBase {
               )
             : null
           const recentMessagesWithAck = ackMessage ? [...baseHistory, ackMessage] : baseHistory
-          const allMessages = [...baseHistory, ...messages]
           const params: ExecuteTriggerMessageParams = {
-            messages: allMessages,
+            messages,
             activeTasks: frontContext.active_tasks ?? [],
             isGroup: false,
             ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
@@ -702,9 +702,7 @@ export class UnifiedAgent extends ModuleBase {
             channelId: session.channel_id,
             sessionId: session.session_id,
             dispatchActionText: actionText,
-            frontContext: ackMessage
-              ? { ...frontContext, recent_messages: recentMessagesWithAck }
-              : frontContext,
+            frontContext: { ...frontContext, recent_messages: recentMessagesWithAck },
           }
           const taskTraceId = await this.spawnTaskTrace({
             dispatchTraceId: trace.trace_id,
@@ -898,15 +896,13 @@ export class UnifiedAgent extends ModuleBase {
         sendImmediateReply,
         reactToTriggerMessage: this.buildReactToTriggerMessage(session.channel_id, sessionId),
         spawnAgentInstance: async (actionText: string, spawnOptions) => {
-          // 群聊：把 attention 批次 messages（已含群成员发的文件/图片）+ recent_messages 历史去重后整批传给 worker。
-          // 不用 action.text 覆盖触发消息的 content.text，让 worker 拿到完整保真的消息上下文；
-          // 但 actionText 单独作为 task title/description 透传（dispatchActionText），影响
-          // dispatcher 后续 supplement 决策时活跃任务清单的可识别度。
+          // 群聊：params.messages 只放当前 attention 批次（含群成员发的文件/图片）；
+          // 历史 + dispatcher immediate_reply 放 frontContext.recent_messages。
+          // buildTriggerUserPrompt 合并两者按 timestamp 单段渲染（spec 2026-06-04 §3）。
           const currentIds = new Set(messages.map((m) => m.platform_message_id))
           const baseHistory = (frontContext.recent_messages ?? []).filter(
             (m) => !currentIds.has(m.platform_message_id)
           )
-          // dispatcher 已发的预回复只注入 frontContext.recent_messages（"聊天历史"段），不进 params.messages。
           const ackMessage = spawnOptions?.immediateReply
             ? this.buildDispatcherAckChannelMessage(
                 spawnOptions.immediateReply,
@@ -916,9 +912,8 @@ export class UnifiedAgent extends ModuleBase {
               )
             : null
           const recentMessagesWithAck = ackMessage ? [...baseHistory, ackMessage] : baseHistory
-          const allMessages = [...baseHistory, ...messages]
           const params: ExecuteTriggerMessageParams = {
-            messages: allMessages,
+            messages,
             activeTasks: frontContext.active_tasks ?? [],
             isGroup: true,
             ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
@@ -928,9 +923,7 @@ export class UnifiedAgent extends ModuleBase {
             channelId: session.channel_id,
             sessionId,
             dispatchActionText: actionText,
-            frontContext: ackMessage
-              ? { ...frontContext, recent_messages: recentMessagesWithAck }
-              : frontContext,
+            frontContext: { ...frontContext, recent_messages: recentMessagesWithAck },
           }
           const taskTraceId = await this.spawnTaskTrace({
             dispatchTraceId: trace.trace_id,
@@ -1585,7 +1578,9 @@ export class UnifiedAgent extends ModuleBase {
           }
         },
         spawnAgentInstance: async (actionText: string, spawnOptions) => {
-          // admin_chat：把当前 trigger + recent_messages 去重后整批传给 worker，保留媒体上下文。
+          // admin_chat：params.messages 只放当前 trigger（单条），历史 + dispatcher
+          // immediate_reply 放 frontContext.recent_messages，buildTriggerUserPrompt
+          // 合并两者按 timestamp 单段渲染（spec 2026-06-04 §3）。
           // 注：admin chat 由 admin REST 串行串发（前端 fetch 等响应才会发下一条），天然单线，
           //     不走 SessionLane；这里 awaitWorker=true 同步等 worker 完成，便于把错误反映到 HTTP 响应。
           //     trace 模型仍拆分 dispatch / task：dispatch trace 标 completed 与 worker 完成对齐，
@@ -1594,7 +1589,6 @@ export class UnifiedAgent extends ModuleBase {
           const baseHistory = (frontContext.recent_messages ?? []).filter(
             (m) => !triggerIds.has(m.platform_message_id)
           )
-          // dispatcher 已发的预回复只注入 frontContext.recent_messages（"聊天历史"段），不进 params.messages。
           const ackMessage = spawnOptions?.immediateReply
             ? this.buildDispatcherAckChannelMessage(
                 spawnOptions.immediateReply,
@@ -1604,9 +1598,8 @@ export class UnifiedAgent extends ModuleBase {
               )
             : null
           const recentMessagesWithAck = ackMessage ? [...baseHistory, ackMessage] : baseHistory
-          const allMessages = [...baseHistory, message]
           const params: ExecuteTriggerMessageParams = {
-            messages: allMessages,
+            messages: [message],
             activeTasks: frontContext.active_tasks ?? [],
             isGroup: false,
             ...(frontContext.scene_profile ? { sceneProfile: frontContext.scene_profile } : {}),
@@ -1616,9 +1609,7 @@ export class UnifiedAgent extends ModuleBase {
             channelId: 'admin-web',
             sessionId,
             dispatchActionText: actionText,
-            frontContext: ackMessage
-              ? { ...frontContext, recent_messages: recentMessagesWithAck }
-              : frontContext,
+            frontContext: { ...frontContext, recent_messages: recentMessagesWithAck },
           }
           const taskTraceId = await this.spawnTaskTrace({
             dispatchTraceId: trace.trace_id,
