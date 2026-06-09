@@ -579,11 +579,20 @@ export class SkillManager {
         const snapTs = isoCompactTs(generateTimestamp())
         const snapRel = path.posix.join('.snapshots', `${id}-${snapTs}`)
         const snapDir = path.join(this.skillsRoot, snapRel)
+        await fs.mkdir(path.dirname(snapDir), { recursive: true })
+        // 1. 先 copy 到 tmp，成功后 rename 到正式 snapDir；失败仅 tmp 残留被清，旧 snapshot 完好
+        const tmpSnapDir = `${snapDir}.tmp.${process.pid}.${Date.now()}.${randomBytes(4).toString('hex')}`
+        try {
+          await copyDir(entry.skill_dir, tmpSnapDir)
+          await fs.rename(tmpSnapDir, snapDir)
+        } catch (err) {
+          await fs.rm(tmpSnapDir, { recursive: true, force: true }).catch(() => {})
+          throw err
+        }
+        // 2. 新 snapshot 已就位，再删旧（N=1）
         if (entry.previous_snapshot) {
           await fs.rm(path.join(this.skillsRoot, entry.previous_snapshot.snapshot_dir), { recursive: true, force: true })
         }
-        await fs.mkdir(path.dirname(snapDir), { recursive: true })
-        await copyDir(entry.skill_dir, snapDir)
         await atomicWriteFileBuf(skillMdPath, Buffer.from(params.content, 'utf-8'))
         previousSnapshot = {
           snapshot_dir: snapRel,
@@ -618,7 +627,8 @@ export class SkillManager {
 
     const oldSnapRel = entry.previous_snapshot.snapshot_dir
     const oldSnapDir = path.join(this.skillsRoot, oldSnapRel)
-    const newSnapTs = isoCompactTs(generateTimestamp())
+    const now = generateTimestamp()
+    const newSnapTs = isoCompactTs(now)
     const newSnapRel = path.posix.join('.snapshots', `${id}-${newSnapTs}`)
     const newSnapDir = path.join(this.skillsRoot, newSnapRel)
     await fs.mkdir(path.dirname(newSnapDir), { recursive: true })
@@ -626,12 +636,23 @@ export class SkillManager {
     // 三段 swap：当前→stash，旧→当前，stash→新
     const tempStash = path.join(this.skillsRoot, `.swap.${process.pid}.${Date.now()}.${randomBytes(4).toString('hex')}`)
     await fs.rename(entry.skill_dir, tempStash)
+    let stepASucceeded = false
     try {
       await fs.rename(oldSnapDir, entry.skill_dir)
+      stepASucceeded = true
       await fs.rename(tempStash, newSnapDir)
     } catch (err) {
-      // 尽量回滚
-      await fs.rename(tempStash, entry.skill_dir).catch(() => {})
+      if (!stepASucceeded) {
+        // A 失败：tempStash 还在，旧 snapshot 完好，把 stash 还回去
+        await fs.rename(tempStash, entry.skill_dir).catch(() => {})
+      } else {
+        // B 失败：磁盘 swap 已半成功（entry.skill_dir 已是旧版内容），但 registry 尚未更新。
+        // tempStash 是被替换下来的"原新版"内容；把它挪到 .orphan-<ts> 便于用户手工捞，
+        // 然后抛 error 让 upstream 知道 registry 没同步。
+        const orphanRel = path.posix.join('.snapshots', `${id}-orphan-${newSnapTs}`)
+        const orphanDir = path.join(this.skillsRoot, orphanRel)
+        await fs.rename(tempStash, orphanDir).catch(() => {})
+      }
       throw err
     }
 
@@ -646,9 +667,9 @@ export class SkillManager {
         snapshot_dir: newSnapRel,
         version: entry.version,
         updated_at: entry.updated_at,
-        snapshotted_at: generateTimestamp(),
+        snapshotted_at: now,
       },
-      updated_at: generateTimestamp(),
+      updated_at: now,
     }
     this.skills.set(id, updated)
     await this.save()

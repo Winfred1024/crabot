@@ -313,9 +313,8 @@ describe('update + restore 文件夹 swap 语义（Task 6）', () => {
     await fs.writeFile(path.join(builtinSrc, 'SKILL.md'), '---\nname: builtin-skill\ndescription: d\nversion: 1.0.0\n---\nbody')
     await manager.registerBuiltins(path.dirname(builtinSrc))  // 父目录扫
     const entries = manager.list().filter(s => s.is_builtin)
-    if (entries.length > 0) {
-      const b = entries[0]
-      await expect(manager.update(b.id, { content: 'new' })).rejects.toThrow(/内置/)
-    }
+    expect(entries.length).toBeGreaterThan(0)  // 如果 registerBuiltins 没扫到，测试就 FAIL 而非静默通过
+    const b = entries[0]
+    await expect(manager.update(b.id, { content: 'new' })).rejects.toThrow(/内置/)
   })
 })
