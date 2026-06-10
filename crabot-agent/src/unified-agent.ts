@@ -1572,8 +1572,9 @@ export class UnifiedAgent extends ModuleBase {
           // immediate_reply 放 frontContext.recent_messages，buildTriggerUserPrompt
           // 合并两者按 timestamp 单段渲染（spec 2026-06-04 §3）。
           // 注：admin chat 由 admin REST 串行串发（前端 fetch 等响应才会发下一条），天然单线，
-          //     不走 SessionLane；这里 awaitWorker=true 同步等 worker 完成，便于把错误反映到 HTTP 响应。
-          //     trace 模型仍拆分 dispatch / task：dispatch trace 标 completed 与 worker 完成对齐，
+          //     不走 SessionLane；trace 模型仍拆分 dispatch / task：
+          //     awaitWorker=false：worker 注册即返回，结果经 send_message 伪 channel 回流；
+          //     注册阶段错误仍同步抛出反映到 RPC 响应，运行期失败由任务状态推送呈现。
           //     task trace 由 spawnTaskTrace 独立 endTrace。
           const triggerIds = new Set([message.platform_message_id])
           const baseHistory = (frontContext.recent_messages ?? []).filter(
@@ -1605,7 +1606,22 @@ export class UnifiedAgent extends ModuleBase {
             dispatchTraceId: trace.trace_id,
             params,
             source: 'admin-web',
-            awaitWorker: true,
+            // worker 结果经 send_message 伪 channel 回流（Task 6），不再同步等待——
+            // 同步等待会让长任务撑爆 process_message RPC 超时（旧"看不到输出"主因之一）
+            awaitWorker: false,
+            onTaskRegistered: async (taskId, taskTitle) => {
+              await this.rpcClient.call(
+                await this.getAdminPort(),
+                'chat_callback',
+                {
+                  request_id: callbackInfo.request_id,
+                  reply_type: 'task_created',
+                  content: `已创建任务：${taskTitle}`,
+                  task_id: taskId,
+                },
+                this.config.moduleId
+              )
+            },
           })
           return { spawnedTraceId: taskTraceId }
         },
@@ -2271,9 +2287,10 @@ export class UnifiedAgent extends ModuleBase {
    * - 这里给 worker 单独建一条 trace（trigger.type='task'），所有 worker span（agent_loop /
    *   llm_call / tool_call）写到这条 trace；同时给 dispatch trace 反向标记 related_task_id，
    *   让 "按任务聚合" 视图把 dispatch 和 task 两条 trace 合并到同一组。
-   * - awaitWorker=false：fire-and-forget（私聊 / 群聊 lane handler 用），lane 同步段拿到 pre 后
-   *   即可解锁下一批；worker 完成后由 .then 写 endTrace。
-   * - awaitWorker=true：admin chat 用，dispatcher 内串行 await，便于把 worker 错误反映到 HTTP 响应。
+   * - awaitWorker=false：fire-and-forget（私聊 / 群聊 lane handler 用，以及 admin chat）；
+   *   lane 同步段拿到 pre 后即可解锁下一批；worker 完成后由 .then 写 endTrace。
+   *   admin chat 场景下 worker 结果经 send_message 伪 channel 回流，注册阶段即触发 onTaskRegistered 回调。
+   * - awaitWorker=true：同步等待（保留给需要把 worker 错误反映到 HTTP 响应的场景）。
    *
    * @returns task trace_id，作为 spawnedTraceId 回给 dispatcher_executor 写到 dispatch_action span
    *          的 spawned_trace_id 字段，供 Admin UI 做 cross-trace link 跳转。
@@ -2283,9 +2300,25 @@ export class UnifiedAgent extends ModuleBase {
     params: ExecuteTriggerMessageParams
     source: string
     awaitWorker: boolean
+    /**
+     * task 注册完成、worker loop 启动前回调（admin chat 用它发 task_created 状态卡）。
+     * 抛错只 warn 不阻断 worker——状态卡丢失不应影响任务执行。
+     */
+    onTaskRegistered?: (taskId: string, taskTitle: string) => Promise<void>
   }): Promise<string> {
     const pre = await this.agentHandler!.registerTriggerAndActivate(opts.params)
     this.traceStore.updateTrace(opts.dispatchTraceId, { related_task_id: pre.taskId })
+
+    if (opts.onTaskRegistered) {
+      try {
+        await opts.onTaskRegistered(pre.taskId, pre.taskTitle)
+      } catch (err) {
+        console.warn(
+          `[${this.config.moduleId}] onTaskRegistered failed (continuing):`,
+          err instanceof Error ? err.message : String(err),
+        )
+      }
+    }
 
     const taskTrace = this.traceStore.startTrace({
       module_id: this.config.moduleId,
