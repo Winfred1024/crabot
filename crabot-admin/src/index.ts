@@ -118,6 +118,8 @@ import {
   type GetChatHistoryResult,
   type UpsertPendingMessageParams,
   type UpsertPendingMessageResult,
+  type ChatSendMessageParams,
+  type ChatSendMessageResult,
   type ChannelMessageRef,
   type FriendPermissionConfig,
   type GetFriendPermissionResult,
@@ -161,7 +163,7 @@ import {
   type SessionTypeLookup,
 } from './schedule-migration.js'
 import { ModuleInstaller } from './module-installer.js'
-import { ChatManager } from './chat-manager.js'
+import { ChatManager, buildChatTaskSnapshot } from './chat-manager.js'
 import { MCPServerManager, SkillManager, EssentialToolsManager, DuplicateSkillError } from './mcp-skill-manager.js'
 import { SubAgentManager, resolveSubAgentModel } from './subagent-manager.js'
 import { PRESET_VENDORS } from './preset-vendors.js'
@@ -608,6 +610,8 @@ export class AdminModule extends ModuleBase {
     // Chat 管理
     this.registerMethod('chat_callback', this.handleChatCallback.bind(this))
     this.registerMethod('get_chat_history', this.handleGetChatHistory.bind(this))
+    // admin-web 伪 channel：worker send_message 出站收口（spec 2026-06-10-master-chat-redesign §4）
+    this.registerMethod('send_message', this.handleChatSendMessage.bind(this))
 
     // TaskGoal 管理（spec: 2026-05-23-goal-mode-design.md §3）
     this.registerMethod('set_task_goal', this.handleSetTaskGoal.bind(this))
@@ -1777,6 +1781,17 @@ export class AdminModule extends ModuleBase {
 
       if (pathname === '/api/chat/messages' && req.method === 'DELETE') {
         await this.handleClearChatMessagesApi(req, res)
+        return
+      }
+
+      if (pathname.startsWith('/api/chat/tasks/') && req.method === 'GET') {
+        const taskId = decodeURIComponent(pathname.slice('/api/chat/tasks/'.length))
+        const task = this.tasks.get(taskId as TaskId)
+        if (!task) {
+          sendJson(res, 404, { error: 'task not found' })
+          return
+        }
+        sendJson(res, 200, buildChatTaskSnapshot(task))
         return
       }
 
@@ -4627,6 +4642,11 @@ export class AdminModule extends ModuleBase {
       old_status: oldStatus,
       new_status: newStatus,
     })
+
+    // Master Chat 状态卡推送：admin-web 来源任务的所有状态变更都经此咽喉
+    if (task.source.channel_id === 'admin-web') {
+      this.chatManager?.pushTaskUpdate(buildChatTaskSnapshot(task))
+    }
   }
 
   private async handleUpdateTaskStatus(params: UpdateTaskStatusParams): Promise<{ task: Task }> {
@@ -4731,6 +4751,10 @@ export class AdminModule extends ModuleBase {
       task_id: task.id,
       plan: params.plan,
     })
+
+    if (task.source.channel_id === 'admin-web') {
+      this.chatManager?.pushTaskUpdate(buildChatTaskSnapshot(task))
+    }
 
     return { task }
   }
@@ -8421,6 +8445,13 @@ export class AdminModule extends ModuleBase {
       throw new Error('Chat manager not initialized')
     }
     return this.chatManager.handleChatCallback(params)
+  }
+
+  private async handleChatSendMessage(params: ChatSendMessageParams): Promise<ChatSendMessageResult> {
+    if (!this.chatManager) {
+      throw new Error('Chat manager not initialized')
+    }
+    return this.chatManager.handleSendMessage(params)
   }
 
   private async handleGetChatHistory(params: GetChatHistoryParams): Promise<GetChatHistoryResult> {
