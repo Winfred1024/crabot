@@ -131,6 +131,7 @@ export async function spawnAuditSubagent(
   // 4. 派 bg-agent
   const spawn = deps.spawnFn ?? spawnPersistentAgent
   const auditId = await spawn({
+    prompt: promptText,
     task_description: `[goal_audit] ${promptText.slice(0, 200)}`,
     tools: subTools,
     systemPrompt,

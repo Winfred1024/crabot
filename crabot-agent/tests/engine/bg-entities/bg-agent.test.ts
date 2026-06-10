@@ -80,6 +80,7 @@ afterEach(() => {
 
 function baseOpts(adapter: LLMAdapter): Parameters<typeof spawnPersistentAgent>[0] {
   return {
+    prompt: 'full prompt for the engine',
     task_description: 'test task',
     tools: [],
     systemPrompt: 'You are a test agent.',
@@ -172,6 +173,38 @@ describe('spawnPersistentAgent', () => {
     // Registry guard prevents overwriting 'killed' with 'failed', but since we
     // never set 'killed' here, the catch block should land on 'failed'.
     expect(['failed', 'killed']).toContain(rec!.status)
+  })
+
+  it('engine receives opts.prompt as user input, not task_description (regression: audit prompt 截断)', async () => {
+    const seenPrompts: string[] = []
+    const capturingAdapter: LLMAdapter = {
+      async *stream(params: any) {
+        const first = params.messages?.[0]
+        const content = typeof first?.content === 'string'
+          ? first.content
+          : JSON.stringify(first?.content ?? '')
+        seenPrompts.push(content)
+        for (const chunk of textResponse('done')) yield chunk
+      },
+      updateConfig() {},
+    }
+
+    const id = await spawnPersistentAgent({
+      ...baseOpts(capturingAdapter),
+      prompt: 'FULL_PROMPT_MARKER with all the criteria details',
+      task_description: 'short display label',
+    })
+
+    await waitFor(async () => {
+      const rec = await registry.get(id)
+      return rec?.status === 'completed'
+    })
+
+    expect(seenPrompts[0]).toContain('FULL_PROMPT_MARKER')
+    expect(seenPrompts[0]).not.toContain('short display label')
+    // task_description 仍作为展示标签落 registry
+    const rec = await registry.get(id)
+    expect(rec!.task_description).toBe('short display label')
   })
 
   it('multiple parallel spawns produce independent result_files without mixing', async () => {

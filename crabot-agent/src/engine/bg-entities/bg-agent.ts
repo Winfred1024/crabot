@@ -25,6 +25,13 @@ import { emitInstantSpan, type BgEntityTraceContext } from './trace.js'
 // ---------------------------------------------------------------------------
 
 export interface SpawnPersistentAgentOpts {
+  /**
+   * 子 agent 的完整输入 prompt——原样作为首条 user message 喂给 runEngine。
+   * 与 task_description 严格分离：曾有 caller 把截断后的展示标签当 prompt 传，
+   * 导致 auditor 看不到完整验收标准（2026-06-10 goal audit 死循环事故）。
+   */
+  readonly prompt: string
+  /** 展示标签——只用于 registry / list_entities / exit notification，不进 LLM 输入。 */
   readonly task_description: string
   readonly tools: ReadonlyArray<ToolDefinition>
   readonly systemPrompt: string
@@ -106,7 +113,7 @@ export async function spawnPersistentAgent(opts: SpawnPersistentAgentOpts): Prom
   void (async () => {
     try {
       const result = await runEngine({
-        prompt: opts.task_description,
+        prompt: opts.prompt,
         adapter: opts.adapter,
         options: {
           systemPrompt: opts.systemPrompt,

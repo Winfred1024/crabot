@@ -3200,6 +3200,7 @@ export class AgentHandler {
       : undefined
 
     const entity_id = await spawnPersistentAgent({
+      prompt: input.task,
       task_description: input.task,
       tools: subTools,
       systemPrompt: finalSystemPrompt,

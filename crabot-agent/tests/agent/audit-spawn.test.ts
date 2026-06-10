@@ -148,6 +148,18 @@ describe('spawnAuditSubagent', () => {
     expect(pushSpy).not.toHaveBeenCalled()
   })
 
+  it('passes full audit prompt as opts.prompt (regression: 截断 200 字符曾让 auditor 看不到 criteria)', async () => {
+    await spawnAuditSubagent(deps)
+    const opts = (deps.spawnFn as any).mock.calls[0][0]
+    // 完整 criteria（含 id / spec）必须在 prompt 里——auditor 靠它知道要验什么
+    expect(opts.prompt).toContain('c-1')
+    expect(opts.prompt).toContain('c-2')
+    expect(opts.prompt).toContain('tests pass')
+    expect(opts.prompt).toContain('audit 不阻塞 main loop')
+    // cwd 必须传到（auditor 曾因截断丢失 cwd 开局 pwd && ls 找路）
+    expect(opts.prompt).toContain('/tmp/workspace')
+  })
+
   it('passes correct spawnPersistentAgent opts (task_description prefix / tools / model)', async () => {
     await spawnAuditSubagent(deps)
     const opts = (deps.spawnFn as any).mock.calls[0][0]

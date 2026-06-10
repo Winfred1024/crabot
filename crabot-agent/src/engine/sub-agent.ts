@@ -221,6 +221,7 @@ export function createSubAgentTool(config: SubAgentToolConfig): ToolDefinition {
           }
 
           const agent_id = await spawnPersistentAgent({
+            prompt: String(input.task),
             task_description: String(input.task),
             tools: config.subTools,
             systemPrompt: config.systemPrompt,
