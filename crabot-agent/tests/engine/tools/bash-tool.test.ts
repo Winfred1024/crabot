@@ -15,7 +15,7 @@ import type { ToolCallContext } from '../../../src/engine/types'
 
 describe('createBashTool', () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bash-tool-test-'))
-  const tool = createBashTool(tmpDir)
+  const tool = createBashTool(() => tmpDir)
 
   it('returns ToolDefinition with correct name and schema', () => {
     expect(tool.name).toBe('Bash')
@@ -170,7 +170,7 @@ describe('createBashTool with bgCtx', () => {
   })
 
   it('bgCtx undefined + run_in_background=true → isError with "Background mode unavailable"', async () => {
-    const tool = createBashTool(cwd)
+    const tool = createBashTool(() => cwd)
     const result = await tool.call({ command: 'echo hi', run_in_background: true }, {})
     expect(result.isError).toBe(true)
     expect(result.output).toContain('Background mode unavailable')
@@ -185,7 +185,7 @@ describe('createBashTool with bgCtx', () => {
       owner: { friend_id: 'friend-master' },
       taskId: 'task-001',
     }
-    const tool = createBashTool(cwd, undefined, bgCtx)
+    const tool = createBashTool(() => cwd, undefined, bgCtx)
 
     const result = await tool.call({ command: 'echo hi', run_in_background: true }, {})
     expect(result.isError).toBe(false)
@@ -213,7 +213,7 @@ describe('createBashTool with bgCtx', () => {
       owner: { friend_id: 'friend-normal' },
       taskId: 'task-002',
     }
-    const tool = createBashTool(cwd, undefined, bgCtx)
+    const tool = createBashTool(() => cwd, undefined, bgCtx)
 
     const result = await tool.call({ command: 'echo hi', run_in_background: true }, {})
     expect(result.isError).toBe(false)
@@ -276,7 +276,7 @@ describe('createBashTool with bgCtx', () => {
       })
     }
 
-    const tool = createBashTool(cwd, undefined, bgCtx)
+    const tool = createBashTool(() => cwd, undefined, bgCtx)
     const result = await tool.call({ command: 'echo hi', run_in_background: true }, {})
 
     expect(result.isError).toBe(true)
@@ -286,7 +286,7 @@ describe('createBashTool with bgCtx', () => {
   it('timeout cap: large requested timeout is silently capped at MAX_FOREGROUND_TIMEOUT_MS', async () => {
     // We cannot wait 10 minutes; instead spy on execFile to verify the capped value.
     // Use a short command and verify it works without error — the cap doesn't reject.
-    const tool = createBashTool(cwd)
+    const tool = createBashTool(() => cwd)
     // Request a huge timeout — the cap silently clamps it
     const result = await tool.call({ command: 'echo cap-test', timeout: 999_999_999 }, {})
     expect(result.isError).toBe(false)
@@ -306,7 +306,7 @@ describe('createBashTool with bgCtx', () => {
       owner: { friend_id: 'friend-master' },
       taskId: 'task-sync',
     }
-    const tool = createBashTool(cwd, undefined, bgCtx)
+    const tool = createBashTool(() => cwd, undefined, bgCtx)
 
     // Synchronous (no run_in_background flag)
     const result = await tool.call({ command: 'echo sync-ok' }, {})
@@ -332,7 +332,7 @@ describe('createBashTool with bgCtx', () => {
       owner: { friend_id: 'friend-master' },
       taskId: 'task-auto-bg',
     }
-    const tool = createBashTool(cwd, undefined, bgCtx)
+    const tool = createBashTool(() => cwd, undefined, bgCtx)
 
     const result = await tool.call(
       { command: 'echo auto-bg-test', timeout: 120_000 },
@@ -365,7 +365,7 @@ describe('createBashTool with bgCtx', () => {
       owner: { friend_id: 'friend-master' },
       taskId: 'task-cap-test',
     }
-    const tool = createBashTool(cwd, undefined, bgCtx)
+    const tool = createBashTool(() => cwd, undefined, bgCtx)
 
     const result = await tool.call(
       { command: 'echo cap-test', timeout: 600_000 },
@@ -386,7 +386,7 @@ describe('createBashTool with bgCtx', () => {
       owner: { friend_id: 'friend-master' },
       taskId: 'task-boundary',
     }
-    const tool = createBashTool(cwd, undefined, bgCtx)
+    const tool = createBashTool(() => cwd, undefined, bgCtx)
 
     const result = await tool.call(
       { command: 'echo boundary-test', timeout: 60_000 },
@@ -409,7 +409,7 @@ describe('createBashTool with bgCtx', () => {
       owner: { friend_id: 'friend-master' },
       taskId: 'task-default-timeout',
     }
-    const tool = createBashTool(cwd, undefined, bgCtx)
+    const tool = createBashTool(() => cwd, undefined, bgCtx)
 
     const result = await tool.call(
       { command: 'echo default-test' },
@@ -423,7 +423,7 @@ describe('createBashTool with bgCtx', () => {
   it('auto-bg: 显式 timeout > 60s + bgCtx 不可用（legacy/sub-agent）→ 不转 bg，按 cap 处理', async () => {
     // sub-agent 内部 Bash 没接 bgCtx → 不能转 bg，只能 fall back 到 cap timeout
     // 跑同步。这是 acceptable 的退化路径——sub-agent 短期任务不该自己开 bg。
-    const tool = createBashTool(cwd) // 没传 bgCtx
+    const tool = createBashTool(() => cwd) // 没传 bgCtx
 
     const result = await tool.call(
       { command: 'echo legacy-test', timeout: 120_000 },
@@ -443,7 +443,7 @@ describe('createBashTool with bgCtx', () => {
       owner: { friend_id: 'friend-master' },
       taskId: 'task-explicit-bg',
     }
-    const tool = createBashTool(cwd, undefined, bgCtx)
+    const tool = createBashTool(() => cwd, undefined, bgCtx)
 
     const result = await tool.call(
       { command: 'echo explicit-bg', run_in_background: true, timeout: 120_000 },

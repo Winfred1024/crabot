@@ -16,7 +16,7 @@ describe('createWriteTool', () => {
   })
 
   it('returns correct ToolDefinition metadata', () => {
-    const tool = createWriteTool(tmpDir)
+    const tool = createWriteTool(() => tmpDir)
 
     expect(tool.name).toBe('Write')
     expect(tool.description).toBeTypeOf('string')
@@ -34,7 +34,7 @@ describe('createWriteTool', () => {
   })
 
   it('writes a new file', async () => {
-    const tool = createWriteTool(tmpDir)
+    const tool = createWriteTool(() => tmpDir)
     const filePath = path.join(tmpDir, 'hello.txt')
 
     const result = await tool.call(
@@ -51,7 +51,7 @@ describe('createWriteTool', () => {
     const filePath = path.join(tmpDir, 'existing.txt')
     await fs.writeFile(filePath, 'old content', 'utf-8')
 
-    const tool = createWriteTool(tmpDir)
+    const tool = createWriteTool(() => tmpDir)
     const result = await tool.call(
       { file_path: filePath, content: 'new content' },
       {}
@@ -63,7 +63,7 @@ describe('createWriteTool', () => {
   })
 
   it('creates parent directories automatically', async () => {
-    const tool = createWriteTool(tmpDir)
+    const tool = createWriteTool(() => tmpDir)
     const filePath = path.join(tmpDir, 'a', 'b', 'c', 'deep.txt')
 
     const result = await tool.call(
@@ -77,7 +77,7 @@ describe('createWriteTool', () => {
   })
 
   it('handles empty content', async () => {
-    const tool = createWriteTool(tmpDir)
+    const tool = createWriteTool(() => tmpDir)
     const filePath = path.join(tmpDir, 'empty.txt')
 
     const result = await tool.call(
@@ -91,7 +91,7 @@ describe('createWriteTool', () => {
   })
 
   it('returns byte count in success message', async () => {
-    const tool = createWriteTool(tmpDir)
+    const tool = createWriteTool(() => tmpDir)
     const content = 'Hello, world!'
     const filePath = path.join(tmpDir, 'bytes.txt')
 
@@ -106,7 +106,7 @@ describe('createWriteTool', () => {
   })
 
   it('resolves relative paths against cwd', async () => {
-    const tool = createWriteTool(tmpDir)
+    const tool = createWriteTool(() => tmpDir)
 
     const result = await tool.call(
       { file_path: 'relative/file.txt', content: 'relative test' },

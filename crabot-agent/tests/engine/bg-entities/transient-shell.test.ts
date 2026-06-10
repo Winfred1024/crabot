@@ -42,13 +42,13 @@ afterEach(() => {
 describe('TransientShellRegistry', () => {
   it('spawn returns an entity_id with format shell_<hex>', () => {
     registry = new TransientShellRegistry()
-    const id = registry.spawn({ command: 'sleep 30', owner, spawned_by_task_id: 'task-1' })
+    const id = registry.spawn({ command: 'sleep 30', owner, spawned_by_task_id: 'task-1', cwd: process.cwd() })
     expect(id).toMatch(/^shell_[0-9a-f]{12}$/)
   })
 
   it('initial status is running', () => {
     registry = new TransientShellRegistry()
-    const id = registry.spawn({ command: 'sleep 30', owner, spawned_by_task_id: 'task-1' })
+    const id = registry.spawn({ command: 'sleep 30', owner, spawned_by_task_id: 'task-1', cwd: process.cwd() })
     expect(registry.get(id)?.status).toBe('running')
   })
 
@@ -58,6 +58,7 @@ describe('TransientShellRegistry', () => {
       command: 'echo hello && echo world >&2',
       owner,
       spawned_by_task_id: 'task-1',
+      cwd: process.cwd(),
     })
     await sleep(300)
     const state = registry.get(id)
@@ -67,7 +68,7 @@ describe('TransientShellRegistry', () => {
 
   it('status becomes completed after clean exit', async () => {
     registry = new TransientShellRegistry()
-    const id = registry.spawn({ command: 'exit 0', owner, spawned_by_task_id: 'task-1' })
+    const id = registry.spawn({ command: 'exit 0', owner, spawned_by_task_id: 'task-1', cwd: process.cwd() })
     await sleep(400)
     const state = registry.get(id)
     expect(state?.status).toBe('completed')
@@ -77,7 +78,7 @@ describe('TransientShellRegistry', () => {
 
   it('non-zero exit code marks status as failed', async () => {
     registry = new TransientShellRegistry()
-    const id = registry.spawn({ command: 'exit 7', owner, spawned_by_task_id: 'task-1' })
+    const id = registry.spawn({ command: 'exit 7', owner, spawned_by_task_id: 'task-1', cwd: process.cwd() })
     await sleep(400)
     const state = registry.get(id)
     expect(state?.status).toBe('failed')
@@ -86,7 +87,7 @@ describe('TransientShellRegistry', () => {
 
   it('kill() terminates a running process', async () => {
     registry = new TransientShellRegistry()
-    const id = registry.spawn({ command: 'sleep 30', owner, spawned_by_task_id: 'task-1' })
+    const id = registry.spawn({ command: 'sleep 30', owner, spawned_by_task_id: 'task-1', cwd: process.cwd() })
     await sleep(100)
     registry.kill(id)
     await sleep(300)
@@ -95,7 +96,7 @@ describe('TransientShellRegistry', () => {
 
   it('kill() is a no-op on an already-exited shell', async () => {
     registry = new TransientShellRegistry()
-    const id = registry.spawn({ command: 'exit 0', owner, spawned_by_task_id: 'task-1' })
+    const id = registry.spawn({ command: 'exit 0', owner, spawned_by_task_id: 'task-1', cwd: process.cwd() })
     await sleep(400)
     expect(registry.get(id)?.status).toBe('completed')
     // Should not throw or change status
@@ -109,10 +110,10 @@ describe('TransientShellRegistry', () => {
     const idsB: string[] = []
 
     for (let i = 0; i < 3; i++) {
-      idsA.push(registry.spawn({ command: 'sleep 30', owner, spawned_by_task_id: 'task-A' }))
+      idsA.push(registry.spawn({ command: 'sleep 30', owner, spawned_by_task_id: 'task-A', cwd: process.cwd() }))
     }
     for (let i = 0; i < 2; i++) {
-      idsB.push(registry.spawn({ command: 'sleep 30', owner: ownerB, spawned_by_task_id: 'task-B' }))
+      idsB.push(registry.spawn({ command: 'sleep 30', owner: ownerB, spawned_by_task_id: 'task-B', cwd: process.cwd() }))
     }
 
     await sleep(100)
@@ -129,8 +130,8 @@ describe('TransientShellRegistry', () => {
 
   it('list() filters by owner_friend_id', async () => {
     registry = new TransientShellRegistry()
-    registry.spawn({ command: 'sleep 30', owner, spawned_by_task_id: 'task-1' })
-    registry.spawn({ command: 'sleep 30', owner: ownerB, spawned_by_task_id: 'task-2' })
+    registry.spawn({ command: 'sleep 30', owner, spawned_by_task_id: 'task-1', cwd: process.cwd() })
+    registry.spawn({ command: 'sleep 30', owner: ownerB, spawned_by_task_id: 'task-2', cwd: process.cwd() })
 
     const results = registry.list({ owner_friend_id: 'friend-001' })
     expect(results).toHaveLength(1)
@@ -139,8 +140,8 @@ describe('TransientShellRegistry', () => {
 
   it('list() filters by status', async () => {
     registry = new TransientShellRegistry()
-    const idRunning = registry.spawn({ command: 'sleep 30', owner, spawned_by_task_id: 'task-1' })
-    const idDone = registry.spawn({ command: 'exit 0', owner, spawned_by_task_id: 'task-2' })
+    const idRunning = registry.spawn({ command: 'sleep 30', owner, spawned_by_task_id: 'task-1', cwd: process.cwd() })
+    const idDone = registry.spawn({ command: 'exit 0', owner, spawned_by_task_id: 'task-2', cwd: process.cwd() })
     await sleep(400)
 
     const running = registry.list({ status: ['running'] })
@@ -159,6 +160,7 @@ describe('TransientShellRegistry', () => {
       command: 'yes | head -c 300000',
       owner,
       spawned_by_task_id: 'task-1',
+      cwd: process.cwd(),
     })
     await sleep(800)
     const state = registry.get(id)
@@ -222,8 +224,8 @@ describe('TransientShellRegistry', () => {
   it('size() returns total registered entity count', () => {
     registry = new TransientShellRegistry()
     expect(registry.size()).toBe(0)
-    registry.spawn({ command: 'sleep 30', owner, spawned_by_task_id: 'task-1' })
-    registry.spawn({ command: 'sleep 30', owner, spawned_by_task_id: 'task-2' })
+    registry.spawn({ command: 'sleep 30', owner, spawned_by_task_id: 'task-1', cwd: process.cwd() })
+    registry.spawn({ command: 'sleep 30', owner, spawned_by_task_id: 'task-2', cwd: process.cwd() })
     expect(registry.size()).toBe(2)
   })
 })

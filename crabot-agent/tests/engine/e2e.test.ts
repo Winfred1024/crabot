@@ -128,7 +128,7 @@ describe('Engine E2E', () => {
   describe('multi-step file operations', () => {
     it('should write, read, and edit a file across multiple turns', async () => {
       const targetPath = join(tempDir, 'hello.txt')
-      const tools = getAllBuiltinTools(tempDir)
+      const tools = getAllBuiltinTools(() => tempDir)
 
       const adapter = createScriptedAdapter([
         // Turn 1: Write a file
@@ -200,7 +200,7 @@ describe('Engine E2E', () => {
       await writeFile(join(subDir, 'main.ts'), 'export function hello() { return "hi" }')
       await writeFile(join(subDir, 'utils.ts'), 'export function greet(name: string) { return `Hello ${name}` }')
 
-      const tools = getAllBuiltinTools(tempDir)
+      const tools = getAllBuiltinTools(() => tempDir)
 
       const adapter = createScriptedAdapter([
         // Turn 1: Glob for .ts files
@@ -250,7 +250,7 @@ describe('Engine E2E', () => {
       const filePath = join(tempDir, 'readable.txt')
       await writeFile(filePath, 'permitted content')
 
-      const tools = getAllBuiltinTools(tempDir)
+      const tools = getAllBuiltinTools(() => tempDir)
 
       const turnEvents: Array<{ toolCalls: ReadonlyArray<{ name: string }> }> = []
 
@@ -312,7 +312,7 @@ describe('Engine E2E', () => {
   // -----------------------------------------------------------------------
   describe('maxTurns enforcement', () => {
     it('should stop with max_turns outcome when limit is reached', async () => {
-      const tools = getAllBuiltinTools(tempDir)
+      const tools = getAllBuiltinTools(() => tempDir)
 
       // Script that always calls a tool (never ends naturally)
       const infiniteScript: ScriptEntry[] = Array.from(
@@ -346,7 +346,7 @@ describe('Engine E2E', () => {
   // -----------------------------------------------------------------------
   describe('abort signal', () => {
     it('should stop with aborted outcome when signal is already aborted', async () => {
-      const tools = getAllBuiltinTools(tempDir)
+      const tools = getAllBuiltinTools(() => tempDir)
 
       const controller = new AbortController()
       // Pre-abort so the engine sees it immediately at the top of the loop
@@ -367,7 +367,7 @@ describe('Engine E2E', () => {
     })
 
     it('should abort mid-stream when signal fires during chunk iteration', async () => {
-      const tools = getAllBuiltinTools(tempDir)
+      const tools = getAllBuiltinTools(() => tempDir)
 
       const controller = new AbortController()
 
@@ -461,7 +461,7 @@ describe('Engine E2E', () => {
   // -----------------------------------------------------------------------
   describe('simple text response', () => {
     it('should complete in one turn with no tool calls', async () => {
-      const tools = getAllBuiltinTools(tempDir)
+      const tools = getAllBuiltinTools(() => tempDir)
 
       const adapter = createScriptedAdapter([
         { text: 'The answer is 42.' },
@@ -486,7 +486,7 @@ describe('Engine E2E', () => {
   // -----------------------------------------------------------------------
   describe('callbacks', () => {
     it('should fire onTurn during execution', async () => {
-      const tools = getAllBuiltinTools(tempDir)
+      const tools = getAllBuiltinTools(() => tempDir)
       const turnEvents: number[] = []
 
       const adapter = createScriptedAdapter([
@@ -522,7 +522,7 @@ describe('Engine E2E', () => {
   // -----------------------------------------------------------------------
   describe('bash tool integration', () => {
     it('should execute bash commands in the correct cwd', async () => {
-      const tools = getAllBuiltinTools(tempDir)
+      const tools = getAllBuiltinTools(() => tempDir)
 
       const adapter = createScriptedAdapter([
         {

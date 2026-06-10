@@ -23,7 +23,7 @@ describe('createEditTool', () => {
   }
 
   it('returns correct ToolDefinition metadata', () => {
-    const tool = createEditTool(tempDir)
+    const tool = createEditTool(() => tempDir)
 
     expect(tool.name).toBe('Edit')
     expect(tool.isReadOnly).toBe(false)
@@ -42,7 +42,7 @@ describe('createEditTool', () => {
 
   it('replaces a unique string', async () => {
     const filePath = writeTestFile('test.txt', 'hello world\ngoodbye world\n')
-    const tool = createEditTool(tempDir)
+    const tool = createEditTool(() => tempDir)
 
     const result = await tool.call(
       { file_path: filePath, old_string: 'hello world', new_string: 'hi world' },
@@ -57,7 +57,7 @@ describe('createEditTool', () => {
 
   it('returns error when old_string not found', async () => {
     const filePath = writeTestFile('test.txt', 'hello world\n')
-    const tool = createEditTool(tempDir)
+    const tool = createEditTool(() => tempDir)
 
     const result = await tool.call(
       { file_path: filePath, old_string: 'not here', new_string: 'replacement' },
@@ -70,7 +70,7 @@ describe('createEditTool', () => {
 
   it('returns error when old_string found multiple times without replace_all', async () => {
     const filePath = writeTestFile('test.txt', 'aaa\nbbb\naaa\nccc\naaa\n')
-    const tool = createEditTool(tempDir)
+    const tool = createEditTool(() => tempDir)
 
     const result = await tool.call(
       { file_path: filePath, old_string: 'aaa', new_string: 'zzz' },
@@ -86,7 +86,7 @@ describe('createEditTool', () => {
 
   it('replace_all=true replaces all occurrences', async () => {
     const filePath = writeTestFile('test.txt', 'aaa\nbbb\naaa\nccc\naaa\n')
-    const tool = createEditTool(tempDir)
+    const tool = createEditTool(() => tempDir)
 
     const result = await tool.call(
       { file_path: filePath, old_string: 'aaa', new_string: 'zzz', replace_all: true },
@@ -101,7 +101,7 @@ describe('createEditTool', () => {
 
   it('returns error when old_string === new_string', async () => {
     const filePath = writeTestFile('test.txt', 'hello world\n')
-    const tool = createEditTool(tempDir)
+    const tool = createEditTool(() => tempDir)
 
     const result = await tool.call(
       { file_path: filePath, old_string: 'hello', new_string: 'hello' },
@@ -114,7 +114,7 @@ describe('createEditTool', () => {
 
   it('reports correct line numbers', async () => {
     const filePath = writeTestFile('test.txt', 'line1\nline2\ntarget\nline4\nline5\ntarget\n')
-    const tool = createEditTool(tempDir)
+    const tool = createEditTool(() => tempDir)
 
     const result = await tool.call(
       { file_path: filePath, old_string: 'target', new_string: 'replaced', replace_all: true },
@@ -127,7 +127,7 @@ describe('createEditTool', () => {
 
   it('resolves relative file paths against cwd', async () => {
     writeTestFile('relative.txt', 'old content\n')
-    const tool = createEditTool(tempDir)
+    const tool = createEditTool(() => tempDir)
 
     const result = await tool.call(
       { file_path: 'relative.txt', old_string: 'old content', new_string: 'new content' },

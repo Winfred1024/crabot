@@ -10,7 +10,7 @@ describe('createReadTool', () => {
 
   beforeEach(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'read-tool-test-'))
-    tool = createReadTool(tmpDir)
+    tool = createReadTool(() => tmpDir)
   })
 
   afterEach(async () => {

@@ -73,12 +73,14 @@ describe('TraceStore', () => {
         const result = store2.searchTraces({ task_id: 'task-victim' })
         expect(result.traces.length).toBe(1)
         expect(result.traces[0].trace_id).toBe(trace.trace_id)
-        expect(result.traces[0].status).toBe('running')
+        // 重启后 in-flight trace 被标为 failed (interrupted)，不保持 running
+        expect(result.traces[0].status).toBe('failed')
 
         // getTrace 也应该能拿到完整数据（spans 等）
         const full = store2.getTrace(trace.trace_id)
         expect(full).toBeDefined()
         expect(full?.spans?.length ?? 0).toBeGreaterThan(0)
+        expect(full?.outcome?.summary).toContain('interrupted')
       } finally {
         fs.rmSync(dir, { recursive: true, force: true })
       }

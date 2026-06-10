@@ -81,6 +81,7 @@ describe('spawnPersistentShell with traceContext', () => {
       command: 'sleep 10',
       owner: { friend_id: 'user-A' },
       spawned_by_task_id: 'task-1',
+      cwd: process.cwd(),
       registry,
       traceContext,
     })
@@ -100,6 +101,7 @@ describe('spawnPersistentShell with traceContext', () => {
       command: 'exit 0',
       owner: { friend_id: 'user-A' },
       spawned_by_task_id: 'task-2',
+      cwd: process.cwd(),
       registry,
       traceContext,
     })
@@ -132,6 +134,7 @@ describe('spawnPersistentShell with traceContext', () => {
       command: 'exit 7',
       owner: { friend_id: 'user-A' },
       spawned_by_task_id: 'task-3',
+      cwd: process.cwd(),
       registry,
       traceContext,
     })
@@ -157,6 +160,7 @@ describe('spawnPersistentShell with traceContext', () => {
       command: 'sleep 10',
       owner: { friend_id: 'user-A' },
       spawned_by_task_id: 'task-4',
+      cwd: process.cwd(),
       registry,
       // no traceContext
     })
@@ -183,6 +187,7 @@ describe('TransientShellRegistry.spawn with traceContext', () => {
       command: 'sleep 10',
       owner: { friend_id: 'user-B' },
       spawned_by_task_id: 'task-5',
+      cwd: process.cwd(),
       traceContext,
     })
     transient.kill(entityId)
@@ -201,6 +206,7 @@ describe('TransientShellRegistry.spawn with traceContext', () => {
       command: 'exit 0',
       owner: { friend_id: 'user-B' },
       spawned_by_task_id: 'task-6',
+      cwd: process.cwd(),
       traceContext,
     })
 
@@ -230,6 +236,7 @@ describe('TransientShellRegistry.spawn with traceContext', () => {
       command: 'sleep 10',
       owner: { friend_id: 'user-B' },
       spawned_by_task_id: 'task-7',
+      cwd: process.cwd(),
       // no traceContext
     })
 

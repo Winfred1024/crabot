@@ -90,6 +90,7 @@ describe('Output tool', () => {
       command: 'echo hello',
       owner: OWNER_A,
       spawned_by_task_id: TASK_ID,
+      cwd: process.cwd(),
       registry,
     })
 
@@ -111,6 +112,7 @@ describe('Output tool', () => {
       command: 'echo first; sleep 0.3; echo second',
       owner: OWNER_A,
       spawned_by_task_id: TASK_ID,
+      cwd: process.cwd(),
       registry,
     })
 
@@ -138,6 +140,7 @@ describe('Output tool', () => {
       command: 'echo transient_output',
       owner: OWNER_A,
       spawned_by_task_id: TASK_ID,
+      cwd: process.cwd(),
     })
 
     await sleep(300)
@@ -243,6 +246,7 @@ describe('Output tool', () => {
       command: 'echo shared_data',
       owner: OWNER_A,
       spawned_by_task_id: TASK_ID,
+      cwd: process.cwd(),
       registry,
     })
 
@@ -284,6 +288,7 @@ describe('Kill tool', () => {
       command: 'sleep 30',
       owner: OWNER_A,
       spawned_by_task_id: TASK_ID,
+      cwd: process.cwd(),
       registry,
     })
 
@@ -307,6 +312,7 @@ describe('Kill tool', () => {
       command: 'exit 0',
       owner: OWNER_A,
       spawned_by_task_id: TASK_ID,
+      cwd: process.cwd(),
       registry,
     })
 
@@ -330,6 +336,7 @@ describe('Kill tool', () => {
       command: 'sleep 30',
       owner: OWNER_A,
       spawned_by_task_id: TASK_ID,
+      cwd: process.cwd(),
     })
 
     await sleep(100)
@@ -370,6 +377,7 @@ describe('ListEntities tool', () => {
       command: 'sleep 30',
       owner: OWNER_A,
       spawned_by_task_id: TASK_ID,
+      cwd: process.cwd(),
       registry,
     })
 
@@ -380,6 +388,7 @@ describe('ListEntities tool', () => {
       command: 'sleep 30',
       owner: OWNER_A,
       spawned_by_task_id: TASK_ID,
+      cwd: process.cwd(),
     })
 
     const tool = createListEntitiesTool(deps)
@@ -396,6 +405,7 @@ describe('ListEntities tool', () => {
       command: 'sleep 30',
       owner: OWNER_A,
       spawned_by_task_id: TASK_ID,
+      cwd: process.cwd(),
       registry,
     })
 
@@ -406,6 +416,7 @@ describe('ListEntities tool', () => {
       command: 'sleep 30',
       owner: OWNER_A,
       spawned_by_task_id: TASK_ID,
+      cwd: process.cwd(),
     })
 
     // One entity for owner B
@@ -413,6 +424,7 @@ describe('ListEntities tool', () => {
       command: 'sleep 30',
       owner: OWNER_B,
       spawned_by_task_id: 'task-B',
+      cwd: process.cwd(),
       registry,
     })
 
@@ -434,6 +446,7 @@ describe('ListEntities tool', () => {
       command: 'sleep 30',
       owner: OWNER_A,
       spawned_by_task_id: TASK_ID,
+      cwd: process.cwd(),
       registry,
     })
 
@@ -445,6 +458,7 @@ describe('ListEntities tool', () => {
       command: 'exit 0',
       owner: OWNER_A,
       spawned_by_task_id: TASK_ID,
+      cwd: process.cwd(),
       registry,
     })
 
@@ -460,6 +474,7 @@ describe('ListEntities tool', () => {
       command: 'sleep 30',
       owner: OWNER_A,
       spawned_by_task_id: TASK_ID,
+      cwd: process.cwd(),
       registry,
     })
 
@@ -492,6 +507,7 @@ describe('ListEntities tool', () => {
       command: 'sleep 30',
       owner: OWNER_A,
       spawned_by_task_id: TASK_ID,
+      cwd: process.cwd(),
     })
 
     // Another task's transient shell (same owner, different task)
@@ -499,6 +515,7 @@ describe('ListEntities tool', () => {
       command: 'sleep 30',
       owner: OWNER_A,
       spawned_by_task_id: 'task-other-xyz',
+      cwd: process.cwd(),
     })
 
     const tool = createListEntitiesTool(deps) // taskId = TASK_ID
@@ -661,6 +678,7 @@ describe('agent type branch', () => {
       command: 'sleep 30',
       owner: { friend_id: OWNER_FRIEND_ID, session_id: 'sess-A' },
       spawned_by_task_id: TASK_ID,
+      cwd: process.cwd(),
       registry,
     })
     const shellRec = await registry.get(shellId)

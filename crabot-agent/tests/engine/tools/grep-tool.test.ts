@@ -11,7 +11,7 @@ describe('createGrepTool', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'grep-tool-test-'))
-    tool = createGrepTool(tmpDir)
+    tool = createGrepTool(() => tmpDir)
 
     // Create test file structure
     fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true })

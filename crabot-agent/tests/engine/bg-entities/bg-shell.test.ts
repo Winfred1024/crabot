@@ -49,6 +49,7 @@ describe('spawnPersistentShell', () => {
       command: 'sleep 5',
       owner: { friend_id: 'user-A' },
       spawned_by_task_id: 'task-1',
+      cwd: process.cwd(),
       registry,
     })
 
@@ -64,6 +65,7 @@ describe('spawnPersistentShell', () => {
       command: 'sleep 5',
       owner: { friend_id: 'user-A' },
       spawned_by_task_id: 'task-2',
+      cwd: process.cwd(),
       registry,
     })
 
@@ -82,6 +84,7 @@ describe('spawnPersistentShell', () => {
       command: 'sleep 5',
       owner: { friend_id: 'user-A' },
       spawned_by_task_id: 'task-3',
+      cwd: process.cwd(),
       registry,
     })
 
@@ -99,6 +102,7 @@ describe('spawnPersistentShell', () => {
       command: 'echo hello_bg_shell',
       owner: { friend_id: 'user-A' },
       spawned_by_task_id: 'task-4',
+      cwd: process.cwd(),
       registry,
     })
 
@@ -117,6 +121,7 @@ describe('spawnPersistentShell', () => {
       command: 'exit 0',
       owner: { friend_id: 'user-A' },
       spawned_by_task_id: 'task-5',
+      cwd: process.cwd(),
       registry,
     })
 
@@ -139,6 +144,7 @@ describe('spawnPersistentShell', () => {
       command: 'exit 7',
       owner: { friend_id: 'user-A' },
       spawned_by_task_id: 'task-6',
+      cwd: process.cwd(),
       registry,
     })
 
@@ -161,6 +167,7 @@ describe('spawnPersistentShell', () => {
       command: 'sleep 5',
       owner,
       spawned_by_task_id: 'task-7',
+      cwd: process.cwd(),
       registry,
     })
 
@@ -178,6 +185,7 @@ describe('spawnPersistentShell', () => {
       command: 'sleep 0.1 && echo survived_detach',
       owner: { friend_id: 'user-A' },
       spawned_by_task_id: 'task-8',
+      cwd: process.cwd(),
       registry,
     })
 

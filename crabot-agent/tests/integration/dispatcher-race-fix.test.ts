@@ -153,7 +153,8 @@ describe('dispatcher race fix - msg₂ 立即可 supplement msg₁ 的 agent 实
 
     expect(pushSupplement).not.toHaveBeenCalled()
     expect(spawnAgentInstance).toHaveBeenCalledTimes(1)
-    expect(spawnAgentInstance).toHaveBeenCalledWith('查一下今天 github 早报')
+    // 第二参数是 spawnOptions：无 immediate_reply 时 executor 显式传 undefined
+    expect(spawnAgentInstance).toHaveBeenCalledWith('查一下今天 github 早报', undefined)
   })
 
   it('混合：dispatcher 输出 supplement + new_task → executor 两个都执行（按顺序）', async () => {
@@ -211,6 +212,6 @@ describe('dispatcher race fix - msg₂ 立即可 supplement msg₁ 的 agent 实
     // supplement 必须先于 new_task 执行（顺序保证）
     expect(calls).toEqual(['supp', 'spawn'])
     expect(pushSupplement).toHaveBeenCalledWith('task-A', '只查红米')
-    expect(spawnAgentInstance).toHaveBeenCalledWith('查一下今天 github 早报')
+    expect(spawnAgentInstance).toHaveBeenCalledWith('查一下今天 github 早报', undefined)
   })
 })
