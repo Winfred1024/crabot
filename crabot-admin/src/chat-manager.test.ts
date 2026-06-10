@@ -72,6 +72,21 @@ describe('ChatManager.handleSendMessage', () => {
     expect(mgr.getMessages(10)[0].content).toBe('成员加入：小明')
   })
 
+  it('WS send 同步抛错时推送 best-effort 吞错，不污染调用方', async () => {
+    const mgr = makeManager()
+    ;(mgr as unknown as { activeClient: unknown }).activeClient = {
+      readyState: 1, // WebSocket.OPEN
+      send: () => { throw new Error('socket closing') },
+    }
+    // handleSendMessage（内部 pushToClient）与 pushTaskUpdate 都不应抛错
+    await expect(
+      mgr.handleSendMessage({ session_id: 'admin-chat', content: { type: 'text', text: 'ok' } })
+    ).resolves.toBeTruthy()
+    expect(() =>
+      mgr.pushTaskUpdate({ task_id: 't1' as never, status: 'executing' as never, title: 'x' })
+    ).not.toThrow()
+  })
+
   it('空文本抛错', async () => {
     const mgr = makeManager()
     await expect(

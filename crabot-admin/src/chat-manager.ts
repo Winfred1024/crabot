@@ -224,7 +224,13 @@ export class ChatManager {
 
   private pushToClient(message: ChatServerMessage): void {
     if (this.activeClient && this.activeClient.readyState === WebSocket.OPEN) {
-      this.activeClient.send(JSON.stringify(message))
+      // send 在 OPEN→CLOSING 竞态下可能同步抛错；推送是 best-effort，
+      // 不能让异常冒泡污染调用方（尤其任务状态机 applyStatusTransition 钩子）
+      try {
+        this.activeClient.send(JSON.stringify(message))
+      } catch (error) {
+        console.warn('[ChatManager] pushToClient failed:', error instanceof Error ? error.message : String(error))
+      }
     }
   }
 
