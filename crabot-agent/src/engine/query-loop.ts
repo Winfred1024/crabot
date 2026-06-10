@@ -171,23 +171,32 @@ async function drainAndDispatchMarkers(
   return { remainingTexts, shouldExitCompleted }
 }
 
-/** 构造 audit fail 时注入给 worker 的 user message 文案 */
+/** 构造 audit fail 时注入给 worker 的 user message 文案。
+ *  框架：差距对照的是"人类的要求"而非 worker 自己的承诺（判决锚点 = 人类原话，
+ *  spec 2026-06-10-audit-anchor-human-request §3.5），并明确给出两条出口。 */
 function formatAuditFailReport(result: AuditResultMarker): string {
   const lines: string[] = [
-    '[crabot 内部 / 仅你可见] 自检发现交付与你的承诺有差距——这是你和系统之间的事，人类看不见，不要把这段内容转给人类。',
+    '[crabot 内部 / 仅你可见] 自检发现交付与人类的要求还有差距——这是你和系统之间的事，人类看不见，不要把这段内容转给人类。',
     '',
   ]
   if (result.failedCriteria.length > 0) {
-    lines.push('## 还没满足的承诺项')
+    lines.push(`## 人类要求里还没满足的（${result.failedCriteria.length} 项）`)
     for (const c of result.failedCriteria) {
       lines.push(`- ${c}`)
     }
     lines.push('')
   }
   if (result.detailedReport) {
-    lines.push('## 详细报告')
+    lines.push('## 详细报告（含自检对人类要求的提炼，理解有误可在续作中用证据反驳）')
     lines.push(result.detailedReport)
+    lines.push('')
   }
+  lines.push('## 接下来')
+  lines.push('- 补完缺口后重新 send_message 交付，系统会自动再审；不要原样重发同一条消息')
+  lines.push(
+    '- 客观做不到 / 人类要求自相矛盾 / 你认为自检理解错了需求 → '
+    + "send_message(intent='ask_human') 向人类说明情况（用人话，不要提自检机制或贴这段报告）",
+  )
   return lines.join('\n')
 }
 

@@ -32,20 +32,22 @@ export interface SetTaskGoalDeps {
   readonly abortAudit?: (reason: string) => void
 }
 
-const TOOL_DESCRIPTION = `在动手前写下本任务的完成承诺。**复杂任务（≥2 个独立动作 / 跨多 turn / 用户明确说"确保 X""完成 Y 后通知我"）必须先调本工具。**
+const TOOL_DESCRIPTION = `在动手前写下本任务的工作计划与自验承诺。**复杂任务（≥2 个独立动作 / 跨多 turn / 用户明确说"确保 X""完成 Y 后通知我"）必须先调本工具。**
+
+acceptance_criteria 是**你的自验计划**——你打算用什么方式证明自己做完了。注意：交付的判决标准是**人类的原始请求**（原话），不是你写的 criteria——计划写得再窄也挡不住审计按人类原话验收，所以照实写、写全。
 
 调用本工具后：
-- 你的承诺锁定到 task.goal，不可由你自己修改
+- 你的计划锁定到 task.goal，不可由你自己修改
 - 之后可以调 todo 工具拆步骤（todo 工具被门控：没目标拒绝调用）
-- send_message(intent='info') 完成交付后 end_turn，系统会自动跑独立审计员对照你写下的 acceptance_criteria 验证证据
-- 审计未通过 → 工具返回错误 + 下一轮你会拿到详细缺口报告
+- send_message(intent='info') 完成交付后 end_turn，系统会自动跑独立审计员：以人类原始请求为标准验收，你的 criteria 作为取证线索（cmd/file 类会被实际执行）
+- 审计未通过 → 下一轮你会拿到详细缺口报告
 
 简单任务（直接问答 / 一次工具调用即可）**不必**调本工具，直接 send_message(intent='info') 后 end_turn 即可，无 goal 不触发审计。
 
 acceptance_criteria 至少 1 条，每条结构：
 - id: 短 id（如 c-typecheck），audit 报告里用来定位
 - kind: cmd | file | semantic
-- spec: kind=cmd 时是命令；kind=file 时是路径；kind=semantic 时是自然语言验证标准
+- spec: kind=cmd 时是命令（写成可直接执行的）；kind=file 时是路径；kind=semantic 时是自然语言验证标准
 - expect?: { exit_code?, stdout_contains?, stdout_matches? }（cmd/file 用）
 - rationale?: 给 auditor 看的解释`
 

@@ -784,6 +784,7 @@ export class AgentHandler {
         activeAuditId: undefined,
         activeAsyncSubagentIds: new Set<string>(),
         everSentMessage: false,
+        everBufferedMessage: false,
         silentNoDeliveryRetries: 0,
       }
       this.activeTasks.set(task.task_id, taskState)
@@ -986,6 +987,11 @@ export class AgentHandler {
           onDispatched: (entry, sendResult) => {
             taskState.everSentMessage = true
             this.appendAgentMessageBestEffort(taskState.taskId, entry, sendResult)
+          },
+          // 进 buffer ≠ 送达：audit fail 会整体丢弃 buffer。endTurnGate 用此标志
+          // 把"交付被拦"与"从未交付"区分开（spec 2026-06-10 §3.5）。
+          onBuffered: () => {
+            taskState.everBufferedMessage = true
           },
           // 透传 sub-agent trace 上下文：让 audit gate 触发的 audit subagent
           // 产生的 sub_agent_call span 挂到主 worker trace 下，admin UI 能渲染。
@@ -1808,6 +1814,7 @@ export class AgentHandler {
       activeAuditId: undefined,
       activeAsyncSubagentIds: new Set<string>(),
       everSentMessage: false,
+      everBufferedMessage: false,
       silentNoDeliveryRetries: 0,
     })
 

@@ -814,6 +814,16 @@ export interface WorkerTaskState {
    */
   everSentMessage: boolean
   /**
+   * Task 生命周期内是否至少一次 send_message(intent='info') 进过 outboundBuffer
+   * （即"worker 交付过但可能被 audit 拦下/丢弃"）。一旦置 true 不再清零。
+   *
+   * endTurnGate 用它区分 NO_DELIVERY 提示的两种情形：从未调过 send_message（保持
+   * 原文案）vs 调过但被 audit 拦下（换文案——否则 worker 看到"你从未交付"会
+   * 原样重发同一条消息，trace e1c9663f 死循环成因之三）。
+   * spec: 2026-06-10-audit-anchor-human-request §3.5
+   */
+  everBufferedMessage: boolean
+  /**
    * endTurnGate "buffer 空 + has goal + !everSentMessage" 路径已塞 GOAL_MODE_NO_DELIVERY_PROMPT 次数。
    * 累计 3 次仍 silent end_turn → 第 4 次切换强制派 audit subagent 路径（even with empty buffer）。
    * spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.13.3 / §4.13.4

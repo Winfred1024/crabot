@@ -36,6 +36,20 @@ export const GOAL_MODE_NO_DELIVERY_PROMPT =
   + '  ② 如果遇到实际阻塞或需要人类决策，调 send_message(intent=\'ask_human\') 提问\n'
   + '不要再次直接 end_turn——它会再次注入本提示，反复 3 次后强制派 audit subagent 评估你的进度。'
 
+/**
+ * 同一路径但 everBufferedMessage=true 时的变体：worker 调过 send_message，消息进过
+ * buffer 但被 audit fail 丢弃、从未送达人类。此时再说"你从未交付任何内容"对 worker
+ * 是误导——它会以为消息没发出去而原样重发同一条，触发"重发→再审→再 fail"死循环
+ * （trace e1c9663f 成因之三）。spec 2026-06-10-audit-anchor-human-request §3.5
+ */
+export const GOAL_MODE_INTERCEPTED_DELIVERY_PROMPT =
+  '你之前的交付未通过自检，消息没有送达人类（被系统拦下丢弃了）。\n'
+  + '不要原样重发同一条消息——内容不变，自检结果也不会变。请选一条路径继续：\n'
+  + '  ① 对照上一轮自检报告指出的差距，把缺口补完后重新 send_message 交付，系统会自动再审\n'
+  + '  ② 客观做不到 / 你认为自检理解错了需求 → 调 send_message(intent=\'ask_human\') 向人类'
+  + '说明情况（用人话描述你想做什么、卡在哪，不要提自检机制）\n'
+  + '不要再次直接 end_turn——它会再次注入本提示，反复 3 次后强制派 audit subagent 评估你的进度。'
+
 const MAX_SILENT_NO_DELIVERY_RETRIES = 3
 
 export interface AsyncAuditEndTurnGateDeps {
@@ -90,10 +104,12 @@ export function createAsyncAuditEndTurnGate(
         // 讨论型放行：之前 flush 过 info，这次没事干 end_turn 是预期行为
         return null
       }
-      // !everSentMessage：goal 设了但从未交付
+      // !everSentMessage：goal 设了但从未送达——按"交付被拦"vs"从未交付"分文案
       if (deps.taskState.silentNoDeliveryRetries < MAX_SILENT_NO_DELIVERY_RETRIES) {
         deps.taskState.silentNoDeliveryRetries++
-        return GOAL_MODE_NO_DELIVERY_PROMPT
+        return deps.taskState.everBufferedMessage
+          ? GOAL_MODE_INTERCEPTED_DELIVERY_PROMPT
+          : GOAL_MODE_NO_DELIVERY_PROMPT
       }
       // 兜底耗尽：fall through 到 audit-spawn 共享路径，强制派 audit（buffer 空也派，让 auditor 跑一次正式评估）
     }

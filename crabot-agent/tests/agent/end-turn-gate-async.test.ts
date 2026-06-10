@@ -20,6 +20,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
   createAsyncAuditEndTurnGate,
   GOAL_MODE_NO_DELIVERY_PROMPT,
+  GOAL_MODE_INTERCEPTED_DELIVERY_PROMPT,
   type AsyncAuditEndTurnGateDeps,
 } from '../../src/agent/end-turn-gate'
 import { parseSystemMarker } from '../../src/agent/audit-result-marker'
@@ -61,6 +62,7 @@ function makeTaskState(overrides: Partial<WorkerTaskState> = {}): WorkerTaskStat
     activeAsyncSubagentIds: new Set<string>(),
     // §4.13 默认：未发过、零计数。具体测试按需 override 模拟"讨论型 / 已塞过 N 次 prompt"等场景。
     everSentMessage: false,
+    everBufferedMessage: false,
     silentNoDeliveryRetries: 0,
     ...overrides,
   }
@@ -277,6 +279,23 @@ describe('createAsyncAuditEndTurnGate § 4.13 二级分支', () => {
     expect(h.rpcCall).not.toHaveBeenCalled()
     expect(h.spawnFn).not.toHaveBeenCalled()
     expect(h.taskState.activeAuditId).toBeUndefined()
+  })
+
+  it('trace e1c9663f 重现：buffer 空 + !everSentMessage + everBufferedMessage=true → 返回"交付被拦"变体文案（不再误导"从未交付"）', async () => {
+    const h = makeHarness({
+      bufferEntries: [],
+      everSentMessage: false,
+      silentNoDeliveryRetries: 0,
+    })
+    h.taskState.everBufferedMessage = true
+    const gate = createAsyncAuditEndTurnGate(h.deps)
+
+    const result = await gate()
+
+    expect(result).toBe(GOAL_MODE_INTERCEPTED_DELIVERY_PROMPT)
+    expect(result).not.toBe(GOAL_MODE_NO_DELIVERY_PROMPT)
+    expect(h.taskState.silentNoDeliveryRetries).toBe(1)
+    expect(h.spawnFn).not.toHaveBeenCalled()
   })
 
   it('retries=1, 2 时仍塞 prompt + 计数 +1', async () => {

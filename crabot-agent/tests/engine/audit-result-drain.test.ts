@@ -215,7 +215,7 @@ describe('query-loop: audit_result marker drain dispatch', () => {
     expect(dropSpy).toHaveBeenCalledTimes(1)
     expect(clearAuditSpy).toHaveBeenCalledTimes(1)
     // detailedReport 应被注入
-    const failReport = injections.find((e) => e.text.includes('还没满足的承诺项'))
+    const failReport = injections.find((e) => e.text.includes('人类要求里还没满足的'))
     expect(failReport).toBeDefined()
     expect(failReport?.text).toContain('未发送最终成绩单')
     expect(failReport?.text).toContain('你说"我搞定了"')

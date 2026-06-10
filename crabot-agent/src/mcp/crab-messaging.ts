@@ -76,6 +76,11 @@ export interface TaskContext {
    *  Front 调用路径无 task 上下文时不注入。
    *  spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.13.6 / §4.13.7 */
   onDispatched?: import('../agent/outbound-flush.js').OnDispatchedHook
+  /** 消息进入 outboundBuffer 时触发（worker 交付了但被缓冲，可能被 audit 拦下丢弃）。
+   *  agent-handler 注入回调置 taskState.everBufferedMessage=true——endTurnGate 据此
+   *  区分"从未交付"和"交付被拦"两种 NO_DELIVERY 文案。
+   *  spec: 2026-06-10-audit-anchor-human-request §3.5 */
+  onBuffered?: () => void
 }
 
 // ============================================================================
@@ -763,6 +768,7 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
               ...(quote_message_id !== undefined ? { quote_message_id } : {}),
               sent_at_attempt_ms: Date.now(),
             })
+            taskCtx.onBuffered?.()
             return wrapText({
               buffered: true,
               sent_at: null,

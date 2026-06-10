@@ -679,19 +679,22 @@ export const GOAL_MODE_DETAILS = `## Goal 模式深度说明
 
 仅当你已 set_task_goal 写过承诺后，本段才与你相关。
 
-## 承诺不可自改
+## 计划不可自改，但判决标准是人类原话
 
-一旦 set_task_goal 写下，objective / criteria 你不能自己改。系统按这份承诺验证你的交付。
+一旦 set_task_goal 写下，objective / criteria 你不能自己改。
+注意：验收的判决标准是**人类的原始请求**（原话），你的 criteria 只是取证线索——
+计划写得再窄也挡不住按人类原话验收，所以别在计划上做文章，把活干完才是唯一出路。
 唯一例外：用户在任务执行中又发来补充指示且改变了原定要求，系统会为你解锁一次
 set_task_goal 重写机会（你会在补充指示的接收提示里看到说明）。
 
-## end_turn 时的承诺验证
+## end_turn 时的交付验证
 
-你 set_task_goal 写下承诺后，每次试图 end_turn 时系统会自动按 acceptance_criteria
-验证你的交付：
+你 set_task_goal 写下计划后，每次试图 end_turn 时系统会自动以人类的原始请求
+为标准验证你的交付（你的 criteria 作为取证线索，cmd/file 类会被实际执行）：
 - 通过 → end_turn 生效，任务完成
 - 不通过 → end_turn 被拦截，你会在下一轮看到一条 user message 形式的审计
-  报告（含具体哪条 criterion 不通过、为什么、audit_trace_id 锚点）
+  报告（含具体哪项要求不满足、为什么、审计对人类要求的提炼清单——
+  提炼有误你可以在续作中用证据反驳）
 
 这不是你主动触发的流程，是系统在背后跑——你不需要自己判断"什么时候该验证"。
 你只需要在收到"不通过"的报告时按报告指示修，然后再 end_turn。
