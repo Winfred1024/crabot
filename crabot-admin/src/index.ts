@@ -422,12 +422,25 @@ export class AdminModule extends ModuleBase {
   private waitingHumanScanTimer?: NodeJS.Timeout
   private stopTraceCleanupCron?: () => void
 
+  // Task/Trace 状态对账（SSOT 重整 2026-06-09 兜底层）
+  private static readonly RECONCILIATION_INTERVAL_MS = 5 * 60 * 1000  // 5min
+  /** task 距上次更新 < 此阈值 = 跳过对账（防误判刚 spawn 的 task） */
+  private static readonly RECONCILIATION_MIN_STALE_AGE_MS = 60 * 1000  // 60s
+  private reconciliationTimer?: NodeJS.Timeout
+
   // 数据加载完成前 saveData 必须拒绝，否则会用空内存覆盖磁盘真实数据
   private dataLoaded = false
 
   // saveData 串行化锁：防止并发 saveData 在 atomicWriteFile 的 write(.tmp) + rename 上竞态
   // 典型场景：trigger_now 的 fire-and-forget saveData 与 admin.stop() 的 saveData 同时进行
   private saveDataLock: Promise<void> | null = null
+
+  // saveTasks 专项串行化锁：tasks 写盘频率比 saveData 高得多（每条 task mutation 都触发），
+  // 必须跟 saveData 解耦——共用 saveDataLock 会让 task 写盘等其他 6 个文件依次写完，性能不可接受。
+  // 解决问题：handleCreateTask / handleUpdateTaskStatus 等并发 upsertTask 时，多个 atomicWriteFile
+  // 同时 writeFile(tasks.json.tmp) → rename(tmp→tasks.json) 在 rename 阶段抢同一个 tmp 文件，
+  // 后到的拿 ENOENT 抛错 → schedule create_task 失败 → ScheduledTaskRunner 不触发 → task 卡 pending。
+  private saveTasksLock: Promise<void> | null = null
 
   constructor(
     moduleConfig: ModuleConfig,
@@ -745,6 +758,15 @@ export class AdminModule extends ModuleBase {
       AdminModule.WAITING_HUMAN_SCAN_INTERVAL_MS,
     )
 
+    // 启动 task/trace 状态对账（SSOT 重整兜底层 2026-06-09）
+    // 启动后立即跑一次，把历史 phantom 数据（trace 已终态但 task 仍活跃）即时修复；
+    // 然后周期性兜底——任何上游漏 RPC 都会被这层抓住。
+    void this.runReconciliation().catch((err) => console.error('[Admin] reconciliation initial run error:', err))
+    this.reconciliationTimer = setInterval(
+      () => { this.runReconciliation().catch((err) => console.error('[Admin] reconciliation error:', err)) },
+      AdminModule.RECONCILIATION_INTERVAL_MS,
+    )
+
     // 启动 trace 自动清理 cron（每日）
     const { startTraceCleanupCron } = await import('./trace-cleanup-cron.js')
     this.stopTraceCleanupCron = startTraceCleanupCron({
@@ -767,6 +789,9 @@ export class AdminModule extends ModuleBase {
   protected override async onStop(): Promise<void> {
     // 停止 waiting_human 超时扫描器
     if (this.waitingHumanScanTimer) clearInterval(this.waitingHumanScanTimer)
+
+    // 停止 task/trace 状态对账
+    if (this.reconciliationTimer) clearInterval(this.reconciliationTimer)
 
     // 停止 trace 自动清理 cron
     this.stopTraceCleanupCron?.()
@@ -4059,6 +4084,25 @@ export class AdminModule extends ModuleBase {
    */
   private async saveTasks(): Promise<void> {
     if (!this.dataLoaded) return
+
+    // 串行化：等待前一个 saveTasks 完成后再执行——atomicWriteFile 在 write(.tmp) + rename 两步间
+    // 不可并发（两个并发 saveTasks 各写 tasks.json.tmp 后 rename，后到的 rename 拿 ENOENT）。
+    while (this.saveTasksLock) {
+      await this.saveTasksLock
+    }
+
+    const promise = this.saveTasksImpl()
+    this.saveTasksLock = promise
+    try {
+      await promise
+    } finally {
+      if (this.saveTasksLock === promise) {
+        this.saveTasksLock = null
+      }
+    }
+  }
+
+  private async saveTasksImpl(): Promise<void> {
     const tasksArray = Array.from(this.tasks.values())
     await this.atomicWriteFile(this.tasksFilePath, JSON.stringify(tasksArray, null, 2))
   }
@@ -4563,6 +4607,11 @@ export class AdminModule extends ModuleBase {
   ): void {
     const oldStatus = task.status
     if (!VALID_TRANSITIONS[oldStatus].includes(newStatus)) {
+      // 静默会让 caller（含 bestEffortRpc）吞错——SSOT 重整后约定：所有拒绝必须可见，
+      // 否则 drift 会累积。caller 决定要不要重试 / 走 reconciliation 兜底，但本层必须记录。
+      console.warn(
+        `[Admin] applyStatusTransition rejected: task=${task.id} ${oldStatus} → ${newStatus} not in VALID_TRANSITIONS`
+      )
       throw new Error(AdminErrorCode.INVALID_STATUS_TRANSITION)
     }
 
@@ -4936,6 +4985,82 @@ export class AdminModule extends ModuleBase {
       affected_count: tasksToDelete.length + traceResult.affected_count,
       affected_bytes: traceResult.affected_bytes,
       deleted_trace_ids: traceResult.deleted_trace_ids,
+    }
+  }
+
+  /**
+   * Task/Trace 状态对账（SSOT 重整 2026-06-09 兜底层）。
+   *
+   * 周期 + 启动各跑一次。对每条"admin 视角仍活跃但 trace 全终态"的 task 强制切到终态——
+   * 兜底任何上游漏 RPC / 状态机拒绝 / 吞错路径导致的 drift。
+   *
+   * reconciliation 跟普通 transition 的差别：会把 waiting_human 这种"按状态机表 → completed
+   * 非法"的拒绝场景拆成两步走（waiting_human → executing → completed），每步都通过
+   * applyStatusTransition 路径，保留派生字段维护和事件发布。
+   *
+   * 失败容忍：单条 patch apply 失败只 log + 跳过，不影响其他 patch；下轮 reconciliation 继续重试。
+   */
+  async runReconciliation(): Promise<void> {
+    if (!this.dataLoaded) return  // 启动早期 loadData 未完不跑
+
+    const fetchTracesByTaskId = async (taskId: string) => {
+      try {
+        const result = await this.callAgentRpc<
+          { task_id: string; limit: number },
+          { traces: Array<{ trace_id: string; related_task_id?: string; status: 'running' | 'completed' | 'failed'; outcome?: { summary?: string } }>; total: number }
+        >('search_traces', { task_id: taskId, limit: 100 })
+        return result.traces
+      } catch (err) {
+        throw err instanceof Error ? err : new Error(String(err))
+      }
+    }
+
+    let patches: ReadonlyArray<import('./reconcile-tasks-against-traces.js').ReconcilePatch>
+    try {
+      const mod = await import('./reconcile-tasks-against-traces.js')
+      patches = await mod.reconcileTasksAgainstTraces({
+        tasks: Array.from(this.tasks.values()),
+        fetchTracesByTaskId,
+        minStaleAgeMs: AdminModule.RECONCILIATION_MIN_STALE_AGE_MS,
+      })
+    } catch (err) {
+      console.error('[Admin] reconciliation: pure scan failed:', err instanceof Error ? err.message : err)
+      return
+    }
+
+    if (patches.length === 0) return
+
+    console.log(`[Admin] reconciliation: found ${patches.length} drifted task(s) to fix`)
+
+    // Apply 阶段：每条 patch 单独跑，失败不影响其他
+    let applied = 0
+    for (const patch of patches) {
+      const task = this.tasks.get(patch.taskId)
+      if (!task) continue  // race：扫描期间 task 被删了
+
+      try {
+        // 智能恢复：current=waiting_human/waiting → 终态非法，需中转 executing
+        if (task.status === 'waiting_human' || task.status === 'waiting') {
+          this.applyStatusTransition(task, 'executing')
+        }
+        this.applyStatusTransition(task, patch.newStatus, {
+          error: patch.newStatus === 'failed' ? `reconciliation: ${patch.reason}` : undefined,
+        })
+        applied++
+        console.warn(
+          `[Admin] reconciliation fixed task=${patch.taskId} ${patch.oldStatus} → ${patch.newStatus}` +
+          ` (${patch.reason}; traces: ${patch.traces.map(t => `${t.trace_id.slice(0, 8)}=${t.status}`).join(',')})`
+        )
+      } catch (err) {
+        console.error(
+          `[Admin] reconciliation failed to fix task=${patch.taskId} ${patch.oldStatus} → ${patch.newStatus}: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    }
+
+    if (applied > 0) {
+      await this.saveTasks()
+      console.log(`[Admin] reconciliation: applied ${applied}/${patches.length} fix(es)`)
     }
   }
 

@@ -771,7 +771,6 @@ export class AgentHandler {
     if (!taskState) {
       taskState = {
         taskId: task.task_id,
-        status: 'executing',
         startedAt: new Date().toISOString(),
         title: task.task_title,
         triggerType: task.source?.trigger_type === 'scheduled' ? 'scheduled' : 'message',
@@ -1786,7 +1785,6 @@ export class AgentHandler {
     // runWorkerLoop 入口已 idempotent，会复用本 taskState。
     this.activeTasks.set(syntheticTaskId, {
       taskId: syntheticTaskId,
-      status: 'executing',
       startedAt: new Date().toISOString(),
       title: taskTitle,
       triggerType: 'message',
@@ -2131,11 +2129,14 @@ export class AgentHandler {
     const finalStatus = engineResult.outcome === 'completed' ? 'completed' : 'failed'
     const finishedAt = new Date().toISOString()
 
-    await this.bestEffortRpc(adminPort, 'update_task_status', {
-      task_id: taskId,
-      status: finalStatus,
+    // SSOT 重整后走 transitionTaskStatus（含智能恢复：waiting_human → executing → terminal）。
+    // 仍 fire-and-forget 容忍——拒绝时已 log [task-status-drift]，由 reconcileTasksAgainstTraces 兜底。
+    const ok = await this.transitionTaskStatus(taskId, finalStatus, {
       result: { outcome: finalStatus, finished_at: finishedAt },
-    }, 'update_task_status')
+    })
+    if (!ok) {
+      log(`finalize: task=${taskId} status drift unrecoverable, expecting reconciliation to fix later`)
+    }
 
     const humanQueue = this.humanQueues.get(taskId)
     if (humanQueue) {
@@ -2243,6 +2244,72 @@ export class AgentHandler {
     } catch (err) {
       log(`finalize: ${label} failed (continuing): ${err instanceof Error ? err.message : String(err)}`)
     }
+  }
+
+  /**
+   * agent → admin 切 task.status 的单点封装（SSOT 原则：admin tasks.json 是 task.status 权威，
+   * agent 永远不直接 mutate 字段；spec: task/trace 状态同步 SSOT 重整 2026-06-09）。
+   *
+   * 智能恢复：admin 状态机表（task-state-machine.ts VALID_TRANSITIONS）某些 transition 非法（如
+   * waiting_human → completed）。本 helper 检测到 INVALID_STATUS_TRANSITION 时，对终态目标自动
+   * 先插一步 executing 中转：waiting_human → executing → target。这覆盖了 worker loop 在
+   * ask_human 后 supplement 推回但 agent 漏 RPC、loop 结束 finalize 直接切 completed 被拒的经典 case。
+   *
+   * 返回 false 表示拒绝且无法恢复——调用方按需 log，由 admin reconcileTasksAgainstTraces 兜底修复。
+   *
+   * @param taskId  任务 id
+   * @param target  目标 status
+   * @param opts    pending_question（waiting_human 时用）/ result（终态时用）
+   * @returns true=切成功；false=拒绝且不可恢复，需 reconciliation 兜底
+   */
+  private async transitionTaskStatus(
+    taskId: TaskId,
+    target: 'executing' | 'waiting_human' | 'completed' | 'failed' | 'cancelled',
+    opts?: { pendingQuestion?: string; result?: unknown },
+  ): Promise<boolean> {
+    if (!this.deps?.getAdminPort || !this.deps.rpcClient) {
+      log(`transitionTaskStatus(${taskId}, ${target}): deps missing, skipping`)
+      return false
+    }
+    const adminPort = await this.deps.getAdminPort()
+    const moduleId = this.deps.moduleId
+    const rpcClient = this.deps.rpcClient
+
+    const callOnce = async (status: string): Promise<{ ok: true } | { ok: false; error: string }> => {
+      try {
+        await rpcClient.call(adminPort, 'update_task_status', {
+          task_id: taskId,
+          status,
+          ...(opts?.pendingQuestion !== undefined ? { pending_question: opts.pendingQuestion } : {}),
+          ...(opts?.result !== undefined ? { result: opts.result } : {}),
+        }, moduleId)
+        return { ok: true }
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) }
+      }
+    }
+
+    const first = await callOnce(target)
+    if (first.ok) return true
+
+    // 智能恢复路径：终态目标被拒（典型场景 current=waiting_human → completed/failed 非法），
+    // 先把 task 拉回 executing，再切到目标态。
+    const isTerminalTarget = target === 'completed' || target === 'failed' || target === 'cancelled'
+    if (first.error.includes('INVALID_STATUS_TRANSITION') && isTerminalTarget) {
+      log(`transitionTaskStatus(${taskId}, ${target}) rejected (${first.error}); trying executing → ${target}`)
+      const mid = await callOnce('executing')
+      if (mid.ok) {
+        const retry = await callOnce(target)
+        if (retry.ok) return true
+        log(`transitionTaskStatus(${taskId}, ${target}) retry after executing failed: ${retry.error}`)
+      } else {
+        log(`transitionTaskStatus(${taskId}) intermediate executing also rejected: ${mid.error}`)
+      }
+    }
+
+    // 拒绝且无法恢复 —— admin tasks.json 与 trace/agent 真实状态 drift，等 reconciliation 修
+    log(`[task-status-drift] task=${taskId} target=${target} unrecoverable error=${first.error}`)
+    return false
   }
 
   /**
@@ -2392,7 +2459,7 @@ export class AgentHandler {
       throw new Error(`Task not found: ${taskId}`)
     }
 
-    log(`[supplement] deliverHumanResponse: queued ${messages.length} messages for task ${taskId} (status: ${taskState.status})`)
+    log(`[supplement] deliverHumanResponse: queued ${messages.length} messages for task ${taskId}`)
 
     // 渲染含媒体的消息（文件名 / 图片 url）—— 与 dispatcher buildUserPrompt 对齐
     const supplement = messages
@@ -2415,7 +2482,13 @@ export class AgentHandler {
 
     // Also store in pendingHumanMessages for backward compat with task state
     taskState.pendingHumanMessages.push(...messages)
-    taskState.status = 'executing'
+
+    // SSOT: admin tasks.json 是 task.status 权威。supplement 到达后必须把 admin 那侧也切回
+    // executing，否则 task 永远卡在 waiting_human：worker loop 结束 finalize 调
+    // update_task_status('completed') 会被 admin 状态机拒（waiting_human → completed 非法），
+    // 导致 trace=completed 但 task=waiting_human 永久 drift（spec：task/trace 状态同步 SSOT 重整 2026-06-09）。
+    // fire-and-forget：失败由 admin reconcileTasksAgainstTraces 周期对账兜底，不阻塞 supplement 投递。
+    void this.transitionTaskStatus(taskId, 'executing')
 
     // spec 2026-06-09-task-trace-tool-unification.md §4.2:
     // 把人类对话流真值写入 admin task.messages（role='human'）。
@@ -2453,10 +2526,11 @@ export class AgentHandler {
   }
 
   cancelTask(taskId: TaskId, _reason: string): void {
+    // SSOT: 不再 mutate agent 内存里的 task status —— admin 那侧的 cancel_task RPC 已经
+    // 把 tasks.json 改成 'cancelled'，本方法只负责 abort 当前 worker loop。
     const taskState = this.activeTasks.get(taskId)
     if (taskState) {
       taskState.abortController.abort()
-      taskState.status = 'cancelled'
     }
   }
 
@@ -2505,10 +2579,11 @@ export class AgentHandler {
     return result
   }
 
-  getActiveTasksForQuery(): Array<{ task_id: string; status: string; started_at: string; title?: string }> {
+  getActiveTasksForQuery(): Array<{ task_id: string; started_at: string; title?: string }> {
+    // status 字段已从 WorkerTaskState 删除（SSOT 重整 2026-06-09）：admin tasks.json 是 status 权威，
+    // 调用方需要 status 自行从 admin 拉。本接口只暴露 agent 内存里的纯执行态字段。
     return Array.from(this.activeTasks.values()).map(t => ({
       task_id: t.taskId,
-      status: t.status,
       started_at: t.startedAt,
       title: t.title,
     }))

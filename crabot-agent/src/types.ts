@@ -757,7 +757,11 @@ export interface CancelTaskParams {
 
 export interface WorkerTaskState {
   taskId: TaskId
-  status: string
+  /**
+   * 注：task.status 字段曾经存在过，2026-06-09 起删除（spec：task/trace 状态同步 SSOT 重整）。
+   * task.status 的 SSOT 是 admin tasks.json；agent 永远不直接 mutate。
+   * 这里只保留 ephemeral 执行态（humanQueue / abortController / pendingHumanMessages 等）。
+   */
   startedAt: string
   title?: string
   /** task 触发类型，供 context-assembler union 时过滤 scheduled task */

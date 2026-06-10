@@ -1535,18 +1535,8 @@ export class UnifiedAgent extends ModuleBase {
           try {
             const adminPort = await this.getAdminPort()
 
-            // waiting_human 状态切回 executing
-            if (target?.status === 'waiting_human') {
-              try {
-                await this.rpcClient.call(adminPort, 'update_task_status', {
-                  task_id: taskId,
-                  status: 'executing',
-                  pending_question: null,
-                }, this.config.moduleId)
-              } catch (err) {
-                console.error(`[${this.config.moduleId}] pushSupplement admin_chat: failed to transition task ${taskId}: ${err instanceof Error ? err.message : String(err)}`)
-              }
-            }
+            // SSOT 重整：waiting_human → executing 的 RPC 已统一收到 deliverHumanResponse 内部
+            // （走 transitionTaskStatus helper），admin_chat 不再重复执行。
 
             // 即时回复（通过 chat_callback）
             const replyText = `收到，正在调整：${text.slice(0, 60)}`
@@ -1560,7 +1550,7 @@ export class UnifiedAgent extends ModuleBase {
               console.error(`[${this.config.moduleId}] pushSupplement admin_chat: chat_callback failed: ${err instanceof Error ? err.message : String(err)}`)
             }
 
-            // 投递纠偏消息
+            // 投递纠偏消息（deliverHumanResponse 内部会调 transitionTaskStatus('executing')）
             const syntheticMessage: ChannelMessage = {
               platform_message_id: `supplement-${Date.now()}`,
               session: { channel_id: 'admin-web', session_id: sessionId, type: 'private' as const },
