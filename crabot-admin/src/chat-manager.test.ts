@@ -63,6 +63,15 @@ describe('ChatManager.handleSendMessage', () => {
     expect(stored[0].content).toContain('截图说明')
   })
 
+  it('system_event 内容直接透出 text（不降级为媒体占位）', async () => {
+    const mgr = makeManager()
+    await mgr.handleSendMessage({
+      session_id: 'admin-chat',
+      content: { type: 'system_event', text: '成员加入：小明' },
+    })
+    expect(mgr.getMessages(10)[0].content).toBe('成员加入：小明')
+  })
+
   it('空文本抛错', async () => {
     const mgr = makeManager()
     await expect(

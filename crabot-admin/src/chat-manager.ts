@@ -267,7 +267,8 @@ export class ChatManager {
 
   /** MessageContent → 文本。Phase 1 仅消费 text，媒体降级为占位文本（Phase 2 接入显示） */
   private contentToText(content: ChatSendMessageParams['content']): string {
-    if (content.type === 'text') return content.text ?? ''
+    // system_event 的 text 是协议规定的人类可读 fallback，与 text 同样直接透出
+    if (content.type === 'text' || content.type === 'system_event') return content.text ?? ''
     const label = content.type === 'image' ? '图片' : '文件'
     const name = content.filename ?? content.media_url ?? content.file_path ?? ''
     const caption = content.text ? `\n${content.text}` : ''
