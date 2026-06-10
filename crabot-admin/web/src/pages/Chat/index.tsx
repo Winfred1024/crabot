@@ -1,16 +1,18 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { MainLayout } from '../../components/Layout/MainLayout'
 import { chatService } from '../../services/chat'
-import type { ChatMessage, ChatServerMessage, ConnectionStatus } from '../../types/chat'
+import type { ChatMessage, ChatServerMessage, ChatTaskSnapshot, ConnectionStatus } from '../../types/chat'
+import { TaskStatusCard } from './TaskStatusCard'
 
 /** 消息状态 */
 interface MessageState extends ChatMessage {
   status?: 'sending' | 'sent' | 'processing' | 'completed' | 'failed'
   reply_type?: 'direct_reply' | 'task_created' | 'task_completed' | 'task_failed'
   error?: string
+  /** 任务状态卡数据（chat_task_update 推送 / 历史 hydrate） */
+  task?: ChatTaskSnapshot
 }
 
 const PAGE_SIZE = 30
@@ -29,7 +31,6 @@ export const Chat: React.FC = () => {
   const inputRef = useRef<HTMLInputElement>(null)
   const isLoadingHistoryRef = useRef(false)
   const isNearBottomRef = useRef(true)
-  const navigate = useNavigate()
 
   // 检测滚动位置
   const handleScroll = useCallback(() => {
@@ -137,6 +138,17 @@ export const Chat: React.FC = () => {
         if (history.length < PAGE_SIZE) {
           setHasMore(false)
         }
+        // hydrate 任务状态卡（带 task_id 的历史消息）
+        const taskIds = [...new Set(history.filter((m) => m.task_id).map((m) => m.task_id!))]
+        if (taskIds.length > 0) {
+          const snapshots = await Promise.all(taskIds.map((id) => chatService.getTaskSnapshot(id)))
+          const snapMap = new Map(
+            snapshots.filter((s): s is ChatTaskSnapshot => s !== null).map((s) => [s.task_id, s])
+          )
+          setMessages((prev) =>
+            prev.map((m) => (m.task_id && snapMap.has(m.task_id) ? { ...m, task: snapMap.get(m.task_id) } : m))
+          )
+        }
       } catch (error) {
         console.error('Failed to load chat history:', error)
       }
@@ -219,6 +231,36 @@ export const Chat: React.FC = () => {
 
   // 处理服务端消息
   const handleServerMessage = (message: ChatServerMessage) => {
+    if (message.type === 'chat_reply' && message.reply_type === 'task_created') {
+      // task_created 单独处理：转为任务状态卡，避免覆盖 dispatcher 先行 direct_reply
+      setMessages((prev) => {
+        const cardMsg: MessageState = {
+          message_id: `msg_${Date.now()}_task`,
+          role: 'assistant',
+          content: message.content,
+          request_id: message.request_id,
+          task_id: message.task_id,
+          reply_type: 'task_created',
+          timestamp: new Date().toISOString(),
+          status: 'completed',
+          task: message.task_id
+            ? { task_id: message.task_id, status: 'executing', title: message.content.replace(/^已创建任务：/, '') }
+            : undefined,
+        }
+        // 占位仍在 processing → 原地转为状态卡；否则（已被 direct_reply 填充）追加新消息
+        const idx = prev.findIndex(
+          (m) => m.request_id === message.request_id && m.role === 'assistant' && m.status === 'processing'
+        )
+        if (idx >= 0) {
+          const updated = [...prev]
+          updated[idx] = { ...cardMsg, message_id: prev[idx].message_id }
+          return updated
+        }
+        return [...prev, cardMsg]
+      })
+      return
+    }
+
     if (message.type === 'chat_reply') {
       setMessages((prev) => {
         // 找到对应的 request 并更新状态
@@ -273,6 +315,14 @@ export const Chat: React.FC = () => {
           )
         )
       }
+    } else if (message.type === 'chat_push') {
+      // worker 经 send_message 伪 channel 回流的新消息，直接追加
+      setMessages((prev) => [...prev, { ...message.message, status: 'completed' as const }])
+    } else if (message.type === 'chat_task_update') {
+      // 任务状态/计划变更，实时更新对应消息的状态卡数据
+      setMessages((prev) =>
+        prev.map((m) => (m.task_id === message.task.task_id ? { ...m, task: message.task } : m))
+      )
     }
   }
 
@@ -379,12 +429,11 @@ export const Chat: React.FC = () => {
       if (!message.reply_type || message.reply_type === 'direct_reply') return null
 
       const hints = {
-        task_created: { text: '✓ 任务已创建，正在后台执行', color: 'var(--primary)' },
         task_completed: { text: '✓ 任务已完成', color: 'var(--success)' },
         task_failed: { text: '✗ 任务执行失败', color: 'var(--error)' },
-      }
+      } as const
 
-      const hint = hints[message.reply_type]
+      const hint = hints[message.reply_type as keyof typeof hints]
       if (!hint) return null
 
       return (
@@ -442,23 +491,7 @@ export const Chat: React.FC = () => {
                 )}
               </div>
               {message.task_id && (
-                <div style={{ marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border)' }}>
-                  <button
-                    onClick={() => navigate(`/tasks/${message.task_id}`)}
-                    style={{
-                      padding: '0.4rem 0.8rem',
-                      fontSize: '0.85rem',
-                      background: 'var(--primary)',
-                      color: 'white',
-                      border: 'none',
-                      borderRadius: '6px',
-                      cursor: 'pointer',
-                      fontWeight: 500,
-                    }}
-                  >
-                    查看任务详情 →
-                  </button>
-                </div>
+                <TaskStatusCard taskId={message.task_id} snapshot={message.task} />
               )}
               {message.error && (
                 <div style={{ marginTop: '0.5rem', fontSize: '0.85rem', color: 'var(--error)' }}>
