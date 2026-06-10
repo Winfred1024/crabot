@@ -17,6 +17,7 @@ import { writePid, clearPid, checkSingleInstance, isPidAlive } from './lib/pid.m
 import { scanModules, applyMigration } from './upgrade-lib/migrate.mjs'
 import { runScript } from './upgrade-lib/runner.mjs'
 import { hasInstance, readInstance, resolveCliDataDir } from './lib/instance.mjs'
+import { probeMmHealthy } from './lib/mm-probe.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
@@ -291,8 +292,8 @@ if (!DAEMON_MODE) {
       process.exit(1)
     }
     try {
-      const r = await fetch(`http://localhost:${MM_PORT}/health`, { signal: AbortSignal.timeout(1500) })
-      if (r.ok) {
+      // MM 的 /health 是 POST RPC 路由，GET 会 405（见 lib/mm-probe.mjs）
+      if (await probeMmHealthy(MM_PORT)) {
         const r2 = await fetch(`http://localhost:${WEB_PORT}/health`, { signal: AbortSignal.timeout(1500) })
         if (r2.ok) {
           console.log(`[crabot] \x1b[32m●\x1b[0m MM ready (port ${MM_PORT})`)
