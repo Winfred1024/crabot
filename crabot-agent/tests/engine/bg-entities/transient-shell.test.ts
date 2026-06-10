@@ -167,6 +167,58 @@ describe('TransientShellRegistry', () => {
     expect((state?.ringBuffer.length ?? 0)).toBeGreaterThan(0)
   }, 5000)
 
+  it('onExit fires on natural exit with status and exit_code', async () => {
+    registry = new TransientShellRegistry()
+    const calls: Array<{ entity_id: string; status: string; exit_code: number }> = []
+    const id = registry.spawn({
+      command: 'exit 0',
+      cwd: process.cwd(),
+      owner,
+      spawned_by_task_id: 'task-1',
+      onExit: (info) => calls.push(info),
+    })
+    await sleep(400)
+    expect(calls).toHaveLength(1)
+    expect(calls[0].entity_id).toBe(id)
+    expect(calls[0].status).toBe('completed')
+    expect(calls[0].exit_code).toBe(0)
+  })
+
+  it('onExit does NOT fire when shell is killed (task teardown path)', async () => {
+    registry = new TransientShellRegistry()
+    const calls: unknown[] = []
+    const id = registry.spawn({
+      command: 'sleep 30',
+      cwd: process.cwd(),
+      owner,
+      spawned_by_task_id: 'task-1',
+      onExit: (info) => calls.push(info),
+    })
+    await sleep(100)
+    registry.kill(id)
+    await sleep(300)
+    expect(registry.get(id)?.status).toBe('killed')
+    expect(calls).toHaveLength(0)
+  })
+
+  it('onExit push wakes a humanQueue barrier (wait_for_signal scenario)', async () => {
+    const { HumanMessageQueue } = await import('../../../src/engine/human-message-queue')
+    registry = new TransientShellRegistry()
+    const queue = new HumanMessageQueue()
+    registry.spawn({
+      command: 'exit 0',
+      cwd: process.cwd(),
+      owner,
+      spawned_by_task_id: 'task-1',
+      onExit: (info) => queue.push(`[系统] Background shell ${info.entity_id} 已退出 (status=${info.status})`),
+    })
+    queue.setBarrier(10_000)
+    await queue.waitBarrier()  // shell exit push 应在 10s 兜底前唤醒
+    const drained = queue.drainPending()
+    expect(drained).toHaveLength(1)
+    expect(String(drained[0])).toContain('已退出')
+  }, 5000)
+
   it('size() returns total registered entity count', () => {
     registry = new TransientShellRegistry()
     expect(registry.size()).toBe(0)

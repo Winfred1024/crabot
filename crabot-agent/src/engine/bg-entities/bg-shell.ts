@@ -233,7 +233,8 @@ export interface SpawnTransientShellOpts {
   /**
    * Async exit hook，与 SpawnPersistentShellOpts.onExit 同款；
    * 用于 worker 推 push notification（transient 在 task 内 exit 的场景）。
-   * Phase 1 仅 plumbing，worker 端目前不消费 transient 通知（mid-task 注入靠 humanMessageQueue 待 Phase 2）。
+   * worker 端（agent-handler onShellExit）把它接到本 task 的 humanMessageQueue——
+   * exit 时 push 唤醒 wait_for_signal 挂起的 worker，或在下个 turn 边界作为 supplement 注入。
    */
   readonly onExit?: (info: {
     entity_id: string

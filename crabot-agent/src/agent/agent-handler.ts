@@ -1023,16 +1023,28 @@ export class AgentHandler {
           session_id: context.task_origin?.session_id,
           channel_id: context.task_origin?.channel_id,
         }
-        // push notification 接线：bg shell 自然 exit 时排到该 friend 的下一次 task prompt
-        // 仅持久（master 私聊）路径有意义；transient 在 task 结束被 kill，agent 此时也不在了
+        // push notification 接线：
+        // - persistent（master 私聊）：exit 排到该 friend 的下一次 task prompt
+        // - transient：exit 直接 push 本 task 的 humanQueue——worker 若正 wait_for_signal
+        //   挂起会被立即唤醒（等 bg shell 退出的场景），否则下个 turn 边界作为 supplement 注入。
+        //   task 结束时 transient 被 killAllOwnedBy 标 killed 不触发 onExit；
+        //   humanQueues 也已清理（get 返回 undefined），无幽灵推送。
         const onShellExit: BashBgContext['onShellExit'] = (info) => {
-          if (info.mode !== 'persistent') return
           const runtimeStr = formatRuntimeMs(info.runtime_ms)
+          const command = `${info.command.slice(0, 200)}${info.command.length > 200 ? '...' : ''}`
+          if (info.mode !== 'persistent') {
+            this.humanQueues.get(task.task_id)?.push(
+              `[系统] Background shell ${info.entity_id} 已退出 (status=${info.status}, exit_code=${info.exit_code}, 运行 ${runtimeStr})。\n` +
+              `命令: ${command}\n` +
+              `用 Output("${info.entity_id}") 读取输出。`,
+            )
+            return
+          }
           const message =
             `Background shell ${info.entity_id} 已退出。\n` +
             `状态: ${info.status} (exit_code=${info.exit_code})\n` +
             `运行时长: ${runtimeStr}\n` +
-            `命令: ${info.command.slice(0, 200)}${info.command.length > 200 ? '...' : ''}\n` +
+            `命令: ${command}\n` +
             `提示: 用 Output("${info.entity_id}") 读完整输出，确认后用 Kill 清理（即使已 exit 也建议清以防混淆）`
           this.enqueueBgNotification(`friend:${bgOwner.friend_id}`, message)
         }
