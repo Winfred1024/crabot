@@ -1353,10 +1353,10 @@ export class UnifiedAgent extends ModuleBase {
   /**
    * 处理 Admin Chat 消息（使用统一 loop）
    *
-   * Admin Chat 特殊处理：send_message 工具以 channel_id='admin-web' 调用 Channel RPC，
-   * 但 admin 模块未注册 send_message 方法，会导致 RPC 失败。
-   * 因此 agent 调 send_message 失败后 sentMessage=false，finalText 保留回复内容，
-   * 统一 loop 结束后用 finalText 通过 chat_callback RPC 发出。
+   * admin-web 是伪 channel（spec 2026-06-10-master-chat-redesign §4）：
+   * worker 的 send_message 经 getChannelPort('admin-web') 路由到 admin 模块的
+   * 同签名 send_message RPC，最终结果直接回流聊天界面，与真实 channel 行为一致。
+   * chat_callback 仅用于 dispatcher 同步路径（immediate_reply / task_created / 错误兜底）。
    */
   private async processAdminChatMessage(
     message: ChannelMessage,
@@ -2592,6 +2592,11 @@ export class UnifiedAgent extends ModuleBase {
   }
 
   private async getChannelPort(channelId: ModuleId): Promise<number> {
+    // admin-web 是 Master Chat 伪 channel：send_message 等出站 RPC 路由到 admin 模块
+    // （spec 2026-06-10-master-chat-redesign §4；admin 已注册同签名 send_message）
+    if (channelId === 'admin-web') {
+      return this.getAdminPort()
+    }
     let port = this.channelPorts.get(channelId)
     if (port === undefined) {
       const modules = await this.rpcClient.resolve({ module_id: channelId }, this.config.moduleId)
