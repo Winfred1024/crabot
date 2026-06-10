@@ -865,8 +865,12 @@ export class AgentHandler {
       // 后续 turn 的 todo / send_message 检查 cache 立即生效，免去重复 RPC。
       const goalModeEnabled = this.isGoalModeEnabled(task.source?.trigger_type)
       let goalSetCache = false
-      // conversationLog：记录任务期间 agent↔human 双向对话，audit 输入
-      const conversationLog: ConversationEntry[] = []
+      // conversationLog：audit 输入——seed 人类原始请求（trigger 原文），后续追加双向往来。
+      // audit 判决锚点 = 人类原话（trigger + supplements），曾因空数组起步让 auditor
+      // 看不到原始需求。spec 2026-06-10-audit-anchor-human-request §3.1
+      const conversationLog: ConversationEntry[] = (context.trigger_messages ?? []).map(
+        (m) => ({ role: 'human' as const, content: formatMessageContent(m) }),
+      )
       // sentInfoMessage：send_message(intent='info') 成功至少一次；forced_summary 判断依据
       let sentInfoMessage = false
       // 任务触发类型：scheduled 任务始终抑制 forced_summary
