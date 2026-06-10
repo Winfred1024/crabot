@@ -14,6 +14,8 @@ import type {
   ChatServerMessage,
   ChatCallbackParams,
   ChatCallbackResult,
+  ChatSendMessageParams,
+  ChatSendMessageResult,
 } from './types.js'
 
 export class ChatManager {
@@ -255,6 +257,39 @@ export class ChatManager {
     this.pendingRequests.delete(params.request_id)
 
     return { received: true }
+  }
+
+  // ==========================================================================
+  // send_message（admin-web 伪 channel 入口，spec 2026-06-10-master-chat-redesign §4）
+  // ==========================================================================
+
+  /** MessageContent → 文本。Phase 1 仅消费 text，媒体降级为占位文本（Phase 2 接入显示） */
+  private contentToText(content: ChatSendMessageParams['content']): string {
+    if (content.type === 'text') return content.text ?? ''
+    const label = content.type === 'image' ? '图片' : '文件'
+    const name = content.filename ?? content.media_url ?? content.file_path ?? ''
+    const caption = content.text ? `\n${content.text}` : ''
+    return `[${label}] ${name}（媒体显示将在后续版本支持）${caption}`
+  }
+
+  async handleSendMessage(params: ChatSendMessageParams): Promise<ChatSendMessageResult> {
+    if (params.session_id !== 'admin-chat') {
+      throw new Error(`Unknown chat session: ${params.session_id}`)
+    }
+    const text = this.contentToText(params.content)
+    if (!text.trim()) {
+      throw new Error('Empty message content')
+    }
+    const message: ChatMessage = {
+      message_id: generateId(),
+      role: 'assistant',
+      content: text,
+      timestamp: generateTimestamp(),
+    }
+    this.messages.set(message.message_id, message)
+    await this.saveData()
+    this.pushToClient({ type: 'chat_push', message })
+    return { platform_message_id: message.message_id, sent_at: message.timestamp }
   }
 
   // ==========================================================================
