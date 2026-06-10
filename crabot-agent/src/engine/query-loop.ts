@@ -329,6 +329,11 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
     const currentTools = typeof options.tools === 'function'
       ? (options.tools as () => ReadonlyArray<import('./types').ToolDefinition>)()
       : options.tools
+    // 快照本轮实际使用的 systemPrompt/tools 给 fork observer（见 EngineMessagesRef 注释）
+    if (messagesRef) {
+      messagesRef.systemPrompt = currentSystemPrompt
+      messagesRef.tools = currentTools
+    }
     const llmStartedAtMs = Date.now()
     let llmCallMs = 0
     if (options.onPromptDump) {

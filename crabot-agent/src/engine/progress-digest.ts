@@ -1,19 +1,22 @@
 import type { LLMAdapter } from './llm-adapter'
 import { callNonStreaming } from './llm-adapter'
-import type { EngineMessage, EngineTurnEvent } from './types'
+import type { EngineMessage, EngineMessagesRef, EngineTurnEvent } from './types'
 import { createUserMessage } from './types'
 
 /**
  * 进度汇报（fork 模式）。
  *
  * 思路：定时从主 loop 的 messages 数组 fork 一份只读副本，在末尾追加一条
- * "请汇报"user msg，调主 loop 自己的 adapter 跑一次非流式 LLM 调用，把
- * 输出转给用户。主 loop 完全不感知本次 fork——messages 是浅拷贝，主 loop
- * 的对话历史不会被污染。
+ * "系统提醒：该汇报进度了"user msg，复用主 loop 上一轮实际使用的
+ * systemPrompt + tools 跑一次非流式 LLM 调用，截获 send_message tool_use
+ * 的 content 转给用户（工具不真正执行）。主 loop 完全不感知本次 fork——
+ * messages 是浅拷贝，主 loop 的对话历史不会被污染。
  *
- * 为什么 fork 主 loop：摘要 LLM 需要看到任务上下文（user 的原始诉求、
- * 思考过程、工具调用 + 结果、todo 状态）才能写出有意义的汇报。旧实现
- * 只喂工具名计数，所以只能输出"做了 3 次 Glob、5 次 grep"这类废话。
+ * 为什么逐字节复用主 loop 的 systemPrompt/tools：prompt cache 按精确前缀
+ * 匹配（tools → system → messages），任何一处不同都会让整个对话历史按
+ * 全价 input 重算。用 engine 快照的原值（EngineMessagesRef.systemPrompt/
+ * tools）而非重调 builder 回调，保证逐字节一致——不依赖回调的确定性，
+ * 也不受 admin push config 热更新的时序影响。
  */
 
 // --- Config & Deps ---
@@ -49,28 +52,19 @@ export interface ProgressDigestDeps {
   /** 主 loop 的 maxTokens；不传则走 adapter 默认 */
   readonly maxTokens?: number
   /**
-   * 主 loop messages 的只读 holder。engine 在每个 turn 完成时浅拷贝刷新
-   * `current`。doFlush 时拿当前快照 fork 一份给摘要 LLM。
+   * 主 loop 对话状态的只读 holder。engine 在每个 turn 完成时浅拷贝刷新
+   * `current`，每次 LLM 调用前快照 systemPrompt/tools。doFlush 时拿当前
+   * 快照 fork 一份给摘要 LLM。
    */
-  readonly messagesRef: { readonly current: ReadonlyArray<EngineMessage> }
+  readonly messagesRef: EngineMessagesRef
 }
 
 // --- Prompts ---
 
-const DIGEST_SYSTEM_PROMPT =
-  '你是任务执行助手。根据完整对话历史向 master 汇报当前进度。' +
-  '严格基于历史事实，不要推测、编造或虚构未发生的操作和结果。' +
-  '不超过 80 字。'
-
-const buildAskPrompt = (isMasterPrivate: boolean): string => {
-  const base = '请用 1-2 句话汇报：你刚才在做什么（具体的、有意义的事），现在在做什么 / 卡在哪 / 下一步打算。\n' +
-    '要求：\n' +
-    '- 第一人称，像同事汇报\n' +
-    '- 不要列工具名计数（如"调用 Bash 3 次"），说有意义的事\n' +
-    '- 不要 markdown 格式\n' +
-    '- 只输出汇报文本，不要"好的""汇报如下"这类前后缀'
+const buildReminder = (isMasterPrivate: boolean): string => {
+  const base = '系统提醒：已经过去较长时间了，你需要使用 send_message 向人类汇报一下当前的进度'
   if (!isMasterPrivate) {
-    return base + '\n- 不要泄露绝对路径，路径只说 basename（如 progress-digest.ts 而不是 /Users/xxx/.../progress-digest.ts）'
+    return base + '（不要泄露绝对路径，路径只说 basename）'
   }
   return base
 }
@@ -191,18 +185,34 @@ export class ProgressDigest {
   }
 
   private async generateDigest(snapshot: ReadonlyArray<EngineMessage>): Promise<string> {
-    const askPrompt = buildAskPrompt(this.config.isMasterPrivate)
-    const forkMessages: EngineMessage[] = [...snapshot, createUserMessage(askPrompt)]
+    // systemPrompt/tools 必须用 engine 快照的原值才能命中 prompt cache 前缀；
+    // 第一次 LLM 调用前快照还没写入 → 跳过本次，下个 interval 重试
+    const { systemPrompt, tools } = this.deps.messagesRef
+    if (systemPrompt === undefined || tools === undefined) return ''
+
+    const reminder = buildReminder(this.config.isMasterPrivate)
+    const forkMessages: EngineMessage[] = [...snapshot, createUserMessage(reminder)]
 
     const params = {
       messages: forkMessages,
-      systemPrompt: DIGEST_SYSTEM_PROMPT,
-      tools: [],
+      systemPrompt,
+      tools: [...tools],
       model: this.deps.modelId,
       ...(this.deps.maxTokens !== undefined ? { maxTokens: this.deps.maxTokens } : {}),
     }
     const response = await callNonStreaming(this.deps.adapter, params)
 
+    // 优先截获 send_message tool_use 的 content（工具不真正执行）；
+    // 模型没调工具时 fallback 到文本块输出
+    for (const block of response.content) {
+      if (block.type !== 'tool_use') continue
+      const bare = block.name.replace(/^mcp__[^_]+__/, '')
+      if (bare !== 'send_message' && bare !== 'send_private_message') continue
+      const content = (block.input as { content?: unknown }).content
+      if (typeof content === 'string' && content.trim().length > 0) {
+        return content.trim()
+      }
+    }
     return response.content
       .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
       .map(b => b.text)

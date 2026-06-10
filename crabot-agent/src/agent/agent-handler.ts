@@ -32,6 +32,7 @@ import type {
   EngineResult,
   ContentBlock,
   EngineMessage,
+  EngineMessagesRef,
   ProgressDigestConfig,
   ProgressDigestDeps,
   ToolPermissionConfig,
@@ -1252,11 +1253,12 @@ export class AgentHandler {
         tools: initialTools.map(t => t.name),
       })
 
-      // 主 loop messages 的只读 holder —— engine 在每 turn 后浅拷贝刷新 current；
-      // ProgressDigest 定时从这里 fork 一份做摘要，主 loop 不感知。
+      // 主 loop 对话状态的只读 holder —— engine 在每 turn 后浅拷贝刷新 current，
+      // 每次 LLM 调用前快照 systemPrompt/tools；ProgressDigest 定时从这里 fork
+      // 一份做摘要，主 loop 不感知。
       // 总是创建：即使本任务不启用 digest（silent / text_forward），engine 维护
       // 它无副作用，留出钩子方便日后其他 observer 复用。
-      const messagesRef: { current: ReadonlyArray<EngineMessage> } = { current: [] }
+      const messagesRef: EngineMessagesRef = { current: [] }
 
       // 创建进度汇报（根据会话场景分支）
       let textForwardMode = false

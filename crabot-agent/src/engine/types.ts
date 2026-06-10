@@ -207,6 +207,19 @@ export interface EngineTurnEvent {
 export type Resolvable<T> = T | (() => T)
 
 /**
+ * 主 loop 对话状态的外部只读 holder（progress digest 等 observer 用）。
+ * engine 每轮刷新 `current`；每次 LLM 调用前同步快照该轮实际使用的
+ * systemPrompt / tools —— fork 调用逐字节复用这两者，保证与主 loop 最近
+ * 一次请求的 prompt cache 前缀完全一致（不依赖 builder 回调的确定性，
+ * 也不受 admin push config 热更新 system prompt / tools 的时序影响）。
+ */
+export interface EngineMessagesRef {
+  current: ReadonlyArray<EngineMessage>
+  systemPrompt?: string
+  tools?: ReadonlyArray<ToolDefinition>
+}
+
+/**
  * 实时进度事件（细粒度）。
  *
  * 与 `EngineTurnEvent` 的区别：onTurn 是事后回调（工具执行完才触发，所有 span
@@ -287,7 +300,7 @@ export interface EngineOptions {
    * 不传时 engine 不更新；ref 对象由 caller 维护生命周期。`current` 字段可写但
    * 写入的数组本身是 ReadonlyArray —— 外部只读，不应原地修改。
    */
-  readonly messagesRef?: { current: ReadonlyArray<EngineMessage> }
+  readonly messagesRef?: EngineMessagesRef
   /**
    * 引擎层主动向 loop 注入 user message 时触发（trace 可见性钩子）。
    *

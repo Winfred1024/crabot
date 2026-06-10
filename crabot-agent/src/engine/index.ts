@@ -17,6 +17,7 @@ export type {
   ToolPermissionConfig,
   PermissionDecision,
   EngineMessage,
+  EngineMessagesRef,
   EngineUserMessage,
   EngineAssistantMessage,
   EngineToolResultMessage,

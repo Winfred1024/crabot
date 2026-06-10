@@ -1,11 +1,25 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { ProgressDigest } from '../../src/engine/progress-digest'
 import type { ProgressDigestConfig, ProgressDigestDeps } from '../../src/engine/progress-digest'
-import type { EngineMessage, EngineTurnEvent } from '../../src/engine/types'
+import type { EngineMessage, EngineMessagesRef, EngineTurnEvent, ToolDefinition } from '../../src/engine/types'
 import type { LLMAdapter, LLMCallResponse, LLMStreamParams } from '../../src/engine/llm-adapter'
 import { createUserMessage, createAssistantMessage, createToolResultMessage } from '../../src/engine/types'
 
 const FAKE_DIGEST = '正在 grep 关键字定位错误位置；下一步看 stack trace 决定改哪一行。'
+
+const FAKE_SYSTEM_PROMPT = 'sys-prompt-snapshot'
+const FAKE_TOOL: ToolDefinition = {
+  name: 'mcp__crab-messaging__send_message',
+  description: 'send',
+  inputSchema: {},
+  isReadOnly: false,
+  call: async () => ({ output: 'ok', isError: false }),
+}
+
+/** 模拟 engine 已快照 systemPrompt/tools 的 ref（正常 fork 前提） */
+function makeRef(messages: ReadonlyArray<EngineMessage>): EngineMessagesRef {
+  return { current: messages, systemPrompt: FAKE_SYSTEM_PROMPT, tools: [FAKE_TOOL] }
+}
 
 function makeAdapter(reply: string = FAKE_DIGEST) {
   const complete = vi.fn().mockImplementation(
@@ -24,7 +38,7 @@ function makeAdapter(reply: string = FAKE_DIGEST) {
 
 function makeDeps(opts: {
   sendToUser?: (text: string) => Promise<void>
-  messagesRef: { current: ReadonlyArray<EngineMessage> }
+  messagesRef: EngineMessagesRef
   adapter: LLMAdapter
 }): ProgressDigestDeps {
   return {
@@ -70,7 +84,7 @@ describe('ProgressDigest fork mode', () => {
   it('interval flush fetches messagesRef snapshot, asks LLM, sends result', async () => {
     const sendToUser = vi.fn().mockResolvedValue(undefined)
     const { adapter, complete } = makeAdapter()
-    const messagesRef = { current: [createUserMessage('帮我改个 bug')] as ReadonlyArray<EngineMessage> }
+    const messagesRef = makeRef([createUserMessage('帮我改个 bug')])
     const config: ProgressDigestConfig = { intervalMs: 1_000, isMasterPrivate: true }
     const digest = new ProgressDigest(config, makeDeps({ sendToUser, messagesRef, adapter }))
 
@@ -81,19 +95,77 @@ describe('ProgressDigest fork mode', () => {
 
     expect(complete).toHaveBeenCalledTimes(1)
     const params = complete.mock.calls[0][0] as LLMStreamParams
-    // fork 调用：messages 是 snapshot + 一条 user "请汇报"
+    // fork 调用：messages 是 snapshot + 一条"系统提醒"user msg
     expect(params.messages.length).toBe(2)
-    expect(params.tools).toEqual([])
+    expect(JSON.stringify(params.messages[1])).toContain('系统提醒')
+    // systemPrompt/tools 逐字节复用 engine 快照（prompt cache 前缀对齐）
+    expect(params.systemPrompt).toBe(FAKE_SYSTEM_PROMPT)
+    expect(params.tools).toEqual([FAKE_TOOL])
     expect(params.model).toBe('test-model')
 
     expect(sendToUser).toHaveBeenCalledWith(FAKE_DIGEST)
     digest.dispose()
   })
 
+  it('intercepts send_message tool_use content as the digest output', async () => {
+    const sendToUser = vi.fn().mockResolvedValue(undefined)
+    const complete = vi.fn(async (): Promise<LLMCallResponse> => ({
+      content: [
+        { type: 'text', text: '我来汇报一下' },
+        {
+          type: 'tool_use',
+          id: 'call-1',
+          name: 'mcp__crab-messaging__send_message',
+          input: { channel_id: 'c1', session_id: 's1', content: '正在修 bug，已定位到根因' },
+        },
+      ],
+      stopReason: 'tool_use',
+    }))
+    const adapter: LLMAdapter = {
+      stream: async function* () { /* unused */ },
+      complete,
+      updateConfig() { /* noop */ },
+    }
+    const messagesRef = makeRef([createUserMessage('go')])
+    const config: ProgressDigestConfig = { intervalMs: 1_000, isMasterPrivate: true }
+    const digest = new ProgressDigest(config, makeDeps({ sendToUser, messagesRef, adapter }))
+
+    await vi.advanceTimersByTimeAsync(1_000)
+    await Promise.resolve(); await Promise.resolve()
+
+    // tool_use 的 content 优先于文本块
+    expect(sendToUser).toHaveBeenCalledWith('正在修 bug，已定位到根因')
+    digest.dispose()
+  })
+
+  it('skips flush when systemPrompt/tools not yet snapshotted', async () => {
+    const sendToUser = vi.fn().mockResolvedValue(undefined)
+    const { adapter, complete } = makeAdapter()
+    // engine 第一次 LLM 调用前的状态：messages 已有但快照还没写入
+    const messagesRef: EngineMessagesRef = { current: [createUserMessage('go')] }
+    const config: ProgressDigestConfig = { intervalMs: 1_000, isMasterPrivate: true }
+    const digest = new ProgressDigest(config, makeDeps({ sendToUser, messagesRef, adapter }))
+
+    await vi.advanceTimersByTimeAsync(1_000)
+    await Promise.resolve(); await Promise.resolve()
+    expect(complete).not.toHaveBeenCalled()
+    expect(sendToUser).not.toHaveBeenCalled()
+
+    // 快照写入后下个 interval 正常 fork
+    messagesRef.systemPrompt = FAKE_SYSTEM_PROMPT
+    messagesRef.tools = [FAKE_TOOL]
+    messagesRef.current = [...messagesRef.current, createUserMessage('(progress)')]
+    await vi.advanceTimersByTimeAsync(1_000)
+    await Promise.resolve(); await Promise.resolve()
+    expect(complete).toHaveBeenCalledTimes(1)
+    expect(sendToUser).toHaveBeenCalledTimes(1)
+    digest.dispose()
+  })
+
   it('empty messagesRef skips flush — no LLM call, no sendToUser', async () => {
     const sendToUser = vi.fn().mockResolvedValue(undefined)
     const { adapter, complete } = makeAdapter()
-    const messagesRef = { current: [] as ReadonlyArray<EngineMessage> }
+    const messagesRef = makeRef([])
     const config: ProgressDigestConfig = { intervalMs: 1_000, isMasterPrivate: true }
     const digest = new ProgressDigest(config, makeDeps({ sendToUser, messagesRef, adapter }))
 
@@ -108,7 +180,7 @@ describe('ProgressDigest fork mode', () => {
   it('snapshot unchanged across two intervals → only one flush', async () => {
     const sendToUser = vi.fn().mockResolvedValue(undefined)
     const { adapter, complete } = makeAdapter()
-    const messagesRef = { current: [createUserMessage('go')] as ReadonlyArray<EngineMessage> }
+    const messagesRef = makeRef([createUserMessage('go')])
     const config: ProgressDigestConfig = { intervalMs: 1_000, isMasterPrivate: true }
     const digest = new ProgressDigest(config, makeDeps({ sendToUser, messagesRef, adapter }))
 
@@ -127,7 +199,7 @@ describe('ProgressDigest fork mode', () => {
   it('ask_human tool call triggers immediate flush', async () => {
     const sendToUser = vi.fn().mockResolvedValue(undefined)
     const { adapter, complete } = makeAdapter()
-    const messagesRef = { current: [createUserMessage('confirm?')] as ReadonlyArray<EngineMessage> }
+    const messagesRef = makeRef([createUserMessage('confirm?')])
     const config: ProgressDigestConfig = { intervalMs: 1_800_000, isMasterPrivate: true }
     const digest = new ProgressDigest(config, makeDeps({ sendToUser, messagesRef, adapter }))
 
@@ -151,7 +223,7 @@ describe('ProgressDigest fork mode', () => {
   it('non-ask_human send_message does NOT immediate flush', async () => {
     const sendToUser = vi.fn().mockResolvedValue(undefined)
     const { adapter, complete } = makeAdapter()
-    const messagesRef = { current: [createUserMessage('go')] as ReadonlyArray<EngineMessage> }
+    const messagesRef = makeRef([createUserMessage('go')])
     const config: ProgressDigestConfig = { intervalMs: 1_800_000, isMasterPrivate: true }
     const digest = new ProgressDigest(config, makeDeps({ sendToUser, messagesRef, adapter }))
 
@@ -173,7 +245,7 @@ describe('ProgressDigest fork mode', () => {
 
   it('non-master session injects path-redaction rule into prompt', async () => {
     const { adapter, complete } = makeAdapter()
-    const messagesRef = { current: [createUserMessage('test')] as ReadonlyArray<EngineMessage> }
+    const messagesRef = makeRef([createUserMessage('test')])
     const config: ProgressDigestConfig = { intervalMs: 1_000, isMasterPrivate: false }
     const digest = new ProgressDigest(config, makeDeps({ messagesRef, adapter }))
 
@@ -197,7 +269,7 @@ describe('ProgressDigest fork mode', () => {
       complete,
       updateConfig() { /* noop */ },
     }
-    const messagesRef = { current: [createUserMessage('go')] as ReadonlyArray<EngineMessage> }
+    const messagesRef = makeRef([createUserMessage('go')])
     const config: ProgressDigestConfig = { intervalMs: 1_000, isMasterPrivate: true }
     const digest = new ProgressDigest(config, makeDeps({ sendToUser, messagesRef, adapter }))
 
@@ -213,7 +285,7 @@ describe('ProgressDigest fork mode', () => {
   it('overdueMs triggers single fork-and-send at the deadline', async () => {
     const sendToUser = vi.fn().mockResolvedValue(undefined)
     const { adapter, complete } = makeAdapter()
-    const messagesRef = { current: [createUserMessage('begin')] as ReadonlyArray<EngineMessage> }
+    const messagesRef = makeRef([createUserMessage('begin')])
     // 只开 overdueMs，不开 intervalMs —— 验证 overdue 独立工作
     const config: ProgressDigestConfig = { overdueMs: 3_000, isMasterPrivate: true }
     const digest = new ProgressDigest(config, makeDeps({ sendToUser, messagesRef, adapter }))
@@ -239,7 +311,7 @@ describe('ProgressDigest fork mode', () => {
   it('intervalMs and overdueMs can co-exist; both fire independently', async () => {
     const sendToUser = vi.fn().mockResolvedValue(undefined)
     const { adapter, complete } = makeAdapter()
-    const messagesRef = { current: [createUserMessage('begin')] as ReadonlyArray<EngineMessage> }
+    const messagesRef = makeRef([createUserMessage('begin')])
     const config: ProgressDigestConfig = { intervalMs: 2_000, overdueMs: 5_000, isMasterPrivate: true }
     const digest = new ProgressDigest(config, makeDeps({ sendToUser, messagesRef, adapter }))
 
@@ -263,7 +335,7 @@ describe('ProgressDigest fork mode', () => {
 
   it('traces each flush via onTraceStart/onTraceEnd with reason', async () => {
     const { adapter } = makeAdapter()
-    const messagesRef = { current: [createUserMessage('go')] as ReadonlyArray<EngineMessage> }
+    const messagesRef = makeRef([createUserMessage('go')])
     const onTraceStart = vi.fn((_reason: string) => 'span-1')
     const onTraceEnd = vi.fn()
     const config: ProgressDigestConfig = {
@@ -293,7 +365,7 @@ describe('ProgressDigest fork mode', () => {
       complete,
       updateConfig() { /* noop */ },
     }
-    const messagesRef = { current: [createUserMessage('go')] as ReadonlyArray<EngineMessage> }
+    const messagesRef = makeRef([createUserMessage('go')])
     const onTraceStart = vi.fn((_reason: string) => 'span-x')
     const onTraceEnd = vi.fn()
     const config: ProgressDigestConfig = {
@@ -317,7 +389,7 @@ describe('ProgressDigest fork mode', () => {
   it('overdue is skipped after agent has sent a message; interval still fires', async () => {
     const sendToUser = vi.fn().mockResolvedValue(undefined)
     const { adapter, complete } = makeAdapter()
-    const messagesRef = { current: [createUserMessage('go')] as ReadonlyArray<EngineMessage> }
+    const messagesRef = makeRef([createUserMessage('go')])
     const config: ProgressDigestConfig = {
       intervalMs: 2_000,
       overdueMs: 3_000,
@@ -352,7 +424,7 @@ describe('ProgressDigest fork mode', () => {
   it('overdue still fires when agent has only used non-send_message tools', async () => {
     const sendToUser = vi.fn().mockResolvedValue(undefined)
     const { adapter, complete } = makeAdapter()
-    const messagesRef = { current: [createUserMessage('go')] as ReadonlyArray<EngineMessage> }
+    const messagesRef = makeRef([createUserMessage('go')])
     const config: ProgressDigestConfig = { overdueMs: 1_000, isMasterPrivate: true }
     const digest = new ProgressDigest(config, makeDeps({ sendToUser, messagesRef, adapter }))
 
@@ -376,7 +448,7 @@ describe('ProgressDigest fork mode', () => {
   it('errored send_message does NOT mark sentMessage; overdue still fires', async () => {
     const sendToUser = vi.fn().mockResolvedValue(undefined)
     const { adapter, complete } = makeAdapter()
-    const messagesRef = { current: [createUserMessage('go')] as ReadonlyArray<EngineMessage> }
+    const messagesRef = makeRef([createUserMessage('go')])
     const config: ProgressDigestConfig = { overdueMs: 1_000, isMasterPrivate: true }
     const digest = new ProgressDigest(config, makeDeps({ sendToUser, messagesRef, adapter }))
 
@@ -406,9 +478,7 @@ describe('ProgressDigest fork mode', () => {
       [{ type: 'tool_use', id: 'call-1', name: 'Bash', input: { command: 'ls' } }],
       'tool_use',
     )
-    const messagesRef = {
-      current: [createUserMessage('do it'), danglingAssistant] as ReadonlyArray<EngineMessage>,
-    }
+    const messagesRef = makeRef([createUserMessage('do it'), danglingAssistant])
     const config: ProgressDigestConfig = { intervalMs: 1_000, isMasterPrivate: true }
     const digest = new ProgressDigest(config, makeDeps({ sendToUser, messagesRef, adapter }))
 
