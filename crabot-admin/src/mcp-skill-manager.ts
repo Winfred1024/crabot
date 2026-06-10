@@ -879,8 +879,19 @@ export class SkillManager {
   async seedBuiltinSkills(entries: SkillRegistryEntry[]): Promise<void> {
     let changed = false
     for (const e of entries) {
-      if (!this.skills.has(e.id)) {
+      const existing = this.skills.get(e.id)
+      if (!existing) {
         this.skills.set(e.id, e)
+        changed = true
+        continue
+      }
+      // 修复历史脏数据：旧版本格式的 builtin entry 没有 skill_dir 字段（content 时代遗留），
+      // push 给 agent 时 SkillConfig.skill_dir=undefined → agent computeSkillsHash
+      // h.update(undefined) 抛 TypeError → 整个 update_config 失败（连带 subagents 不更新）。
+      // 这里用 code default 的 skill_dir 补齐；其余字段尊重磁盘上的用户改动。
+      if (!existing.skill_dir && e.skill_dir) {
+        this.skills.set(e.id, { ...existing, skill_dir: e.skill_dir, updated_at: new Date().toISOString() })
+        console.warn(`[SkillManager] Repaired builtin skill "${e.name}" (${e.id}): missing skill_dir → ${e.skill_dir}`)
         changed = true
       }
     }

@@ -15,7 +15,7 @@ import { AdminModule } from '../src/index.js'
 
 function buildAdmin(deps: {
   mcpEnabled?: Array<{ id: string; name: string; enabled: boolean }>
-  skillEnabled?: Array<{ id: string; name: string; enabled: boolean }>
+  skillEnabled?: Array<{ id: string; name: string; enabled: boolean; skill_dir?: string }>
   agentConfig?: Record<string, unknown>
 }): unknown {
   const admin = Object.create(AdminModule.prototype) as Record<string, unknown>
@@ -86,8 +86,8 @@ describe('handleGetAgentConfig — global enable layer', () => {
   it('skills 等于全部 enabled skill（不读 config.skill_ids）', async () => {
     const admin = buildAdmin({
       skillEnabled: [
-        { id: 'skill-1', name: 'foo', enabled: true },
-        { id: 'skill-2', name: 'bar', enabled: false }, // disabled
+        { id: 'skill-1', name: 'foo', enabled: true, skill_dir: '/skills/foo' },
+        { id: 'skill-2', name: 'bar', enabled: false, skill_dir: '/skills/bar' }, // disabled
       ],
       agentConfig: { skill_ids: ['nonexistent-skill-id'] }, // deprecated 字段被忽略
     })
@@ -97,6 +97,22 @@ describe('handleGetAgentConfig — global enable layer', () => {
 
     const names = result.config.skills.map((s) => s.name)
     expect(names).toEqual(['foo'])
+  })
+
+  it('skill_dir 缺失的 enabled skill 被过滤（历史脏数据防御）', async () => {
+    const admin = buildAdmin({
+      skillEnabled: [
+        { id: 'skill-1', name: 'good', enabled: true, skill_dir: '/skills/good' },
+        { id: 'skill-2', name: 'legacy-no-dir', enabled: true }, // skill_dir 缺失（旧格式脏数据）
+      ],
+      agentConfig: {},
+    })
+
+    const result = await (admin as { handleGetAgentConfig: (p: unknown) => Promise<{ config: { skills: Array<{ name: string }> } }> })
+      .handleGetAgentConfig({ instance_id: 'test-agent' })
+
+    const names = result.config.skills.map((s) => s.name)
+    expect(names).toEqual(['good'])
   })
 
   it('全部 disabled 时 mcp_servers/skills 为空', async () => {

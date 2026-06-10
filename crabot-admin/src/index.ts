@@ -6578,8 +6578,17 @@ export class AdminModule extends ModuleBase {
         // 不再读 config.mcp_server_ids（已 @deprecated）
         mcp_servers: mcpServerConfigs,
         // 所有 enabled skill 都对所有 agent 可见，不再读 config.skill_ids（已 @deprecated）
+        // skill_dir 缺失的 entry 过滤掉（历史脏数据防御）：agent 拿到 undefined skill_dir 会在
+        // computeSkillsHash h.update(undefined) 抛 TypeError，整个 update_config 推送失败。
         skills: this.skillManager.list()
-          .filter((s) => s.enabled)
+          .filter((s) => {
+            if (!s.enabled) return false
+            if (!s.skill_dir) {
+              console.warn(`[Admin] skill "${s.name}" (${s.id}) skill_dir missing — skipped from agent push`)
+              return false
+            }
+            return true
+          })
           .map((s) => this.skillManager.toAgentConfig(s)),
       },
     }

@@ -349,9 +349,11 @@ export function adapterFromSdkEnv(sdkEnv: SdkEnvConfig) {
 function computeSkillsHash(skills: ReadonlyArray<SkillConfig>): string {
   const h = createHash('sha256')
   for (const s of [...skills].sort((a, b) => a.name.localeCompare(b.name))) {
-    h.update(s.name)
+    // 防御：历史脏数据可能缺 name / skill_dir 字段（admin 已在 push 侧过滤，这里防御纵深）。
+    // h.update(undefined) 抛 TypeError，会让整个 update_config 推送失败（连带 subagents 不更新）。
+    h.update(s.name ?? '')
     h.update('\0')
-    h.update(s.skill_dir)
+    h.update(s.skill_dir ?? '')
     h.update('\0')
   }
   return h.digest('hex')
