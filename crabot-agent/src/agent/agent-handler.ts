@@ -1890,6 +1890,13 @@ export class AgentHandler {
       const errMsg = error instanceof Error ? error.message : String(error)
       // 清理 activeTasks（runWorkerLoop 通常自己清，但本路径异常时兜底）
       this.activeTasks.delete(taskId)
+      // loop 异常时不会走下方 finalizeTask——必须兜底把 admin 任务落到终态，
+      // 否则任务卡 executing（master chat 状态卡依赖状态推送，会永久"执行中"）
+      if (registered) {
+        await this.transitionTaskStatus(taskId, 'failed', {
+          result: { outcome: 'failed', finished_at: new Date().toISOString() },
+        })
+      }
       return {
         outcome: 'failed' as const,
         finalText: '',
