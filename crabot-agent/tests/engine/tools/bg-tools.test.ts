@@ -149,6 +149,71 @@ describe('Output tool', () => {
     expect(result.output).toContain('transient_output')
   })
 
+  it('transient shell: incremental read — second call does not repeat first output', async () => {
+    const entityId = transient.spawn({
+      command: 'echo first; sleep 0.3; echo second',
+      cwd: process.cwd(),
+      owner: OWNER_A,
+      spawned_by_task_id: TASK_ID,
+    })
+
+    const tool = createOutputTool(deps)
+
+    await sleep(150)
+    const result1 = await tool.call({ entity_id: entityId }, {})
+    expect(result1.isError).toBe(false)
+    expect(result1.output).toContain('first')
+
+    await sleep(400)
+    const result2 = await tool.call({ entity_id: entityId }, {})
+    expect(result2.isError).toBe(false)
+    expect(result2.output).toContain('second')
+    expect(result2.output).not.toContain('first')
+  })
+
+  it('transient shell: no new output since last read returns (no new output) marker', async () => {
+    const entityId = transient.spawn({
+      command: 'echo once; sleep 30',
+      cwd: process.cwd(),
+      owner: OWNER_A,
+      spawned_by_task_id: TASK_ID,
+    })
+
+    const tool = createOutputTool(deps)
+
+    await sleep(300)
+    const result1 = await tool.call({ entity_id: entityId }, {})
+    expect(result1.output).toContain('once')
+
+    const result2 = await tool.call({ entity_id: entityId }, {})
+    expect(result2.isError).toBe(false)
+    expect(result2.output).toContain('(no new output)')
+    expect(result2.output).toContain('[status: running')
+  })
+
+  it('transient shell: block=true waits for next output instead of returning immediately (trace ec8618b8 bug)', async () => {
+    const entityId = transient.spawn({
+      command: 'sleep 2.5; echo late_output',
+      cwd: process.cwd(),
+      owner: OWNER_A,
+      spawned_by_task_id: TASK_ID,
+    })
+
+    const tool = createOutputTool(deps)
+
+    await sleep(100)
+    const startMs = Date.now()
+    const result = await tool.call(
+      { entity_id: entityId, block: true, timeout_ms: 8_000 },
+      {},
+    )
+    const elapsed = Date.now() - startMs
+    expect(result.isError).toBe(false)
+    expect(result.output).toContain('late_output')
+    // bug 形态是秒回 [status: running] 空内容；修复后应真正等到输出（>2s）
+    expect(elapsed).toBeGreaterThan(2_000)
+  }, 15_000)
+
   it('non-existent entity_id returns error', async () => {
     const tool = createOutputTool(deps)
     const result = await tool.call({ entity_id: 'shell_000000000000' }, {})

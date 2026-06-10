@@ -220,6 +220,8 @@ export interface TransientShellState {
   ended_at: string | null
   /** 滚动 buffer：超 200KB 时从头截 */
   ringBuffer: string
+  /** 累计输出字符数（不随 ring 截断减少）——Output 工具增量读用的单调游标 */
+  totalOutputChars: number
   readonly child: ChildProcess
 }
 
@@ -267,12 +269,14 @@ export class TransientShellRegistry {
       exit_code: null,
       ended_at: null,
       ringBuffer: '',
+      totalOutputChars: 0,
       child,
     }
     this.shells.set(entity_id, state)
 
     const append = (chunk: Buffer | string) => {
       const text = chunk.toString()
+      state.totalOutputChars += text.length
       const combined = state.ringBuffer + text
       if (combined.length > BG_TRANSIENT_RING_BUFFER_BYTES) {
         state.ringBuffer = combined.slice(combined.length - BG_TRANSIENT_RING_BUFFER_BYTES)
