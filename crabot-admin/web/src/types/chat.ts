@@ -31,6 +31,16 @@ export type ChatServerMessage =
     }
   | { type: 'chat_status'; request_id: string; status: 'processing' }
   | { type: 'chat_error'; request_id?: string; error: string }
+  | { type: 'chat_push'; message: ChatMessage }
+  | { type: 'chat_task_update'; task: ChatTaskSnapshot }
+
+/** 任务状态快照（chat_task_update / GET /api/chat/tasks/:id） */
+export interface ChatTaskSnapshot {
+  task_id: string
+  status: string
+  title: string
+  step?: { index: number; total: number; description: string }
+}
 
 /** WebSocket 连接状态 */
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error'

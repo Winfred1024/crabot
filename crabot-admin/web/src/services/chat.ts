@@ -4,7 +4,7 @@
 
 import { storage } from '../utils/storage'
 import { api } from './api'
-import type { ChatMessage, ChatClientMessage, ChatServerMessage, ConnectionStatus } from '../types/chat'
+import type { ChatMessage, ChatClientMessage, ChatServerMessage, ChatTaskSnapshot, ConnectionStatus } from '../types/chat'
 
 type MessageHandler = (message: ChatServerMessage) => void
 type StatusHandler = (status: ConnectionStatus) => void
@@ -121,6 +121,15 @@ class ChatWebSocketClient {
     if (before) url += `&before=${encodeURIComponent(before)}`
     const { messages } = await api.get<{ messages: ChatMessage[] }>(url)
     return messages
+  }
+
+  /** 任务状态卡 hydrate（页面加载/重连时）；404/网络错误返回 null，卡片降级为纯链接 */
+  async getTaskSnapshot(taskId: string): Promise<ChatTaskSnapshot | null> {
+    try {
+      return await api.get<ChatTaskSnapshot>(`/chat/tasks/${encodeURIComponent(taskId)}`)
+    } catch {
+      return null
+    }
   }
 
   private generateRequestId(): string {
