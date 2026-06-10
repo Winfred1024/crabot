@@ -13,7 +13,7 @@ import { randomBytes } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import type { LLMAdapter } from '../llm-adapter.js'
-import type { ToolDefinition } from '../types.js'
+import type { ToolDefinition, ToolPermissionConfig } from '../types.js'
 import { runEngine } from '../query-loop.js'
 import { getBgEntitiesLogsDir } from '../../core/data-paths.js'
 import type { BgEntityRegistry } from './registry.js'
@@ -39,6 +39,12 @@ export interface SpawnPersistentAgentOpts {
   /** Per-call max output tokens；缺省时让 adapter 走默认行为 */
   readonly maxTokens?: number
   readonly adapter: LLMAdapter
+  /**
+   * 工具权限配置——透传给 runEngine。不传时 checkToolPermission 对 dangerous 级
+   * 工具（Bash 等）一律拒绝；audit subagent 曾因此永远跑不了 cmd criterion
+   * （2026-06-10 goal audit 死循环事故，spec 2026-06-10-audit-anchor-human-request §4.6）。
+   */
+  readonly permissionConfig?: ToolPermissionConfig
   readonly owner: BgEntityOwner
   readonly spawned_by_task_id: string
   readonly registry: BgEntityRegistry
@@ -120,6 +126,7 @@ export async function spawnPersistentAgent(opts: SpawnPersistentAgentOpts): Prom
           tools: [...opts.tools],
           model: opts.model,
           ...(opts.maxTokens !== undefined ? { maxTokens: opts.maxTokens } : {}),
+          ...(opts.permissionConfig ? { permissionConfig: opts.permissionConfig } : {}),
           abortSignal: abortController.signal,
           // 同 forkEngine：bg-agent 也是 subagent 派发路径，禁用 compaction。
           // 详见 EngineOptions.disableCompaction 注释。

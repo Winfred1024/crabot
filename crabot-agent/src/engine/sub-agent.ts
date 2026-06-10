@@ -224,6 +224,7 @@ export function createSubAgentTool(config: SubAgentToolConfig): ToolDefinition {
             prompt: String(input.task),
             task_description: String(input.task),
             tools: config.subTools,
+            ...(config.permissionConfig ? { permissionConfig: config.permissionConfig } : {}),
             systemPrompt: config.systemPrompt,
             model: config.model,
             ...(config.maxTokens !== undefined ? { maxTokens: config.maxTokens } : {}),

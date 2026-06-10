@@ -160,6 +160,16 @@ describe('spawnAuditSubagent', () => {
     expect(opts.prompt).toContain('/tmp/workspace')
   })
 
+  it('forwards permissionConfig to spawnPersistentAgent (auditor 跑 dangerous 工具必需)', async () => {
+    const depsWithPerm: SpawnAuditSubagentDeps = {
+      ...deps,
+      permissionConfig: { mode: 'bypass' },
+    }
+    await spawnAuditSubagent(depsWithPerm)
+    const opts = (depsWithPerm.spawnFn as any).mock.calls[0][0]
+    expect(opts.permissionConfig).toEqual({ mode: 'bypass' })
+  })
+
   it('passes correct spawnPersistentAgent opts (task_description prefix / tools / model)', async () => {
     await spawnAuditSubagent(deps)
     const opts = (deps.spawnFn as any).mock.calls[0][0]

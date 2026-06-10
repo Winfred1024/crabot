@@ -67,6 +67,9 @@ export interface SpawnAuditSubagentDeps {
   /** worker baseTools —— audit subagent 在其上做 capability filter。缺省 [] 会让 auditor
    *  没工具可用导致永远 fail（详见 runGoalAudit 同名警示）。 */
   readonly parentTools: ReadonlyArray<ToolDefinition>
+  /** worker 同款权限配置——不传时 runEngine 对 dangerous 工具（Bash）默认拒绝，
+   *  auditor 永远验不了 cmd criterion（2026-06-10 死循环事故）。 */
+  readonly permissionConfig?: import('../engine/types.js').ToolPermissionConfig
   /** audit subagent 用的 LLMAdapter（auditor.model 解析后建好的 adapter）。 */
   readonly adapter: LLMAdapter
 
@@ -134,6 +137,7 @@ export async function spawnAuditSubagent(
     prompt: promptText,
     task_description: `[goal_audit] ${promptText.slice(0, 200)}`,
     tools: subTools,
+    ...(deps.permissionConfig ? { permissionConfig: deps.permissionConfig } : {}),
     systemPrompt,
     model: deps.auditor.model.model_id,
     ...(deps.auditor.model.max_tokens !== undefined

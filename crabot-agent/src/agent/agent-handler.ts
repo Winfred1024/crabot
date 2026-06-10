@@ -920,6 +920,7 @@ export class AgentHandler {
       // permissionConfig（auditor 调 dangerous 工具如 Bash 时 runtime permission check 才能放行）。
       // spec: 2026-05-23-goal-mode-design.md §6 / §7.2（auditor 工具来源）
       let auditBaseTools: ReadonlyArray<ToolDefinition> = []
+      let auditPermissionConfig: ToolPermissionConfig | undefined
 
       // wait_for_signal 用：跟踪本任务派出的 async subagent entity_ids。
       // delegate_task 异步路径返回 `{agent_id, status:'launched'}`，我们在 wrapper 里
@@ -1067,6 +1068,7 @@ export class AgentHandler {
         const baseTools = filterToolsByPermission(baseToolsRaw, baseToolsPermissionConfig)
         // 把 baseTools 接到 outer，audit gate getter 用。
         auditBaseTools = baseTools
+        auditPermissionConfig = baseToolsPermissionConfig
 
         if (subAgentsSnapshot.length > 0) {
           const baseRunSubAgent = this.makeRunSubAgent({
@@ -1428,6 +1430,7 @@ export class AgentHandler {
             // 闭包延迟读 auditBaseTools —— 由 buildToolsDynamic 写入，engine 第一次跑前
             // 已被 callback 调用过；endTurnGate 触发时一定有值。
             getAuditBaseTools: () => auditBaseTools,
+            getAuditPermissionConfig: () => auditPermissionConfig,
             ...(subAgentTraceConfig ? { traceConfig: subAgentTraceConfig } : {}),
             humanQueue,
             cwd: getWorkspaceDir(),
@@ -3075,6 +3078,8 @@ export class AgentHandler {
     readonly taskState: WorkerTaskState
     readonly subAgents: ReadonlyArray<SubAgentConfig>
     readonly getAuditBaseTools: () => ReadonlyArray<ToolDefinition>
+    /** worker 同款权限配置——auditor 跑 dangerous 工具（Bash 验 cmd criterion）必需。 */
+    readonly getAuditPermissionConfig: () => ToolPermissionConfig | undefined
     readonly traceConfig?: SubAgentTraceConfig
     readonly humanQueue: HumanMessageQueue
     readonly cwd: string
@@ -3109,6 +3114,7 @@ export class AgentHandler {
           format: auditor.model.format,
           ...(auditor.model.account_id ? { accountId: auditor.model.account_id } : {}),
         })
+        const auditPermission = opts.getAuditPermissionConfig()
         return {
           goal,
           conversationLog: opts.getConversationLog(),
@@ -3116,6 +3122,7 @@ export class AgentHandler {
           parentTaskId: opts.taskId,
           auditor,
           parentTools: opts.getAuditBaseTools(),
+          ...(auditPermission ? { permissionConfig: auditPermission } : {}),
           adapter: auditAdapter,
           owner: opts.owner,
           registry: handler.bgRegistry,
@@ -3177,6 +3184,7 @@ export class AgentHandler {
       readonly parentTools: ReadonlyArray<import('../engine/types.js').ToolDefinition>
       readonly parentTaskId: string
       readonly humanQueue?: import('../engine/human-message-queue.js').HumanMessageQueue
+      readonly permissionConfig?: import('../engine/types.js').ToolPermissionConfig
       readonly traceConfig?: SubAgentTraceConfig
     },
   ): Promise<import('../engine/types.js').ToolCallResult> {
@@ -3206,6 +3214,7 @@ export class AgentHandler {
       prompt: input.task,
       task_description: input.task,
       tools: subTools,
+      ...(deps.permissionConfig ? { permissionConfig: deps.permissionConfig } : {}),
       systemPrompt: finalSystemPrompt,
       model: subModel.model_id,
       ...(subModel.max_tokens !== undefined ? { maxTokens: subModel.max_tokens } : {}),

@@ -203,8 +203,55 @@ describe('spawnPersistentAgent', () => {
     expect(seenPrompts[0]).toContain('FULL_PROMPT_MARKER')
     expect(seenPrompts[0]).not.toContain('short display label')
     // task_description 仍作为展示标签落 registry
-    const rec = await registry.get(id)
-    expect(rec!.task_description).toBe('short display label')
+    const rec = (await registry.get(id)) as import('../../../src/engine/bg-entities/types').BgAgentRegistryRecord
+    expect(rec.task_description).toBe('short display label')
+  })
+
+  it('permissionConfig is forwarded to engine — dangerous tool allowed under bypass (regression: auditor Bash 永远被拒)', async () => {
+    const toolCalls: string[] = []
+    const dangerousTool = {
+      name: 'Bash',
+      description: 'test dangerous tool',
+      isReadOnly: false,
+      permissionLevel: 'dangerous' as const,
+      inputSchema: { type: 'object' as const, properties: {} },
+      call: async () => {
+        toolCalls.push('Bash')
+        return { isError: false, output: 'ok' }
+      },
+    }
+    // 第一轮调工具，第二轮 end_turn
+    let call = 0
+    const adapter: LLMAdapter = {
+      async *stream() {
+        call++
+        if (call === 1) {
+          yield { type: 'message_start', messageId: 'm1' } as StreamChunk
+          yield { type: 'tool_use_start', id: 'tu1', name: 'Bash' } as StreamChunk
+          yield { type: 'tool_use_delta', id: 'tu1', inputJson: '{}' } as StreamChunk
+          yield { type: 'tool_use_end', id: 'tu1' } as StreamChunk
+          yield { type: 'message_end', stopReason: 'tool_use', usage: { inputTokens: 10, outputTokens: 5 } } as StreamChunk
+        } else {
+          for (const c of textResponse('done')) yield c
+        }
+      },
+      updateConfig() {},
+    }
+
+    const id = await spawnPersistentAgent({
+      ...baseOpts(adapter),
+      tools: [dangerousTool],
+      permissionConfig: { mode: 'bypass' },
+    })
+
+    await waitFor(async () => {
+      const rec = await registry.get(id)
+      return rec?.status === 'completed' || rec?.status === 'failed'
+    })
+
+    // bypass 下 dangerous 工具应被实际执行；不传 permissionConfig 时会被
+    // checkToolPermission 默认拒绝（"marked as dangerous"）
+    expect(toolCalls).toEqual(['Bash'])
   })
 
   it('multiple parallel spawns produce independent result_files without mixing', async () => {
