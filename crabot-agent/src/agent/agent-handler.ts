@@ -1184,6 +1184,11 @@ export class AgentHandler {
               }
               return false
             },
+            // 本 task 的 running transient shell——退出时 onShellExit push humanQueue 唤醒，
+            // 所以"等它退出"是合法挂起。persistent shell 可能永不退出，不算（等它得带 timeout_ms）。
+            hasRunningBgEntity: () =>
+              this.transientShells.list({ status: ['running'] })
+                .some((s) => s.spawned_by_task_id === task.task_id),
           },
         )
         if (waitForSignalTool) tools.push(waitForSignalTool)

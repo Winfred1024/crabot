@@ -94,9 +94,16 @@ export class HumanMessageQueue {
     this.children = next
   }
 
-  setBarrier(timeoutMs: number): void {
+  /**
+   * @param onTimeout 超时（而非 push/clearBarrier）触发时回调。
+   *   典型用法：push 一条 [wait_timeout] 标记消息，让 worker 醒来知道是计时器到了。
+   *   push 或 clearBarrier 提前唤醒时不会调用。
+   */
+  setBarrier(timeoutMs: number, onTimeout?: () => void): void {
     this.clearBarrier()
     this.barrierTimer = setTimeout(() => {
+      this.barrierTimer = null
+      onTimeout?.()
       this.clearBarrier()
     }, timeoutMs)
   }

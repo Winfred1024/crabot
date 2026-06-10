@@ -171,6 +171,49 @@ describe('HumanMessageQueue', () => {
       }
     })
 
+    it('setBarrier onTimeout fires on expiry', async () => {
+      vi.useFakeTimers()
+      try {
+        const queue = new HumanMessageQueue()
+        const onTimeout = vi.fn(() => queue.push('[wait_timeout] expired'))
+        queue.setBarrier(100, onTimeout)
+        vi.advanceTimersByTime(100)
+        expect(onTimeout).toHaveBeenCalledTimes(1)
+        expect(queue.hasBarrier).toBe(false)
+        expect(queue.drainPending()).toEqual(['[wait_timeout] expired'])
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('setBarrier onTimeout NOT called when push wakes barrier first', async () => {
+      vi.useFakeTimers()
+      try {
+        const queue = new HumanMessageQueue()
+        const onTimeout = vi.fn()
+        queue.setBarrier(100, onTimeout)
+        queue.push('early wake')
+        vi.advanceTimersByTime(200)
+        expect(onTimeout).not.toHaveBeenCalled()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('setBarrier onTimeout NOT called when clearBarrier called first', async () => {
+      vi.useFakeTimers()
+      try {
+        const queue = new HumanMessageQueue()
+        const onTimeout = vi.fn()
+        queue.setBarrier(100, onTimeout)
+        queue.clearBarrier()
+        vi.advanceTimersByTime(200)
+        expect(onTimeout).not.toHaveBeenCalled()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
     it('setBarrier clears previous barrier before setting new one', () => {
       const queue = new HumanMessageQueue()
       queue.setBarrier(5000)

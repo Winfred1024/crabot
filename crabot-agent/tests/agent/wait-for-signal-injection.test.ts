@@ -44,6 +44,7 @@ describe('maybeCreateWaitForSignalTool', () => {
     humanQueue: new HumanMessageQueue(),
     hasActiveAudit: () => false,
     hasActiveAsyncSubagent: () => false,
+    hasRunningBgEntity: () => false,
   }
 
   it('goalMode + async 都开 → 注入', () => {
