@@ -1775,15 +1775,49 @@ export interface ChatClientMessage {
   content: string
 }
 
+/** send_message RPC（admin-web 伪 channel）入参，对齐 protocol-channel SendMessageParams */
+export interface ChatSendMessageParams {
+  session_id: string
+  content: {
+    type: 'text' | 'image' | 'file' | 'system_event'
+    text?: string
+    media_url?: string
+    file_path?: string
+    filename?: string
+    mime_type?: string
+    size?: number
+  }
+  features?: Record<string, unknown>
+}
+
+/** send_message RPC 返回 */
+export interface ChatSendMessageResult {
+  platform_message_id: string
+  sent_at: string
+}
+
+/** 任务状态快照（chat_task_update 推送与 GET /api/chat/tasks/:id 共用） */
+export interface ChatTaskSnapshot {
+  task_id: TaskId
+  status: TaskStatus
+  title: string
+  /** 当前计划步骤（task.plan 存在时） */
+  step?: { index: number; total: number; description: string }
+}
+
 /** 服务端发送的聊天消息 */
 export interface ChatServerMessage {
-  type: 'chat_reply' | 'chat_status' | 'chat_error'
+  type: 'chat_reply' | 'chat_status' | 'chat_error' | 'chat_push' | 'chat_task_update'
   request_id?: string
   content?: string
   status?: 'processing' | 'completed' | 'failed'
   task_id?: TaskId
   reply_type?: 'direct_reply' | 'task_created' | 'task_completed' | 'task_failed'
   error?: string
+  /** type='chat_push'：完整新消息（worker 经 send_message 伪 channel 回流） */
+  message?: ChatMessage
+  /** type='chat_task_update'：任务状态快照 */
+  task?: ChatTaskSnapshot
 }
 
 /** chat_callback RPC 方法参数 */
