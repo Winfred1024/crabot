@@ -58,6 +58,8 @@ const SUBCOMMAND_TO_CLASSIFICATION: ReadonlyMap<string, CliClassification> = new
   ['skill list',            { domain: 'skill',      kind: 'read'  }],
   ['skill show',            { domain: 'skill',      kind: 'read'  }],
   ['skill add',             { domain: 'skill',      kind: 'write' }],
+  ['skill update',          { domain: 'skill',      kind: 'write' }],
+  ['skill restore',         { domain: 'skill',      kind: 'write' }],
   ['skill delete',          { domain: 'skill',      kind: 'write' }],
   // schedule
   ['schedule list',         { domain: 'schedule',   kind: 'read'  }],

@@ -12,6 +12,9 @@ describe('classifyCliSubcommand', () => {
     assert.deepEqual(classifyCliSubcommand('agent set-model'), { domain: 'agent', kind: 'write' })
     assert.deepEqual(classifyCliSubcommand('config switch-default'), { domain: 'config', kind: 'write' })
     assert.deepEqual(classifyCliSubcommand('undo'), { domain: 'undo', kind: 'write' })
+    // skill update / restore：N=1 版本管理上线时漏注册过，回归 fail-closed 拦截
+    assert.deepEqual(classifyCliSubcommand('skill update'), { domain: 'skill', kind: 'write' })
+    assert.deepEqual(classifyCliSubcommand('skill restore'), { domain: 'skill', kind: 'write' })
   })
 
   it('大小写敏感：大写或混合大小写视为未知（fail-closed 由调用方负责 deny）', () => {

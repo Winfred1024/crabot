@@ -83,7 +83,7 @@ import {
 } from '../prompts/agent-sections.js'
 import type { SubAgentConfig } from '../types.js'
 import { HumanMessageQueue } from '../engine/human-message-queue.js'
-import { createCodingExpertHookRegistry, createCliPermissionHook } from '../hooks/defaults.js'
+import { createCodingExpertHookRegistry, createCliPermissionHook, createSkillDirFenceHook } from '../hooks/defaults.js'
 import { HookRegistry } from '../hooks/hook-registry.js'
 import type { ContentReviewer } from '../hooks/types.js'
 import { reviewCliContent } from './cli-content-reviewer.js'
@@ -1298,6 +1298,9 @@ export class AgentHandler {
       //  isMasterPrivate 仅保留给 progress digest / bg entity persistence 等独立语义）
       const workerHookRegistry: HookRegistry = new HookRegistry()
       workerHookRegistry.register(createCliPermissionHook())
+      // Skill 目录写入 fence —— 拦 Write/Edit 直接改 data/admin/skills/**，强制走 `crabot skill update`
+      // 以确保 admin N=1 previous_snapshot + UI diff + restore 链路生效。
+      workerHookRegistry.register(createSkillDirFenceHook())
 
       // 6c. 注入 CLI 环境变量（CRABOT_TOKEN + CRABOT_ACTOR）
       // 总是注入（不论 isMasterPrivate）—— token 只是让子进程能调 CLI；

@@ -6,6 +6,7 @@ import * as fsp from 'fs/promises'
 import * as path from 'path'
 import { classifyCliSubcommand, REQUIRES_CONTENT_REVIEW } from 'crabot-shared'
 import { parseCrabotInvocation } from './crabot-cmd-parser.js'
+import { getAdminDataDir } from '../core/data-paths.js'
 
 const handlers = new Map<string, InternalHandler>()
 
@@ -169,6 +170,32 @@ registerInternalHandler('cli-permission-gate', async (input, context) => {
   }
 
   return { action: 'continue' }
+})
+
+// --- Built-in: skill-dir-fence ---
+// 拦截 Write/Edit 直接写 admin skills 目录的尝试。
+// agent 通过 Skill 工具被告知 skill_dir 绝对路径（skill-tool.ts:121），所以确实有能力直接写；
+// 但直接写会绕过 admin 的 N=1 previous_snapshot + Admin UI diff + crabot skill restore。
+// 不区分身份——master 改也得走 update，否则版本管理形同虚设。
+// 注意：agent 子进程的 DATA_DIR 是 <root>/data/agent，admin skills 在 <root>/data/admin/skills；
+// 必须走 getAdminDataDir() 而不是 path.join(DATA_DIR, 'admin', ...)，后者会算成
+// <root>/data/agent/admin/skills（不存在），fence 失效。
+registerInternalHandler('skill-dir-fence', async (input, _context) => {
+  const filePath = input.toolInput ? extractFilePaths(input.toolInput)[0] : undefined
+  if (!filePath) return { action: 'continue' }
+
+  const skillsRootAbs = path.join(getAdminDataDir(), 'skills')
+  const rel = path.relative(skillsRootAbs, path.resolve(filePath))
+  // 命中 root 自身（rel === ''）或 root 之下子路径（rel 不以 .. 开头且非绝对）→ block
+  const inSkillsRoot = rel === '' || (!rel.startsWith('..' + path.sep) && rel !== '..' && !path.isAbsolute(rel))
+  if (!inSkillsRoot) return { action: 'continue' }
+
+  return {
+    action: 'block',
+    message:
+      '禁止直接 Write/Edit admin skills 目录下的文件——会绕过 N=1 版本管理（previous_snapshot）和 Admin UI diff。' +
+      '请改用 `crabot skill update <ref> --file <new-SKILL.md>` 提交修改，admin 会自动打快照并支持 `crabot skill restore` 回退。',
+  }
 })
 
 // --- Legacy alias: block-cli-write → cli-permission-gate ---

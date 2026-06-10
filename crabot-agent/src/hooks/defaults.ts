@@ -20,6 +20,16 @@ export function createCliPermissionHook(): HookDefinition {
 // Backward-compat alias for existing references in agent-handler
 export const createCliBlockHook = createCliPermissionHook
 
+// Skill 目录写入 fence —— 详见 internal-handlers.ts `skill-dir-fence` 注释
+export function createSkillDirFenceHook(): HookDefinition {
+  return {
+    event: 'PreToolUse',
+    matcher: 'Write|Edit',
+    type: 'command',
+    command: '__internal:skill-dir-fence',
+  }
+}
+
 function getCodingExpertHooks(): ReadonlyArray<HookDefinition> {
   return [
     {

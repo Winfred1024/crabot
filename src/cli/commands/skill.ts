@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises'
+import { resolve as resolvePath } from 'node:path'
 import { Command } from 'commander'
 import { createContext } from '../main.js'
 import { renderResult, type Column, shortId } from '../output.js'
@@ -137,6 +139,38 @@ export function registerSkillCommands(parent: Command): void {
       } else {
         add.error('Either --git, --skill-md-url, or --path is required')
       }
+    })
+
+  skill
+    .command('update <ref>')
+    .description('替换已安装 skill 的 SKILL.md 全文（admin 自动打 previous_snapshot，可 restore）')
+    .option('--file <path>', '新 SKILL.md 文件路径（含 frontmatter）')
+    .action(async (ref: string, opts: { file?: string }) => {
+      const ctx = createContext(parent)
+      if (!opts.file) {
+        throw new Error('crabot skill update: 必须用 --file <path> 指定新 SKILL.md 文件')
+      }
+      // resolveRef 走 HTTP、readFile 走 disk，两者独立——并发省一次 RTT
+      const [{ id }, content] = await Promise.all([
+        resolveRef(ctx.client, 'skill', ref),
+        readFile(resolvePath(opts.file), 'utf-8'),
+      ])
+      const cmdText = `skill update ${ref} --file ${opts.file}`
+
+      const result = await runWrite({
+        subcommand: 'skill update',
+        args: { _positional: ref, '--file': opts.file },
+        command_text: cmdText,
+        execute: () => ctx.client.patch(`/api/skills/${id}`, { content }),
+        reverse: {
+          command: `skill restore ${ref}`,
+          preview_description: `restore skill ${ref} to version before this update (admin 自动打的 previous_snapshot)`,
+        },
+        dataDir: ctx.dataDir,
+        actor: ctx.actor,
+        mode: ctx.mode,
+      })
+      renderResult(maskSensitive(result), { mode: ctx.mode })
     })
 
   skill
