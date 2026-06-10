@@ -16,6 +16,8 @@ import type {
   ChatCallbackResult,
   ChatSendMessageParams,
   ChatSendMessageResult,
+  ChatTaskSnapshot,
+  Task,
 } from './types.js'
 
 export class ChatManager {
@@ -292,6 +294,11 @@ export class ChatManager {
     return { platform_message_id: message.message_id, sent_at: message.timestamp }
   }
 
+  /** 任务状态/计划变更推送（index.ts 的状态机钩子调用） */
+  pushTaskUpdate(snapshot: ChatTaskSnapshot): void {
+    this.pushToClient({ type: 'chat_task_update', task: snapshot })
+  }
+
   // ==========================================================================
   // 消息查询
   // ==========================================================================
@@ -329,5 +336,18 @@ export class ChatManager {
       this.wsServer.close()
       this.wsServer = null
     }
+  }
+}
+
+/** Task → 状态卡快照（chat_task_update 推送与 GET /api/chat/tasks/:id 共用） */
+export function buildChatTaskSnapshot(task: Task): ChatTaskSnapshot {
+  const steps = task.plan?.steps ?? []
+  const idx = task.plan?.current_step_index ?? 0
+  const current = steps[idx]
+  return {
+    task_id: task.id,
+    status: task.status,
+    title: task.title,
+    ...(current ? { step: { index: idx, total: steps.length, description: current.description } } : {}),
   }
 }

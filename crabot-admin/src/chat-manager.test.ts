@@ -3,7 +3,8 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
-import { ChatManager } from './chat-manager.js'
+import { ChatManager, buildChatTaskSnapshot } from './chat-manager.js'
+import type { Task } from './types.js'
 
 const TEST_DATA_DIR = './test-data/chat-manager-send-test'
 
@@ -78,5 +79,42 @@ describe('ChatManager.handleSendMessage', () => {
     const mgr2 = makeManager()
     await mgr2.loadData()
     expect(mgr2.getMessages(10)[0].content).toBe('persisted')
+  })
+})
+
+describe('buildChatTaskSnapshot', () => {
+  const baseTask = {
+    id: 'task-1',
+    status: 'executing',
+    priority: 'normal',
+    title: '调查 X',
+    source: { trigger_type: 'message', channel_id: 'admin-web' },
+    messages: [],
+    tags: [],
+    created_at: '2026-06-10T00:00:00Z',
+    updated_at: '2026-06-10T00:00:00Z',
+  } as unknown as Task
+
+  it('无 plan：只有 task_id/status/title', () => {
+    const snap = buildChatTaskSnapshot(baseTask)
+    expect(snap).toEqual({ task_id: 'task-1', status: 'executing', title: '调查 X' })
+  })
+
+  it('有 plan：带当前步骤', () => {
+    const task = {
+      ...baseTask,
+      plan: {
+        goal: 'g',
+        steps: [
+          { id: 's1', description: '第一步', status: 'completed', retry_count: 0 },
+          { id: 's2', description: '第二步', status: 'in_progress', retry_count: 0 },
+        ],
+        current_step_index: 1,
+        created_at: '2026-06-10T00:00:00Z',
+        updated_at: '2026-06-10T00:00:00Z',
+      },
+    } as unknown as Task
+    const snap = buildChatTaskSnapshot(task)
+    expect(snap.step).toEqual({ index: 1, total: 2, description: '第二步' })
   })
 })
