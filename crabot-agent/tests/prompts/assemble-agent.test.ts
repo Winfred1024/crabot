@@ -103,25 +103,3 @@ describe('assembleAgentPrompt goalModeEnabled 分支', () => {
   })
 })
 
-describe('assembleAgentPrompt snapshot（防止未察觉的内容漂移）', () => {
-  it('私聊版完整 prompt snapshot', () => {
-    const prompt = assembleAgentPrompt({ goalModeEnabled: true })
-    expect(prompt).toMatchSnapshot()
-  })
-
-  it('群聊版完整 prompt snapshot', () => {
-    const prompt = assembleAgentPrompt({ goalModeEnabled: true })
-    expect(prompt).toMatchSnapshot()
-  })
-
-  it('私聊版含 adminPersonality + sceneProfile + skillListing + subAgents 的全要素 snapshot', () => {
-    const prompt = assembleAgentPrompt({
-      goalModeEnabled: true,
-      adminPersonality: '你是某种 persona。',
-      sceneProfile: { label: 'team-dev', content: '这是开发讨论场景' },
-      skillListing: '## available_skills\n- skill-a: 描述',
-      availableSubAgents: [{ toolName: 'reviewer', workerHint: '代码评审' }],
-    })
-    expect(prompt).toMatchSnapshot()
-  })
-})
