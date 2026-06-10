@@ -19,11 +19,11 @@
  * runGoalAudit 保留不动，未来如需 sync fallback / 兼容旧路径仍可用。
  */
 
-import { buildAuditPendingMarker } from './audit-result-marker.js'
 import { spawnAuditSubagent, type SpawnAuditSubagentDeps } from './audit-spawn.js'
 import type { GoalAuditTaskGoal } from './goal-audit.js'
 import type { RpcClient } from 'crabot-shared'
 import type { WorkerTaskState } from '../types.js'
+import type { EndTurnGateResult } from '../engine/types.js'
 
 /**
  * "buffer 空 + has goal + !everSentMessage" 路径前 3 次注入的提示文案。
@@ -78,15 +78,18 @@ export interface AsyncAuditEndTurnGateDeps {
 }
 
 /**
- * 构造 engine endTurnGate 闭包 — 异步派 audit + 注入 [audit_pending] marker。
+ * 构造 engine endTurnGate 闭包 — 异步派 audit + 返回 wait 信号让 engine 直接挂起。
  *
- * 闭包签名：`() => Promise<string | null>`
+ * 闭包签名：`() => Promise<EndTurnGateResult>`
  *  - 返回 string：engine 把这段文本作为 user message 注入下一轮（worker 不真 end_turn）
+ *  - 返回 { kind: 'wait' }：audit 已派出，engine 直接 setBarrier 挂起等结果——
+ *    取代旧的「注入 [audit_pending] 文本 → LLM 调 wait_for_signal」往返，
+ *    每轮 audit 省一次全量 context 的 LLM 调用（spec 2026-06-10 §4.7）
  *  - 返回 null：engine 放行 end_turn（含 flush outboundBuffer）
  */
 export function createAsyncAuditEndTurnGate(
   deps: AsyncAuditEndTurnGateDeps,
-): () => Promise<string | null> {
+): () => Promise<EndTurnGateResult> {
   const spawn = deps.spawnAuditSubagentFn ?? spawnAuditSubagent
 
   return async () => {
@@ -152,7 +155,7 @@ export function createAsyncAuditEndTurnGate(
     // 5. 标记等审态 — send_message handler / drain / wait_for_signal 用这个判
     deps.taskState.activeAuditId = auditId
 
-    // 6. 注入 [audit_pending] marker — 续 turn 让 worker 看到 + 调 wait_for_signal
-    return buildAuditPendingMarker({ auditId })
+    // 6. 返回 wait 信号 — engine 直接挂起等 audit 结果 push，不再经过 LLM
+    return { kind: 'wait' }
   }
 }

@@ -179,12 +179,8 @@ describe('createAsyncAuditEndTurnGate', () => {
     // activeAuditId 落位
     expect(h.taskState.activeAuditId).toBe('audit-test-xyz')
 
-    // 返回的 marker 是 audit_pending
-    expect(result).toBeTruthy()
-    const parsed = parseSystemMarker(result!)
-    expect(parsed?.type).toBe('audit_pending')
-    if (parsed?.type !== 'audit_pending') throw new Error('marker type mismatch')
-    expect(parsed.auditId).toBe('audit-test-xyz')
+    // 返回 wait 信号——engine 直接挂起，不再注入 audit_pending 文本（spec 2026-06-10 §4.7）
+    expect(result).toEqual({ kind: 'wait' })
 
     // buildSpawnDeps 收到 RPC 拿回的 goal
     expect(h.buildSpawnDeps).toHaveBeenCalledOnce()
@@ -334,9 +330,8 @@ describe('createAsyncAuditEndTurnGate § 4.13 二级分支', () => {
     // 强制路径不再 ++ 计数器（计数器本就 ≥3）
     expect(h.taskState.silentNoDeliveryRetries).toBe(3)
 
-    // 返回的是 audit_pending marker
-    const parsed = parseSystemMarker(result!)
-    expect(parsed?.type).toBe('audit_pending')
+    // 返回 wait 信号（spec 2026-06-10 §4.7）
+    expect(result).toEqual({ kind: 'wait' })
   })
 
   it('讨论型不误伤：buffer 空 + has goal + everSentMessage=true + retries=0 → null', async () => {
@@ -396,7 +391,6 @@ describe('createAsyncAuditEndTurnGate § 4.13 二级分支', () => {
     expect(h.taskState.activeAuditId).toBe('audit-from-buffered')
     expect(h.taskState.silentNoDeliveryRetries).toBe(0)
 
-    const parsed = parseSystemMarker(result!)
-    expect(parsed?.type).toBe('audit_pending')
+    expect(result).toEqual({ kind: 'wait' })
   })
 })

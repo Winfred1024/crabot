@@ -241,6 +241,12 @@ export type LiveProgressEvent =
       readonly error: string         // 触发 retry 的 error message（截断 200）
     }
 
+/**
+ * endTurnGate 的决策结果（见 EngineOptions.endTurnGate 注释）。
+ * spec: 2026-06-10-audit-anchor-human-request-design.md §4.7
+ */
+export type EndTurnGateResult = string | { readonly kind: 'wait' } | null
+
 export interface EngineOptions {
   readonly systemPrompt: Resolvable<string>
   readonly tools: Resolvable<ReadonlyArray<ToolDefinition>>
@@ -325,10 +331,14 @@ export interface EngineOptions {
   /**
    * end_turn 前的异步决策钩子。engine 在自然退出前调用（suppressForcedSummary=true 的 silent
    * end_turn 路径，以及有文字/forced_summary 耗尽的路径）。
-   * 返回 string → 注入为 user message 继续 loop；返回 null → 正常退出。
+   * - 返回 string → 注入为 user message 继续 loop（NO_DELIVERY 提示等）
+   * - 返回 { kind: 'wait' } → audit 已异步派出；engine 直接挂起等 humanQueue push
+   *   （audit 结果 / 用户 supplement），不注入文本、不烧 LLM 轮次。
+   *   spec 2026-06-10-audit-anchor-human-request §4.7
+   * - 返回 null → 正常退出
    * 不传时直接退出。
    */
-  readonly endTurnGate?: () => Promise<string | null>
+  readonly endTurnGate?: () => Promise<EndTurnGateResult>
   /**
    * Goal mode 缓冲消息 flush 钩子。Engine 在以下时机调：
    * - stop_reason='tool_use' 续 turn 之前（agent 还在干活，上一轮缓冲的 info 是"过程信息"）
@@ -399,6 +409,8 @@ export interface HumanMessageQueueLike {
   readonly drainPending: () => Array<string | ContentBlock[]>
   readonly hasPending: boolean
   readonly hasBarrier: boolean
+  /** endTurnGate 'wait' 路径用：engine 自行布防 barrier 再 waitBarrier（spec 2026-06-10 §4.7） */
+  readonly setBarrier: (timeoutMs: number) => void
   readonly waitBarrier: (signal?: AbortSignal) => Promise<void>
   readonly clearBarrier: () => void
 }

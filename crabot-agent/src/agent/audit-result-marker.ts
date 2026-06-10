@@ -24,6 +24,10 @@ export type SystemMarker = AuditPendingMarker | AuditResultMarker | AuditAborted
 /**
  * Build a system marker as a tag-wrapped user message. Tag前缀风格与 <sub_agent_notification>
  * 一致，避免给 humanMessageQueue 加结构化 push API。
+ *
+ * @deprecated 2026-06-10 起 endTurnGate 返回 { kind: 'wait' } 由 engine 直接挂起，
+ * 不再注入 audit_pending 文本（spec 2026-06-10-audit-anchor-human-request §4.7）。
+ * parseSystemMarker 的 audit_pending 分支保留向后兼容；本函数仅测试在用。
  */
 export function buildAuditPendingMarker(params: { auditId: string }): string {
   if (params.auditId.includes('</audit_id>') || params.auditId.includes('</audit_pending>')) {

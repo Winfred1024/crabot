@@ -3096,7 +3096,7 @@ export class AgentHandler {
     readonly cwd: string
     readonly owner: BgEntityOwner
     readonly getConversationLog: () => ReadonlyArray<ConversationEntry>
-  }): (() => Promise<string | null>) | undefined {
+  }): (() => Promise<import('../engine/types.js').EndTurnGateResult>) | undefined {
     if (!opts.goalModeEnabled) return undefined
     if (!this.deps?.rpcClient || !this.deps.getAdminPort) {
       // 没 admin 通信能力 → audit gate 无法解析 goal，透明放行。

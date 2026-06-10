@@ -200,6 +200,53 @@ function formatAuditFailReport(result: AuditResultMarker): string {
   return lines.join('\n')
 }
 
+// endTurnGate 'wait' 路径的挂起超时兜底——与 WAIT_FOR_SIGNAL_TIMEOUT_MS 对齐（24 小时）。
+// 正常路径不依赖它：audit onExit 必然 push marker 唤醒。
+const GATE_WAIT_BARRIER_TIMEOUT_MS = 24 * 60 * 60 * 1000
+
+/**
+ * endTurnGate 返回 { kind: 'wait' } 后的挂起处理：audit 已异步派出，engine 直接
+ * setBarrier + waitBarrier 等 humanQueue push（audit 结果 / 用户 supplement），唤醒后
+ * 走 drainAndDispatchMarkers 既有分流。全程不烧 LLM 轮次——取代旧的「注入
+ * [audit_pending] 文本 → LLM 读完整上下文 → 调 wait_for_signal」往返（每轮 audit
+ * 浪费一次全量 context 的 LLM 调用）。
+ *
+ * 返回 'exit' → caller buildResult('completed') 退出（audit pass + 无后续 pending，
+ * flush 已在 dispatch 内完成）；'continue' → caller continue 进下一轮 LLM。
+ * spec: 2026-06-10-audit-anchor-human-request-design.md §4.7
+ */
+async function waitGateAuditAndDispatch(
+  options: EngineOptions,
+  messages: EngineMessage[],
+  totalTurns: number,
+  abortSignal?: AbortSignal,
+): Promise<'exit' | 'continue'> {
+  const queue = options.humanMessageQueue
+  if (!queue) {
+    // 防御：audit gate 必然由带 humanQueue 的 worker loop 注入；缺 queue 无从等待，
+    // fail-open 放行 end_turn（audit 结果将无人消费，但不能让 loop 永久挂死）。
+    return 'exit'
+  }
+  // push 先于挂起到达（如 supplement 已 pending）→ 跳过 barrier 直接 drain，避免错过唤醒。
+  if (!queue.hasPending) {
+    queue.setBarrier(GATE_WAIT_BARRIER_TIMEOUT_MS)
+    await queue.waitBarrier(abortSignal)
+  }
+  const drained = queue.drainPending()
+  const dispatch = await drainAndDispatchMarkers(drained, options, messages, totalTurns)
+  if (dispatch.shouldExitCompleted) return 'exit'
+  for (const content of dispatch.remainingTexts) {
+    messages.push(createUserMessage(content))
+    options.onSystemInjection?.({
+      type: 'supplement',
+      text: typeof content === 'string' ? content : '[ContentBlock[] supplement]',
+      turnNumber: totalTurns,
+      injectedAtMs: Date.now(),
+    })
+  }
+  return 'continue'
+}
+
 // --- Core Loop ---
 
 export async function runEngine(params: RunEngineParams): Promise<EngineResult> {
@@ -469,7 +516,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
         ))
         if (options.endTurnGate) {
           const gateResult = await options.endTurnGate()
-          if (gateResult !== null) {
+          if (typeof gateResult === 'string') {
             messages.push(createUserMessage(gateResult))
             options.onSystemInjection?.({
               type: 'forced_summary',
@@ -477,6 +524,14 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
               turnNumber: totalTurns,
               injectedAtMs: Date.now(),
             })
+            continue
+          }
+          if (gateResult !== null) {
+            // { kind: 'wait' }：audit 已派出，engine 直接挂起等结果（spec 2026-06-10 §4.7）
+            const outcome = await waitGateAuditAndDispatch(options, messages, totalTurns, abortSignal)
+            if (outcome === 'exit') {
+              return buildResult('completed', finalText, totalTurns, contextManager, messages, exitToolCall, toolCallCount, wroteMemoryOrScene)
+            }
             continue
           }
         }
@@ -512,7 +567,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
       ))
       if (options.endTurnGate) {
         const gateResult = await options.endTurnGate()
-        if (gateResult !== null) {
+        if (typeof gateResult === 'string') {
           messages.push(createUserMessage(gateResult))
           options.onSystemInjection?.({
             type: 'forced_summary',
@@ -520,6 +575,14 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
             turnNumber: totalTurns,
             injectedAtMs: Date.now(),
           })
+          continue
+        }
+        if (gateResult !== null) {
+          // { kind: 'wait' }：audit 已派出，engine 直接挂起等结果（spec 2026-06-10 §4.7）
+          const outcome = await waitGateAuditAndDispatch(options, messages, totalTurns, abortSignal)
+          if (outcome === 'exit') {
+            return buildResult('completed', finalText, totalTurns, contextManager, messages, exitToolCall, toolCallCount, wroteMemoryOrScene)
+          }
           continue
         }
       }

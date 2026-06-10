@@ -35,9 +35,9 @@ const inputSchema = z.object({
 const TOOL_DESCRIPTION =
   '挂起当前任务，等待外部异步事件唤醒。适用场景：' +
   '1) 你派出了 async subagent（delegate_task）没有别的事可干；' +
-  '2) 系统注入 [audit_pending] 告知你有审计正在跑；' +
-  '3) 任意"我没事干、等通知"场景。' +
+  '2) 任意"我没事干、等通知"场景。' +
   '任何 humanQueue push（subagent 完成 / 用户补充指示 / 系统结果）都会唤醒你。' +
+  '交付审计的等待不需要调本工具——系统在你 end_turn 时自动挂起。' +
   '当前确实有 pending 异步事件才调；滥用会被工具拒绝。'
 
 export function createWaitForSignalTool(deps: WaitForSignalDeps): ToolDefinition {
