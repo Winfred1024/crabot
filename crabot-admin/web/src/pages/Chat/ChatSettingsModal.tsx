@@ -30,10 +30,16 @@ export const ChatSettingsModal: React.FC<{ onClose: () => void }> = ({ onClose }
   }, [])
 
   const handleSave = async () => {
+    // 前置校验：空串 Number()→0、非数字→NaN，没必要发无效请求
+    const n = Number(ttlDays)
+    if (!Number.isInteger(n) || n < 1 || n > 365) {
+      setError('请输入 1-365 的整数')
+      return
+    }
     setSaving(true)
     setError('')
     try {
-      await api.patch('/chat/media-config', { ttl_days: Number(ttlDays) })
+      await api.patch('/chat/media-config', { ttl_days: n })
       onClose()
     } catch (e) {
       setError(e instanceof Error ? e.message : '保存失败')

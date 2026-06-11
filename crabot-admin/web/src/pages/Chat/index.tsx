@@ -365,18 +365,31 @@ export const Chat: React.FC = () => {
     setAttachments((prev) => [...prev, ...valid])
   }
 
-  // 移除单个附件
+  // 移除单个附件（同名同时间戳文件可能共享 objectURL，仅在无其他引用时 revoke）
   const removeAttachment = (index: number) => {
     setAttachments((prev) => {
       const removed = prev[index]
       const key = removed.name + removed.lastModified
+      const stillUsed = prev.some((f, i) => i !== index && f.name + f.lastModified === key)
       const url = objectUrlsRef.current.get(key)
-      if (url) {
+      if (url && !stillUsed) {
         URL.revokeObjectURL(url)
         objectUrlsRef.current.delete(key)
       }
       return prev.filter((_, i) => i !== index)
     })
+  }
+
+  // 释放一批附件的预览 objectURL（发送完成后调用，防内存泄漏）
+  const releasePreviewUrls = (files: File[]) => {
+    for (const f of files) {
+      const key = f.name + f.lastModified
+      const url = objectUrlsRef.current.get(key)
+      if (url) {
+        URL.revokeObjectURL(url)
+        objectUrlsRef.current.delete(key)
+      }
+    }
   }
 
   // 获取文件预览 objectURL（图片用）
@@ -409,6 +422,7 @@ export const Chat: React.FC = () => {
         const files = attachments
         setAttachments([])
         setInput('')
+        releasePreviewUrls(files)
         const { message, request_id } = await chatService.sendMessageWithAttachments(content, files)
         setMessages((prev) => [
           ...prev,
@@ -423,8 +437,7 @@ export const Chat: React.FC = () => {
           },
         ])
       } else {
-        // 既有 WS 纯文本路径
-        if (!content) return
+        // 既有 WS 纯文本路径（入口已保证 content 非空）
         const request_id = chatService.sendMessage(content)
 
         // 添加用户消息
@@ -803,7 +816,11 @@ export const Chat: React.FC = () => {
             type="file"
             multiple
             ref={fileInputRef}
-            onChange={(e) => e.target.files && addFiles(e.target.files)}
+            onChange={(e) => {
+              if (e.target.files) addFiles(e.target.files)
+              // 重置 value：否则再次选择同一文件不触发 onChange
+              e.target.value = ''
+            }}
             style={{ display: 'none' }}
           />
           {/* 附件按钮 */}
