@@ -418,12 +418,14 @@ export const Chat: React.FC = () => {
     setIsSending(true)
     try {
       if (attachments.length > 0) {
-        // 带附件走 HTTP multipart
+        // 带附件走 HTTP multipart。
+        // 清空动作放在发送成功之后：失败时保留 input/attachments 让用户能直接重试
+        // （isSending 已禁用发送按钮，await 期间不会重复提交）
         const files = attachments
+        const { message, request_id } = await chatService.sendMessageWithAttachments(content, files)
         setAttachments([])
         setInput('')
         releasePreviewUrls(files)
-        const { message, request_id } = await chatService.sendMessageWithAttachments(content, files)
         setMessages((prev) => [
           ...prev,
           { ...message, status: 'sent' as const },
