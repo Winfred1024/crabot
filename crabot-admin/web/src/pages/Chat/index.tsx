@@ -5,6 +5,7 @@ import type { ChatMessageContent, ChatServerMessage, ChatTaskSnapshot, Connectio
 import { ChatSettingsModal } from './ChatSettingsModal'
 import { useToast } from '../../contexts/ToastContext'
 import { ChatMessageItem, type MessageState } from './ChatMessageItem'
+import { ActiveTasksBar } from './ActiveTasksBar'
 
 const PAGE_SIZE = 30
 
@@ -29,6 +30,8 @@ function formatDateLabel(ts: string): string {
 export const Chat: React.FC = () => {
   const toast = useToast()
   const [messages, setMessages] = useState<MessageState[]>([])
+  // 进行中任务条数据（非终态任务，chat_task_update 推送实时维护）
+  const [activeTasks, setActiveTasks] = useState<ChatTaskSnapshot[]>([])
   const [input, setInput] = useState('')
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>(chatService.status)
   const [hasMore, setHasMore] = useState(true)
@@ -88,8 +91,10 @@ export const Chat: React.FC = () => {
 
     const unsubStatus = chatService.onStatusChange((status) => {
       setConnectionStatus(status)
-      // 重连成功后用 API 检查并更新 processing 状态的消息
+      // 重连成功后：补拉进行中任务条（重连不补会遗漏运行中任务）
       if (status === 'connected') {
+        chatService.getActiveTasks().then(setActiveTasks).catch(() => {/* 静默忽略 */})
+        // 检查并更新 processing 状态的消息
         chatService.loadHistory(PAGE_SIZE).then((history) => {
           if (history.length === 0) return
           const historyMap = new Map(history.map((m) => [m.message_id, m]))
@@ -152,11 +157,15 @@ export const Chat: React.FC = () => {
     }
   }, [])
 
-  // 加载历史消息
+  // 加载历史消息 + 进行中任务条数据
   useEffect(() => {
     const loadHistory = async () => {
       try {
-        const history = await chatService.loadHistory(PAGE_SIZE)
+        // 并行拉取：历史消息 + 非终态任务列表
+        const [history, activeTasksList] = await Promise.all([
+          chatService.loadHistory(PAGE_SIZE),
+          chatService.getActiveTasks(),
+        ])
         if (history.length > 0) {
           // API 返回倒序（最新在前），UI 需要正序（最旧在前）
           const chronological = [...history].reverse()
@@ -165,17 +174,8 @@ export const Chat: React.FC = () => {
         if (history.length < PAGE_SIZE) {
           setHasMore(false)
         }
-        // hydrate 任务状态卡（带 task_id 的历史消息）
-        const taskIds = [...new Set(history.filter((m) => m.task_id).map((m) => m.task_id!))]
-        if (taskIds.length > 0) {
-          const snapshots = await Promise.all(taskIds.map((id) => chatService.getTaskSnapshot(id)))
-          const snapMap = new Map(
-            snapshots.filter((s): s is ChatTaskSnapshot => s !== null).map((s) => [s.task_id, s])
-          )
-          setMessages((prev) =>
-            prev.map((m) => (m.task_id && snapMap.has(m.task_id) ? { ...m, task: snapMap.get(m.task_id) } : m))
-          )
-        }
+        // 进行中任务条数据：不能只靠消息 hydrate，运行中任务可能不在已加载的历史分页里
+        setActiveTasks(activeTasksList)
       } catch (error) {
         console.error('Failed to load chat history:', error)
       }
@@ -275,7 +275,7 @@ export const Chat: React.FC = () => {
   // 处理服务端消息
   const handleServerMessage = (message: ChatServerMessage) => {
     if (message.type === 'chat_reply' && message.reply_type === 'task_created') {
-      // task_created 单独处理：转为任务状态卡，避免覆盖 dispatcher 先行 direct_reply
+      // task_created 单独处理：转为系统提示样式消息，避免覆盖 dispatcher 先行 direct_reply
       // WS chat_reply 的 content 仍是 string，包装成 ChatMessageContent
       setMessages((prev) => {
         const cardMsg: MessageState = {
@@ -287,11 +287,8 @@ export const Chat: React.FC = () => {
           reply_type: 'task_created',
           timestamp: new Date().toISOString(),
           status: 'completed',
-          task: message.task_id
-            ? { task_id: message.task_id, status: 'executing', title: (message.content ?? '').replace(/^已创建任务：/, '') }
-            : undefined,
         }
-        // 占位仍在 processing → 原地转为状态卡；否则（已被 direct_reply 填充）追加新消息
+        // 占位仍在 processing → 原地转为系统提示；否则（已被 direct_reply 填充）追加新消息
         const idx = prev.findIndex(
           (m) => m.request_id === message.request_id && m.role === 'assistant' && m.status === 'processing'
         )
@@ -302,6 +299,23 @@ export const Chat: React.FC = () => {
         }
         return [...prev, cardMsg]
       })
+      // 同步 upsert 进行中任务条
+      if (message.task_id) {
+        const newTask: ChatTaskSnapshot = {
+          task_id: message.task_id,
+          status: 'executing',
+          title: (message.content ?? '').replace(/^已创建任务：/, ''),
+        }
+        setActiveTasks((prev) => {
+          const idx = prev.findIndex((t) => t.task_id === newTask.task_id)
+          if (idx >= 0) {
+            const updated = [...prev]
+            updated[idx] = newTask
+            return updated
+          }
+          return [...prev, newTask]
+        })
+      }
       return
     }
 
@@ -367,10 +381,22 @@ export const Chat: React.FC = () => {
       // message.message 已是新结构 ChatMessage，无需转换
       setMessages((prev) => [...prev, { ...message.message, status: 'completed' as const }])
     } else if (message.type === 'chat_task_update') {
-      // 任务状态/计划变更，实时更新对应消息的状态卡数据
-      setMessages((prev) =>
-        prev.map((m) => (m.task_id === message.task.task_id ? { ...m, task: message.task } : m))
-      )
+      // 任务状态/计划变更，更新进行中任务条（终态时移除，非终态时 upsert）
+      const { task } = message
+      const isTerminal = ['completed', 'failed', 'cancelled'].includes(task.status)
+      if (isTerminal) {
+        setActiveTasks((prev) => prev.filter((t) => t.task_id !== task.task_id))
+      } else {
+        setActiveTasks((prev) => {
+          const idx = prev.findIndex((t) => t.task_id === task.task_id)
+          if (idx >= 0) {
+            const updated = [...prev]
+            updated[idx] = task
+            return updated
+          }
+          return [...prev, task]
+        })
+      }
     }
   }
 
@@ -696,6 +722,9 @@ export const Chat: React.FC = () => {
             </button>
           )}
         </div>
+
+        {/* 进行中任务条（非终态任务，终态后自动移除） */}
+        <ActiveTasksBar tasks={activeTasks} />
 
         {/* 附件预览条 */}
         {attachments.length > 0 && (

@@ -3,29 +3,46 @@
  * memo 后历史消息不随列表更新重渲染，ReactMarkdown 不重复解析）
  */
 import React from 'react'
+import { useNavigate } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { chatService } from '../../services/chat'
-import { TaskStatusCard } from './TaskStatusCard'
 import { MessageMedia } from './MessageMedia'
-import type { ChatMessage, ChatTaskSnapshot } from '../../types/chat'
+import type { ChatMessage } from '../../types/chat'
 
 /** 消息状态（从 index.tsx 迁入，UI 层扩展字段） */
 export interface MessageState extends ChatMessage {
   status?: 'sending' | 'sent' | 'processing' | 'completed' | 'failed'
   reply_type?: 'direct_reply' | 'task_created' | 'task_completed' | 'task_failed'
   error?: string
-  /** 任务状态卡数据（chat_task_update 推送 / 历史 hydrate） */
-  task?: ChatTaskSnapshot
 }
 
 export const ChatMessageItem = React.memo(function ChatMessageItem({ message }: { message: MessageState }) {
+  const navigate = useNavigate()
   const isUser = message.role === 'user'
   const isProcessing = message.status === 'processing'
 
+  // task_created 消息（含历史存量）渲染为居中单行系统提示样式
+  if (message.task_id && message.content.text?.startsWith('已创建任务')) {
+    return (
+      <div style={{ textAlign: 'center', margin: '0.75rem 0' }}>
+        <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+          ⚙ {message.content.text}
+          <a
+            onClick={(e) => { e.preventDefault(); navigate(`/traces?task_id=${encodeURIComponent(message.task_id!)}`) }}
+            href="#"
+            style={{ color: 'var(--primary)', marginLeft: '0.5rem', textDecoration: 'none' }}
+          >
+            详情 →
+          </a>
+        </span>
+      </div>
+    )
+  }
+
   // reply_type 对应的提示信息
   const getReplyTypeHint = () => {
-    // task_created 由状态卡承载，不出提示文字
+    // task_created 由系统提示行承载，不出提示文字
     if (message.reply_type !== 'task_completed' && message.reply_type !== 'task_failed') return null
 
     const hints = {
@@ -104,9 +121,6 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({ message }: 
             </div>
             {message.content.media && message.content.media.length > 0 && (
               <MessageMedia media={message.content.media} />
-            )}
-            {message.task_id && (
-              <TaskStatusCard taskId={message.task_id} snapshot={message.task} />
             )}
             {message.error && (
               <div style={{ marginTop: '0.5rem', fontSize: '0.85rem', color: 'var(--error)' }}>

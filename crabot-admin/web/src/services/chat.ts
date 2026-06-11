@@ -132,6 +132,16 @@ class ChatWebSocketClient {
     }
   }
 
+  /** 拉取所有非终态任务快照（进行中任务条数据源）；出错返回空数组，不阻塞主流程 */
+  async getActiveTasks(): Promise<ChatTaskSnapshot[]> {
+    try {
+      const { tasks } = await api.get<{ tasks: ChatTaskSnapshot[] }>('/chat/tasks')
+      return tasks
+    } catch {
+      return []
+    }
+  }
+
   /** 带附件的消息走 HTTP multipart（WS 保持纯文本）。返回落库后的 user 消息。 */
   async sendMessageWithAttachments(text: string, files: File[]): Promise<{ message: ChatMessage; request_id: string }> {
     const request_id = this.generateRequestId()
