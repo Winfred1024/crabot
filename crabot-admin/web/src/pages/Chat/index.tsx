@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { MainLayout } from '../../components/Layout/MainLayout'
@@ -39,6 +39,9 @@ export const Chat: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const isLoadingHistoryRef = useRef(false)
   const isNearBottomRef = useRef(true)
+  // 首屏定位完成标记：完成前自动滚动 effect 与顶部哨兵都不工作，
+  // 防止初始 smooth 全程滚 + 哨兵在 scrollTop=0 时误触发连环加载
+  const initialPositionedRef = useRef(false)
   // objectURL 追踪，组件卸载时 revoke 防内存泄漏
   const objectUrlsRef = useRef<Map<string, string>>(new Map())
 
@@ -174,8 +177,20 @@ export const Chat: React.FC = () => {
     loadHistory()
   }, [])
 
-  // 自动滚动到底部（仅用户在底部附近时）
+  // 首屏瞬时锚定底部（同步于绘制前，无可感知滚动）
+  useLayoutEffect(() => {
+    if (initialPositionedRef.current) return
+    if (messages.length === 0) return
+    const container = messagesContainerRef.current
+    if (container) {
+      container.scrollTop = container.scrollHeight
+    }
+    initialPositionedRef.current = true
+  }, [messages])
+
+  // 自动滚动到底部（仅用户在底部附近时；首屏定位由上方 useLayoutEffect 负责）
   useEffect(() => {
+    if (!initialPositionedRef.current) return
     if (isLoadingHistoryRef.current) return
     if (isNearBottomRef.current) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -199,6 +214,7 @@ export const Chat: React.FC = () => {
 
     const container = messagesContainerRef.current
     const prevScrollHeight = container?.scrollHeight ?? 0
+    const prevScrollTop = container?.scrollTop ?? 0
 
     try {
       const older = await chatService.loadHistory(PAGE_SIZE, oldest.timestamp)
@@ -215,7 +231,8 @@ export const Chat: React.FC = () => {
         requestAnimationFrame(() => {
           if (container) {
             const newScrollHeight = container.scrollHeight
-            container.scrollTop = newScrollHeight - prevScrollHeight
+            // 保留触发时的原 scrollTop 偏移，而非假定从 0 开始
+            container.scrollTop = prevScrollTop + (newScrollHeight - prevScrollHeight)
           }
           setLoadingMore(false)
           isLoadingHistoryRef.current = false
@@ -236,6 +253,8 @@ export const Chat: React.FC = () => {
 
     const observer = new IntersectionObserver(
       (entries) => {
+        // 首屏定位完成前不触发——scrollTop=0 的初始渲染瞬间哨兵必然可见
+        if (!initialPositionedRef.current) return
         if (entries[0].isIntersecting && hasMore && !loadingMore) {
           loadOlderMessages()
         }
