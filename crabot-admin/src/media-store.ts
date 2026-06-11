@@ -58,7 +58,9 @@ export class MediaStore {
   }
 
   private async atomicWrite(filePath: string, content: string): Promise<void> {
-    const tmp = `${filePath}.tmp`
+    // tmp 名带随机后缀：并发 saveIndex 时共享固定 tmp 名会让先 rename 的一方
+    // 把另一方的 tmp 抢走（ENOENT），调用方平白收到失败
+    const tmp = `${filePath}.${crypto.randomUUID()}.tmp`
     await fs.writeFile(tmp, content, 'utf-8')
     await fs.rename(tmp, filePath)
   }

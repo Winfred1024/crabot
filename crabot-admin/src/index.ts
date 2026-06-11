@@ -1816,8 +1816,9 @@ export class AdminModule extends ModuleBase {
 
       if (pathname === '/api/chat/media-config' && req.method === 'PATCH') {
         if (!this.mediaStore) { sendJson(res, 503, { error: 'media store not ready' }); return }
-        const body = await this.readJsonBody<{ ttl_days?: number }>(req)
         try {
+          // readJsonBody 放 try 内：非法 JSON 也应回 400 而非 500
+          const body = await this.readJsonBody<{ ttl_days?: number }>(req)
           await this.mediaStore.setConfig({ ttl_days: Number(body.ttl_days) })
           sendJson(res, 200, this.mediaStore.getConfig())
         } catch (err) {

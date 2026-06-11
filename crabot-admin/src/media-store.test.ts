@@ -57,6 +57,19 @@ describe('MediaStore', () => {
     expect(store2.resolve(saved.id)).not.toBeNull()
   })
 
+  it('并发 saveBuffer：两次都成功且 index 持久化完整', async () => {
+    const store = await makeStore()
+    const [a, b] = await Promise.all([
+      store.saveBuffer(Buffer.from('a'), { filename: 'a', mime_type: 'text/plain' }),
+      store.saveBuffer(Buffer.from('b'), { filename: 'b', mime_type: 'text/plain' }),
+    ])
+    expect(store.resolve(a.id)).not.toBeNull()
+    expect(store.resolve(b.id)).not.toBeNull()
+    const store2 = await makeStore()
+    expect(store2.resolve(a.id)).not.toBeNull()
+    expect(store2.resolve(b.id)).not.toBeNull()
+  })
+
   it('getUsage 统计数量与字节数', async () => {
     const store = await makeStore()
     await store.saveBuffer(Buffer.from('12345'), { filename: 'a', mime_type: 'text/plain' })
