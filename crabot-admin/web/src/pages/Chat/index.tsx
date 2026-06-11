@@ -426,15 +426,15 @@ export const Chat: React.FC = () => {
 
     // reply_type 对应的提示信息
     const getReplyTypeHint = () => {
-      if (!message.reply_type || message.reply_type === 'direct_reply') return null
+      // task_created 由状态卡承载，不出提示文字
+      if (message.reply_type !== 'task_completed' && message.reply_type !== 'task_failed') return null
 
       const hints = {
         task_completed: { text: '✓ 任务已完成', color: 'var(--success)' },
         task_failed: { text: '✗ 任务执行失败', color: 'var(--error)' },
       } as const
 
-      const hint = hints[message.reply_type as keyof typeof hints]
-      if (!hint) return null
+      const hint = hints[message.reply_type]
 
       return (
         <div
