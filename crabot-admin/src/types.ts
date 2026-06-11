@@ -1876,7 +1876,13 @@ export interface GetChatHistoryResult {
     platform_message_id: string
     session: { session_id: string; channel_id: string; type: 'private' }
     sender: { friend_id?: string; platform_user_id: string; platform_display_name: string }
-    content: { type: 'text'; text: string }
+    /** 结构化内容，含可选的 media[]（Phase 2 起透传，agent 侧 MessageContent.media 在 Task 7 加） */
+    content: {
+      type: 'text' | 'image' | 'file' | 'system_event'
+      text?: string
+      media_url?: string
+      media?: MediaItem[]
+    }
     features: { is_mention_crab: false }
     platform_timestamp: string
   }>

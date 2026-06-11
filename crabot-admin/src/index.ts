@@ -746,13 +746,14 @@ export class AdminModule extends ModuleBase {
     }, 24 * 60 * 60 * 1000)
     this.mediaSweepTimer.unref?.()
 
-    // 初始化 Chat 管理器
+    // 初始化 Chat 管理器（mediaStore 已在上方初始化，作为第 6 参注入）
     this.chatManager = new ChatManager(
       this.adminConfig.data_dir,
       this.rpcClient,
       () => this.ensureAgentPort(),
       this.jwtSecret,
       verifyJwtWithEpoch,
+      this.mediaStore!,
     )
     await this.chatManager.loadData()
 
@@ -1800,6 +1801,11 @@ export class AdminModule extends ModuleBase {
       // Chat 路由
       if (pathname === '/api/chat/messages' && req.method === 'GET') {
         await this.handleGetChatMessagesApi(req, res, url)
+        return
+      }
+
+      if (pathname === '/api/chat/messages' && req.method === 'POST') {
+        await this.handlePostChatMessageApi(req, res)
         return
       }
 
@@ -8522,7 +8528,13 @@ export class AdminModule extends ModuleBase {
         sender: msg.role === 'user'
           ? { friend_id: 'master', platform_user_id: 'master', platform_display_name: 'Master' }
           : { friend_id: 'assistant', platform_user_id: 'assistant', platform_display_name: 'Crabot' },
-        content: { type: 'text' as const, text: msg.content.text ?? '' },
+        // Phase 2 起透传结构化 content（含 media[]），供 agent 侧 media-resolver 消费
+        content: {
+          type: msg.content.type,
+          ...(msg.content.text !== undefined ? { text: msg.content.text } : {}),
+          ...(msg.content.media_url !== undefined ? { media_url: msg.content.media_url } : {}),
+          ...(msg.content.media !== undefined ? { media: msg.content.media } : {}),
+        },
         features: { is_mention_crab: false as const },
         platform_timestamp: msg.timestamp,
       })),
@@ -8599,6 +8611,55 @@ export class AdminModule extends ModuleBase {
     await this.chatManager.clearMessages()
     res.writeHead(204)
     res.end()
+  }
+
+  /** POST /api/chat/messages — multipart/form-data 消息入口（文字 + N 附件） */
+  private async handlePostChatMessageApi(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.chatManager) {
+      sendJson(res, 503, { error: 'chat not ready' })
+      return
+    }
+    const MAX_FILE = 25 * 1024 * 1024
+    const MAX_TOTAL = 100 * 1024 * 1024
+    const contentLength = Number(req.headers['content-length'] ?? 0)
+    if (contentLength > MAX_TOTAL) {
+      sendJson(res, 413, { error: '请求体过大（上限 100MB）' })
+      return
+    }
+    try {
+      // Node 18+ 内建 multipart 解析：IncomingMessage 包成 Web 标准 Request
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const RequestClass = Request as unknown as new (url: string, init: Record<string, unknown>) => { formData(): Promise<{ get(k: string): unknown; getAll(k: string): unknown[] }> }
+      const request = new RequestClass('http://localhost/api/chat/messages', {
+        method: 'POST',
+        headers: req.headers,
+        body: req,
+        duplex: 'half',
+      })
+      const form = await request.formData()
+      const text = String(form.get('text') ?? '')
+      const requestId = String(form.get('request_id') ?? '')
+      if (!requestId) {
+        sendJson(res, 400, { error: 'request_id required' })
+        return
+      }
+      const files: Array<{ buffer: Buffer; filename: string; mime_type: string }> = []
+      // File 类在 Node 20+ 全局可用；使用 as unknown 绕过 tsconfig 中未含 DOM lib 的类型限制
+      const FileClass = (globalThis as unknown as { File: new (...args: unknown[]) => { name: string; type: string; arrayBuffer(): Promise<ArrayBuffer> } }).File
+      for (const value of form.getAll('files')) {
+        if (!FileClass || !(value instanceof FileClass)) continue
+        const buffer = Buffer.from(await value.arrayBuffer())
+        if (buffer.length > MAX_FILE) {
+          sendJson(res, 413, { error: `文件 ${value.name} 超过 25MB 上限` })
+          return
+        }
+        files.push({ buffer, filename: value.name, mime_type: value.type || 'application/octet-stream' })
+      }
+      const result = await this.chatManager.handleInboundMessage({ request_id: requestId, text, files })
+      sendJson(res, 200, result)
+    } catch (err) {
+      sendJson(res, 400, { error: err instanceof Error ? err.message : 'invalid multipart request' })
+    }
   }
 
   // ============================================================================
