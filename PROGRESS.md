@@ -1,6 +1,18 @@
 # Crabot 项目进度
 
-> 最后更新：2026-06-11 — 修 agent OOM：zod globalRegistry 内存泄漏
+> 最后更新：2026-06-11 — Master Chat 重构 Phase 1 完成（回复链路修通 + 任务状态卡）
+
+## 2026-06-11 — Master Chat 重构 Phase 1（已合并 main）
+
+Admin Web 聊天界面从"几乎不可用"修到可用。spec：[`2026-06-10-master-chat-redesign-design.md`](crabot-docs/superpowers/specs/2026-06-10-master-chat-redesign-design.md)，三期分期，本次 Phase 1。
+
+- **核心架构**：admin-web 成为伪 channel——Admin 注册标准 `send_message` RPC（协议 §3.20.3），worker 出站零特判直达聊天界面；`chat_callback` 保留给 dispatcher 同步路径
+- **任务状态卡**：派 worker 时 `task_created`（携带 task_id）把占位转为状态卡；admin 状态机咽喉 `applyStatusTransition` + `handleUpdatePlan` 推 `chat_task_update` 驱动卡片实时更新；`GET /api/chat/tasks/:id` 供刷新 hydrate；点击跳 `/traces?task_id=`（顺手修掉 `/tasks/:id` 死链）
+- **异步派发**：admin chat 派 worker 从 awaitWorker:true 改 false——旧同步等待会撑爆 process_message RPC 超时（"看不到输出"主因之一）
+- **实测揪出的存量大坑**：chat-manager 合成身份 `friend_id='master'` 与真实 master friend UUID 不一致 → 权限解析落 minimal 模板 → **worker 工具全被滤光（tools=[]）**，模型只能把 send_message 写成 XML 正文，回复链路静默断裂数月。修复：`resolvePrincipalPermissions` 识别合成 master id（无记录时直接 master_private 模板）
+- 其他修复：system_event 误降级为媒体占位、pushToClient WS 竞态抛错污染状态机、worker loop 异常时任务卡 executing 致状态卡永久转圈
+- 新增测试 15 个（admin 713 全绿、agent 1281 全绿）；协议文档先行修订（protocol-admin §3.20）
+- **Phase 2 待做**：MessageContent 加 `media[]` 多附件 + 图片/文件双向 + 上传 API（已知技术债：Phase 1 媒体占位文本有损落盘，见 spec）；**Phase 3**：历史滚动体验打磨
 
 ## 2026-06-11 — 修 agent ~13 小时 OOM 自动重启（zod globalRegistry 泄漏）
 
