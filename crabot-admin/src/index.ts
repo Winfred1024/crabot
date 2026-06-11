@@ -120,6 +120,7 @@ import {
   type UpsertPendingMessageResult,
   type ChatSendMessageParams,
   type ChatSendMessageResult,
+  type ChatTaskSnapshot,
   type ChannelMessageRef,
   type FriendPermissionConfig,
   type GetFriendPermissionResult,
@@ -1830,6 +1831,12 @@ export class AdminModule extends ModuleBase {
         } catch (err) {
           sendJson(res, 400, { error: err instanceof Error ? err.message : 'invalid ttl_days' })
         }
+        return
+      }
+
+      if (pathname === '/api/chat/tasks' && req.method === 'GET') {
+        // 进行中任务条 hydrate：运行中任务可能不在已加载的历史分页里，须全量列出
+        sendJson(res, 200, { tasks: this.listActiveChatTaskSnapshots() })
         return
       }
 
@@ -8512,6 +8519,14 @@ export class AdminModule extends ModuleBase {
       throw new Error('Chat manager not initialized')
     }
     return this.chatManager.handleSendMessage(params)
+  }
+
+  /** admin-web 来源的非终态任务快照（进行中任务条数据源） */
+  private listActiveChatTaskSnapshots(): ChatTaskSnapshot[] {
+    const NON_TERMINAL: ReadonlySet<TaskStatus> = new Set(['pending', 'planning', 'executing', 'waiting', 'waiting_human'])
+    return Array.from(this.tasks.values())
+      .filter((t) => t.source.channel_id === 'admin-web' && NON_TERMINAL.has(t.status))
+      .map((t) => buildChatTaskSnapshot(t))
   }
 
   private async handleGetChatHistory(params: GetChatHistoryParams): Promise<GetChatHistoryResult> {

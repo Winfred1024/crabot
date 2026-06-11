@@ -109,4 +109,29 @@ describe('chat_task_update push hooks', () => {
     expect(pushed).toHaveLength(1)
     expect(pushed[0].step).toEqual({ index: 0, total: 2, description: '第一步' })
   })
+
+  it('listActiveChatTaskSnapshots：只含 admin-web 来源的非终态任务', async () => {
+    const running = await createTask({
+      title: '进行中的',
+      source: { trigger_type: 'message', origin: 'human', channel_id: 'admin-web', session_id: 'admin-chat' },
+    })
+    const done = await createTask({
+      title: '已完成的',
+      source: { trigger_type: 'message', origin: 'human', channel_id: 'admin-web', session_id: 'admin-chat' },
+    })
+    await (admin as any).handleUpdateTaskStatus({ task_id: done.id, status: 'planning' })
+    await (admin as any).handleUpdateTaskStatus({ task_id: done.id, status: 'executing' })
+    await (admin as any).handleUpdateTaskStatus({ task_id: done.id, status: 'completed' })
+    await createTask({
+      title: '非 admin-web 的',
+      source: { trigger_type: 'message', origin: 'human', channel_id: 'wechat-1', session_id: 's1' },
+    })
+
+    const snapshots = (admin as any).listActiveChatTaskSnapshots()
+    const ids = snapshots.map((s: { task_id: string }) => s.task_id)
+    expect(ids).toContain(running.id)
+    expect(ids).not.toContain(done.id)
+    expect(snapshots.find((s: { task_id: string }) => s.task_id === running.id).title).toBe('进行中的')
+    expect(snapshots.every((s: { title: string }) => s.title !== '非 admin-web 的')).toBe(true)
+  })
 })
