@@ -1,6 +1,11 @@
 /**
  * 单条聊天消息气泡（React.memo：函数式 setMessages 保持未变更消息的对象引用，
  * memo 后历史消息不随列表更新重渲染，ReactMarkdown 不重复解析）
+ *
+ * memo 稳定性说明：
+ * - onQuote 由 index.tsx useCallback 保证引用稳定
+ * - taskSnapshot 仅在该任务有新推送时通过 new Map + entry 替换更新（upsert 只替换命中 entry），
+ *   其余消息的 taskSnapshot 引用保持不变，memo 浅比较不触发重渲染
  */
 import React from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -8,7 +13,8 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { chatService } from '../../services/chat'
 import { MessageMedia } from './MessageMedia'
-import type { ChatMessage } from '../../types/chat'
+import { TaskStatusIcon } from './TaskStatusIcon'
+import type { ChatMessage, ChatTaskSnapshot } from '../../types/chat'
 
 /** 消息状态（从 index.tsx 迁入，UI 层扩展字段） */
 export interface MessageState extends ChatMessage {
@@ -21,14 +27,16 @@ interface ChatMessageItemProps {
   message: MessageState
   /** 引用整条消息（右键触发）；useCallback 保证稳定引用，不破坏 memo */
   onQuote?: (m: MessageState) => void
+  /** 消息关联任务的快照（来自 index.tsx 的 taskStatuses Map）；引用仅在该任务更新时变化 */
+  taskSnapshot?: ChatTaskSnapshot
 }
 
-export const ChatMessageItem = React.memo(function ChatMessageItem({ message, onQuote }: ChatMessageItemProps) {
+export const ChatMessageItem = React.memo(function ChatMessageItem({ message, onQuote, taskSnapshot }: ChatMessageItemProps) {
   const navigate = useNavigate()
   const isUser = message.role === 'user'
   const isProcessing = message.status === 'processing'
 
-  // task_created 消息（含历史存量）渲染为居中单行系统提示样式，不挂右键引用
+  // task_created 消息（含历史存量）渲染为居中单行系统提示样式，不挂右键引用、不挂任务图标
   if (message.task_id && message.content.text?.startsWith('已创建任务')) {
     return (
       <div style={{ textAlign: 'center', margin: '0.75rem 0' }}>
@@ -79,9 +87,15 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({ message, on
       style={{
         display: 'flex',
         justifyContent: isUser ? 'flex-end' : 'flex-start',
+        alignItems: 'center',
+        gap: '0.4rem',
         marginBottom: '1rem',
       }}
     >
+      {/* user 消息：任务图标在气泡左侧（先渲染图标） */}
+      {message.task_id && isUser && (
+        <TaskStatusIcon taskId={message.task_id} snapshot={taskSnapshot} />
+      )}
       <div
         style={{
           maxWidth: '80%',
@@ -168,6 +182,10 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({ message, on
           </>
         )}
       </div>
+      {/* assistant 消息：任务图标在气泡右侧（后渲染图标） */}
+      {message.task_id && !isUser && (
+        <TaskStatusIcon taskId={message.task_id} snapshot={taskSnapshot} />
+      )}
     </div>
   )
 })

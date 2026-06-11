@@ -5,7 +5,6 @@ import type { ChatMessageContent, ChatServerMessage, ChatTaskSnapshot, Connectio
 import { ChatSettingsModal } from './ChatSettingsModal'
 import { useToast } from '../../contexts/ToastContext'
 import { ChatMessageItem, type MessageState } from './ChatMessageItem'
-import { ActiveTasksBar } from './ActiveTasksBar'
 
 const PAGE_SIZE = 30
 
@@ -30,8 +29,8 @@ function formatDateLabel(ts: string): string {
 export const Chat: React.FC = () => {
   const toast = useToast()
   const [messages, setMessages] = useState<MessageState[]>([])
-  // 进行中任务条数据（非终态任务，chat_task_update 推送实时维护）
-  const [activeTasks, setActiveTasks] = useState<ChatTaskSnapshot[]>([])
+  // 消息级任务图标数据（task_id → 快照，终态也保留供图标显示 ✓/✗）
+  const [taskStatuses, setTaskStatuses] = useState<Map<string, ChatTaskSnapshot>>(new Map())
   const [input, setInput] = useState('')
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>(chatService.status)
   const [hasMore, setHasMore] = useState(true)
@@ -60,19 +59,12 @@ export const Chat: React.FC = () => {
   // 首屏定位完成标记：完成前自动滚动 effect 与顶部哨兵都不工作，
   // 防止初始 smooth 全程滚 + 哨兵在 scrollTop=0 时误触发连环加载
   const initialPositionedRef = useRef(false)
-  // 本会话内见过终态推送的任务 id：防止在途的 hydrate 旧快照把已完成任务复活到任务条
-  const terminalTaskIdsRef = useRef<Set<string>>(new Set())
-
-  // hydrate 快照合并：剔除已终态的；同 id 保留 prev（推送比快照新）；保留快照没有的 prev 独有项
-  const applyTasksSnapshot = useCallback((snapshot: ChatTaskSnapshot[]) => {
-    setActiveTasks((prev) => {
-      const fresh = snapshot.filter((t) => !terminalTaskIdsRef.current.has(t.task_id))
-      const prevMap = new Map(prev.map((t) => [t.task_id, t]))
-      const freshIds = new Set(fresh.map((t) => t.task_id))
-      return [
-        ...fresh.map((t) => prevMap.get(t.task_id) ?? t),
-        ...prev.filter((t) => !freshIds.has(t.task_id)),
-      ]
+  /** upsert 一条任务快照进 taskStatuses（终态也保留） */
+  const upsertTaskStatus = useCallback((task: ChatTaskSnapshot) => {
+    setTaskStatuses((prev) => {
+      const next = new Map(prev)
+      next.set(task.task_id, task)
+      return next
     })
   }, [])
   // objectURL 追踪，组件卸载时 revoke 防内存泄漏
@@ -115,9 +107,7 @@ export const Chat: React.FC = () => {
 
     const unsubStatus = chatService.onStatusChange((status) => {
       setConnectionStatus(status)
-      // 重连成功后：补拉进行中任务条（重连不补会遗漏运行中任务）
       if (status === 'connected') {
-        chatService.getActiveTasks().then(applyTasksSnapshot).catch(() => {/* 静默忽略 */})
         // 检查并更新 processing 状态的消息
         chatService.loadHistory(PAGE_SIZE).then((history) => {
           if (history.length === 0) return
@@ -181,31 +171,51 @@ export const Chat: React.FC = () => {
     }
   }, [])
 
-  // 加载历史消息 + 进行中任务条数据
+  // 加载历史消息并 hydrate 页内消息的任务快照
   useEffect(() => {
     const loadHistory = async () => {
       try {
-        // 并行拉取：历史消息 + 非终态任务列表
-        const [history, activeTasksList] = await Promise.all([
-          chatService.loadHistory(PAGE_SIZE),
-          chatService.getActiveTasks(),
-        ])
+        const history = await chatService.loadHistory(PAGE_SIZE)
         if (history.length > 0) {
           // API 返回倒序（最新在前），UI 需要正序（最旧在前）
           const chronological = [...history].reverse()
           setMessages(chronological.map((msg) => ({ ...msg, status: 'completed' as const })))
+          // hydrate：对页内消息出现的 task_id 批量拉快照（getTaskSnapshot 已有 null 处理）
+          const taskIds = [...new Set(chronological.map((m) => m.task_id).filter(Boolean))] as string[]
+          if (taskIds.length > 0) {
+            const snapshots = await Promise.all(taskIds.map((id) => chatService.getTaskSnapshot(id)))
+            snapshots.forEach((snap) => {
+              if (snap) upsertTaskStatus(snap)
+            })
+          }
         }
         if (history.length < PAGE_SIZE) {
           setHasMore(false)
         }
-        // 进行中任务条数据：不能只靠消息 hydrate，运行中任务可能不在已加载的历史分页里
-        applyTasksSnapshot(activeTasksList)
       } catch (error) {
         console.error('Failed to load chat history:', error)
       }
     }
     loadHistory()
   }, [])
+
+  // 30s 轮询兜底：刷新非终态任务快照（防丢推送；终态跳过；无非终态时跳过）
+  const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled'])
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setTaskStatuses((cur) => {
+        const nonTerminal = Array.from(cur.values()).filter((t) => !TERMINAL_STATUSES.has(t.status))
+        if (nonTerminal.length === 0) return cur
+        Promise.all(nonTerminal.map((t) => chatService.getTaskSnapshot(t.task_id))).then((snaps) => {
+          snaps.forEach((snap) => {
+            if (snap) upsertTaskStatus(snap)
+          })
+        }).catch(() => {/* 静默忽略 */})
+        return cur
+      })
+    }, 30000)
+    return () => clearInterval(interval)
+  }, [upsertTaskStatus])
 
   // 首屏瞬时锚定底部（同步于绘制前，无可感知滚动）
   useLayoutEffect(() => {
@@ -257,6 +267,21 @@ export const Chat: React.FC = () => {
           ...chronological.map((msg) => ({ ...msg, status: 'completed' as const })),
           ...prev,
         ])
+        // hydrate 新加载的老消息的任务快照（taskStatuses 没有的才拉）
+        const newTaskIds = [...new Set(chronological.map((m) => m.task_id).filter(Boolean))] as string[]
+        if (newTaskIds.length > 0) {
+          setTaskStatuses((cur) => {
+            const missing = newTaskIds.filter((id) => !cur.has(id))
+            if (missing.length > 0) {
+              Promise.all(missing.map((id) => chatService.getTaskSnapshot(id))).then((snaps) => {
+                snaps.forEach((snap) => {
+                  if (snap) upsertTaskStatus(snap)
+                })
+              }).catch(() => {/* 静默忽略 */})
+            }
+            return cur
+          })
+        }
         // 保持滚动位置：等 DOM 更新后调整 scrollTop
         requestAnimationFrame(() => {
           if (container) {
@@ -323,22 +348,22 @@ export const Chat: React.FC = () => {
         }
         return [...prev, cardMsg]
       })
-      // 同步 upsert 进行中任务条
+      // task_created：本地 upsert 初始快照 + tag 同 request_id 的 user 消息
       if (message.task_id) {
         const newTask: ChatTaskSnapshot = {
           task_id: message.task_id,
           status: 'executing',
           title: (message.content ?? '').replace(/^已创建任务：/, ''),
         }
-        setActiveTasks((prev) => {
-          const idx = prev.findIndex((t) => t.task_id === newTask.task_id)
-          if (idx >= 0) {
-            const updated = [...prev]
-            updated[idx] = newTask
-            return updated
-          }
-          return [...prev, newTask]
-        })
+        upsertTaskStatus(newTask)
+        // 同 request_id 的 user 消息打标（本地消息列表）
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.request_id === message.request_id && m.role === 'user' && !m.task_id
+              ? { ...m, task_id: message.task_id }
+              : m
+          )
+        )
       }
       return
     }
@@ -381,6 +406,16 @@ export const Chat: React.FC = () => {
           },
         ]
       })
+      // direct_reply 也可能携带 task_id（supplement 路径）：打标同 request_id 的 user 消息
+      if (message.task_id) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.request_id === message.request_id && m.role === 'user' && !m.task_id
+              ? { ...m, task_id: message.task_id }
+              : m
+          )
+        )
+      }
     } else if (message.type === 'chat_status') {
       // 只更新 assistant 占位消息的状态为 processing
       setMessages((prev) =>
@@ -405,24 +440,25 @@ export const Chat: React.FC = () => {
       // message.message 已是新结构 ChatMessage，无需转换
       setMessages((prev) => [...prev, { ...message.message, status: 'completed' as const }])
     } else if (message.type === 'chat_task_update') {
-      // 任务状态/计划变更，更新进行中任务条（终态时移除，非终态时 upsert）
-      const { task } = message
-      const isTerminal = ['completed', 'failed', 'cancelled'].includes(task.status)
-      if (isTerminal) {
-        // 记录终态 id：HTTP hydrate 快照在途时收到终态推送，旧快照返回后不得复活该任务
-        terminalTaskIdsRef.current.add(task.task_id)
-        setActiveTasks((prev) => prev.filter((t) => t.task_id !== task.task_id))
-      } else {
-        setActiveTasks((prev) => {
-          const idx = prev.findIndex((t) => t.task_id === task.task_id)
-          if (idx >= 0) {
-            const updated = [...prev]
-            updated[idx] = task
-            return updated
-          }
-          return [...prev, task]
-        })
-      }
+      // 任务状态/计划变更：upsert 进 taskStatuses（终态也保留供图标显示 ✓/✗）
+      upsertTaskStatus(message.task)
+    } else if (message.type === 'chat_message_tagged') {
+      // Admin 回填：把对应 message_id 的消息打上 task_id
+      const { message_id, task_id } = message
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.message_id === message_id ? { ...m, task_id } : m
+        )
+      )
+      // 如果 taskStatuses 还没有该 task_id 的快照，拉一次
+      setTaskStatuses((cur) => {
+        if (!cur.has(task_id)) {
+          chatService.getTaskSnapshot(task_id).then((snap) => {
+            if (snap) upsertTaskStatus(snap)
+          }).catch(() => {/* 静默忽略 */})
+        }
+        return cur
+      })
     }
   }
 
@@ -764,7 +800,11 @@ export const Chat: React.FC = () => {
                         </span>
                       </div>
                     )}
-                    <ChatMessageItem message={message} onQuote={handleQuoteMessage} />
+                    <ChatMessageItem
+                      message={message}
+                      onQuote={handleQuoteMessage}
+                      taskSnapshot={message.task_id ? taskStatuses.get(message.task_id) : undefined}
+                    />
                   </React.Fragment>
                 )
               })}
@@ -834,9 +874,6 @@ export const Chat: React.FC = () => {
             引用
           </button>
         )}
-
-        {/* 进行中任务条（非终态任务，终态后自动移除） */}
-        <ActiveTasksBar tasks={activeTasks} />
 
         {/* 引用胶囊（输入区上方，可取消） */}
         {quote && (

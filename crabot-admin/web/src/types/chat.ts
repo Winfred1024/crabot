@@ -49,6 +49,7 @@ export type ChatServerMessage =
   | { type: 'chat_error'; request_id?: string; error: string }
   | { type: 'chat_push'; message: ChatMessage }
   | { type: 'chat_task_update'; task: ChatTaskSnapshot }
+  | { type: 'chat_message_tagged'; message_id: string; task_id: string }
 
 /** 任务状态快照（chat_task_update / GET /api/chat/tasks/:id） */
 export interface ChatTaskSnapshot {
