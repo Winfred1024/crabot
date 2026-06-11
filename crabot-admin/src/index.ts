@@ -8250,7 +8250,12 @@ export class AdminModule extends ModuleBase {
     // 1. friend 侧
     let friendResolved: ResolvedPermissions | null = null
     if (params.sender_friend_id) {
+      // 'master' 是 admin chat 的合成身份（chat-manager 固定 friend_id='master'，
+      // admin web 经 JWT 认证，对话者必然是 master 本人）：映射到真实 master friend；
+      // 无 master friend 记录时直接按 master_private 模板解析。
+      // 修复前 friends.get('master') 查不到 → 落 minimal → worker 工具全被滤光。
       const friend = this.friends.get(params.sender_friend_id)
+        ?? (params.sender_friend_id === 'master' ? this.findMasterFriend() : undefined)
       if (friend) {
         friendResolved = this.buildResolvedFriendPermissions(friend)
         sources.friend_template_id = friend.permission === 'master'
@@ -8260,6 +8265,12 @@ export class AdminModule extends ModuleBase {
         // master 短路：直接返回，跳过 session 合并
         if (friend.permission === 'master' && friendResolved) {
           return { resolved: friendResolved, sources }
+        }
+      } else if (params.sender_friend_id === 'master') {
+        sources.friend_template_id = 'master_private'
+        return {
+          resolved: this.permissionTemplateManager.resolvePermissions('master_private', null),
+          sources,
         }
       }
     }
