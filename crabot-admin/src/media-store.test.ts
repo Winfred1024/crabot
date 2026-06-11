@@ -57,17 +57,17 @@ describe('MediaStore', () => {
     expect(store2.resolve(saved.id)).not.toBeNull()
   })
 
-  it('并发 saveBuffer：两次都成功且 index 持久化完整', async () => {
+  it('并发 saveBuffer：全部成功且 index 持久化完整（无 lost update）', async () => {
     const store = await makeStore()
-    const [a, b] = await Promise.all([
-      store.saveBuffer(Buffer.from('a'), { filename: 'a', mime_type: 'text/plain' }),
-      store.saveBuffer(Buffer.from('b'), { filename: 'b', mime_type: 'text/plain' }),
-    ])
-    expect(store.resolve(a.id)).not.toBeNull()
-    expect(store.resolve(b.id)).not.toBeNull()
+    const saved = await Promise.all(
+      Array.from({ length: 8 }, (_, i) =>
+        store.saveBuffer(Buffer.from(`data-${i}`), { filename: `f${i}`, mime_type: 'text/plain' })
+      )
+    )
+    for (const s of saved) expect(store.resolve(s.id)).not.toBeNull()
+    // 关键断言：重新从磁盘 init，所有条目都在（过期快照后落盘会丢条目）
     const store2 = await makeStore()
-    expect(store2.resolve(a.id)).not.toBeNull()
-    expect(store2.resolve(b.id)).not.toBeNull()
+    for (const s of saved) expect(store2.resolve(s.id)).not.toBeNull()
   })
 
   it('getUsage 统计数量与字节数', async () => {

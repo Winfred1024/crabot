@@ -38,6 +38,8 @@ export class MediaStore {
   private readonly storeDir: string
   private readonly indexPath: string
   private readonly configPath: string
+  /** index.json 写盘串行链：防止并发写时过期快照后落盘（lost update） */
+  private indexWriteChain: Promise<void> = Promise.resolve()
 
   constructor(baseDir: string) {
     this.storeDir = path.join(baseDir, 'media-store')
@@ -66,7 +68,14 @@ export class MediaStore {
   }
 
   private async saveIndex(): Promise<void> {
-    await this.atomicWrite(this.indexPath, JSON.stringify(Array.from(this.index.values()), null, 2))
+    // 快照必须在轮到自己写时才做（链内），否则并发场景下先到的过期快照
+    // 可能最后落盘，丢掉后来者的条目
+    const run = this.indexWriteChain.then(() =>
+      this.atomicWrite(this.indexPath, JSON.stringify(Array.from(this.index.values()), null, 2))
+    )
+    // 链条自身吞错防止毒化后续写；本次调用方仍能拿到失败
+    this.indexWriteChain = run.catch(() => {})
+    return run
   }
 
   private filePathOf(entry: MediaIndexEntry): string {
