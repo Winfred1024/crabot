@@ -20,6 +20,24 @@ interface MessageState extends ChatMessage {
 
 const PAGE_SIZE = 30
 
+/** 同一本地日判定 */
+function sameLocalDay(a: string, b: string): boolean {
+  const da = new Date(a)
+  const db = new Date(b)
+  return da.getFullYear() === db.getFullYear() && da.getMonth() === db.getMonth() && da.getDate() === db.getDate()
+}
+
+/** 日期分隔标签：今天 / 昨天 / yyyy年M月d日 */
+function formatDateLabel(ts: string): string {
+  const d = new Date(ts)
+  const now = new Date()
+  if (sameLocalDay(ts, now.toISOString())) return '今天'
+  const yesterday = new Date(now)
+  yesterday.setDate(now.getDate() - 1)
+  if (sameLocalDay(ts, yesterday.toISOString())) return '昨天'
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`
+}
+
 export const Chat: React.FC = () => {
   const toast = useToast()
   const [messages, setMessages] = useState<MessageState[]>([])
@@ -582,7 +600,6 @@ export const Chat: React.FC = () => {
 
     return (
       <div
-        key={message.message_id}
         style={{
           display: 'flex',
           justifyContent: isUser ? 'flex-end' : 'flex-start',
@@ -729,7 +746,31 @@ export const Chat: React.FC = () => {
                   已加载全部消息
                 </div>
               )}
-              {messages.map(renderMessage)}
+              {messages.map((message, i) => {
+                const prev = messages[i - 1]
+                const showDate = !prev || !sameLocalDay(prev.timestamp, message.timestamp)
+                return (
+                  <React.Fragment key={message.message_id}>
+                    {showDate && (
+                      <div style={{ textAlign: 'center', margin: '1rem 0' }}>
+                        <span
+                          style={{
+                            fontSize: '0.78rem',
+                            color: 'var(--text-secondary)',
+                            backgroundColor: 'var(--surface)',
+                            border: '1px solid var(--border)',
+                            borderRadius: '10px',
+                            padding: '0.2rem 0.75rem',
+                          }}
+                        >
+                          {formatDateLabel(message.timestamp)}
+                        </span>
+                      </div>
+                    )}
+                    {renderMessage(message)}
+                  </React.Fragment>
+                )
+              })}
               <div ref={messagesEndRef} />
             </>
           )}
