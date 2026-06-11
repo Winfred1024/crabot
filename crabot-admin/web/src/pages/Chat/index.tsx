@@ -559,7 +559,9 @@ export const Chat: React.FC = () => {
     <MainLayout>
       <div
         style={{
-          height: 'calc(100vh - 4rem)',
+          // 扣掉 Header 高度 + MainLayout main 的上下 padding（4rem），
+          // 让本页刚好占满剩余视口——窗口不滚动，滚动权交给内部消息容器
+          height: 'calc(100vh - var(--header-height) - 4rem)',
           display: 'flex',
           flexDirection: 'column',
           padding: '2rem',
@@ -589,7 +591,9 @@ export const Chat: React.FC = () => {
 
         {/* 消息区域 */}
         <div
-          style={{ flex: 1, position: 'relative', marginBottom: '1rem' }}
+          // minHeight: 0 是关键：flex 子项默认 min-height:auto，内容多时会撑破
+          // 父级固定高度让整个窗口滚动；钳制后内层 overflowY:auto 容器才是滚动者
+          style={{ flex: 1, minHeight: 0, position: 'relative', marginBottom: '1rem' }}
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => { e.preventDefault(); addFiles(e.dataTransfer.files) }}
         >
