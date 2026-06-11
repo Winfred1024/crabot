@@ -185,6 +185,96 @@ const DAILY_REFLECTION_ALLOWED_TOOLS = new Set([
   'read_feishu_document',
 ])
 
+// ============================================================================
+// 工具 schema（必须是模块级常量，只构建一次）
+//
+// 为什么不能放进 buildMessagingTools：worker 每轮 LLM turn 都会通过
+// buildToolsDynamic 重建本 server；zod v4 的 .describe() 会把 schema clone
+// 写入 globalRegistry（强引用 Map，永不清除）。inline 构建 = 每轮净增整棵
+// schema 树 → 2026-06-11 OOM 事故根因。回归测试：tests/mcp/zod-registry-leak.test.ts
+// ============================================================================
+
+const LOOKUP_FRIEND_SCHEMA = {
+  name: z.string().optional().describe('按名称模糊搜索'),
+  friend_id: z.string().optional().describe('按 friend_id 精确查找'),
+}
+
+const LIST_CONTACTS_SCHEMA = {
+  channel_id: z.string().describe('渠道 ID'),
+  search: z.string().optional().describe('联系人名称搜索关键词'),
+  page: z.number().optional().describe('页码，从 1 开始'),
+  page_size: z.number().optional().describe('每页数量，默认 50，最大 100'),
+}
+
+const LIST_GROUPS_SCHEMA = {
+  channel_id: z.string().describe('渠道 ID'),
+  search: z.string().optional().describe('群名搜索关键词'),
+  page: z.number().optional().describe('页码，从 1 开始'),
+  page_size: z.number().optional().describe('每页数量，默认 50，最大 100'),
+}
+
+const LIST_SESSIONS_SCHEMA = {
+  channel_id: z.string().describe('Channel 模块实例 ID'),
+  type: z.enum(['private', 'group']).optional().describe('按类型过滤'),
+  page: z.number().optional().describe('页码，从 1 开始'),
+  page_size: z.number().optional().describe('每页数量，默认 20，最大 100'),
+}
+
+const LIST_GROUP_MEMBERS_SCHEMA = {
+  channel_id: z.string().describe('Channel 模块实例 ID'),
+  session_id: z.string().describe('群 Session ID（type=group）'),
+  page: z.number().optional().describe('页码，从 1 开始'),
+  page_size: z.number().optional().describe('每页数量，默认 50，最大 100'),
+}
+
+const SEND_PRIVATE_MESSAGE_SCHEMA = {
+  friend_id: z.string().describe('目标熟人 ID'),
+  content: z.string().describe('消息内容（文本）'),
+}
+
+const SEND_MASTER_PRIVATE_SCHEMA = {
+  content: z.string().describe('给 master 看的一句人话（已翻译，无内部黑话）'),
+  channel_id: z.string().optional().describe('指定走哪个 channel。不传则按 master.channel_identities 顺序尝试第一个可用的'),
+}
+
+const SEND_MESSAGE_SCHEMA = {
+  channel_id: z.string().describe('Channel 模块实例 ID'),
+  session_id: z.string().describe('目标 Session ID'),
+  content: z.string().describe('消息内容（给人类看的自然语言；禁止塞 audit/criterion/`/清除目标` 等内部黑话）'),
+  intent: z.enum(['info', 'ask_human']).optional().describe('意图：info=进度告知 / 最终交付（默认，单向，不等回复）；ask_human=阻塞等人类同步回复'),
+  content_type: z.enum(['text', 'image', 'file']).optional().describe('消息类型，默认 text'),
+  media_url: z.string().optional().describe('媒体 URL（网络地址，与 file_path 二选一）'),
+  file_path: z.string().optional().describe('沙盒内本地文件路径（自动转换为主机路径）'),
+  filename: z.string().optional().describe('文件名（可选）'),
+  mentions: z.array(z.object({
+    friend_id: z.string().optional().describe('熟人 ID（与 platform_user_id 二选一）'),
+    platform_user_id: z.string().optional().describe('平台用户 ID（如飞书 open_id，从 list_contacts 获取）。有此字段时跳过熟人查找，可直接 @ 非熟人群成员'),
+    at_name: z.string().optional().describe('你在 content 正文里写的 @标记文本（如 "@徐倩"）。提供后系统在正文里做内联高亮替换；不提供则在消息末尾追加 @ 通知'),
+  })).optional().describe('@提及列表。每项提供 friend_id（熟人 ID）或 platform_user_id（平台 ID，从 list_contacts 获取）之一，加可选的 at_name'),
+  quote_message_id: z.string().optional().describe('引用回复的平台消息 ID'),
+}
+
+const GET_HISTORY_SCHEMA = {
+  channel_id: z.string().describe('Channel 模块实例 ID'),
+  session_id: z.string().describe('Session ID'),
+  keyword: z.string().optional().describe('关键词过滤'),
+  limit: z.number().optional().describe('返回条数上限，默认 20'),
+  before: z.string().optional().describe('查询此时间之前的消息（ISO 8601）'),
+  after: z.string().optional().describe('查询此时间之后的消息（ISO 8601）'),
+}
+
+const GET_MESSAGE_SCHEMA = {
+  channel_id: z.string().describe('Channel 模块实例 ID'),
+  session_id: z.string().describe('Session ID'),
+  platform_message_id: z.string().describe('要查询的消息 ID'),
+}
+
+const READ_FEISHU_DOCUMENT_SCHEMA = {
+  url: z.string().describe('飛書雲文檔 URL，例如 https://xxx.feishu.cn/docx/TOKEN 或 /wiki/TOKEN 或 /sheets/TOKEN'),
+  channel_id: z.string().optional().describe('飛書 channel 實例 ID（有多個飛書 channel 時必須指定）'),
+  max_chars: z.number().optional().describe('正文最大字符數（默認 50000）'),
+}
+
 export function buildMessagingTools(
   deps: CrabMessagingDeps,
   sandboxPathMappingsRef?: { current: PathMapping[] },
@@ -199,10 +289,7 @@ export function buildMessagingTools(
     {
       name: 'lookup_friend',
       description: '搜索熟人信息，包括该熟人在哪些 Channel 上有身份。可按名称模糊搜索或按 friend_id 精确查找。',
-      schema: {
-        name: z.string().optional().describe('按名称模糊搜索'),
-        friend_id: z.string().optional().describe('按 friend_id 精确查找'),
-      },
+      schema: LOOKUP_FRIEND_SCHEMA,
       handler: async (args) => {
         const friendId = args.friend_id as string | undefined
         const searchName = args.name as string | undefined
@@ -265,12 +352,7 @@ export function buildMessagingTools(
     {
       name: 'list_contacts',
       description: '列出渠道平台上的联系人（包括非熟人）。返回是分页结果——pagination.has_more=true 时只是部分；要拿全集请按 next_page 继续调用。不要把单页结果当作全集做断言。',
-      schema: {
-        channel_id: z.string().describe('渠道 ID'),
-        search: z.string().optional().describe('联系人名称搜索关键词'),
-        page: z.number().optional().describe('页码，从 1 开始'),
-        page_size: z.number().optional().describe('每页数量，默认 50，最大 100'),
-      },
+      schema: LIST_CONTACTS_SCHEMA,
       handler: async (args) => {
         const channel_id = args.channel_id as string
         let channelPort: number
@@ -308,12 +390,7 @@ export function buildMessagingTools(
     {
       name: 'list_groups',
       description: '列出渠道平台上的群（包括从未交互过的）。返回是分页结果——pagination.has_more=true 时只是部分；要拿全集请按 next_page 继续调用。不要把单页结果当作全集做断言。',
-      schema: {
-        channel_id: z.string().describe('渠道 ID'),
-        search: z.string().optional().describe('群名搜索关键词'),
-        page: z.number().optional().describe('页码，从 1 开始'),
-        page_size: z.number().optional().describe('每页数量，默认 50，最大 100'),
-      },
+      schema: LIST_GROUPS_SCHEMA,
       handler: async (args) => {
         const channel_id = args.channel_id as string
         let channelPort: number
@@ -351,12 +428,7 @@ export function buildMessagingTools(
     {
       name: 'list_sessions',
       description: '查看指定 Channel 上当前已感知的会话列表。返回是分页结果——pagination.has_more=true 时只是部分；要拿全集请按 next_page 继续调用。',
-      schema: {
-        channel_id: z.string().describe('Channel 模块实例 ID'),
-        type: z.enum(['private', 'group']).optional().describe('按类型过滤'),
-        page: z.number().optional().describe('页码，从 1 开始'),
-        page_size: z.number().optional().describe('每页数量，默认 20，最大 100'),
-      },
+      schema: LIST_SESSIONS_SCHEMA,
       handler: async (args) => {
         const channel_id = args.channel_id as string
         let channelPort: number
@@ -398,12 +470,7 @@ export function buildMessagingTools(
         '返回 { items, pagination, member_count, members_complete, partial_reason? }。' +
         '**`members_complete=false` 时 `partial_reason` 会说明为什么不完整、哪些字段可信、如何兜底——必须读它再决定怎么用结果，不能拿 items 当全集**。' +
         '不要从 Session.participants 反推群成员，那是 channel 内部维护的"已感知"集合，不是全集。',
-      schema: {
-        channel_id: z.string().describe('Channel 模块实例 ID'),
-        session_id: z.string().describe('群 Session ID（type=group）'),
-        page: z.number().optional().describe('页码，从 1 开始'),
-        page_size: z.number().optional().describe('每页数量，默认 50，最大 100'),
-      },
+      schema: LIST_GROUP_MEMBERS_SCHEMA,
       handler: async (args) => {
         const channel_id = args.channel_id as string
         const session_id = args.session_id as string
@@ -448,10 +515,7 @@ export function buildMessagingTools(
     {
       name: 'send_private_message',
       description: '给熟人发私聊消息。当你不关心使用哪个 Channel 或不知道该用哪个 Channel 时使用此工具。系统自动查找可用 Channel 并创建/复用私聊 Session。如果你已知 channel_id 和 session_id，请直接使用 send_message。',
-      schema: {
-        friend_id: z.string().describe('目标熟人 ID'),
-        content: z.string().describe('消息内容（文本）'),
-      },
+      schema: SEND_PRIVATE_MESSAGE_SCHEMA,
       handler: async (args) => {
         const friend_id = args.friend_id as string
         const content = args.content as string
@@ -540,10 +604,7 @@ export function buildMessagingTools(
 找不到 master 时**直接返回 error，不退化、不外发任何 channel**。
 
 注意：发出的内容会被人类看到——禁止塞 trace 数据 / Evolution Mode / case→rule / Audit 等内部黑话，必须翻译成一行人话（"今日整理 X 条经验，无重大发现"这种），多行长报告请走 task outcome 不要外发。`,
-      schema: {
-        content: z.string().describe('给 master 看的一句人话（已翻译，无内部黑话）'),
-        channel_id: z.string().optional().describe('指定走哪个 channel。不传则按 master.channel_identities 顺序尝试第一个可用的'),
-      },
+      schema: SEND_MASTER_PRIVATE_SCHEMA,
       handler: async (args) => {
         const content = args.content as string
         const preferredChannelId = args.channel_id as string | undefined
@@ -653,22 +714,7 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
 
 - **"info"（默认）**：进度告知 / ack / 中间结果 / 最终交付。人类会看到、不期待回复。**不用于**"我做不到 / 卡住了 / 想换方向"——这种话发出去人类也只是看到，loop 不会停，下一轮你还得面对同样状态。
 - **"ask_human"**：阻塞等人类同步回复（task 切 waiting_human）。**任何想让 master 同步回复才能继续的场景**都用它，不限问句形态——决策分叉 / 求助 / 关键澄清都算。Self-check：你期不期待回复内容会改变下一轮动作？期待→ask_human，不期待→info。滥用会让任务停摆，能自己决策的不要 ask。`,
-      schema: {
-        channel_id: z.string().describe('Channel 模块实例 ID'),
-        session_id: z.string().describe('目标 Session ID'),
-        content: z.string().describe('消息内容（给人类看的自然语言；禁止塞 audit/criterion/`/清除目标` 等内部黑话）'),
-        intent: z.enum(['info', 'ask_human']).optional().describe('意图：info=进度告知 / 最终交付（默认，单向，不等回复）；ask_human=阻塞等人类同步回复'),
-        content_type: z.enum(['text', 'image', 'file']).optional().describe('消息类型，默认 text'),
-        media_url: z.string().optional().describe('媒体 URL（网络地址，与 file_path 二选一）'),
-        file_path: z.string().optional().describe('沙盒内本地文件路径（自动转换为主机路径）'),
-        filename: z.string().optional().describe('文件名（可选）'),
-        mentions: z.array(z.object({
-          friend_id: z.string().optional().describe('熟人 ID（与 platform_user_id 二选一）'),
-          platform_user_id: z.string().optional().describe('平台用户 ID（如飞书 open_id，从 list_contacts 获取）。有此字段时跳过熟人查找，可直接 @ 非熟人群成员'),
-          at_name: z.string().optional().describe('你在 content 正文里写的 @标记文本（如 "@徐倩"）。提供后系统在正文里做内联高亮替换；不提供则在消息末尾追加 @ 通知'),
-        })).optional().describe('@提及列表。每项提供 friend_id（熟人 ID）或 platform_user_id（平台 ID，从 list_contacts 获取）之一，加可选的 at_name'),
-        quote_message_id: z.string().optional().describe('引用回复的平台消息 ID'),
-      },
+      schema: SEND_MESSAGE_SCHEMA,
       handler: async (args) => {
         const channel_id = args.channel_id as string
         const session_id = args.session_id as string
@@ -884,14 +930,7 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
     {
       name: 'get_history',
       description: '查看指定 Channel 上某个 Session 的历史消息。',
-      schema: {
-        channel_id: z.string().describe('Channel 模块实例 ID'),
-        session_id: z.string().describe('Session ID'),
-        keyword: z.string().optional().describe('关键词过滤'),
-        limit: z.number().optional().describe('返回条数上限，默认 20'),
-        before: z.string().optional().describe('查询此时间之前的消息（ISO 8601）'),
-        after: z.string().optional().describe('查询此时间之后的消息（ISO 8601）'),
-      },
+      schema: GET_HISTORY_SCHEMA,
       handler: async (args) => {
         const channel_id = args.channel_id as string
         const session_id = args.session_id as string
@@ -985,11 +1024,7 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
     {
       name: 'get_message',
       description: '按消息 ID 查询单条消息详情。当消息内容不完整时可用此工具查看完整内容。',
-      schema: {
-        channel_id: z.string().describe('Channel 模块实例 ID'),
-        session_id: z.string().describe('Session ID'),
-        platform_message_id: z.string().describe('要查询的消息 ID'),
-      },
+      schema: GET_MESSAGE_SCHEMA,
       handler: async (args) => {
         const channel_id = args.channel_id as string
         const session_id = args.session_id as string
@@ -1055,11 +1090,7 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
     ...(deps.enableFeishuDocTool ? [{
       name: 'read_feishu_document',
       description: '讀取飛書雲文檔正文（支持 docx / wiki / sheets）。傳入飛書文檔 URL，返回標題和純文本正文。遇到權限不足時返回授權指引。注意：讀取 wiki/docx 需要把本應用（或應用所在群）加為文檔/文件夾/知識空間的協作者。',
-      schema: {
-        url: z.string().describe('飛書雲文檔 URL，例如 https://xxx.feishu.cn/docx/TOKEN 或 /wiki/TOKEN 或 /sheets/TOKEN'),
-        channel_id: z.string().optional().describe('飛書 channel 實例 ID（有多個飛書 channel 時必須指定）'),
-        max_chars: z.number().optional().describe('正文最大字符數（默認 50000）'),
-      },
+      schema: READ_FEISHU_DOCUMENT_SCHEMA,
       handler: async (args: Record<string, unknown>) => {
         const url = args.url as string
         const maxChars = typeof args.max_chars === 'number' ? args.max_chars : undefined
