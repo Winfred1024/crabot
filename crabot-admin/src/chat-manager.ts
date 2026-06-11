@@ -329,6 +329,12 @@ export class ChatManager {
     // 清理 pending request
     this.pendingRequests.delete(params.request_id)
 
+    // 带任务关联的回执（task_created / supplement）：回填触发它的 user 消息，
+    // 历史重载时消息级任务图标才有数据
+    if (params.task_id) {
+      await this.tagUserMessageByRequestId(params.request_id, params.task_id)
+    }
+
     return { received: true }
   }
 
@@ -407,6 +413,30 @@ export class ChatManager {
   /** 任务状态/计划变更推送（index.ts 的状态机钩子调用） */
   pushTaskUpdate(snapshot: ChatTaskSnapshot): void {
     this.pushToClient({ type: 'chat_task_update', task: snapshot })
+  }
+
+  /**
+   * 给已落库消息回填任务归属并广播（消息级任务图标的数据源）。
+   * 返回是否命中。幂等：已是同 task_id 时不重写不重推。
+   */
+  async tagMessageTask(messageId: string, taskId: TaskId): Promise<boolean> {
+    const msg = this.messages.get(messageId)
+    if (!msg) return false
+    if (msg.task_id === taskId) return true
+    this.messages.set(messageId, { ...msg, task_id: taskId })
+    await this.saveData()
+    this.pushToClient({ type: 'chat_message_tagged', message_id: messageId, task_id: taskId })
+    return true
+  }
+
+  /** 按 request_id 回填 user 消息的任务归属（chat_callback 带 task_id 时调用） */
+  async tagUserMessageByRequestId(requestId: string, taskId: TaskId): Promise<void> {
+    for (const msg of this.messages.values()) {
+      if (msg.request_id === requestId && msg.role === 'user') {
+        await this.tagMessageTask(msg.message_id, taskId)
+        return
+      }
+    }
   }
 
   // ==========================================================================

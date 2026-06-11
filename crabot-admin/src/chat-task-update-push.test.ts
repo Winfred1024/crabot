@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import fs from 'node:fs/promises'
 import AdminModule from './index.js'
-import type { Task, CreateTaskParams, ChatTaskSnapshot } from './types.js'
+import type { Task, CreateTaskParams, ChatTaskSnapshot, ChatMessage } from './types.js'
 
 const TEST_PROTOCOL_PORT = 19828
 const TEST_WEB_PORT = 13028
@@ -108,6 +108,42 @@ describe('chat_task_update push hooks', () => {
     })
     expect(pushed).toHaveLength(1)
     expect(pushed[0].step).toEqual({ index: 0, total: 2, description: '第一步' })
+  })
+
+  it('handleAppendMessage：admin-web 任务 + role=agent + source.platform_message_id → 回填聊天消息 task_id', async () => {
+    // 1. 用 chatManager.handleSendMessage 造一条 assistant 消息（拿到 message_id）
+    const chatMgr = (admin as any).chatManager
+    const sendResult = await chatMgr.handleSendMessage({
+      session_id: 'admin-chat',
+      content: { type: 'text', text: 'worker 产出消息' },
+    })
+    const chatMsgId = sendResult.platform_message_id
+
+    // 2. 创建 admin-web 来源任务
+    const task = await createTask({
+      source: {
+        trigger_type: 'message',
+        origin: 'human',
+        channel_id: 'admin-web',
+        session_id: 'admin-chat',
+      },
+    })
+
+    // 3. 调 handleAppendMessage，带 role=agent + source.platform_message_id
+    await (admin as any).handleAppendMessage({
+      task_id: task.id,
+      role: 'agent',
+      content: 'worker 做完了',
+      source: {
+        channel_id: 'admin-web',
+        platform_message_id: chatMsgId,
+      },
+    })
+
+    // 4. 断言聊天消息的 task_id 已被回填
+    const msgs: ChatMessage[] = chatMgr.getMessages(20)
+    const chatMsg = msgs.find((m: ChatMessage) => m.message_id === chatMsgId)
+    expect(chatMsg?.task_id).toBe(task.id)
   })
 
   it('listActiveChatTaskSnapshots：只含 admin-web 来源的非终态任务', async () => {

@@ -1835,10 +1835,14 @@ export interface ChatTaskSnapshot {
 
 /** 服务端发送的聊天消息 */
 export interface ChatServerMessage {
-  type: 'chat_reply' | 'chat_status' | 'chat_error' | 'chat_push' | 'chat_task_update'
+  type: 'chat_reply' | 'chat_status' | 'chat_error' | 'chat_push' | 'chat_task_update' | 'chat_message_tagged'
   request_id?: string
   content?: string
   status?: 'processing' | 'completed' | 'failed'
+  /**
+   * chat_reply 携带任务关联时填写；chat_message_tagged 必填。
+   * 对应 protocol-admin §3.20 ChatServerMessage.task_id 字段。
+   */
   task_id?: TaskId
   reply_type?: 'direct_reply' | 'task_created' | 'task_completed' | 'task_failed'
   error?: string
@@ -1846,6 +1850,11 @@ export interface ChatServerMessage {
   message?: ChatMessage
   /** type='chat_task_update'：任务状态快照 */
   task?: ChatTaskSnapshot
+  /**
+   * chat_message_tagged 携带：worker 回复消息的任务归属回填。
+   * message_id 为聊天消息 id，task_id 为关联任务 id。
+   */
+  message_id?: string
 }
 
 /** chat_callback RPC 方法参数 */

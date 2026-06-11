@@ -4835,6 +4835,16 @@ export class AdminModule extends ModuleBase {
 
     await this.upsertTask(task)
 
+    // worker 回复消息的任务归属反向回填：agent 出站成功后调本方法记录 task.messages，
+    // source.platform_message_id 即聊天 message_id（admin-web 伪 channel send_message 的返回值）
+    if (
+      task.source.channel_id === 'admin-web' &&
+      params.role === 'agent' &&
+      params.source?.platform_message_id
+    ) {
+      this.chatManager?.tagMessageTask(params.source.platform_message_id, task.id).catch(() => {})
+    }
+
     return { message }
   }
 

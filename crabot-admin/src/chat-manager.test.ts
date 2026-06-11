@@ -256,6 +256,139 @@ describe('出站媒体收存（handleSendMessage Phase 2）', () => {
   })
 })
 
+describe('tagMessageTask / tagUserMessageByRequestId', () => {
+  beforeEach(async () => {
+    await fs.rm(TEST_DATA_DIR, { recursive: true, force: true }).catch(() => {})
+    await fs.mkdir(TEST_DATA_DIR, { recursive: true })
+  })
+
+  afterEach(async () => {
+    await fs.rm(TEST_DATA_DIR, { recursive: true, force: true }).catch(() => {})
+  })
+
+  /** 捕获推送的 helper */
+  function attachClientStub(mgr: ChatManager): Array<{ type: string; [k: string]: unknown }> {
+    const pushed: Array<{ type: string; [k: string]: unknown }> = []
+    ;(mgr as unknown as { activeClient: unknown }).activeClient = {
+      readyState: 1, // WebSocket.OPEN
+      send: (data: string) => { pushed.push(JSON.parse(data)) },
+    }
+    return pushed
+  }
+
+  it('tagMessageTask：命中已落库消息，回填 task_id + 广播 chat_message_tagged', async () => {
+    const mgr = await makeManager()
+    // 先通过 handleInboundMessage 存入 user 消息，避免 RPC（端口 0 会失败，静默处理）
+    // 直接操作内部 messages 构造已落库的消息
+    const pushed = attachClientStub(mgr)
+    const result = await mgr.handleSendMessage({
+      session_id: 'admin-chat',
+      content: { type: 'text', text: '测试消息' },
+    })
+    const msgId = result.platform_message_id
+    // 回填
+    const hit = await mgr.tagMessageTask(msgId, 'task-001' as never)
+    expect(hit).toBe(true)
+    // 验证消息 task_id 已写入
+    const msgs = mgr.getMessages(10)
+    expect(msgs[0].task_id).toBe('task-001')
+    // 验证推送：handleSendMessage 推了 chat_push，tagMessageTask 又推了 chat_message_tagged
+    const tagged = pushed.filter((p) => p.type === 'chat_message_tagged')
+    expect(tagged).toHaveLength(1)
+    expect(tagged[0].message_id).toBe(msgId)
+    expect(tagged[0].task_id).toBe('task-001')
+  })
+
+  it('tagMessageTask：未命中时返回 false，不广播', async () => {
+    const mgr = await makeManager()
+    const pushed = attachClientStub(mgr)
+    const hit = await mgr.tagMessageTask('nonexistent-id', 'task-002' as never)
+    expect(hit).toBe(false)
+    expect(pushed.filter((p) => p.type === 'chat_message_tagged')).toHaveLength(0)
+  })
+
+  it('tagMessageTask：幂等——已是同 task_id 时不重写不重推', async () => {
+    const mgr = await makeManager()
+    const result = await mgr.handleSendMessage({
+      session_id: 'admin-chat',
+      content: { type: 'text', text: '测试幂等' },
+    })
+    const msgId = result.platform_message_id
+    await mgr.tagMessageTask(msgId, 'task-003' as never)
+    const pushed = attachClientStub(mgr) // 重新 attach，清空已有推送
+    // 第二次调用：相同 task_id，不应再推送
+    const hit = await mgr.tagMessageTask(msgId, 'task-003' as never)
+    expect(hit).toBe(true)
+    expect(pushed.filter((p) => p.type === 'chat_message_tagged')).toHaveLength(0)
+  })
+
+  it('tagUserMessageByRequestId：只命中 user 角色的同 request_id 消息', async () => {
+    const mgr = await makeManager()
+    const pushed = attachClientStub(mgr)
+    // 手动构造两条消息：一条 user、一条 assistant，都带同一 request_id
+    const userResult = await mgr.handleSendMessage({
+      session_id: 'admin-chat',
+      content: { type: 'text', text: 'user-msg' },
+    })
+    const userMsgId = userResult.platform_message_id
+    // 修改这条消息的 role 为 user（handleSendMessage 落的是 assistant，通过内部 messages 修改）
+    // 改为用测试帮助函数直接注入 user 消息
+    // 重新构造：先 loadData 读出，再模拟（由于实现复杂度，用内部 map 直接注入）
+    // 访问私有 messages map 做测试
+    const internalMessages = (mgr as unknown as { messages: Map<string, { message_id: string; role: string; content: unknown; request_id?: string; task_id?: string; timestamp: string }> }).messages
+    // 修改 userResult 的 role 为 user，加 request_id
+    const existing = internalMessages.get(userMsgId)!
+    internalMessages.set(userMsgId, { ...existing, role: 'user', request_id: 'req-xyz' })
+    // 加一条 assistant 消息带同一 request_id
+    internalMessages.set('asst-001', {
+      message_id: 'asst-001',
+      role: 'assistant',
+      content: { type: 'text', text: 'reply' },
+      request_id: 'req-xyz',
+      timestamp: new Date().toISOString(),
+    })
+
+    pushed.length = 0 // 清空
+    await mgr.tagUserMessageByRequestId('req-xyz', 'task-xyz' as never)
+
+    // 仅 user 消息被打标
+    const updatedUser = internalMessages.get(userMsgId)!
+    expect(updatedUser.task_id).toBe('task-xyz')
+    const updatedAsst = internalMessages.get('asst-001')!
+    expect(updatedAsst.task_id).toBeUndefined()
+    // 推送只有一条
+    expect(pushed.filter((p) => p.type === 'chat_message_tagged')).toHaveLength(1)
+  })
+
+  it('handleChatCallback 带 task_id 时：回填同 request_id 的 user 消息', async () => {
+    const mgr = await makeManagerWithRpc(async () => ({}))
+    const pushed = attachClientStub(mgr)
+
+    // 通过 handleInboundMessage 创建 user 消息（会失败 process_message 但消息已落库）
+    const { message: userMsg } = await mgr.handleInboundMessage({
+      request_id: 'req-cb-1',
+      text: '发一条会派 task 的消息',
+      files: [],
+    })
+    pushed.length = 0 // 清空处理中推送
+
+    // 模拟 chat_callback 回执带 task_id
+    await mgr.handleChatCallback({
+      request_id: 'req-cb-1',
+      reply_type: 'task_created',
+      content: '已创建任务：调查某事',
+      task_id: 'task-cb-1' as never,
+    })
+
+    // user 消息应被打标
+    const msgs = mgr.getMessages(20)
+    const u = msgs.find((m) => m.message_id === userMsg.message_id)
+    expect(u?.task_id).toBe('task-cb-1')
+    // 应有 chat_message_tagged 推送
+    expect(pushed.some((p) => p.type === 'chat_message_tagged' && p.task_id === 'task-cb-1')).toBe(true)
+  })
+})
+
 describe('buildChatTaskSnapshot', () => {
   const baseTask = {
     id: 'task-1',
