@@ -52,7 +52,11 @@ export const Chat: React.FC = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const sentinelRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
+  // 发送键模式：'enter' = Enter 发送/Shift+Enter 换行；'mod-enter' = Enter 换行/Ctrl(Alt)+Enter 发送
+  const [sendMode, setSendMode] = useState<'enter' | 'mod-enter'>(
+    () => (localStorage.getItem('chat_send_mode') === 'mod-enter' ? 'mod-enter' : 'enter')
+  )
   const fileInputRef = useRef<HTMLInputElement>(null)
   const isLoadingHistoryRef = useRef(false)
   const isNearBottomRef = useRef(true)
@@ -69,6 +73,13 @@ export const Chat: React.FC = () => {
   }, [])
   // objectURL 追踪，组件卸载时 revoke 防内存泄漏
   const objectUrlsRef = useRef<Map<string, string>>(new Map())
+
+  // 发送/清空后复位输入框高度（自适应高度只在 onChange 时增长）
+  useEffect(() => {
+    if (input === '' && inputRef.current) {
+      inputRef.current.style.height = 'auto'
+    }
+  }, [input])
 
   // 清理 objectURL（组件卸载）
   useEffect(() => {
@@ -592,16 +603,28 @@ export const Chat: React.FC = () => {
     }
   }
 
-  // 处理键盘事件
+  // 处理键盘事件（两种发送模式，见 sendMode）
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Escape') {
       setQuote(null)
       return
     }
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key !== 'Enter') return
+    const wantSend = sendMode === 'enter'
+      ? !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey  // 模式1：Enter 发送，Shift+Enter 换行
+      : e.ctrlKey || e.altKey                                  // 模式2：Enter 换行，Ctrl/Alt+Enter 发送
+    if (wantSend) {
       e.preventDefault()
       handleSend()
     }
+    // 不发送时放行，textarea 原生插入换行（模式2 的 Ctrl/Alt+Enter 原生不换行，无需处理）
+  }
+
+  const toggleSendMode = () => {
+    const next = sendMode === 'enter' ? 'mod-enter' : 'enter'
+    setSendMode(next)
+    localStorage.setItem('chat_send_mode', next)
+    inputRef.current?.focus()
   }
 
   // 重连
@@ -999,26 +1022,45 @@ export const Chat: React.FC = () => {
           >
             📎
           </button>
-          <input
+          <textarea
             ref={inputRef}
-            type="text"
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            rows={1}
+            onChange={(e) => {
+              setInput(e.target.value)
+              // 自适应高度（上限 ~6 行）
+              e.target.style.height = 'auto'
+              e.target.style.height = `${Math.min(e.target.scrollHeight, 160)}px`
+            }}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             placeholder={connectionStatus === 'connected' ? '输入消息，可粘贴或拖拽附件...' : '等待连接...'}
             disabled={connectionStatus !== 'connected'}
             className="input"
-            style={{ flex: 1 }}
+            style={{ flex: 1, resize: 'none', overflowY: 'auto', maxHeight: '160px', lineHeight: '1.5', fontFamily: 'inherit' }}
           />
-          <button
-            onClick={handleSend}
-            disabled={(!input.trim() && attachments.length === 0) || connectionStatus !== 'connected' || isSending}
-            className="btn btn-primary"
-            style={{ padding: '0.75rem 1.5rem' }}
-          >
-            {isSending ? '发送中...' : '发送'}
-          </button>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem', alignItems: 'stretch' }}>
+            <button
+              onClick={handleSend}
+              disabled={(!input.trim() && attachments.length === 0) || connectionStatus !== 'connected' || isSending}
+              className="btn btn-primary"
+              style={{ padding: '0.5rem 1.5rem' }}
+            >
+              {isSending ? '发送中...' : '发送'}
+            </button>
+            <button
+              onClick={toggleSendMode}
+              title={sendMode === 'enter'
+                ? '当前：Enter 发送，Shift+Enter 换行（点击切换）'
+                : '当前：Enter 换行，Ctrl/Alt+Enter 发送（点击切换）'}
+              style={{
+                background: 'transparent', border: 'none', cursor: 'pointer',
+                fontSize: '0.7rem', color: 'var(--text-secondary)', padding: 0, whiteSpace: 'nowrap',
+              }}
+            >
+              {sendMode === 'enter' ? 'Enter 发送 ⇄' : 'Ctrl+Enter 发送 ⇄'}
+            </button>
+          </div>
         </div>
       </div>
 
