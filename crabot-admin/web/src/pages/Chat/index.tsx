@@ -41,6 +41,15 @@ export const Chat: React.FC = () => {
   const [attachments, setAttachments] = useState<File[]>([])
   const [isSending, setIsSending] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  // 消息引用：胶囊数据
+  const [quote, setQuote] = useState<{ role: 'user' | 'assistant'; text: string } | null>(null)
+  // 选中文本浮动「引用」按钮
+  const [selectionQuote, setSelectionQuote] = useState<{
+    x: number
+    y: number
+    role: 'user' | 'assistant'
+    text: string
+  } | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const sentinelRef = useRef<HTMLDivElement>(null)
@@ -460,9 +469,10 @@ export const Chat: React.FC = () => {
     }
   }
 
-  // 发送消息
+  // 发送消息（附件路径失败时保留 quote，与保留 input/attachments 同语义）
   const handleSend = async () => {
     const content = input.trim()
+    // 只有 quote 而无正文/附件时不能发送
     if ((!content && attachments.length === 0) || connectionStatus !== 'connected') return
     if (isSending) return
 
@@ -470,12 +480,13 @@ export const Chat: React.FC = () => {
     try {
       if (attachments.length > 0) {
         // 带附件走 HTTP multipart。
-        // 清空动作放在发送成功之后：失败时保留 input/attachments 让用户能直接重试
-        // （isSending 已禁用发送按钮，await 期间不会重复提交）
+        // 清空动作放在发送成功之后：失败时保留 input/attachments/quote 让用户直接重试
         const files = attachments
-        const { message, request_id } = await chatService.sendMessageWithAttachments(content, files)
+        const composed = composeWithQuote(content)
+        const { message, request_id } = await chatService.sendMessageWithAttachments(composed, files)
         setAttachments([])
         setInput('')
+        setQuote(null)
         releasePreviewUrls(files)
         setMessages((prev) => [
           ...prev,
@@ -491,13 +502,14 @@ export const Chat: React.FC = () => {
         ])
       } else {
         // 既有 WS 纯文本路径（入口已保证 content 非空）
-        const request_id = chatService.sendMessage(content)
+        const composed = composeWithQuote(content)
+        const request_id = chatService.sendMessage(composed)
 
-        // 添加用户消息
+        // 添加用户消息（内容含引用块前缀）
         const userMessage: MessageState = {
           message_id: `msg_${Date.now()}`,
           role: 'user',
-          content: { type: 'text', text: content },
+          content: { type: 'text', text: composed },
           request_id,
           timestamp: new Date().toISOString(),
           status: 'sent',
@@ -515,6 +527,7 @@ export const Chat: React.FC = () => {
 
         setMessages((prev) => [...prev, userMessage, assistantPlaceholder])
         setInput('')
+        setQuote(null)
       }
 
       inputRef.current?.focus()
@@ -528,6 +541,10 @@ export const Chat: React.FC = () => {
 
   // 处理键盘事件
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      setQuote(null)
+      return
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSend()
@@ -537,6 +554,39 @@ export const Chat: React.FC = () => {
   // 重连
   const handleReconnect = () => {
     chatService.connect()
+  }
+
+  /** 引用整条消息（右键触发，useCallback 保证稳定引用不破坏 memo） */
+  const handleQuoteMessage = useCallback((m: MessageState) => {
+    setQuote({ role: m.role, text: m.content.text ?? '' })
+  }, [])
+
+  /** 选中文本后触发浮动「引用」按钮（消息容器 onMouseUp） */
+  const handleSelectionQuote = (e: React.MouseEvent) => {
+    const sel = window.getSelection()
+    const text = sel?.toString().trim()
+    if (!text) {
+      setSelectionQuote(null)
+      return
+    }
+    // 找选区起点所属气泡的角色（气泡外层带 data-msg-role 属性）
+    let node: Node | null = sel!.anchorNode
+    let role: 'user' | 'assistant' = 'assistant'
+    while (node) {
+      if (node instanceof HTMLElement && node.dataset.msgRole) {
+        role = node.dataset.msgRole as 'user' | 'assistant'
+        break
+      }
+      node = node.parentNode
+    }
+    setSelectionQuote({ x: e.clientX, y: e.clientY - 40, role, text })
+  }
+
+  /** 将正文与引用胶囊拼为 markdown 引用块格式 */
+  const composeWithQuote = (text: string): string => {
+    if (!quote) return text
+    const quoted = quote.text.split('\n').map((l) => `> ${l}`).join('\n')
+    return `> 引用${quote.role === 'user' ? '我' : ' Crabot'}的消息：\n${quoted}\n\n${text}`
   }
 
   // 连接状态指示器
@@ -626,6 +676,14 @@ export const Chat: React.FC = () => {
           <div
             ref={messagesContainerRef}
             onScroll={handleScroll}
+            onMouseUp={handleSelectionQuote}
+            onMouseDown={(e) => {
+              // 若点击不在浮动引用按钮上，清空选中引用浮层
+              const target = e.target as HTMLElement
+              if (!target.closest('[data-selection-quote-btn]')) {
+                setSelectionQuote(null)
+              }
+            }}
             style={{
               height: '100%',
               overflowY: 'auto',
@@ -683,7 +741,7 @@ export const Chat: React.FC = () => {
                         </span>
                       </div>
                     )}
-                    <ChatMessageItem message={message} />
+                    <ChatMessageItem message={message} onQuote={handleQuoteMessage} />
                   </React.Fragment>
                 )
               })}
@@ -723,8 +781,67 @@ export const Chat: React.FC = () => {
           )}
         </div>
 
+        {/* 选中文本浮动「引用」按钮（fixed 定位，出现在鼠标松开位置上方） */}
+        {selectionQuote && (
+          <button
+            data-selection-quote-btn="1"
+            onMouseDown={(e) => {
+              // 使用 mousedown 避免先于 mouseup 清空选区
+              e.preventDefault()
+              setQuote({ role: selectionQuote.role, text: selectionQuote.text })
+              setSelectionQuote(null)
+              inputRef.current?.focus()
+            }}
+            style={{
+              position: 'fixed',
+              left: selectionQuote.x,
+              top: selectionQuote.y,
+              zIndex: 1100,
+              padding: '0.3rem 0.75rem',
+              fontSize: '0.8rem',
+              backgroundColor: 'var(--primary)',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+              userSelect: 'none',
+            }}
+          >
+            引用
+          </button>
+        )}
+
         {/* 进行中任务条（非终态任务，终态后自动移除） */}
         <ActiveTasksBar tasks={activeTasks} />
+
+        {/* 引用胶囊（输入区上方，可取消） */}
+        {quote && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              padding: '0.4rem 0.75rem',
+              marginBottom: '0.5rem',
+              borderLeft: '3px solid var(--primary)',
+              backgroundColor: 'var(--surface)',
+              borderRadius: '6px',
+              fontSize: '0.82rem',
+              color: 'var(--text-secondary)',
+            }}
+          >
+            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              引用{quote.role === 'user' ? '我' : ' Crabot'}：{quote.text.slice(0, 80)}
+            </span>
+            <button
+              onClick={() => setQuote(null)}
+              style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', flexShrink: 0 }}
+            >
+              ✕
+            </button>
+          </div>
+        )}
 
         {/* 附件预览条 */}
         {attachments.length > 0 && (

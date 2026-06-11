@@ -17,12 +17,18 @@ export interface MessageState extends ChatMessage {
   error?: string
 }
 
-export const ChatMessageItem = React.memo(function ChatMessageItem({ message }: { message: MessageState }) {
+interface ChatMessageItemProps {
+  message: MessageState
+  /** 引用整条消息（右键触发）；useCallback 保证稳定引用，不破坏 memo */
+  onQuote?: (m: MessageState) => void
+}
+
+export const ChatMessageItem = React.memo(function ChatMessageItem({ message, onQuote }: ChatMessageItemProps) {
   const navigate = useNavigate()
   const isUser = message.role === 'user'
   const isProcessing = message.status === 'processing'
 
-  // task_created 消息（含历史存量）渲染为居中单行系统提示样式
+  // task_created 消息（含历史存量）渲染为居中单行系统提示样式，不挂右键引用
   if (message.task_id && message.content.text?.startsWith('已创建任务')) {
     return (
       <div style={{ textAlign: 'center', margin: '0.75rem 0' }}>
@@ -68,6 +74,8 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({ message }: 
 
   return (
     <div
+      data-msg-role={message.role}
+      onContextMenu={onQuote ? (e) => { e.preventDefault(); onQuote(message) } : undefined}
       style={{
         display: 'flex',
         justifyContent: isUser ? 'flex-end' : 'flex-start',
@@ -100,7 +108,37 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({ message }: 
               }}
             >
               {isUser ? (
-                <div style={{ whiteSpace: 'pre-wrap' }}>{message.content.text}</div>
+                // user 消息：前导 "> " 行（与 composeWithQuote 格式对应）渲染为引用块
+                (() => {
+                  const lines = (message.content.text ?? '').split('\n')
+                  let quoteEnd = 0
+                  while (quoteEnd < lines.length && lines[quoteEnd].startsWith('> ')) quoteEnd++
+                  // 引用块后紧跟的空行也跳过（composeWithQuote 会在引用块后加一行）
+                  if (quoteEnd > 0 && quoteEnd < lines.length && lines[quoteEnd] === '') quoteEnd++
+                  const quoteBlock = quoteEnd > 0
+                    ? lines.slice(0, quoteEnd).join('\n').replace(/^> /gm, '').trimEnd()
+                    : null
+                  const bodyText = lines.slice(quoteEnd).join('\n')
+                  return (
+                    <>
+                      {quoteBlock && (
+                        <div
+                          style={{
+                            borderLeft: '3px solid rgba(255,255,255,0.5)',
+                            paddingLeft: '0.6rem',
+                            marginBottom: '0.4rem',
+                            fontSize: '0.82rem',
+                            color: 'rgba(255,255,255,0.75)',
+                            whiteSpace: 'pre-wrap',
+                          }}
+                        >
+                          {quoteBlock}
+                        </div>
+                      )}
+                      <div style={{ whiteSpace: 'pre-wrap' }}>{bodyText}</div>
+                    </>
+                  )
+                })()
               ) : (
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
