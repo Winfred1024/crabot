@@ -30,7 +30,7 @@ export interface PrefetchQuotedDeps {
 interface GetMessageResult {
   platform_message_id: string
   sender: { platform_user_id: string; platform_display_name: string }
-  content: { type: string; text?: string; media_url?: string; filename?: string; mime_type?: string; size?: number }
+  content: { type: string; text?: string; media_url?: string; filename?: string; mime_type?: string; size?: number; media?: Array<{ media_url: string; mime_type: string; filename?: string; size?: number }> }
   features: {
     is_mention_crab?: boolean
     mentions?: Array<{ user_id: string; display_name?: string }>
@@ -119,6 +119,7 @@ export async function prefetchQuotedMessages(
         ...(res.content.filename !== undefined ? { filename: res.content.filename } : {}),
         ...(res.content.mime_type !== undefined ? { mime_type: res.content.mime_type } : {}),
         ...(res.content.size !== undefined ? { size: res.content.size } : {}),
+        ...(res.content.media !== undefined ? { media: res.content.media } : {}),
       },
       features: {
         is_mention_crab: res.features.is_mention_crab ?? false,

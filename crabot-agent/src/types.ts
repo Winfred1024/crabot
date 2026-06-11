@@ -300,6 +300,14 @@ export type MessageType = 'text' | 'image' | 'file' | 'system_event'
 /** 仅 type='system_event' 时使用，见 base-protocol.md §5.4 system_event */
 export type SystemEventType = 'members_added' | 'scheduled'
 
+export interface MediaItem {
+  /** http(s) URL 或本地绝对路径（同机模块间传递场景） */
+  media_url: string
+  mime_type: string
+  filename?: string
+  size?: number
+}
+
 export interface MessageContent {
   type: MessageType
   text?: string
@@ -308,6 +316,8 @@ export interface MessageContent {
   filename?: string
   mime_type?: string
   size?: number
+  /** 多附件数组（media 存在时为权威，media_url 是 media[0] 的镜像）；见 base-protocol §5.4 */
+  media?: MediaItem[]
   /** system_event 子类型（type=system_event 时必填） */
   event_type?: SystemEventType
   /** 系统事件涉及的用户（如 members_added 的新加入者） */
