@@ -132,6 +132,24 @@ class ChatWebSocketClient {
     }
   }
 
+  /** 带附件的消息走 HTTP multipart（WS 保持纯文本）。返回落库后的 user 消息。 */
+  async sendMessageWithAttachments(text: string, files: File[]): Promise<{ message: ChatMessage; request_id: string }> {
+    const request_id = this.generateRequestId()
+    const form = new FormData()
+    form.append('request_id', request_id)
+    form.append('text', text)
+    for (const f of files) form.append('files', f, f.name)
+    const { message } = await api.post<{ message: ChatMessage }>('/chat/messages', form)
+    return { message, request_id }
+  }
+
+  /** store 相对 URL → 可直接用于 <img>/<a> 的带 token URL；http(s) 原样返回 */
+  mediaSrc(mediaUrl: string): string {
+    if (mediaUrl.startsWith('http://') || mediaUrl.startsWith('https://')) return mediaUrl
+    const token = storage.getToken()
+    return token ? `${mediaUrl}?token=${encodeURIComponent(token)}` : mediaUrl
+  }
+
   private generateRequestId(): string {
     return `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
   }

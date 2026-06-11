@@ -3,8 +3,11 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { MainLayout } from '../../components/Layout/MainLayout'
 import { chatService } from '../../services/chat'
-import type { ChatMessage, ChatServerMessage, ChatTaskSnapshot, ConnectionStatus } from '../../types/chat'
+import type { ChatMessage, ChatMessageContent, ChatServerMessage, ChatTaskSnapshot, ConnectionStatus } from '../../types/chat'
 import { TaskStatusCard } from './TaskStatusCard'
+import { MessageMedia } from './MessageMedia'
+import { ChatSettingsModal } from './ChatSettingsModal'
+import { useToast } from '../../contexts/ToastContext'
 
 /** 消息状态 */
 interface MessageState extends ChatMessage {
@@ -18,6 +21,7 @@ interface MessageState extends ChatMessage {
 const PAGE_SIZE = 30
 
 export const Chat: React.FC = () => {
+  const toast = useToast()
   const [messages, setMessages] = useState<MessageState[]>([])
   const [input, setInput] = useState('')
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>(chatService.status)
@@ -25,12 +29,26 @@ export const Chat: React.FC = () => {
   const [loadingMore, setLoadingMore] = useState(false)
   const [showScrollButton, setShowScrollButton] = useState(false)
   const [unreadCount, setUnreadCount] = useState(0)
+  const [attachments, setAttachments] = useState<File[]>([])
+  const [isSending, setIsSending] = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const sentinelRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const isLoadingHistoryRef = useRef(false)
   const isNearBottomRef = useRef(true)
+  // objectURL 追踪，组件卸载时 revoke 防内存泄漏
+  const objectUrlsRef = useRef<Map<string, string>>(new Map())
+
+  // 清理 objectURL（组件卸载）
+  useEffect(() => {
+    return () => {
+      objectUrlsRef.current.forEach((url) => URL.revokeObjectURL(url))
+      objectUrlsRef.current.clear()
+    }
+  }, [])
 
   // 检测滚动位置
   const handleScroll = useCallback(() => {
@@ -233,18 +251,19 @@ export const Chat: React.FC = () => {
   const handleServerMessage = (message: ChatServerMessage) => {
     if (message.type === 'chat_reply' && message.reply_type === 'task_created') {
       // task_created 单独处理：转为任务状态卡，避免覆盖 dispatcher 先行 direct_reply
+      // WS chat_reply 的 content 仍是 string，包装成 ChatMessageContent
       setMessages((prev) => {
         const cardMsg: MessageState = {
           message_id: `msg_${Date.now()}_task`,
           role: 'assistant',
-          content: message.content,
+          content: { type: 'text', text: message.content },
           request_id: message.request_id,
           task_id: message.task_id,
           reply_type: 'task_created',
           timestamp: new Date().toISOString(),
           status: 'completed',
           task: message.task_id
-            ? { task_id: message.task_id, status: 'executing', title: message.content.replace(/^已创建任务：/, '') }
+            ? { task_id: message.task_id, status: 'executing', title: (message.content ?? '').replace(/^已创建任务：/, '') }
             : undefined,
         }
         // 占位仍在 processing → 原地转为状态卡；否则（已被 direct_reply 填充）追加新消息
@@ -268,12 +287,15 @@ export const Chat: React.FC = () => {
           (m) => m.request_id === message.request_id && m.role === 'assistant'
         )
 
+        // WS chat_reply 的 content 是 string，包装成 ChatMessageContent
+        const msgContent: ChatMessageContent = { type: 'text', text: message.content }
+
         if (existingIndex >= 0) {
           // 更新现有消息
           const updated = [...prev]
           updated[existingIndex] = {
             ...updated[existingIndex],
-            content: message.content,
+            content: msgContent,
             status: message.status === 'completed' ? 'completed' : 'failed',
             reply_type: message.reply_type,
             task_id: message.task_id,
@@ -287,7 +309,7 @@ export const Chat: React.FC = () => {
           {
             message_id: `msg_${Date.now()}`,
             role: 'assistant' as const,
-            content: message.content,
+            content: msgContent,
             request_id: message.request_id,
             task_id: message.task_id,
             reply_type: message.reply_type,
@@ -317,6 +339,7 @@ export const Chat: React.FC = () => {
       }
     } else if (message.type === 'chat_push') {
       // worker 经 send_message 伪 channel 回流的新消息，直接追加
+      // message.message 已是新结构 ChatMessage，无需转换
       setMessages((prev) => [...prev, { ...message.message, status: 'completed' as const }])
     } else if (message.type === 'chat_task_update') {
       // 任务状态/计划变更，实时更新对应消息的状态卡数据
@@ -326,41 +349,114 @@ export const Chat: React.FC = () => {
     }
   }
 
+  // 添加附件（过滤超过 25MB 的文件）
+  const addFiles = (incoming: FileList | File[]) => {
+    const list = Array.from(incoming)
+    const valid = list.filter((f) => f.size <= 25 * 1024 * 1024)
+    if (valid.length < list.length) {
+      toast.warning(`${list.length - valid.length} 个文件超过 25MB 已忽略`)
+    }
+    // 生成 objectURL 用于预览缩略图
+    valid.forEach((f) => {
+      if (!objectUrlsRef.current.has(f.name + f.lastModified)) {
+        objectUrlsRef.current.set(f.name + f.lastModified, URL.createObjectURL(f))
+      }
+    })
+    setAttachments((prev) => [...prev, ...valid])
+  }
+
+  // 移除单个附件
+  const removeAttachment = (index: number) => {
+    setAttachments((prev) => {
+      const removed = prev[index]
+      const key = removed.name + removed.lastModified
+      const url = objectUrlsRef.current.get(key)
+      if (url) {
+        URL.revokeObjectURL(url)
+        objectUrlsRef.current.delete(key)
+      }
+      return prev.filter((_, i) => i !== index)
+    })
+  }
+
+  // 获取文件预览 objectURL（图片用）
+  const getObjectUrl = (file: File): string => {
+    const key = file.name + file.lastModified
+    if (!objectUrlsRef.current.has(key)) {
+      objectUrlsRef.current.set(key, URL.createObjectURL(file))
+    }
+    return objectUrlsRef.current.get(key)!
+  }
+
+  // 粘贴处理
+  const handlePaste = (e: React.ClipboardEvent) => {
+    if (e.clipboardData.files.length > 0) {
+      e.preventDefault()
+      addFiles(e.clipboardData.files)
+    }
+  }
+
   // 发送消息
-  const handleSend = () => {
+  const handleSend = async () => {
     const content = input.trim()
-    if (!content || connectionStatus !== 'connected') return
+    if ((!content && attachments.length === 0) || connectionStatus !== 'connected') return
+    if (isSending) return
 
+    setIsSending(true)
     try {
-      const request_id = chatService.sendMessage(content)
+      if (attachments.length > 0) {
+        // 带附件走 HTTP multipart
+        const files = attachments
+        setAttachments([])
+        setInput('')
+        const { message, request_id } = await chatService.sendMessageWithAttachments(content, files)
+        setMessages((prev) => [
+          ...prev,
+          { ...message, status: 'sent' as const },
+          {
+            message_id: `msg_${Date.now()}_assistant`,
+            role: 'assistant' as const,
+            content: { type: 'text' as const, text: '' },
+            request_id,
+            timestamp: new Date().toISOString(),
+            status: 'processing' as const,
+          },
+        ])
+      } else {
+        // 既有 WS 纯文本路径
+        if (!content) return
+        const request_id = chatService.sendMessage(content)
 
-      // 添加用户消息
-      const userMessage: MessageState = {
-        message_id: `msg_${Date.now()}`,
-        role: 'user',
-        content,
-        request_id,
-        timestamp: new Date().toISOString(),
-        status: 'sent',
+        // 添加用户消息
+        const userMessage: MessageState = {
+          message_id: `msg_${Date.now()}`,
+          role: 'user',
+          content: { type: 'text', text: content },
+          request_id,
+          timestamp: new Date().toISOString(),
+          status: 'sent',
+        }
+
+        // 添加占位的 assistant 消息
+        const assistantPlaceholder: MessageState = {
+          message_id: `msg_${Date.now()}_assistant`,
+          role: 'assistant',
+          content: { type: 'text', text: '' },
+          request_id,
+          timestamp: new Date().toISOString(),
+          status: 'processing',
+        }
+
+        setMessages((prev) => [...prev, userMessage, assistantPlaceholder])
+        setInput('')
       }
 
-      // 添加占位的 assistant 消息
-      const assistantPlaceholder: MessageState = {
-        message_id: `msg_${Date.now()}_assistant`,
-        role: 'assistant',
-        content: '',
-        request_id,
-        timestamp: new Date().toISOString(),
-        status: 'processing',
-      }
-
-      setMessages((prev) => [...prev, userMessage, assistantPlaceholder])
-      setInput('')
-
-      // 聚焦输入框
       inputRef.current?.focus()
     } catch (error) {
       console.error('Failed to send message:', error)
+      toast.error('发送失败，请重试')
+    } finally {
+      setIsSending(false)
     }
   }
 
@@ -485,11 +581,28 @@ export const Chat: React.FC = () => {
                 }}
               >
                 {isUser ? (
-                  <div style={{ whiteSpace: 'pre-wrap' }}>{message.content}</div>
+                  <div style={{ whiteSpace: 'pre-wrap' }}>{message.content.text}</div>
                 ) : (
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      // worker 在正文 markdown 嵌 store 图时统一补 token
+                      img: ({ src, alt }) => (
+                        <img
+                          src={typeof src === 'string' ? chatService.mediaSrc(src) : undefined}
+                          alt={alt ?? ''}
+                          style={{ maxWidth: '100%', borderRadius: '8px' }}
+                        />
+                      ),
+                    }}
+                  >
+                    {message.content.text ?? ''}
+                  </ReactMarkdown>
                 )}
               </div>
+              {message.content.media && message.content.media.length > 0 && (
+                <MessageMedia media={message.content.media} />
+              )}
               {message.task_id && (
                 <TaskStatusCard taskId={message.task_id} snapshot={message.task} />
               )}
@@ -524,12 +637,25 @@ export const Chat: React.FC = () => {
             marginBottom: '1rem',
           }}
         >
-          <h1 style={{ fontSize: '2rem', fontWeight: 700 }}>聊天</h1>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <h1 style={{ fontSize: '2rem', fontWeight: 700 }}>聊天</h1>
+            <button
+              onClick={() => setShowSettings(true)}
+              title="聊天媒体设置"
+              style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: '1.1rem', color: 'var(--text-secondary)' }}
+            >
+              ⚙
+            </button>
+          </div>
           {renderConnectionStatus()}
         </div>
 
         {/* 消息区域 */}
-        <div style={{ flex: 1, position: 'relative', marginBottom: '1rem' }}>
+        <div
+          style={{ flex: 1, position: 'relative', marginBottom: '1rem' }}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => { e.preventDefault(); addFiles(e.dataTransfer.files) }}
+        >
           <div
             ref={messagesContainerRef}
             onScroll={handleScroll}
@@ -606,6 +732,61 @@ export const Chat: React.FC = () => {
           )}
         </div>
 
+        {/* 附件预览条 */}
+        {attachments.length > 0 && (
+          <div
+            style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: '0.5rem',
+              padding: '0.5rem 1rem',
+              marginBottom: '0.5rem',
+              backgroundColor: 'var(--bg-secondary)',
+              borderRadius: '8px',
+              border: '1px solid var(--border)',
+            }}
+          >
+            {attachments.map((file, index) => (
+              <div
+                key={index}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.4rem',
+                  padding: '0.3rem 0.6rem',
+                  borderRadius: '6px',
+                  backgroundColor: 'var(--bg-primary)',
+                  border: '1px solid var(--border)',
+                  fontSize: '0.85rem',
+                }}
+              >
+                {file.type.startsWith('image/') ? (
+                  <img
+                    src={getObjectUrl(file)}
+                    alt={file.name}
+                    style={{ width: '32px', height: '32px', objectFit: 'cover', borderRadius: '4px' }}
+                  />
+                ) : (
+                  <span>📎</span>
+                )}
+                <span style={{ maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {file.name}
+                </span>
+                <button
+                  onClick={() => removeAttachment(index)}
+                  style={{
+                    background: 'none', border: 'none', cursor: 'pointer',
+                    color: 'var(--text-secondary)', fontSize: '0.9rem', padding: '0 2px',
+                  }}
+                  title="移除附件"
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* 输入区域 */}
         <div
           style={{
@@ -617,27 +798,57 @@ export const Chat: React.FC = () => {
             border: '1px solid var(--border)',
           }}
         >
+          {/* 隐藏的文件选择 input */}
+          <input
+            type="file"
+            multiple
+            ref={fileInputRef}
+            onChange={(e) => e.target.files && addFiles(e.target.files)}
+            style={{ display: 'none' }}
+          />
+          {/* 附件按钮 */}
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={connectionStatus !== 'connected'}
+            title="添加附件"
+            style={{
+              background: 'transparent',
+              border: '1px solid var(--border)',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              fontSize: '1.1rem',
+              padding: '0.5rem',
+              color: 'var(--text-secondary)',
+              flexShrink: 0,
+            }}
+          >
+            📎
+          </button>
           <input
             ref={inputRef}
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={connectionStatus === 'connected' ? '输入消息...' : '等待连接...'}
+            onPaste={handlePaste}
+            placeholder={connectionStatus === 'connected' ? '输入消息，可粘贴或拖拽附件...' : '等待连接...'}
             disabled={connectionStatus !== 'connected'}
             className="input"
             style={{ flex: 1 }}
           />
           <button
             onClick={handleSend}
-            disabled={!input.trim() || connectionStatus !== 'connected'}
+            disabled={(!input.trim() && attachments.length === 0) || connectionStatus !== 'connected' || isSending}
             className="btn btn-primary"
             style={{ padding: '0.75rem 1.5rem' }}
           >
-            发送
+            {isSending ? '发送中...' : '发送'}
           </button>
         </div>
       </div>
+
+      {/* 聊天媒体设置弹窗 */}
+      {showSettings && <ChatSettingsModal onClose={() => setShowSettings(false)} />}
     </MainLayout>
   )
 }

@@ -14,9 +14,8 @@ class ApiClient {
   ): Promise<T> {
     const token = storage.getToken()
 
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    }
+    const headers: Record<string, string> =
+      options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }
 
     if (options.headers) {
       Object.assign(headers, options.headers)
@@ -69,7 +68,7 @@ class ApiClient {
   async post<T>(endpoint: string, data?: unknown): Promise<T> {
     return this.request<T>(endpoint, {
       method: 'POST',
-      body: data ? JSON.stringify(data) : undefined,
+      body: data instanceof FormData ? data : data ? JSON.stringify(data) : undefined,
     })
   }
 
