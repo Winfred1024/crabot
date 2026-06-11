@@ -8627,14 +8627,26 @@ export class AdminModule extends ModuleBase {
       return
     }
     try {
-      // Node 18+ 内建 multipart 解析：IncomingMessage 包成 Web 标准 Request
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // 手动缓冲 body 并按累计字节硬熔断：Content-Length 预检对 chunked（无声明长度）
+      // 请求无效，必须在读流时设上限，否则 formData() 会无界缓冲进内存
+      const chunks: Buffer[] = []
+      let totalBytes = 0
+      for await (const chunk of req) {
+        const buf = chunk as Buffer
+        totalBytes += buf.length
+        if (totalBytes > MAX_TOTAL) {
+          sendJson(res, 413, { error: '请求体过大（上限 100MB）' })
+          req.destroy()
+          return
+        }
+        chunks.push(buf)
+      }
+      // Node 18+ 内建 multipart 解析：body 已缓冲为 Buffer，无需 stream duplex
       const RequestClass = Request as unknown as new (url: string, init: Record<string, unknown>) => { formData(): Promise<{ get(k: string): unknown; getAll(k: string): unknown[] }> }
       const request = new RequestClass('http://localhost/api/chat/messages', {
         method: 'POST',
         headers: req.headers,
-        body: req,
-        duplex: 'half',
+        body: Buffer.concat(chunks),
       })
       const form = await request.formData()
       const text = String(form.get('text') ?? '')

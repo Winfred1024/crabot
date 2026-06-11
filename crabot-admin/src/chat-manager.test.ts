@@ -155,6 +155,27 @@ describe('入站带附件消息（handleInboundMessage）', () => {
     await fs.rm(TEST_DATA_DIR, { recursive: true, force: true }).catch(() => {})
   })
 
+  it('process_message RPC 失败：消息仍落库、推 chat_error、不抛回调用方', async () => {
+    const mgr = await makeManagerWithRpc(async () => {
+      throw new Error('agent down')
+    })
+    const pushed: Array<{ type: string }> = []
+    ;(mgr as unknown as { activeClient: unknown }).activeClient = {
+      readyState: 1, // WebSocket.OPEN
+      send: (data: string) => { pushed.push(JSON.parse(data)) },
+    }
+    const result = await mgr.handleInboundMessage({
+      request_id: 'req-err',
+      text: '会失败的消息',
+      files: [],
+    })
+    // user 消息已落库且正常返回（失败非原子是已登记的设计取舍）
+    expect(result.message.content.text).toBe('会失败的消息')
+    expect(mgr.getMessages(10)).toHaveLength(1)
+    // 推送序列：chat_status processing → chat_error
+    expect(pushed.map((p) => p.type)).toEqual(['chat_status', 'chat_error'])
+  })
+
   it('文字+附件：附件落 store，落库 content 含 media[]（URL 形态），process_message 收到绝对路径版', async () => {
     const calls: Array<{ method: string; params: unknown }> = []
     const mgr = await makeManagerWithRpc(async (_port: number, method: string, params: unknown) => {
