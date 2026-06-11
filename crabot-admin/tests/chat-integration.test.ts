@@ -206,6 +206,6 @@ describe('Admin Master Chat 集成测试', () => {
     const messagesData = await messagesResponse.json() as { messages: any[] }
     const assistantMessage = messagesData.messages.find((m: any) => m.role === 'assistant')
     expect(assistantMessage).toBeDefined()
-    expect(assistantMessage.content).toBe('这是一条测试回复')
+    expect(assistantMessage.content.text).toBe('这是一条测试回复')
   })
 })

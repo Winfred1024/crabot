@@ -1758,11 +1758,47 @@ export interface AdminEventPayloads {
 // Master Chat（管理员聊天）
 // ============================================================================
 
+/** 单个媒体附件引用（对齐 base-protocol MediaItem） */
+export interface MediaItem {
+  /** http(s) URL 或本地绝对路径（同机模块间传递场景） */
+  media_url: string
+  mime_type: string
+  filename?: string
+  size?: number
+}
+
+/** 消息内容（对齐 base-protocol §5.4 MessageContent，admin chat 双向共用） */
+export interface MessageContent {
+  type: 'text' | 'image' | 'file' | 'system_event'
+  text?: string
+  /** 遗留单媒体表达；media 存在时此字段为 media[0] 的镜像 */
+  media_url?: string
+  file_path?: string
+  filename?: string
+  mime_type?: string
+  size?: number
+  /** 多附件数组；存在时为权威 */
+  media?: MediaItem[]
+}
+
+/** MediaStore 配置 */
+export interface MediaStoreConfig {
+  /** 媒体保留天数（1-365），超期被每日清扫删除 */
+  ttl_days: number
+}
+
+/** MediaStore 占用统计 */
+export interface MediaUsage {
+  file_count: number
+  total_bytes: number
+  ttl_days: number
+}
+
 /** 聊天消息 */
 export interface ChatMessage {
   message_id: string
   role: 'user' | 'assistant'
-  content: string
+  content: MessageContent
   request_id?: string
   task_id?: TaskId
   timestamp: string
@@ -1778,15 +1814,7 @@ export interface ChatClientMessage {
 /** send_message RPC（admin-web 伪 channel）入参，对齐 protocol-channel SendMessageParams */
 export interface ChatSendMessageParams {
   session_id: string
-  content: {
-    type: 'text' | 'image' | 'file' | 'system_event'
-    text?: string
-    media_url?: string
-    file_path?: string
-    filename?: string
-    mime_type?: string
-    size?: number
-  }
+  content: MessageContent
   features?: Record<string, unknown>
 }
 

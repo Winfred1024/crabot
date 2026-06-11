@@ -18,6 +18,7 @@ import type {
   ChatSendMessageResult,
   ChatTaskSnapshot,
   Task,
+  MessageContent,
 } from './types.js'
 
 export class ChatManager {
@@ -44,8 +45,15 @@ export class ChatManager {
   async loadData(): Promise<void> {
     try {
       const data = await fs.readFile(this.messagesFilePath, 'utf-8')
-      const parsed = JSON.parse(data) as ChatMessage[]
-      this.messages = new Map(parsed.map((m) => [m.message_id, m]))
+      // content 字段可能是旧格式（string），需要 hydrate 为 MessageContent
+      const parsed = JSON.parse(data) as Array<Omit<ChatMessage, 'content'> & { content: string | MessageContent }>
+      this.messages = new Map(parsed.map((m) => [
+        m.message_id,
+        {
+          ...m,
+          content: typeof m.content === 'string' ? { type: 'text' as const, text: m.content } : m.content,
+        },
+      ]))
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
         console.error('[ChatManager] Failed to load messages:', error)
@@ -150,11 +158,11 @@ export class ChatManager {
       return
     }
 
-    // 存储用户消息
+    // 存储用户消息（WS 纯文本路径：content 字段包装为 MessageContent）
     const userMessage: ChatMessage = {
       message_id: generateId(),
       role: 'user',
-      content: data.content,
+      content: { type: 'text', text: data.content },
       request_id: data.request_id,
       timestamp: generateTimestamp(),
     }
@@ -239,11 +247,11 @@ export class ChatManager {
   // ==========================================================================
 
   async handleChatCallback(params: ChatCallbackParams): Promise<ChatCallbackResult> {
-    // 存储 assistant 消息
+    // 存储 assistant 消息（chat_callback 仍传 string content，包装为 MessageContent）
     const assistantMessage: ChatMessage = {
       message_id: generateId(),
       role: 'assistant',
-      content: params.content,
+      content: { type: 'text', text: params.content },
       request_id: params.request_id,
       task_id: params.task_id,
       timestamp: generateTimestamp(),
@@ -271,28 +279,39 @@ export class ChatManager {
   // send_message（admin-web 伪 channel 入口，spec 2026-06-10-master-chat-redesign §4）
   // ==========================================================================
 
-  /** MessageContent → 文本。Phase 1 仅消费 text，媒体降级为占位文本（Phase 2 接入显示） */
-  private contentToText(content: ChatSendMessageParams['content']): string {
-    // system_event 的 text 是协议规定的人类可读 fallback，与 text 同样直接透出
-    if (content.type === 'text' || content.type === 'system_event') return content.text ?? ''
-    const label = content.type === 'image' ? '图片' : '文件'
-    const name = content.filename ?? content.media_url ?? content.file_path ?? ''
-    const caption = content.text ? `\n${content.text}` : ''
-    return `[${label}] ${name}（媒体显示将在后续版本支持）${caption}`
-  }
-
   async handleSendMessage(params: ChatSendMessageParams): Promise<ChatSendMessageResult> {
     if (params.session_id !== 'admin-chat') {
       throw new Error(`Unknown chat session: ${params.session_id}`)
     }
-    const text = this.contentToText(params.content)
-    if (!text.trim()) {
-      throw new Error('Empty message content')
+    const c = params.content
+    // system_event：text 是协议规定的人类可读 fallback，按纯文本落库
+    if (c.type === 'system_event') {
+      return this._storeAssistantMessage({ type: 'text', text: c.text ?? '' })
     }
+    // Phase 1 行为等价适配：媒体降级为占位文本（Task 6 接入 MediaStore 后会改此逻辑）
+    let contentToStore: MessageContent
+    if (c.type === 'text') {
+      const text = c.text ?? ''
+      if (!text.trim()) {
+        throw new Error('Empty message content')
+      }
+      contentToStore = { type: 'text', text }
+    } else {
+      // image / file 类型：降级为占位文本（Phase 1 行为保持）
+      const label = c.type === 'image' ? '图片' : '文件'
+      const name = c.filename ?? c.media_url ?? c.file_path ?? ''
+      const caption = c.text ? `\n${c.text}` : ''
+      const text = `[${label}] ${name}（媒体显示将在后续版本支持）${caption}`
+      contentToStore = { type: 'text', text }
+    }
+    return this._storeAssistantMessage(contentToStore)
+  }
+
+  private async _storeAssistantMessage(content: MessageContent): Promise<ChatSendMessageResult> {
     const message: ChatMessage = {
       message_id: generateId(),
       role: 'assistant',
-      content: text,
+      content,
       timestamp: generateTimestamp(),
     }
     this.messages.set(message.message_id, message)

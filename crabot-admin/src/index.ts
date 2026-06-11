@@ -8479,7 +8479,7 @@ export class AdminModule extends ModuleBase {
         sender: msg.role === 'user'
           ? { friend_id: 'master', platform_user_id: 'master', platform_display_name: 'Master' }
           : { friend_id: 'assistant', platform_user_id: 'assistant', platform_display_name: 'Crabot' },
-        content: { type: 'text' as const, text: msg.content },
+        content: { type: 'text' as const, text: msg.content.text ?? '' },
         features: { is_mention_crab: false as const },
         platform_timestamp: msg.timestamp,
       })),

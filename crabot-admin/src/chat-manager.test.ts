@@ -40,7 +40,7 @@ describe('ChatManager.handleSendMessage', () => {
     const stored = mgr.getMessages(10)
     expect(stored).toHaveLength(1)
     expect(stored[0].role).toBe('assistant')
-    expect(stored[0].content).toBe('任务完成，结果如下…')
+    expect(stored[0].content.text).toBe('任务完成，结果如下…')
   })
 
   it('未知 session_id 抛错且不落库', async () => {
@@ -58,9 +58,9 @@ describe('ChatManager.handleSendMessage', () => {
       content: { type: 'image', media_url: 'http://x/y.png', filename: 'y.png', text: '截图说明' },
     })
     const stored = mgr.getMessages(10)
-    expect(stored[0].content).toContain('[图片]')
-    expect(stored[0].content).toContain('y.png')
-    expect(stored[0].content).toContain('截图说明')
+    expect(stored[0].content.text).toContain('[图片]')
+    expect(stored[0].content.text).toContain('y.png')
+    expect(stored[0].content.text).toContain('截图说明')
   })
 
   it('system_event 内容直接透出 text（不降级为媒体占位）', async () => {
@@ -69,7 +69,7 @@ describe('ChatManager.handleSendMessage', () => {
       session_id: 'admin-chat',
       content: { type: 'system_event', text: '成员加入：小明' },
     })
-    expect(mgr.getMessages(10)[0].content).toBe('成员加入：小明')
+    expect(mgr.getMessages(10)[0].content.text).toBe('成员加入：小明')
   })
 
   it('WS send 同步抛错时推送 best-effort 吞错，不污染调用方', async () => {
@@ -102,7 +102,36 @@ describe('ChatManager.handleSendMessage', () => {
     })
     const mgr2 = makeManager()
     await mgr2.loadData()
-    expect(mgr2.getMessages(10)[0].content).toBe('persisted')
+    expect(mgr2.getMessages(10)[0].content.text).toBe('persisted')
+  })
+})
+
+describe('ChatMessage content 模型升级', () => {
+  beforeEach(async () => {
+    await fs.rm(TEST_DATA_DIR, { recursive: true, force: true }).catch(() => {})
+    await fs.mkdir(TEST_DATA_DIR, { recursive: true })
+  })
+
+  it('loadData hydrate：旧 string content 升级为 {type:text,text}', async () => {
+    await fs.writeFile(
+      `${TEST_DATA_DIR}/chat_messages.json`,
+      JSON.stringify([{ message_id: 'old-1', role: 'user', content: '旧消息', timestamp: '2026-05-19T00:00:00Z' }]),
+      'utf-8'
+    )
+    const mgr = makeManager()
+    await mgr.loadData()
+    const [msg] = mgr.getMessages(10)
+    expect(msg.content).toEqual({ type: 'text', text: '旧消息' })
+  })
+
+  it('handleSendMessage 落库的 content 是 MessageContent 结构', async () => {
+    const mgr = makeManager()
+    await mgr.handleSendMessage({
+      session_id: 'admin-chat',
+      content: { type: 'text', text: '结构化' },
+    })
+    expect(mgr.getMessages(10)[0].content.text).toBe('结构化')
+    expect(mgr.getMessages(10)[0].content.type).toBe('text')
   })
 })
 
