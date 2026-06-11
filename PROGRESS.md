@@ -1,6 +1,13 @@
 # Crabot 项目进度
 
-> 最后更新：2026-06-09 — Skill filesystem-native 改造 (对齐 Anthropic Agent Skills 业界标准)
+> 最后更新：2026-06-11 — 修 agent OOM：zod globalRegistry 内存泄漏
+
+## 2026-06-11 — 修 agent ~13 小时 OOM 自动重启（zod globalRegistry 泄漏）
+
+- 现象：home-m2u.local 上 agent 进程跑 ~13h 后堆 2.2GB OOM crash，MM auto_restart 拉起
+- 根因（heap snapshot 实证）：worker 每轮 LLM turn 经 buildToolsDynamic 重建 crab-memory / crab-messaging in-process MCP server，zod v4 `.describe()` 把 schema clone 写入 globalRegistry（强引用 Map 永不清除）→ 每轮净增整棵 schema 树 ~2-3MB
+- 修复：两个文件的工具 zod schema 全部提升为模块级常量（schema 与 task 上下文无关，ctx 都在 handler 闭包里）；registry 条目变成启动时固定有限集
+- 回归测试：`tests/mcp/zod-registry-leak.test.ts`——重复构建 server 断言 globalRegistry 条目零增长
 
 ## 最新里程碑（2026-06-09 — Skill 改造 filesystem-native）
 

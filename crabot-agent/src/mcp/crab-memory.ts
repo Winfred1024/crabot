@@ -96,6 +96,168 @@ export async function resolveSceneAnchorLabel(params: {
 }
 
 // ============================================================================
+// 工具 inputSchema（必须是模块级常量，只构建一次）
+//
+// 为什么不能放进 createCrabMemoryServer：worker 每轮 LLM turn 都会通过
+// buildToolsDynamic 重建本 server；zod v4 的 .describe() 会把 schema clone
+// 写入 globalRegistry（强引用 Map，永不清除）。inline 构建 = 每轮净增整棵
+// schema 树 → 2026-06-11 OOM 事故根因。回归测试：tests/mcp/zod-registry-leak.test.ts
+// ============================================================================
+
+const STORE_MEMORY_SCHEMA = {
+  content: z.string().describe('要记住的完整信息（成为 body），应包含足够上下文'),
+  brief: z.string().optional()
+    .describe('召回标题（≤80 字符）。不传则自动从 content 首行截取'),
+  type: z.enum(['fact', 'lesson', 'concept']).optional()
+    .describe('记忆类型：fact=客观事实, lesson=经验教训, concept=概念定义（默认 fact）'),
+  importance: z.number().min(1).max(10).optional()
+    .describe('重要性 1-10，日常偏好 3-5，重要决策 6-8，关键信息 9-10（用于推断 importance_factors）'),
+  tags: z.array(z.string()).optional()
+    .describe('分类标签'),
+}
+
+const SEARCH_MEMORY_SCHEMA = {
+  query: z.string().describe('FTS5 全文检索查询（trigram tokenizer，CJK/英文混合都支持）；query 抽词后 <3 字符的 token 不命中（trigram 固有限制）'),
+  level: z.enum(['short_term', 'long_term']).default('long_term')
+    .describe('搜索范围：short_term=事件流水账（找历史 ID 的入口），long_term=认知知识库'),
+  limit: z.number().min(1).max(20).default(5)
+    .describe('返回数量上限'),
+}
+
+const GET_MEMORY_DETAIL_SCHEMA = {
+  memory_id: z.string().describe('记忆 ID'),
+  include: z.enum(['brief', 'full']).default('full')
+    .describe('详细程度：brief=仅返回标识与 brief, full=附带 body 与 frontmatter'),
+}
+
+const sourceRefSchema = z.object({
+  type: z.enum(['conversation', 'reflection', 'system']).describe('来源类型'),
+  task_id: z.string().optional(),
+  channel_id: z.string().optional(),
+  session_id: z.string().optional(),
+})
+
+const importanceFactorsSchema = z.object({
+  proximity: z.number().min(0).max(1),
+  surprisal: z.number().min(0).max(1),
+  entity_priority: z.number().min(0).max(1),
+  unambiguity: z.number().min(0).max(1),
+})
+
+// protocol-memory v0.3.0：SceneIdentity 收 2 路（global 已废除）
+const sceneSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('group_session'),
+    channel_id: z.string(),
+    session_id: z.string(),
+  }),
+  z.object({
+    type: z.literal('friend'),
+    friend_id: z.string(),
+  }),
+])
+
+type SceneArg =
+  | { type: 'friend'; friend_id: string }
+  | { type: 'group_session'; channel_id: string; session_id: string }
+
+const QUICK_CAPTURE_SCHEMA = {
+  type: z.enum(['fact', 'lesson', 'concept']).describe('记忆类型'),
+  brief: z.string().describe('一行召回标题（≤80 字符），需含场景关键词'),
+  content: z.string().describe('完整正文 markdown'),
+  source_ref: sourceRefSchema.optional()
+    .describe('来源指纹；不传默认 reflection'),
+  entities: z.array(z.object({
+    id: z.string(),
+    type: z.string(),
+    name: z.string().optional(),
+  })).optional(),
+  tags: z.array(z.string()).optional(),
+  importance_factors: importanceFactorsSchema.optional()
+    .describe('4 维重要性因子（每维 0-1）；不传默认全 0.5'),
+  lesson_meta: z.object({
+    scenario: z.string().optional(),
+    outcome: z.enum(['success', 'failure']).optional(),
+    source_cases: z.array(z.string()).optional(),
+  }).optional()
+    .describe('lesson 类型专属元数据'),
+  source_trust: z.number().int().min(1).max(5).optional()
+    .describe('来源信任度 1-5；默认 3'),
+  content_confidence: z.number().int().min(1).max(5).optional()
+    .describe('内容置信度 1-5；默认 3'),
+  event_time: z.string().optional()
+    .describe('ISO8601 事件时间；不传默认现在'),
+}
+
+const SEARCH_LONG_TERM_SCHEMA = {
+  query: z.string().describe('自然语言查询；用 "*" 或 "recent" 占位 + filters 时表示无主题约束'),
+  k: z.number().int().min(1).max(50).default(10),
+  filters: z.object({
+    type: z.enum(['fact', 'lesson', 'concept']).optional(),
+    status: z.enum(['inbox', 'confirmed', 'trash']).optional(),
+    tags: z.array(z.string()).optional(),
+  }).optional(),
+  include: z.enum(['brief', 'full']).default('brief'),
+  recent_entities: z.array(z.string()).optional(),
+}
+
+const UPDATE_LONG_TERM_SCHEMA = {
+  id: z.string().describe('记忆 ID'),
+  patch: z.record(z.string(), z.unknown())
+    .describe('字段差量。例如 { content_confidence_increment: 1 }、{ invalidated_by: "<新条 id>" }、{ maturity: "confirmed" }'),
+}
+
+const DELETE_MEMORY_SCHEMA = {
+  id: z.string().describe('记忆 ID'),
+}
+
+const LIST_RECENT_SCHEMA = {
+  window_days: z.number().int().min(1).max(90).default(7)
+    .describe('时间窗口（天数）'),
+  type: z.enum(['fact', 'lesson', 'concept']).optional(),
+  limit: z.number().int().min(1).max(100).default(20),
+}
+
+const RUN_MAINTENANCE_SCHEMA = {
+  scope: z.enum(['all', 'observation_check', 'stale_aging', 'trash_cleanup']).default('all'),
+  now_iso: z.string().optional().describe('覆盖当前时间（测试用）'),
+}
+
+const SET_EVOLUTION_MODE_SCHEMA = {
+  mode: z.enum(['balanced', 'innovate', 'harden', 'repair-only']),
+  reason: z.string().optional().describe('切换原因（写入审计）'),
+}
+
+const SCENE_ONLY_SCHEMA = {
+  scene: sceneSchema,
+}
+
+const SET_SCENE_PROFILE_MASTER_SCHEMA = {
+  scene: sceneSchema,
+  label: z.string().optional(),
+  content: z.string().describe('场景画像正文（覆盖式写入）'),
+  source_memory_ids: z.array(z.string()).optional()
+    .describe('来源记忆 ID 列表（追溯用）'),
+}
+
+const SET_SCENE_PROFILE_SCHEMA = {
+  content: z.string().describe('场景画像正文（覆盖式写入）'),
+  source_memory_ids: z.array(z.string()).optional()
+    .describe('来源记忆 ID 列表（追溯用）'),
+}
+
+const PROMOTE_TO_RULE_SCHEMA = {
+  source_cases: z.array(z.string()).min(3)
+    .describe('≥3 条来源 case 的 id（spec §6.4 门槛）'),
+  brief: z.string().describe('rule 召回标题（≤80 字符）'),
+  content: z.string().describe('rule 完整正文：scenario / 适用条件 / 推荐做法 / 反例'),
+  scenario: z.string().optional().describe('场景描述；不传则空'),
+  source_trust: z.number().int().min(1).max(5).default(4),
+  content_confidence: z.number().int().min(1).max(5).default(4),
+  observation_window_days: z.number().int().min(1).max(90).default(7),
+}
+
+// ============================================================================
 // MCP Server 创建
 // ============================================================================
 
@@ -111,17 +273,7 @@ export function createCrabMemoryServer(
         'store_memory',
         {
           description: '将信息写入长期记忆 inbox。用户要求记住时必须使用；发现有价值的偏好、案例、模式等信息时也应主动使用。',
-          inputSchema: {
-            content: z.string().describe('要记住的完整信息（成为 body），应包含足够上下文'),
-            brief: z.string().optional()
-              .describe('召回标题（≤80 字符）。不传则自动从 content 首行截取'),
-            type: z.enum(['fact', 'lesson', 'concept']).optional()
-              .describe('记忆类型：fact=客观事实, lesson=经验教训, concept=概念定义（默认 fact）'),
-            importance: z.number().min(1).max(10).optional()
-              .describe('重要性 1-10，日常偏好 3-5，重要决策 6-8，关键信息 9-10（用于推断 importance_factors）'),
-            tags: z.array(z.string()).optional()
-              .describe('分类标签'),
-          },
+          inputSchema: STORE_MEMORY_SCHEMA,
         },
         async (args) => {
           try {
@@ -180,13 +332,7 @@ export function createCrabMemoryServer(
         {
           description: '搜索记忆。short_term=跨 session 事件流水账（每条自带 channel/session/task/trace 锚点）；long_term=认知知识库（事实/经验/概念）。' +
             '【short_term 用途】未知 task_id/trace_id 时回溯历史事件的入口——任何需要回答"哪一次任务/事件 / 上一次怎么处理 / 之前为什么变成这样"的问题，先调本工具（level=short_term）拿锚点，再用 search_traces / get_task_details 取详情。',
-          inputSchema: {
-            query: z.string().describe('FTS5 全文检索查询（trigram tokenizer，CJK/英文混合都支持）；query 抽词后 <3 字符的 token 不命中（trigram 固有限制）'),
-            level: z.enum(['short_term', 'long_term']).default('long_term')
-              .describe('搜索范围：short_term=事件流水账（找历史 ID 的入口），long_term=认知知识库'),
-            limit: z.number().min(1).max(20).default(5)
-              .describe('返回数量上限'),
-          },
+          inputSchema: SEARCH_MEMORY_SCHEMA,
         },
         async (args) => {
           try {
@@ -226,11 +372,7 @@ export function createCrabMemoryServer(
         'get_memory_detail',
         {
           description: '获取某条长期记忆的详细内容。先用 search_memory 找到记忆 ID，再用此工具查看详情。',
-          inputSchema: {
-            memory_id: z.string().describe('记忆 ID'),
-            include: z.enum(['brief', 'full']).default('full')
-              .describe('详细程度：brief=仅返回标识与 brief, full=附带 body 与 frontmatter'),
-          },
+          inputSchema: GET_MEMORY_DETAIL_SCHEMA,
         },
         async (args) => {
           try {
@@ -274,37 +416,6 @@ export function createCrabMemoryServer(
     }
   }
 
-  const sourceRefSchema = z.object({
-    type: z.enum(['conversation', 'reflection', 'system']).describe('来源类型'),
-    task_id: z.string().optional(),
-    channel_id: z.string().optional(),
-    session_id: z.string().optional(),
-  })
-
-  const importanceFactorsSchema = z.object({
-    proximity: z.number().min(0).max(1),
-    surprisal: z.number().min(0).max(1),
-    entity_priority: z.number().min(0).max(1),
-    unambiguity: z.number().min(0).max(1),
-  })
-
-  // protocol-memory v0.3.0：SceneIdentity 收 2 路（global 已废除）
-  const sceneSchema = z.discriminatedUnion('type', [
-    z.object({
-      type: z.literal('group_session'),
-      channel_id: z.string(),
-      session_id: z.string(),
-    }),
-    z.object({
-      type: z.literal('friend'),
-      friend_id: z.string(),
-    }),
-  ])
-
-  type SceneArg =
-    | { type: 'friend'; friend_id: string }
-    | { type: 'group_session'; channel_id: string; session_id: string }
-
   /** 从当前 ctx 推断场景（普通群聊 / 非 master 私聊使用） */
   function inferSceneFromCtx(): SceneArg | null {
     if (ctx.sessionType === 'group' && ctx.channelId && ctx.sessionId) {
@@ -329,33 +440,7 @@ export function createCrabMemoryServer(
     'quick_capture',
     {
       description: '把一条候选记忆写入 inbox（待审）。反思流程提炼经验时使用，与 store_memory 相比字段更精细可控。',
-      inputSchema: {
-        type: z.enum(['fact', 'lesson', 'concept']).describe('记忆类型'),
-        brief: z.string().describe('一行召回标题（≤80 字符），需含场景关键词'),
-        content: z.string().describe('完整正文 markdown'),
-        source_ref: sourceRefSchema.optional()
-          .describe('来源指纹；不传默认 reflection'),
-        entities: z.array(z.object({
-          id: z.string(),
-          type: z.string(),
-          name: z.string().optional(),
-        })).optional(),
-        tags: z.array(z.string()).optional(),
-        importance_factors: importanceFactorsSchema.optional()
-          .describe('4 维重要性因子（每维 0-1）；不传默认全 0.5'),
-        lesson_meta: z.object({
-          scenario: z.string().optional(),
-          outcome: z.enum(['success', 'failure']).optional(),
-          source_cases: z.array(z.string()).optional(),
-        }).optional()
-          .describe('lesson 类型专属元数据'),
-        source_trust: z.number().int().min(1).max(5).optional()
-          .describe('来源信任度 1-5；默认 3'),
-        content_confidence: z.number().int().min(1).max(5).optional()
-          .describe('内容置信度 1-5；默认 3'),
-        event_time: z.string().optional()
-          .describe('ISO8601 事件时间；不传默认现在'),
-      },
+      inputSchema: QUICK_CAPTURE_SCHEMA,
     },
     async (args) => callRpc('quick_capture', args as Record<string, unknown>),
   )
@@ -364,17 +449,7 @@ export function createCrabMemoryServer(
     'search_long_term',
     {
       description: '在长期记忆中按语义/关键词搜索，支持按 type、status、tags 等过滤。反思流程使用此工具按 status: "inbox" 拉候选。',
-      inputSchema: {
-        query: z.string().describe('自然语言查询；用 "*" 或 "recent" 占位 + filters 时表示无主题约束'),
-        k: z.number().int().min(1).max(50).default(10),
-        filters: z.object({
-          type: z.enum(['fact', 'lesson', 'concept']).optional(),
-          status: z.enum(['inbox', 'confirmed', 'trash']).optional(),
-          tags: z.array(z.string()).optional(),
-        }).optional(),
-        include: z.enum(['brief', 'full']).default('brief'),
-        recent_entities: z.array(z.string()).optional(),
-      },
+      inputSchema: SEARCH_LONG_TERM_SCHEMA,
     },
     async (args) => callRpc('search_long_term', args as Record<string, unknown>),
   )
@@ -383,11 +458,7 @@ export function createCrabMemoryServer(
     'update_long_term',
     {
       description: '更新一条长期记忆的字段。支持的 patch 字段：brief / tags / entities / maturity / importance_factors / invalidated_by / lesson_meta / observation / body / content_confidence_increment / use_count_increment / observation_outcome。',
-      inputSchema: {
-        id: z.string().describe('记忆 ID'),
-        patch: z.record(z.string(), z.unknown())
-          .describe('字段差量。例如 { content_confidence_increment: 1 }、{ invalidated_by: "<新条 id>" }、{ maturity: "confirmed" }'),
-      },
+      inputSchema: UPDATE_LONG_TERM_SCHEMA,
     },
     async (args) => callRpc('update_long_term', args as Record<string, unknown>),
   )
@@ -396,9 +467,7 @@ export function createCrabMemoryServer(
     'delete_memory',
     {
       description: '把一条长期记忆软删除到 trash（30 天后由 maintenance 物理清理；期间可 restore_memory 恢复）。',
-      inputSchema: {
-        id: z.string().describe('记忆 ID'),
-      },
+      inputSchema: DELETE_MEMORY_SCHEMA,
     },
     async (args) => callRpc('delete_memory', args as Record<string, unknown>),
   )
@@ -407,12 +476,7 @@ export function createCrabMemoryServer(
     'list_recent',
     {
       description: '列出最近 N 天写入的长期记忆（按 ingestion_time 倒序）。反思流程做"今日新增"扫描时使用。',
-      inputSchema: {
-        window_days: z.number().int().min(1).max(90).default(7)
-          .describe('时间窗口（天数）'),
-        type: z.enum(['fact', 'lesson', 'concept']).optional(),
-        limit: z.number().int().min(1).max(100).default(20),
-      },
+      inputSchema: LIST_RECENT_SCHEMA,
     },
     async (args) => callRpc('list_recent', args as Record<string, unknown>),
   )
@@ -421,10 +485,7 @@ export function createCrabMemoryServer(
     'run_maintenance',
     {
       description: '触发记忆维护任务。scope=all 会依次跑 observation_check（按 pass/fail 净值判定观察期到期项）/ stale_aging（180 天未访问的 fact 标 stale）/ trash_cleanup（30 天回收站）。每天凌晨 04:00 已有内置 schedule 自动跑一次，此处用于反思末尾兜底或手动触发。',
-      inputSchema: {
-        scope: z.enum(['all', 'observation_check', 'stale_aging', 'trash_cleanup']).default('all'),
-        now_iso: z.string().optional().describe('覆盖当前时间（测试用）'),
-      },
+      inputSchema: RUN_MAINTENANCE_SCHEMA,
     },
     async (args) => callRpc('run_maintenance', args as Record<string, unknown>),
   )
@@ -451,10 +512,7 @@ export function createCrabMemoryServer(
     'set_evolution_mode',
     {
       description: '切换演化模式。balanced=默认；innovate=低错误率时偏向新知识；harden=大量 case 待整理时偏向抽象 rule；repair-only=高错误率时只修不增。',
-      inputSchema: {
-        mode: z.enum(['balanced', 'innovate', 'harden', 'repair-only']),
-        reason: z.string().optional().describe('切换原因（写入审计）'),
-      },
+      inputSchema: SET_EVOLUTION_MODE_SCHEMA,
     },
     async (args) => callRpc('set_evolution_mode', args as Record<string, unknown>),
   )
@@ -510,9 +568,7 @@ export function createCrabMemoryServer(
       'get_scene_profile',
       {
         description: '【master 通道】取任意场景的画像。scene 必填——按 friend_id 或 (channel_id, session_id) 定位。',
-        inputSchema: {
-          scene: sceneSchema,
-        },
+        inputSchema: SCENE_ONLY_SCHEMA,
       },
       async (args) => callRpc('get_scene_profile', args as Record<string, unknown>),
     )
@@ -525,13 +581,7 @@ export function createCrabMemoryServer(
           'scene 必填——明确指定要写哪个场景（friend / group_session）。' +
           '【关键】这是覆盖式写入；当前场景的画像已在你 prompt 顶部，覆盖前请基于现状合并。' +
           '【边界】跨场景通用偏好不要写到本工具——走 store_memory。',
-        inputSchema: {
-          scene: sceneSchema,
-          label: z.string().optional(),
-          content: z.string().describe('场景画像正文（覆盖式写入）'),
-          source_memory_ids: z.array(z.string()).optional()
-            .describe('来源记忆 ID 列表（追溯用）'),
-        },
+        inputSchema: SET_SCENE_PROFILE_MASTER_SCHEMA,
       },
       async (args) => {
         try {
@@ -546,9 +596,7 @@ export function createCrabMemoryServer(
       'delete_scene_profile',
       {
         description: '【master 通道】删除任意场景的画像。仅在画像已被新证据完全推翻、且无替代时使用。',
-        inputSchema: {
-          scene: sceneSchema,
-        },
+        inputSchema: SCENE_ONLY_SCHEMA,
       },
       async (args) => callRpc('delete_scene_profile', args as Record<string, unknown>),
     )
@@ -575,11 +623,7 @@ export function createCrabMemoryServer(
           '【关键】这是覆盖式写入，不是 patch——当前场景画像已在你 prompt 顶部，覆盖前请基于现状合并。' +
           '【边界】跨多个场景都适用的用户偏好不要写到本工具——走 store_memory。' +
           '操作类指令（"修改 X 配置 / 调整 Y schedule"）不要写到本工具——走对应 admin/CLI 操作。',
-        inputSchema: {
-          content: z.string().describe('场景画像正文（覆盖式写入）'),
-          source_memory_ids: z.array(z.string()).optional()
-            .describe('来源记忆 ID 列表（追溯用）'),
-        },
+        inputSchema: SET_SCENE_PROFILE_SCHEMA,
       },
       async (args) => {
         try {
@@ -610,16 +654,7 @@ export function createCrabMemoryServer(
     'promote_to_rule',
     {
       description: 'Case→Rule 自动晋升。在凑齐 ≥3 条同 scenario 的 case 后，把 LLM 抽象出的 rule 文本直接写入 confirmed/lesson/，maturity=rule，进 7 天观察期。无人工 confirm。',
-      inputSchema: {
-        source_cases: z.array(z.string()).min(3)
-          .describe('≥3 条来源 case 的 id（spec §6.4 门槛）'),
-        brief: z.string().describe('rule 召回标题（≤80 字符）'),
-        content: z.string().describe('rule 完整正文：scenario / 适用条件 / 推荐做法 / 反例'),
-        scenario: z.string().optional().describe('场景描述；不传则空'),
-        source_trust: z.number().int().min(1).max(5).default(4),
-        content_confidence: z.number().int().min(1).max(5).default(4),
-        observation_window_days: z.number().int().min(1).max(90).default(7),
-      },
+      inputSchema: PROMOTE_TO_RULE_SCHEMA,
     },
     async (args) => callRpc('promote_to_rule', args as Record<string, unknown>),
   )
