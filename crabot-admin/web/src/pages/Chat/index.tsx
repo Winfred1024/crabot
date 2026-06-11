@@ -60,6 +60,21 @@ export const Chat: React.FC = () => {
   // 首屏定位完成标记：完成前自动滚动 effect 与顶部哨兵都不工作，
   // 防止初始 smooth 全程滚 + 哨兵在 scrollTop=0 时误触发连环加载
   const initialPositionedRef = useRef(false)
+  // 本会话内见过终态推送的任务 id：防止在途的 hydrate 旧快照把已完成任务复活到任务条
+  const terminalTaskIdsRef = useRef<Set<string>>(new Set())
+
+  // hydrate 快照合并：剔除已终态的；同 id 保留 prev（推送比快照新）；保留快照没有的 prev 独有项
+  const applyTasksSnapshot = useCallback((snapshot: ChatTaskSnapshot[]) => {
+    setActiveTasks((prev) => {
+      const fresh = snapshot.filter((t) => !terminalTaskIdsRef.current.has(t.task_id))
+      const prevMap = new Map(prev.map((t) => [t.task_id, t]))
+      const freshIds = new Set(fresh.map((t) => t.task_id))
+      return [
+        ...fresh.map((t) => prevMap.get(t.task_id) ?? t),
+        ...prev.filter((t) => !freshIds.has(t.task_id)),
+      ]
+    })
+  }, [])
   // objectURL 追踪，组件卸载时 revoke 防内存泄漏
   const objectUrlsRef = useRef<Map<string, string>>(new Map())
 
@@ -102,7 +117,7 @@ export const Chat: React.FC = () => {
       setConnectionStatus(status)
       // 重连成功后：补拉进行中任务条（重连不补会遗漏运行中任务）
       if (status === 'connected') {
-        chatService.getActiveTasks().then(setActiveTasks).catch(() => {/* 静默忽略 */})
+        chatService.getActiveTasks().then(applyTasksSnapshot).catch(() => {/* 静默忽略 */})
         // 检查并更新 processing 状态的消息
         chatService.loadHistory(PAGE_SIZE).then((history) => {
           if (history.length === 0) return
@@ -184,7 +199,7 @@ export const Chat: React.FC = () => {
           setHasMore(false)
         }
         // 进行中任务条数据：不能只靠消息 hydrate，运行中任务可能不在已加载的历史分页里
-        setActiveTasks(activeTasksList)
+        applyTasksSnapshot(activeTasksList)
       } catch (error) {
         console.error('Failed to load chat history:', error)
       }
@@ -394,6 +409,8 @@ export const Chat: React.FC = () => {
       const { task } = message
       const isTerminal = ['completed', 'failed', 'cancelled'].includes(task.status)
       if (isTerminal) {
+        // 记录终态 id：HTTP hydrate 快照在途时收到终态推送，旧快照返回后不得复活该任务
+        terminalTaskIdsRef.current.add(task.task_id)
         setActiveTasks((prev) => prev.filter((t) => t.task_id !== task.task_id))
       } else {
         setActiveTasks((prev) => {
@@ -579,7 +596,13 @@ export const Chat: React.FC = () => {
       }
       node = node.parentNode
     }
-    setSelectionQuote({ x: e.clientX, y: e.clientY - 40, role, text })
+    // 钳制到视口内：选区贴近顶部/右缘时按钮不可飞出屏幕
+    setSelectionQuote({
+      x: Math.min(e.clientX, window.innerWidth - 88),
+      y: Math.max(8, e.clientY - 40),
+      role,
+      text,
+    })
   }
 
   /** 将正文与引用胶囊拼为 markdown 引用块格式 */
