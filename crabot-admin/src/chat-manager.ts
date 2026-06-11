@@ -377,8 +377,7 @@ export class ChatManager {
     }
 
     const failureNote = failures.length > 0 ? `\n[附件收存失败: ${failures.join(', ')}]` : ''
-    const baseText = c.type === 'text' ? (c.text ?? '') : (c.text ?? '')
-    const text = `${baseText}${failureNote}`.trim()
+    const text = `${c.text ?? ''}${failureNote}`.trim()
     if (!text && media.length === 0) {
       throw new Error('Empty message content')
     }
