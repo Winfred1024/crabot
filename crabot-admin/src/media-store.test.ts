@@ -89,6 +89,17 @@ describe('MediaStore', () => {
     await expect(store.setConfig({ ttl_days: 9999 })).rejects.toThrow()
   })
 
+  it('setConfig 缩短 TTL 后立即触发清扫（按新期限超期的文件马上删除）', async () => {
+    const store = await makeStore()
+    const old = await store.saveBuffer(Buffer.from('old'), { filename: 'old', mime_type: 'text/plain' })
+    const fresh = await store.saveBuffer(Buffer.from('new'), { filename: 'new', mime_type: 'text/plain' })
+    // old 落在 10 天前：默认 30 天 TTL 下安全，缩到 7 天后应被立即清掉
+    ;(store as any).index.get(old.id).created_at = new Date(Date.now() - 10 * 86400_000).toISOString()
+    await store.setConfig({ ttl_days: 7 })
+    expect(store.resolve(old.id)).toBeNull()
+    expect(store.resolve(fresh.id)).not.toBeNull()
+  })
+
   it('sweepExpired：超期文件删除、未超期保留、index 同步', async () => {
     const store = await makeStore()
     const old = await store.saveBuffer(Buffer.from('old'), { filename: 'old', mime_type: 'text/plain' })

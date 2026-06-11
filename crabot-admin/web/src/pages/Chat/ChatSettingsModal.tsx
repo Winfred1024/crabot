@@ -21,6 +21,7 @@ export const ChatSettingsModal: React.FC<{ onClose: () => void }> = ({ onClose }
   const [ttlDays, setTtlDays] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [saved, setSaved] = useState(false)
 
   useEffect(() => {
     api.get<MediaUsage>('/chat/media-usage').then((u) => {
@@ -38,9 +39,13 @@ export const ChatSettingsModal: React.FC<{ onClose: () => void }> = ({ onClose }
     }
     setSaving(true)
     setError('')
+    setSaved(false)
     try {
       await api.patch('/chat/media-config', { ttl_days: n })
-      onClose()
+      // 后端保存即按新期限清扫——刷新占用数字，让清理效果立刻可见
+      const u = await api.get<MediaUsage>('/chat/media-usage')
+      setUsage(u)
+      setSaved(true)
     } catch (e) {
       setError(e instanceof Error ? e.message : '保存失败')
     } finally {
@@ -74,8 +79,13 @@ export const ChatSettingsModal: React.FC<{ onClose: () => void }> = ({ onClose }
           style={{ width: '100%', marginBottom: '0.75rem' }}
         />
         {error && <div style={{ color: 'var(--error)', fontSize: '0.85rem', marginBottom: '0.5rem' }}>{error}</div>}
+        {saved && !error && (
+          <div style={{ color: 'var(--success)', fontSize: '0.85rem', marginBottom: '0.5rem' }}>
+            已保存，超期文件已按新期限清理
+          </div>
+        )}
         <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
-          <button onClick={onClose} className="btn" style={{ padding: '0.5rem 1rem' }}>取消</button>
+          <button onClick={onClose} className="btn" style={{ padding: '0.5rem 1rem' }}>关闭</button>
           <button onClick={handleSave} disabled={saving} className="btn btn-primary" style={{ padding: '0.5rem 1rem' }}>
             {saving ? '保存中…' : '保存'}
           </button>

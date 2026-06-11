@@ -142,6 +142,9 @@ export class MediaStore {
     }
     this.config = { ttl_days: cfg.ttl_days }
     await this.atomicWrite(this.configPath, JSON.stringify(this.config, null, 2))
+    // 改保存天数立即按新期限清扫：用户缩短 TTL 通常就是为了马上回收空间，
+    // 不该让效果等到下一次每日清扫（最长 24h 后）才可见
+    await this.sweepExpired()
   }
 
   /** 清扫超期文件；返回删除数。失败的单个文件跳过不中断。 */
