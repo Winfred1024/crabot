@@ -164,6 +164,7 @@ import {
 } from './schedule-migration.js'
 import { ModuleInstaller } from './module-installer.js'
 import { ChatManager, buildChatTaskSnapshot } from './chat-manager.js'
+import { MediaStore } from './media-store.js'
 import { MCPServerManager, SkillManager, EssentialToolsManager, DuplicateSkillError } from './mcp-skill-manager.js'
 import { SubAgentManager, resolveSubAgentModel } from './subagent-manager.js'
 import { PRESET_VENDORS } from './preset-vendors.js'
@@ -381,6 +382,10 @@ export class AdminModule extends ModuleBase {
 
   // Chat 管理器
   private chatManager: ChatManager | null = null
+
+  // 媒体存储
+  private mediaStore: MediaStore | null = null
+  private mediaSweepTimer: NodeJS.Timeout | null = null
 
   // Channel 配置入口管理（onboarding_methods）
   private onboardingManager: OnboardingManager
@@ -731,6 +736,16 @@ export class AdminModule extends ModuleBase {
     // 初始化 Browser 管理器
     await this.browserManager.loadConfig()
 
+    // 初始化媒体存储（在 chatManager 之前，Task 6 会把 mediaStore 注入 chatManager）
+    this.mediaStore = new MediaStore(this.adminConfig.data_dir)
+    await this.mediaStore.init()
+    // 启动时补扫一次，覆盖停机期间超期的文件
+    this.mediaStore.sweepExpired().catch(() => {})
+    this.mediaSweepTimer = setInterval(() => {
+      this.mediaStore?.sweepExpired().catch(() => {})
+    }, 24 * 60 * 60 * 1000)
+    this.mediaSweepTimer.unref?.()
+
     // 初始化 Chat 管理器
     this.chatManager = new ChatManager(
       this.adminConfig.data_dir,
@@ -791,6 +806,9 @@ export class AdminModule extends ModuleBase {
   }
 
   protected override async onStop(): Promise<void> {
+    // 停止媒体存储每日清扫定时器
+    if (this.mediaSweepTimer) clearInterval(this.mediaSweepTimer)
+
     // 停止 waiting_human 超时扫描器
     if (this.waitingHumanScanTimer) clearInterval(this.waitingHumanScanTimer)
 
@@ -945,8 +963,8 @@ export class AdminModule extends ModuleBase {
     const url = new URL(req.url ?? '/', `http://localhost:${this.adminConfig.web_port}`)
     const pathname = url.pathname
 
-    // 认证检查（排除登录接口和静态文件）
-    if (pathname.startsWith('/api/') && pathname !== '/api/auth/login') {
+    // 认证检查（排除登录接口、静态文件、媒体文件端点）
+    if (pathname.startsWith('/api/') && pathname !== '/api/auth/login' && !pathname.startsWith('/api/media/')) {
       const authHeader = req.headers.authorization
       let token: string | null = null
       if (authHeader?.startsWith('Bearer ')) {
@@ -1773,6 +1791,12 @@ export class AdminModule extends ModuleBase {
         return
       }
 
+      // 媒体文件路由（端点内部自行认证，支持 ?token= 供 <img> 引用）
+      if (pathname.startsWith('/api/media/') && req.method === 'GET') {
+        await this.handleGetMediaApi(req, res, url)
+        return
+      }
+
       // Chat 路由
       if (pathname === '/api/chat/messages' && req.method === 'GET') {
         await this.handleGetChatMessagesApi(req, res, url)
@@ -1781,6 +1805,24 @@ export class AdminModule extends ModuleBase {
 
       if (pathname === '/api/chat/messages' && req.method === 'DELETE') {
         await this.handleClearChatMessagesApi(req, res)
+        return
+      }
+
+      if (pathname === '/api/chat/media-usage' && req.method === 'GET') {
+        if (!this.mediaStore) { sendJson(res, 503, { error: 'media store not ready' }); return }
+        sendJson(res, 200, await this.mediaStore.getUsage())
+        return
+      }
+
+      if (pathname === '/api/chat/media-config' && req.method === 'PATCH') {
+        if (!this.mediaStore) { sendJson(res, 503, { error: 'media store not ready' }); return }
+        const body = await this.readJsonBody<{ ttl_days?: number }>(req)
+        try {
+          await this.mediaStore.setConfig({ ttl_days: Number(body.ttl_days) })
+          sendJson(res, 200, this.mediaStore.getConfig())
+        } catch (err) {
+          sendJson(res, 400, { error: err instanceof Error ? err.message : 'invalid ttl_days' })
+        }
         return
       }
 
@@ -8483,6 +8525,43 @@ export class AdminModule extends ModuleBase {
         features: { is_mention_crab: false as const },
         platform_timestamp: msg.timestamp,
       })),
+    }
+  }
+
+  // ============================================================================
+  // 媒体文件 REST API
+  // ============================================================================
+
+  /** GET /api/media/:id — 自行认证（?token= 或 Authorization header），返回文件字节流 */
+  private async handleGetMediaApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    // 自行认证：?token= 或 Authorization header（与 /ws/chat 同模式）
+    const token = url.searchParams.get('token')
+      ?? (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : null)
+    let ok = false
+    try {
+      ok = !!(token && (await verifyJwtWithEpoch(token, this.jwtSecret, this.adminConfig.data_dir)))
+    } catch { ok = false }
+    if (!ok) {
+      sendJson(res, 401, { error: 'Unauthorized' })
+      return
+    }
+    const id = decodeURIComponent(url.pathname.slice('/api/media/'.length))
+    const resolved = this.mediaStore?.resolve(id)
+    if (!resolved) {
+      sendJson(res, 404, { error: 'media not found or expired' })
+      return
+    }
+    try {
+      const buf = await fs.readFile(resolved.abs_path)
+      res.writeHead(200, {
+        'Content-Type': resolved.mime_type,
+        'Content-Length': buf.length,
+        'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(resolved.filename)}`,
+        'Cache-Control': 'private, max-age=86400',
+      })
+      res.end(buf)
+    } catch {
+      sendJson(res, 404, { error: 'media not found or expired' })
     }
   }
 
