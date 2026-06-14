@@ -458,6 +458,15 @@ export class ChatManager {
     return messages.slice(0, limit)
   }
 
+  /** 删除单条消息并广播（返回是否命中） */
+  async deleteMessage(messageId: string): Promise<boolean> {
+    if (!this.messages.has(messageId)) return false
+    this.messages.delete(messageId)
+    await this.saveData()
+    this.pushToClient({ type: 'chat_message_deleted', message_id: messageId })
+    return true
+  }
+
   async clearMessages(): Promise<void> {
     this.messages.clear()
     await this.saveData()

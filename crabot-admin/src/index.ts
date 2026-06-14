@@ -1810,6 +1810,16 @@ export class AdminModule extends ModuleBase {
         return
       }
 
+      // 单条消息删除（必须在清空路由前，路径更具体）
+      if (pathname.startsWith('/api/chat/messages/') && req.method === 'DELETE') {
+        if (!this.chatManager) { sendJson(res, 503, { error: 'chat not ready' }); return }
+        const messageId = decodeURIComponent(pathname.slice('/api/chat/messages/'.length))
+        const ok = await this.chatManager.deleteMessage(messageId)
+        if (!ok) { sendJson(res, 404, { error: 'message not found' }); return }
+        res.writeHead(204); res.end()
+        return
+      }
+
       if (pathname === '/api/chat/messages' && req.method === 'DELETE') {
         await this.handleClearChatMessagesApi(req, res)
         return

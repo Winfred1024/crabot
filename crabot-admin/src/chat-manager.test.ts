@@ -389,6 +389,64 @@ describe('tagMessageTask / tagUserMessageByRequestId', () => {
   })
 })
 
+describe('deleteMessage', () => {
+  beforeEach(async () => {
+    await fs.rm(TEST_DATA_DIR, { recursive: true, force: true }).catch(() => {})
+    await fs.mkdir(TEST_DATA_DIR, { recursive: true })
+  })
+
+  afterEach(async () => {
+    await fs.rm(TEST_DATA_DIR, { recursive: true, force: true }).catch(() => {})
+  })
+
+  /** 捕获推送的 helper（复用 tagMessageTask 区的写法） */
+  function attachClientStub(mgr: ChatManager): Array<{ type: string; [k: string]: unknown }> {
+    const pushed: Array<{ type: string; [k: string]: unknown }> = []
+    ;(mgr as unknown as { activeClient: unknown }).activeClient = {
+      readyState: 1, // WebSocket.OPEN
+      send: (data: string) => { pushed.push(JSON.parse(data)) },
+    }
+    return pushed
+  }
+
+  it('命中：消息从 getMessages 消失 + 推送 chat_message_deleted + 返回 true', async () => {
+    const mgr = await makeManager()
+    const pushed = attachClientStub(mgr)
+    const { platform_message_id } = await mgr.handleSendMessage({
+      session_id: 'admin-chat',
+      content: { type: 'text', text: '待删除的消息' },
+    })
+    pushed.length = 0 // 清空 handleSendMessage 产生的推送
+
+    const ok = await mgr.deleteMessage(platform_message_id)
+    expect(ok).toBe(true)
+    expect(mgr.getMessages(10)).toHaveLength(0)
+    expect(pushed).toHaveLength(1)
+    expect(pushed[0]).toMatchObject({ type: 'chat_message_deleted', message_id: platform_message_id })
+  })
+
+  it('未命中（不存在 id）：返回 false，不推送', async () => {
+    const mgr = await makeManager()
+    const pushed = attachClientStub(mgr)
+    const ok = await mgr.deleteMessage('nonexistent-id')
+    expect(ok).toBe(false)
+    expect(pushed.filter((p) => p.type === 'chat_message_deleted')).toHaveLength(0)
+  })
+
+  it('持久化：删除后新实例 loadData 不含该消息', async () => {
+    const mgr = await makeManager()
+    const { platform_message_id } = await mgr.handleSendMessage({
+      session_id: 'admin-chat',
+      content: { type: 'text', text: '持久化删除测试' },
+    })
+    await mgr.deleteMessage(platform_message_id)
+
+    const mgr2 = await makeManager()
+    await mgr2.loadData()
+    expect(mgr2.getMessages(10)).toHaveLength(0)
+  })
+})
+
 describe('buildChatTaskSnapshot', () => {
   const baseTask = {
     id: 'task-1',

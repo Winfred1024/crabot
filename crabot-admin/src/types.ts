@@ -1835,7 +1835,7 @@ export interface ChatTaskSnapshot {
 
 /** 服务端发送的聊天消息 */
 export interface ChatServerMessage {
-  type: 'chat_reply' | 'chat_status' | 'chat_error' | 'chat_push' | 'chat_task_update' | 'chat_message_tagged'
+  type: 'chat_reply' | 'chat_status' | 'chat_error' | 'chat_push' | 'chat_task_update' | 'chat_message_tagged' | 'chat_message_deleted'
   request_id?: string
   content?: string
   status?: 'processing' | 'completed' | 'failed'
@@ -1851,8 +1851,8 @@ export interface ChatServerMessage {
   /** type='chat_task_update'：任务状态快照 */
   task?: ChatTaskSnapshot
   /**
-   * chat_message_tagged 携带：worker 回复消息的任务归属回填。
-   * message_id 为聊天消息 id，task_id 为关联任务 id。
+   * chat_message_tagged 携带：worker 回复消息的任务归属回填（message_id + task_id）。
+   * chat_message_deleted 携带：已删除消息的 id，前端据此实时移除该消息。
    */
   message_id?: string
 }
