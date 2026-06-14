@@ -1119,12 +1119,15 @@ export const Chat: React.FC = () => {
           }}
           onDelete={() => {
             const msg = contextMenu.message
-            // 乐观本地移除（服务端 404 也无妨，本地 placeholder id 不在服务端）
+            // 乐观本地移除
             setMessages((prev) => prev.filter((m) => m.message_id !== msg.message_id))
-            // 调接口（服务端成功后还会推 chat_message_deleted，前端 filter 为幂等）
-            chatService.deleteMessage(msg.message_id).catch(() => {
-              toast.error('删除失败')
-            })
+            // 本地占位消息（msg_ 前缀）从未落服务端，无需调接口（否则 404 误报"删除失败"）；
+            // 服务端消息调接口删，成功后还会推 chat_message_deleted，前端 filter 为幂等
+            if (!msg.message_id.startsWith('msg_')) {
+              chatService.deleteMessage(msg.message_id).catch(() => {
+                toast.error('删除失败')
+              })
+            }
           }}
           onClose={() => setContextMenu(null)}
         />
