@@ -50,6 +50,7 @@ export type ChatServerMessage =
   | { type: 'chat_push'; message: ChatMessage }
   | { type: 'chat_task_update'; task: ChatTaskSnapshot }
   | { type: 'chat_message_tagged'; message_id: string; task_id: string }
+  | { type: 'chat_message_deleted'; message_id: string }
 
 /** 任务状态快照（chat_task_update / GET /api/chat/tasks/:id） */
 export interface ChatTaskSnapshot {

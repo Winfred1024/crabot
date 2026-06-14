@@ -3,7 +3,7 @@
  * memo 后历史消息不随列表更新重渲染，ReactMarkdown 不重复解析）
  *
  * memo 稳定性说明：
- * - onQuote 由 index.tsx useCallback 保证引用稳定
+ * - onContextMenu 由 index.tsx useCallback 保证引用稳定（依赖数组为 []）
  * - taskSnapshot 仅在该任务有新推送时通过 new Map + entry 替换更新（upsert 只替换命中 entry），
  *   其余消息的 taskSnapshot 引用保持不变，memo 浅比较不触发重渲染
  */
@@ -25,13 +25,16 @@ export interface MessageState extends ChatMessage {
 
 interface ChatMessageItemProps {
   message: MessageState
-  /** 引用整条消息（右键触发）；useCallback 保证稳定引用，不破坏 memo */
-  onQuote?: (m: MessageState) => void
+  /**
+   * 右键菜单回调（含 e.clientX/Y 用于菜单定位）；useCallback([], []) 保证稳定引用，不破坏 memo。
+   * 旧 onQuote 拆分为菜单三项之一（引用），由父组件在菜单关闭回调里调用。
+   */
+  onContextMenu?: (e: React.MouseEvent, m: MessageState) => void
   /** 消息关联任务的快照（来自 index.tsx 的 taskStatuses Map）；引用仅在该任务更新时变化 */
   taskSnapshot?: ChatTaskSnapshot
 }
 
-export const ChatMessageItem = React.memo(function ChatMessageItem({ message, onQuote, taskSnapshot }: ChatMessageItemProps) {
+export const ChatMessageItem = React.memo(function ChatMessageItem({ message, onContextMenu, taskSnapshot }: ChatMessageItemProps) {
   const navigate = useNavigate()
   const isUser = message.role === 'user'
   const isProcessing = message.status === 'processing'
@@ -83,7 +86,7 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({ message, on
   return (
     <div
       data-msg-role={message.role}
-      onContextMenu={onQuote ? (e) => { e.preventDefault(); onQuote(message) } : undefined}
+      onContextMenu={onContextMenu ? (e) => { e.preventDefault(); onContextMenu(e, message) } : undefined}
       style={{
         display: 'flex',
         justifyContent: isUser ? 'flex-end' : 'flex-start',

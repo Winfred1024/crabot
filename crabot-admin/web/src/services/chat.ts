@@ -153,6 +153,16 @@ class ChatWebSocketClient {
     return { message, request_id }
   }
 
+  /** 删除单条消息（204 成功，404 消息不存在抛错） */
+  async deleteMessage(messageId: string): Promise<void> {
+    await api.delete(`/chat/messages/${encodeURIComponent(messageId)}`)
+  }
+
+  /** 清空全部聊天记录 */
+  async clearMessages(): Promise<void> {
+    await api.delete('/chat/messages')
+  }
+
   /** store 相对 URL → 可直接用于 <img>/<a> 的带 token URL；http(s) 原样返回 */
   mediaSrc(mediaUrl: string): string {
     if (mediaUrl.startsWith('http://') || mediaUrl.startsWith('https://')) return mediaUrl

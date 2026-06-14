@@ -3,8 +3,10 @@ import { MainLayout } from '../../components/Layout/MainLayout'
 import { chatService } from '../../services/chat'
 import type { ChatMessageContent, ChatServerMessage, ChatTaskSnapshot, ConnectionStatus } from '../../types/chat'
 import { ChatSettingsModal } from './ChatSettingsModal'
+import { ConfirmModal } from '../../components/Common/ConfirmModal'
 import { useToast } from '../../contexts/ToastContext'
 import { ChatMessageItem, type MessageState } from './ChatMessageItem'
+import { MessageContextMenu } from './MessageContextMenu'
 
 const PAGE_SIZE = 30
 
@@ -49,6 +51,11 @@ export const Chat: React.FC = () => {
     role: 'user' | 'assistant'
     text: string
   } | null>(null)
+  // 右键菜单状态
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; message: MessageState } | null>(null)
+  // 清空历史二次确认弹窗
+  const [showClearConfirm, setShowClearConfirm] = useState(false)
+  const [isClearingMessages, setIsClearingMessages] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const sentinelRef = useRef<HTMLDivElement>(null)
@@ -89,7 +96,7 @@ export const Chat: React.FC = () => {
     }
   }, [])
 
-  // 检测滚动位置
+  // 检测滚动位置（滚动时同步关闭右键菜单）
   const handleScroll = useCallback(() => {
     const container = messagesContainerRef.current
     if (!container) return
@@ -101,6 +108,8 @@ export const Chat: React.FC = () => {
     if (nearBottom) {
       setUnreadCount(0)
     }
+    // 滚动时关闭右键菜单（避免菜单飘离触发位置）
+    setContextMenu(null)
   }, [])
 
   // 滚动到底部
@@ -470,11 +479,17 @@ export const Chat: React.FC = () => {
         }
         return cur
       })
+    } else if (message.type === 'chat_message_deleted') {
+      // 单条消息删除（DELETE /api/chat/messages/:id 成功后推送）
+      const { message_id } = message
+      setMessages((prev) => prev.filter((m) => m.message_id !== message_id))
     }
   }
 
   // 添加附件（过滤超过 25MB 的文件）
-  const addFiles = (incoming: FileList | File[]) => {
+  // useCallback([]) 保证引用稳定：toast/setAttachments/objectUrlsRef 均是稳定引用，
+  // 可安全在 document 级 paste 监听中直接使用，不会捕获到过期闭包
+  const addFiles = useCallback((incoming: FileList | File[]) => {
     const list = Array.from(incoming)
     const valid = list.filter((f) => f.size <= 25 * 1024 * 1024)
     if (valid.length < list.length) {
@@ -487,7 +502,7 @@ export const Chat: React.FC = () => {
       }
     })
     setAttachments((prev) => [...prev, ...valid])
-  }
+  }, [])
 
   // 移除单个附件（同名同时间戳文件可能共享 objectURL，仅在无其他引用时 revoke）
   const removeAttachment = (index: number) => {
@@ -525,13 +540,18 @@ export const Chat: React.FC = () => {
     return objectUrlsRef.current.get(key)!
   }
 
-  // 粘贴处理
-  const handlePaste = (e: React.ClipboardEvent) => {
-    if (e.clipboardData.files.length > 0) {
-      e.preventDefault()
-      addFiles(e.clipboardData.files)
+  // 整页粘贴附件：注册到 document，无需先 focus 输入框
+  // addFiles 已是 useCallback([]) 稳定引用，闭包安全
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      if (e.clipboardData && e.clipboardData.files.length > 0) {
+        e.preventDefault()
+        addFiles(e.clipboardData.files)
+      }
     }
-  }
+    document.addEventListener('paste', onPaste)
+    return () => document.removeEventListener('paste', onPaste)
+  }, [addFiles])
 
   // 发送消息（附件路径失败时保留 quote，与保留 input/attachments 同语义）
   const handleSend = async () => {
@@ -632,9 +652,17 @@ export const Chat: React.FC = () => {
     chatService.connect()
   }
 
-  /** 引用整条消息（右键触发，useCallback 保证稳定引用不破坏 memo） */
+  /** 引用整条消息（由右键菜单中的「引用」项触发） */
   const handleQuoteMessage = useCallback((m: MessageState) => {
     setQuote({ role: m.role, text: m.content.text ?? '' })
+  }, [])
+
+  /**
+   * 右键菜单打开回调（useCallback([]) 保证稳定引用不破坏 ChatMessageItem memo）
+   * 依赖数组为空：setContextMenu 是 stable dispatch，不需要列入
+   */
+  const handleContextMenu = useCallback((e: React.MouseEvent, m: MessageState) => {
+    setContextMenu({ x: e.clientX, y: e.clientY, message: m })
   }, [])
 
   /** 选中文本后触发浮动「引用」按钮（消息容器 onMouseUp） */
@@ -743,6 +771,13 @@ export const Chat: React.FC = () => {
             >
               ⚙
             </button>
+            <button
+              onClick={() => setShowClearConfirm(true)}
+              title="清空聊天记录"
+              style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: '0.85rem', color: 'var(--text-secondary)', padding: '0.25rem 0.5rem' }}
+            >
+              清空
+            </button>
           </div>
           {renderConnectionStatus()}
         </div>
@@ -825,7 +860,7 @@ export const Chat: React.FC = () => {
                     )}
                     <ChatMessageItem
                       message={message}
-                      onQuote={handleQuoteMessage}
+                      onContextMenu={handleContextMenu}
                       taskSnapshot={message.task_id ? taskStatuses.get(message.task_id) : undefined}
                     />
                   </React.Fragment>
@@ -1033,7 +1068,6 @@ export const Chat: React.FC = () => {
               e.target.style.height = `${Math.min(e.target.scrollHeight, 160)}px`
             }}
             onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
             placeholder={connectionStatus === 'connected' ? '输入消息，可粘贴或拖拽附件...' : '等待连接...'}
             disabled={connectionStatus !== 'connected'}
             className="input"
@@ -1066,6 +1100,60 @@ export const Chat: React.FC = () => {
 
       {/* 聊天媒体设置弹窗 */}
       {showSettings && <ChatSettingsModal onClose={() => setShowSettings(false)} />}
+
+      {/* 消息右键菜单 */}
+      {contextMenu && (
+        <MessageContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onQuote={() => {
+            handleQuoteMessage(contextMenu.message)
+            inputRef.current?.focus()
+          }}
+          onCopy={() => {
+            navigator.clipboard.writeText(contextMenu.message.content.text ?? '').then(() => {
+              toast.success('已复制')
+            }).catch(() => {
+              toast.error('复制失败')
+            })
+          }}
+          onDelete={() => {
+            const msg = contextMenu.message
+            // 乐观本地移除（服务端 404 也无妨，本地 placeholder id 不在服务端）
+            setMessages((prev) => prev.filter((m) => m.message_id !== msg.message_id))
+            // 调接口（服务端成功后还会推 chat_message_deleted，前端 filter 为幂等）
+            chatService.deleteMessage(msg.message_id).catch(() => {
+              toast.error('删除失败')
+            })
+          }}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
+
+      {/* 清空聊天历史二次确认 */}
+      <ConfirmModal
+        open={showClearConfirm}
+        title="清空聊天记录"
+        message="确定清空全部聊天记录吗？此操作不可撤销。"
+        confirmText="清空"
+        confirmVariant="danger"
+        loading={isClearingMessages}
+        onCancel={() => setShowClearConfirm(false)}
+        onConfirm={async () => {
+          setIsClearingMessages(true)
+          try {
+            await chatService.clearMessages()
+            setMessages([])
+            setTaskStatuses(new Map())
+            setShowClearConfirm(false)
+            toast.success('已清空')
+          } catch {
+            toast.error('清空失败')
+          } finally {
+            setIsClearingMessages(false)
+          }
+        }}
+      />
     </MainLayout>
   )
 }
