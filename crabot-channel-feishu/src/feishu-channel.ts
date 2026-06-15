@@ -30,6 +30,7 @@ import { parseFeishuDocUrl, extractFeishuDocUrls } from './feishu-url.js'
 import { WsSubscriber } from './ws-subscriber.js'
 import { SessionManager } from './session-manager.js'
 import { MessageStore, type StoredMessage } from './message-store.js'
+import { MediaHandleStore } from './media-handle-store.js'
 import { splitTextByTableLimit } from './card-table-guard.js'
 import {
   detectMentionCrab,
@@ -112,6 +113,7 @@ export class FeishuChannel extends ModuleBase {
   private readonly subscriber: WsSubscriber
   private readonly sessionManager: SessionManager
   private readonly messageStore: MessageStore
+  private readonly mediaHandleStore: MediaHandleStore
   private readonly docReader: FeishuDocReader
 
   private botOpenId: string | null = null
@@ -153,6 +155,7 @@ export class FeishuChannel extends ModuleBase {
     })
     this.sessionManager = new SessionManager(config.module_id, config.data_dir)
     this.messageStore = new MessageStore(config.data_dir)
+    this.mediaHandleStore = new MediaHandleStore(config.data_dir)
     this.docReader = new FeishuDocReader(this.client)
 
     fs.mkdirSync(path.join(this.dataDir, 'media'), { recursive: true })
@@ -173,6 +176,7 @@ export class FeishuChannel extends ModuleBase {
       console.warn('[FeishuChannel] getBotInfo failed:', err)
     }
 
+    await this.mediaHandleStore.init()
     this.messageStore.startCleanup()
 
     const dispatcher = new lark.EventDispatcher({}).register({
@@ -320,30 +324,37 @@ export class FeishuChannel extends ModuleBase {
   }
 
   /**
-   * 把 mapper 输出的 image/file 内容补齐 file_path / mime_type / size，下载失败则降级为文本占位。
+   * 把 mapper 输出的 image/file 内容补齐媒体信息。
+   * - 图片：急切下载（VLM 要内联看图，需本地文件），写 file_path + status=ready
+   * - 非图片文件：惰性——不下载，只登记 handle + 元信息 + status=not_fetched
    */
   private async applyMediaContent(
     mapped: ReturnType<typeof mapMessageContent>,
     messageId: string,
   ): Promise<MessageContent> {
     const { content, raw } = mapped
+    // 图片：急切下载、内联 VLM 需要本地文件，写 file_path + status=ready
     if (content.type === 'image' && raw?.image_key) {
       const r = await this.downloadAndPersistMedia(messageId, raw.image_key, 'image')
       if (!r) return { type: 'text', text: '[图片下载失败]' }
       return {
         ...content,
         file_path: r.filePath,
+        status: 'ready',
         mime_type: r.mimeType ?? content.mime_type,
         ...(r.size !== undefined ? { size: r.size } : {}),
       }
     }
+    // 非图片文件：惰性——不下载，只登记 handle + 元信息 + status=not_fetched
     if (content.type === 'file' && raw?.file_key) {
-      const r = await this.downloadAndPersistMedia(messageId, raw.file_key, 'file', raw.filename)
-      if (!r) {
-        const fname = raw.filename ?? '未知文件'
-        return { type: 'text', text: `[文件 ${fname} 下载失败]` }
-      }
-      return { ...content, file_path: r.filePath }
+      const handle = await this.mediaHandleStore.put({
+        platform_message_id: messageId,
+        file_key: raw.file_key,
+        kind: 'file',
+        ...(raw.filename !== undefined ? { filename: raw.filename } : {}),
+        ...(content.size !== undefined ? { size: content.size } : {}),
+      })
+      return { ...content, handle, status: 'not_fetched' }
     }
     return content
   }
