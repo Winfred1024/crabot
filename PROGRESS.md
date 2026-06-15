@@ -1,6 +1,17 @@
 # Crabot 项目进度
 
-> 最后更新：2026-06-11 — Master Chat 重构 Phase 1 完成（回复链路修通 + 任务状态卡）
+> 最后更新：2026-06-11 — Master Chat 重构 Phase 2+3 完成并合并 main（三期收官）
+
+## 2026-06-11 — Master Chat 重构 Phase 2+3（已合并 main，merge 7be178d）
+
+Phase 1 之后两期一并完成，整个三期重构收官。分支 `feat/master-chat-phase2`→`feat/master-chat-phase3`，33 commit 合入。spec：[`2026-06-10-master-chat-redesign-design.md`](crabot-docs/superpowers/specs/2026-06-10-master-chat-redesign-design.md)。
+
+- **Phase 2 媒体双向**：base-protocol `MessageContent` 加 `media?: MediaItem[]` 多附件；Admin 内置 `MediaStore`（带 TTL 简易媒体存储，默认 30 天可在聊天设置弹窗配置 + 看占用，改 TTL 即时清扫，每日定时清扫）；入站走 `POST /api/chat/messages` multipart（Node 内建 `Request.formData()` 解析，无三方依赖，累计字节硬熔断）；出站 `send_message` 媒体收存进 store；media-resolver 多图注入同一 VLM turn；前端附件上传（粘贴/拖拽/选择）+ 图文卡 + lightbox + markdown 嵌图补 token
+- **Phase 3 历史体验**：进页瞬时锚底（`useLayoutEffect` + `initialPositionedRef` 守门，修哨兵首屏连环加载）；**修了根因——消息容器 `flex:1` 缺 `minHeight:0` 导致整窗口滚动而非容器滚动**（[[feedback-frontend-verify-in-browser]]）；日期分隔符；ChatMessageItem 提取 + React.memo
+- **消息级任务图标**（取代中途的"进行中任务条"设计）：任务状态挂到触发它的消息气泡旁（spinner/✓/✗ + tooltip + 点击跳 trace）；消息↔任务关联由 Admin 回填（chat_callback 回填 user 消息 / append_message 反向回填 worker 回复 + `chat_message_tagged` 推送）；30s 轮询兜底
+- **交互**：消息引用（右键菜单引用/复制/删除 + 选中文本引用，markdown 引用块传递）；右键消息整行背景高亮；多行 textarea 输入框（双发送模式可切换并记忆）；整页粘贴附件；清空历史二次确认；删单条消息（`DELETE /api/chat/messages/:id` + `chat_message_deleted`）
+- **测试隔离修复**：admin 测试经默认 MM 端口污染开发机 live 实例（写测试消息进真实聊天库 + 制造 recovery 噪音）——vitest.setup.ts 死端口隔离；存量污染用 `scripts/cleanup-test-pollution.mjs` 清理（309 消息 + 51 任务）
+- 三端全绿：admin 739 / agent 1285 / web tsc+build。已知 flake：self-healing 跨文件并发偶发 1 失败，单跑必过
 
 ## 2026-06-11 — Master Chat 重构 Phase 1（已合并 main）
 
