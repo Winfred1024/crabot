@@ -31,6 +31,7 @@ import { WsSubscriber } from './ws-subscriber.js'
 import { SessionManager } from './session-manager.js'
 import { MessageStore, type StoredMessage } from './message-store.js'
 import { MediaHandleStore } from './media-handle-store.js'
+import { MediaCleaner } from './media-cleaner.js'
 import { splitTextByTableLimit } from './card-table-guard.js'
 import {
   detectMentionCrab,
@@ -120,6 +121,7 @@ export class FeishuChannel extends ModuleBase {
   private readonly sessionManager: SessionManager
   private readonly messageStore: MessageStore
   private readonly mediaHandleStore: MediaHandleStore
+  private readonly mediaCleaner: MediaCleaner
   private readonly docReader: FeishuDocReader
 
   private botOpenId: string | null = null
@@ -162,6 +164,7 @@ export class FeishuChannel extends ModuleBase {
     this.sessionManager = new SessionManager(config.module_id, config.data_dir)
     this.messageStore = new MessageStore(config.data_dir)
     this.mediaHandleStore = new MediaHandleStore(config.data_dir)
+    this.mediaCleaner = new MediaCleaner(config.data_dir, 7)
     this.docReader = new FeishuDocReader(this.client)
 
     fs.mkdirSync(path.join(this.dataDir, 'media'), { recursive: true })
@@ -184,6 +187,7 @@ export class FeishuChannel extends ModuleBase {
 
     await this.mediaHandleStore.init()
     this.messageStore.startCleanup()
+    this.mediaCleaner.startCleanup()
 
     const dispatcher = new lark.EventDispatcher({}).register({
       'im.message.receive_v1': (data) => this.safeHandle('message.receive', () => this.handleMessageReceive(data)),
@@ -234,6 +238,7 @@ export class FeishuChannel extends ModuleBase {
 
   protected override async onStop(): Promise<void> {
     this.messageStore.stopCleanup()
+    this.mediaCleaner.stopCleanup()
     await this.subscriber.close()
   }
 
