@@ -95,6 +95,13 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({ message, on
         alignItems: 'center',
         gap: '0.4rem',
         marginBottom: '1rem',
+        // 右键选中：整行背景高亮（不依赖气泡颜色，对自己/Agent 消息都明显）
+        // 用负 margin + padding 让背景块向两侧延展，不挤动气泡布局
+        padding: '0.4rem 0.75rem',
+        margin: '0 -0.75rem 0.6rem',
+        borderRadius: '10px',
+        backgroundColor: highlighted ? 'var(--surface-elevated, rgba(255,255,255,0.06))' : 'transparent',
+        transition: 'background-color 0.12s',
       }}
     >
       {/* user 消息：任务图标在气泡左侧（先渲染图标） */}
@@ -109,10 +116,6 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({ message, on
           backgroundColor: isUser ? 'var(--primary)' : 'var(--bg-secondary)',
           color: isUser ? 'white' : 'var(--text-primary)',
           border: isUser ? 'none' : '1px solid var(--border)',
-          // 右键选中高亮：橙色描边环 + 轻微提亮
-          ...(highlighted
-            ? { boxShadow: '0 0 0 2px var(--primary)', filter: 'brightness(1.08)', transition: 'box-shadow 0.12s' }
-            : { transition: 'box-shadow 0.12s' }),
         }}
       >
         {isProcessing ? (
