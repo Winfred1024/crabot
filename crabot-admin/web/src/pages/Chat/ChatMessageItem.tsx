@@ -32,9 +32,11 @@ interface ChatMessageItemProps {
   onContextMenu?: (e: React.MouseEvent, m: MessageState) => void
   /** 消息关联任务的快照（来自 index.tsx 的 taskStatuses Map）；引用仅在该任务更新时变化 */
   taskSnapshot?: ChatTaskSnapshot
+  /** 当前被右键菜单选中（高亮显示）；仅命中的那条传 true，memo 浅比较只影响该条 */
+  highlighted?: boolean
 }
 
-export const ChatMessageItem = React.memo(function ChatMessageItem({ message, onContextMenu, taskSnapshot }: ChatMessageItemProps) {
+export const ChatMessageItem = React.memo(function ChatMessageItem({ message, onContextMenu, taskSnapshot, highlighted }: ChatMessageItemProps) {
   const navigate = useNavigate()
   const isUser = message.role === 'user'
   const isProcessing = message.status === 'processing'
@@ -107,6 +109,10 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({ message, on
           backgroundColor: isUser ? 'var(--primary)' : 'var(--bg-secondary)',
           color: isUser ? 'white' : 'var(--text-primary)',
           border: isUser ? 'none' : '1px solid var(--border)',
+          // 右键选中高亮：橙色描边环 + 轻微提亮
+          ...(highlighted
+            ? { boxShadow: '0 0 0 2px var(--primary)', filter: 'brightness(1.08)', transition: 'box-shadow 0.12s' }
+            : { transition: 'box-shadow 0.12s' }),
         }}
       >
         {isProcessing ? (

@@ -862,6 +862,7 @@ export const Chat: React.FC = () => {
                       message={message}
                       onContextMenu={handleContextMenu}
                       taskSnapshot={message.task_id ? taskStatuses.get(message.task_id) : undefined}
+                      highlighted={contextMenu?.message.message_id === message.message_id}
                     />
                   </React.Fragment>
                 )
