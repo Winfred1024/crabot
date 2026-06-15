@@ -1096,7 +1096,8 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
       name: 'fetch_media',
       description:
         '按需下载某条消息携带的非图片文件（如 PDF/视频），返回可用 Read 工具读取的本地路径。' +
-        '入参 handle 来自消息里 [文件: … handle=fm_xxx] 标记。幂等：已就绪直接返回缓存路径。',
+        '入参 channel_id（消息来源渠道）+ handle（来自消息里 [文件: … handle=fm_xxx] 标记）。' +
+        '重复调用返回同一本地路径。',
       schema: FETCH_MEDIA_SCHEMA,
       handler: async (args: Record<string, unknown>) => {
         const channel_id = args.channel_id as string
