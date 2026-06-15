@@ -72,6 +72,8 @@ import type {
   ContactItem,
   GroupItem,
   MentionTarget,
+  FetchMediaParams,
+  FetchMediaResult,
 } from './types.js'
 
 /**
@@ -694,6 +696,7 @@ export class FeishuChannel extends ModuleBase {
     this.registerMethod('update_config', this.handleUpdateConfig.bind(this))
     this.registerMethod('read_document', this.handleReadDocument.bind(this))
     this.registerMethod('add_reaction', this.handleAddReaction.bind(this))
+    this.registerMethod('fetch_media', this.handleFetchMedia.bind(this))
   }
 
   /**
@@ -715,6 +718,32 @@ export class FeishuChannel extends ModuleBase {
     if (!emoji) throwError('INVALID_ARGUMENT', `Unknown reaction kind: ${params.kind}`)
     await this.client.addReaction(params.platform_message_id, emoji)
     return { added: true }
+  }
+
+  /**
+   * 凭 handle 同步下载媒体并返回本地路径。本切片只做同步快档；超大文件的
+   * 慢档（bg-entity + wait_for_signal）见 Phase 1B。
+   */
+  private async handleFetchMedia(params: FetchMediaParams): Promise<FetchMediaResult> {
+    const rec = this.mediaHandleStore.get(params.handle)
+    if (!rec) {
+      return { status: 'failed', error: `unknown media handle: ${params.handle}` }
+    }
+    const r = await this.downloadAndPersistMedia(
+      rec.platform_message_id,
+      rec.file_key,
+      rec.kind,
+      rec.filename,
+    )
+    if (!r) {
+      return { status: 'failed', error: `download failed for handle ${params.handle}` }
+    }
+    return {
+      status: 'ready',
+      file_path: r.filePath,
+      ...(r.mimeType !== undefined ? { mime_type: r.mimeType } : {}),
+      ...(r.size !== undefined ? { size: r.size } : {}),
+    }
   }
 
   private async handleSendMessage(params: SendMessageParams): Promise<SendMessageResult> {
@@ -904,6 +933,7 @@ export class FeishuChannel extends ModuleBase {
       supports_list_contacts: true,
       supports_list_groups: true,
       supports_list_group_members: true,
+      supports_media_fetch: true,
       extensions: [],
     }
   }

@@ -130,6 +130,8 @@ export interface ChannelCapabilities {
   supports_list_groups: boolean
   /** 是否支持 list_group_members */
   supports_list_group_members: boolean
+  /** 是否支持 fetch_media（惰性媒体按需下载） */
+  supports_media_fetch?: boolean
   extensions?: ChannelExtensionTool[]
 }
 
@@ -420,4 +422,16 @@ export interface ListGroupMembersResult {
   member_count: number
   members_complete: boolean
   partial_reason?: string
+}
+
+export interface FetchMediaParams {
+  handle: string
+}
+
+export interface FetchMediaResult {
+  status: 'ready' | 'fetching' | 'failed'
+  file_path?: string
+  mime_type?: string
+  size?: number
+  error?: string
 }
