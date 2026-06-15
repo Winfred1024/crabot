@@ -318,6 +318,10 @@ export interface MessageContent {
   size?: number
   /** 多附件数组（media 存在时为权威，media_url 是 media[0] 的镜像）；见 base-protocol §5.4 */
   media?: MediaItem[]
+  /** 惰性媒体下载句柄（非图片文件 status=not_fetched 时携带，传给 fetch_media RPC） */
+  handle?: string
+  /** 媒体就绪状态：ready=已就绪(见 file_path) / not_fetched=未下载 / fetching=下载中 / failed=失败 */
+  status?: 'ready' | 'not_fetched' | 'fetching' | 'failed'
   /** system_event 子类型（type=system_event 时必填） */
   event_type?: SystemEventType
   /** 系统事件涉及的用户（如 members_added 的新加入者） */

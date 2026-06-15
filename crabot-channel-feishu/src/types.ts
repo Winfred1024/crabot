@@ -30,6 +30,10 @@ export interface MessageContent {
   filename?: string
   mime_type?: string
   size?: number
+  /** 惰性媒体下载句柄（非图片文件 status=not_fetched 时携带，传给 fetch_media RPC） */
+  handle?: string
+  /** 媒体就绪状态：ready=已就绪(见 file_path) / not_fetched=未下载 / fetching=下载中 / failed=失败 */
+  status?: 'ready' | 'not_fetched' | 'fetching' | 'failed'
   event_type?: SystemEventType
   affected_users?: Array<{ platform_user_id: string; platform_display_name: string }>
 }
