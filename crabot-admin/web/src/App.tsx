@@ -26,6 +26,7 @@ import { SubagentList } from './pages/Subagents/SubagentList'
 import { Traces } from './pages/Traces'
 import { ScheduleList } from './pages/Schedules/ScheduleList'
 import BgEntitiesPage from './pages/BgEntities'
+import { OpenClawImportWizard } from './pages/OpenClawImport/OpenClawImportWizard'
 import './App.css'
 
 const PrivateRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -112,6 +113,14 @@ const AppRoutes: React.FC = () => {
         element={
           <PrivateRoute>
             <NewChannelOnboarding />
+          </PrivateRoute>
+        }
+      />
+      <Route
+        path="/migrate/openclaw"
+        element={
+          <PrivateRoute>
+            <OpenClawImportWizard />
           </PrivateRoute>
         }
       />
