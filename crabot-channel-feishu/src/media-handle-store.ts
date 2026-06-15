@@ -37,7 +37,13 @@ export class MediaHandleStore {
   async put(rec: MediaHandleRecord): Promise<string> {
     const handle = `fm_${randomBytes(6).toString('hex')}`
     this.map = new Map(this.map).set(handle, rec)
-    await this.persist()
+    try {
+      await this.persist()
+    } catch (err) {
+      // 落盘失败：handle 本次进程内有效（已在内存 map），但重启后丢失。
+      // 不上抛——避免一条媒体消息因落盘问题被整体丢弃。
+      console.warn('[MediaHandleStore] persist failed, handle will be lost on restart:', err)
+    }
     return handle
   }
 

@@ -333,7 +333,6 @@ export class FeishuChannel extends ModuleBase {
     messageId: string,
   ): Promise<MessageContent> {
     const { content, raw } = mapped
-    // 图片：急切下载、内联 VLM 需要本地文件，写 file_path + status=ready
     if (content.type === 'image' && raw?.image_key) {
       const r = await this.downloadAndPersistMedia(messageId, raw.image_key, 'image')
       if (!r) return { type: 'text', text: '[图片下载失败]' }
@@ -345,7 +344,6 @@ export class FeishuChannel extends ModuleBase {
         ...(r.size !== undefined ? { size: r.size } : {}),
       }
     }
-    // 非图片文件：惰性——不下载，只登记 handle + 元信息 + status=not_fetched
     if (content.type === 'file' && raw?.file_key) {
       const handle = await this.mediaHandleStore.put({
         platform_message_id: messageId,
