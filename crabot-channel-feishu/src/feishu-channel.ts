@@ -739,6 +739,15 @@ export class FeishuChannel extends ModuleBase {
         error: `file too large: ${rec.size} bytes exceeds inbound limit ${INBOUND_MAX_FILE_SIZE} bytes`,
       }
     }
+    // 幂等缓存命中：已下载且文件仍在 → 直接返回，不重下
+    if (rec.downloaded_file_path && fs.existsSync(rec.downloaded_file_path)) {
+      return {
+        status: 'ready',
+        file_path: rec.downloaded_file_path,
+        ...(rec.mime_type !== undefined ? { mime_type: rec.mime_type } : {}),
+        ...(rec.size !== undefined ? { size: rec.size } : {}),
+      }
+    }
     const r = await this.downloadAndPersistMedia(
       rec.platform_message_id,
       rec.file_key,
@@ -748,6 +757,7 @@ export class FeishuChannel extends ModuleBase {
     if (!r) {
       return { status: 'failed', error: `download failed for handle ${params.handle}` }
     }
+    await this.mediaHandleStore.markDownloaded(params.handle, r.filePath)
     return {
       status: 'ready',
       file_path: r.filePath,

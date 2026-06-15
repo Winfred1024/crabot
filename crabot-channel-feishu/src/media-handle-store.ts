@@ -15,6 +15,8 @@ export interface MediaHandleRecord {
   filename?: string
   mime_type?: string
   size?: number
+  /** 首次下载成功后写回的本地路径；再次 fetch 时若文件仍在则直接返回，避免重下 */
+  downloaded_file_path?: string
 }
 
 export class MediaHandleStore {
@@ -49,6 +51,18 @@ export class MediaHandleStore {
 
   get(handle: string): MediaHandleRecord | undefined {
     return this.map.get(handle)
+  }
+
+  /** 标记 handle 已下载，缓存本地路径。未知 handle 静默 no-op。落盘失败降级为告警。 */
+  async markDownloaded(handle: string, filePath: string): Promise<void> {
+    const rec = this.map.get(handle)
+    if (!rec) return
+    this.map = new Map(this.map).set(handle, { ...rec, downloaded_file_path: filePath })
+    try {
+      await this.persist()
+    } catch (err) {
+      console.warn('[MediaHandleStore] markDownloaded persist failed:', err)
+    }
   }
 
   private async persist(): Promise<void> {

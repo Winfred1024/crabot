@@ -40,4 +40,22 @@ describe('MediaHandleStore', () => {
   it('未知 handle 返回 undefined', () => {
     expect(store.get('fm_deadbeef0000')).toBeUndefined()
   })
+
+  it('markDownloaded 写回 downloaded_file_path，get 能读到', async () => {
+    const handle = await store.put({ platform_message_id: 'om_3', file_key: 'fk3', kind: 'file' })
+    await store.markDownloaded(handle, '/data/media/om_3.pdf')
+    expect(store.get(handle)?.downloaded_file_path).toBe('/data/media/om_3.pdf')
+  })
+
+  it('markDownloaded 后重新 init 仍保留（已落盘）', async () => {
+    const handle = await store.put({ platform_message_id: 'om_4', file_key: 'fk4', kind: 'file' })
+    await store.markDownloaded(handle, '/data/media/om_4.pdf')
+    const store2 = new MediaHandleStore(dir)
+    await store2.init()
+    expect(store2.get(handle)?.downloaded_file_path).toBe('/data/media/om_4.pdf')
+  })
+
+  it('markDownloaded 未知 handle → 静默 no-op', async () => {
+    await expect(store.markDownloaded('fm_000000000000', '/x')).resolves.toBeUndefined()
+  })
 })
