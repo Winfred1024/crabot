@@ -98,6 +98,10 @@ export type SubscribedEventIdentifier = typeof SUBSCRIBED_EVENTS[number]['identi
 
 const MAX_FILE_SIZE = 30 * 1024 * 1024 // 30MB（飞书附件上限）
 
+/** 入站文件下载上限：超过则 fetch_media 拒绝，防超大文件同步下载卡死 worker / 吃满磁盘。
+ *  注意：这与出站发送的 MAX_FILE_SIZE（飞书 30MB 上传上限）是两回事。 */
+const INBOUND_MAX_FILE_SIZE = 100 * 1024 * 1024 // 100MB
+
 export interface FeishuChannelInitConfig {
   module_id: string
   module_type: 'channel'
@@ -728,6 +732,12 @@ export class FeishuChannel extends ModuleBase {
     const rec = this.mediaHandleStore.get(params.handle)
     if (!rec) {
       return { status: 'failed', error: `unknown media handle: ${params.handle}` }
+    }
+    if (rec.size !== undefined && rec.size > INBOUND_MAX_FILE_SIZE) {
+      return {
+        status: 'failed',
+        error: `file too large: ${rec.size} bytes exceeds inbound limit ${INBOUND_MAX_FILE_SIZE} bytes`,
+      }
     }
     const r = await this.downloadAndPersistMedia(
       rec.platform_message_id,
