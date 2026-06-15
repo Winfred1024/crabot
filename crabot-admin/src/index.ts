@@ -8,7 +8,13 @@ import http, { type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
+import { createWriteStream } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
+import { pipeline } from 'node:stream/promises'
+import { buildBackupOverview } from './openclaw-import/build-overview.js'
+import { runImport, type ImportSelections } from './openclaw-import/run-import.js'
+import { buildImportDeps } from './openclaw-import/build-import-deps.js'
 import { BrowserManager } from './browser-manager.js'
 import { PermissionTemplateManager } from './permission-template-manager.js'
 import {
@@ -411,6 +417,9 @@ export class AdminModule extends ModuleBase {
 
   // Memory v2 REST router
   private memoryV2Router!: ReturnType<typeof createMemoryV2RestRouter>
+
+  // OpenClaw 导入：上传产生的 token → 临时归档文件路径（execute 步取用）
+  private openclawImportTokens: Map<string, string> = new Map()
 
   // 模块 env 配置缓存
   private moduleEnvConfigCache: Map<string, Record<string, string>> = new Map()
@@ -1441,6 +1450,16 @@ export class AdminModule extends ModuleBase {
 
       if (pathname === '/api/skills/scan-workspace' && req.method === 'POST') {
         await this.handleScanWorkspaceSkillsApi(req, res)
+        return
+      }
+
+      // OpenClaw 迁移导入
+      if (pathname === '/api/openclaw-import/parse' && req.method === 'POST') {
+        await this.handleOpenClawImportParseApi(req, res)
+        return
+      }
+      if (pathname === '/api/openclaw-import/execute' && req.method === 'POST') {
+        await this.handleOpenClawImportExecuteApi(req, res)
         return
       }
 
@@ -7077,6 +7096,81 @@ export class AdminModule extends ModuleBase {
         this.writeDuplicateSkillResponse(res, err)
         return
       }
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'import failed' }))
+    }
+  }
+
+  /**
+   * POST /api/openclaw-import/parse — 流式接收 OpenClaw backup .tar.gz（可能 GB 级，
+   * 直接 pipe 落临时文件，绝不 buffer 进内存），解析出备份概览。
+   */
+  private async handleOpenClawImportParseApi(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const tmpFile = path.join(os.tmpdir(), `openclaw-import-${crypto.randomUUID()}.tar.gz`)
+    try {
+      await pipeline(req, createWriteStream(tmpFile))
+      const result = await buildBackupOverview(tmpFile)
+      if (!result.ok) {
+        await fs.rm(tmpFile, { force: true }).catch(() => undefined)
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: result.error }))
+        return
+      }
+      const token = crypto.randomUUID()
+      this.openclawImportTokens.set(token, tmpFile)
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ token, overview: result.overview }))
+    } catch (err) {
+      await fs.rm(tmpFile, { force: true }).catch(() => undefined)
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'parse failed' }))
+    }
+  }
+
+  /**
+   * POST /api/openclaw-import/execute — 按用户勾选执行导入，用后即焚临时归档。
+   * body: { token, selections }
+   */
+  private async handleOpenClawImportExecuteApi(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    try {
+      const body = await this.readJsonBody<{ token: string; selections: ImportSelections }>(req)
+      const archivePath = this.openclawImportTokens.get(body.token)
+      if (!archivePath) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: '上传 token 已失效，请重新上传备份' }))
+        return
+      }
+
+      const memoryPort = await this.getMemoryPort()
+      const deps = buildImportDeps({
+        listProviderNames: () => this.modelProviderManager.listProviders().map((p) => p.name),
+        createProvider: (p) => this.modelProviderManager.createProvider(p),
+        listChannelNames: () => this.channelManager.listInstances().items.map((i) => i.name),
+        createChannel: (p) => this.channelManager.createInstance(p),
+        listMcpNames: () => this.mcpServerManager.list().map((s) => s.name),
+        importMcpJson: (json) => this.mcpServerManager.importFromJson(json),
+        listSkillNames: () => this.skillManager.list().map((s) => s.name),
+        importSkillDir: (dir) => this.skillManager.importFromLocalPath(dir),
+        writeLongTerm: (params) =>
+          this.rpcClient.call(
+            memoryPort,
+            'write_long_term',
+            { ...params, author: 'user', status: 'confirmed' },
+            this.config.moduleId,
+          ),
+        workspaceDir: this.workspaceDir,
+      })
+
+      const tempDir = path.join(os.tmpdir(), `openclaw-import-work-${crypto.randomUUID()}`)
+      const summary = await runImport({ archivePath, tempDir, selections: body.selections, deps })
+
+      this.openclawImportTokens.delete(body.token)
+      await fs.rm(archivePath, { force: true }).catch(() => undefined)
+      this.triggerPushAfter('openclaw import')
+
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(summary))
+    } catch (err) {
       res.writeHead(400, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'import failed' }))
     }
