@@ -54,7 +54,7 @@ async function fetchRemoteImage(url: string): Promise<Buffer | null> {
   }
 }
 
-/** 从一条消息收集待注入 VLM 的图片引用（media[] 权威，回退遗留单 media_url） */
+/** 从一条消息收集待注入 VLM 的图片引用（media[] 权威，回退遗留单 media_url / file_path） */
 function collectImageRefs(msg: ChannelMessage): Array<{ url: string; mime?: string }> {
   const items = msg.content.media
   if (items && items.length > 0) {
@@ -62,8 +62,11 @@ function collectImageRefs(msg: ChannelMessage): Array<{ url: string; mime?: stri
       .filter((m) => m.mime_type.startsWith('image/'))
       .map((m) => ({ url: m.media_url, mime: m.mime_type }))
   }
-  if (msg.content.type === 'image' && msg.content.media_url) {
-    return [{ url: msg.content.media_url, ...(msg.content.mime_type !== undefined ? { mime: msg.content.mime_type } : {}) }]
+  if (msg.content.type === 'image') {
+    const url = msg.content.media_url ?? msg.content.file_path
+    if (url) {
+      return [{ url, ...(msg.content.mime_type !== undefined ? { mime: msg.content.mime_type } : {}) }]
+    }
   }
   return []
 }
@@ -84,12 +87,21 @@ function formatMediaRef(msg: ChannelMessage): string {
       )
       .join('\n')
   }
-  if (!msg.content.media_url) return ''
+  if (!msg.content.media_url && !msg.content.file_path && !msg.content.handle) return ''
   switch (msg.content.type) {
     case 'image':
-      return `[图片: ${msg.content.media_url}]`
-    case 'file':
-      return `[文件: ${msg.content.filename ?? msg.content.media_url}]`
+      return `[图片: ${msg.content.media_url ?? msg.content.filename ?? msg.content.file_path}]`
+    case 'file': {
+      const name = msg.content.filename ?? msg.content.media_url ?? msg.content.file_path ?? '文件'
+      if (msg.content.status === 'not_fetched' && msg.content.handle) {
+        const sizeHint = msg.content.size ? `, ${Math.round(msg.content.size / 1024)}KB` : ''
+        return `[文件: ${name}（未下载${sizeHint}）— 需要内容时调 fetch_media 工具，handle=${msg.content.handle}]`
+      }
+      if (msg.content.status === 'ready' && msg.content.file_path) {
+        return `[文件: ${name} | 本地路径(可用 Read 读取): ${msg.content.file_path}]`
+      }
+      return `[文件: ${name}]`
+    }
     default:
       return ''
   }
