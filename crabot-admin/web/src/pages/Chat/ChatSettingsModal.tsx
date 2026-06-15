@@ -1,0 +1,96 @@
+/**
+ * 聊天媒体设置弹窗（TTL 可配置 + 存储占用展示）
+ */
+import React, { useEffect, useState } from 'react'
+import { api } from '../../services/api'
+
+interface MediaUsage {
+  file_count: number
+  total_bytes: number
+  ttl_days: number
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`
+}
+
+export const ChatSettingsModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
+  const [usage, setUsage] = useState<MediaUsage | null>(null)
+  const [ttlDays, setTtlDays] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    api.get<MediaUsage>('/chat/media-usage').then((u) => {
+      setUsage(u)
+      setTtlDays(String(u.ttl_days))
+    }).catch(() => setError('加载失败'))
+  }, [])
+
+  const handleSave = async () => {
+    // 前置校验：空串 Number()→0、非数字→NaN，没必要发无效请求
+    const n = Number(ttlDays)
+    if (!Number.isInteger(n) || n < 1 || n > 365) {
+      setError('请输入 1-365 的整数')
+      return
+    }
+    setSaving(true)
+    setError('')
+    setSaved(false)
+    try {
+      await api.patch('/chat/media-config', { ttl_days: n })
+      // 后端保存即按新期限清扫——刷新占用数字，让清理效果立刻可见
+      const u = await api.get<MediaUsage>('/chat/media-usage')
+      setUsage(u)
+      setSaved(true)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: 'fixed', inset: 0, zIndex: 1000, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{ width: '380px', padding: '1.5rem', borderRadius: '12px', backgroundColor: 'var(--surface-raised, var(--bg-secondary))', border: '1px solid var(--border)' }}
+      >
+        <h3 style={{ marginBottom: '1rem' }}>聊天媒体设置</h3>
+        <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>
+          {usage ? `当前存储占用：${usage.file_count} 个文件，共 ${formatBytes(usage.total_bytes)}` : '加载中…'}
+        </div>
+        <label style={{ display: 'block', fontSize: '0.9rem', marginBottom: '0.4rem' }}>
+          媒体保留天数（1-365，超期自动清理）
+        </label>
+        <input
+          type="number"
+          min={1}
+          max={365}
+          value={ttlDays}
+          onChange={(e) => setTtlDays(e.target.value)}
+          className="input"
+          style={{ width: '100%', marginBottom: '0.75rem' }}
+        />
+        {error && <div style={{ color: 'var(--error)', fontSize: '0.85rem', marginBottom: '0.5rem' }}>{error}</div>}
+        {saved && !error && (
+          <div style={{ color: 'var(--success)', fontSize: '0.85rem', marginBottom: '0.5rem' }}>
+            已保存，超期文件已按新期限清理
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
+          <button onClick={onClose} className="btn" style={{ padding: '0.5rem 1rem' }}>关闭</button>
+          <button onClick={handleSave} disabled={saving} className="btn btn-primary" style={{ padding: '0.5rem 1rem' }}>
+            {saving ? '保存中…' : '保存'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}

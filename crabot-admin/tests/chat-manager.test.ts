@@ -62,7 +62,7 @@ describe('ChatManager', () => {
       const messages = chatManager.getMessages(10)
       expect(messages).toHaveLength(1)
       expect(messages[0].role).toBe('assistant')
-      expect(messages[0].content).toBe('你好，我是 AI 助手')
+      expect(messages[0].content.text).toBe('你好，我是 AI 助手')
       expect(messages[0].request_id).toBe('req-001')
     })
 
@@ -83,9 +83,9 @@ describe('ChatManager', () => {
       expect(messages).toHaveLength(3)
 
       // 验证按时间倒序
-      expect(messages[0].content).toBe('消息 4')
-      expect(messages[1].content).toBe('消息 3')
-      expect(messages[2].content).toBe('消息 2')
+      expect(messages[0].content.text).toBe('消息 4')
+      expect(messages[1].content.text).toBe('消息 3')
+      expect(messages[2].content.text).toBe('消息 2')
     })
 
     it('应该能够清空消息', async () => {
@@ -124,7 +124,7 @@ describe('ChatManager', () => {
 
       const messages = newChatManager.getMessages(10)
       expect(messages).toHaveLength(1)
-      expect(messages[0].content).toBe('持久化测试')
+      expect(messages[0].content.text).toBe('持久化测试')
 
       newChatManager.close()
     })
@@ -172,7 +172,7 @@ describe('ChatManager', () => {
       })
 
       const messages = chatManager.getMessages(10)
-      expect(messages[0].content).toBe('任务已完成')
+      expect(messages[0].content.text).toBe('任务已完成')
     })
 
     it('应该能够处理 task_failed 回复', async () => {
@@ -184,7 +184,7 @@ describe('ChatManager', () => {
       })
 
       const messages = chatManager.getMessages(10)
-      expect(messages[0].content).toBe('任务失败')
+      expect(messages[0].content.text).toBe('任务失败')
     })
   })
 })

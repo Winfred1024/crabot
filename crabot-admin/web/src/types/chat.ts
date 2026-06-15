@@ -2,17 +2,33 @@
  * 聊天类型定义
  */
 
+/** 单个媒体附件引用 */
+export interface MediaItem {
+  media_url: string
+  mime_type: string
+  filename?: string
+  size?: number
+}
+
+/** 消息内容（对齐 protocol-admin §3.20 升级后的 ChatMessage.content） */
+export interface ChatMessageContent {
+  type: 'text' | 'image' | 'file' | 'system_event'
+  text?: string
+  media_url?: string
+  media?: MediaItem[]
+}
+
 /** 聊天消息 */
 export interface ChatMessage {
   message_id: string
   role: 'user' | 'assistant'
-  content: string
+  content: ChatMessageContent
   request_id?: string
   task_id?: string
   timestamp: string
 }
 
-/** 客户端发送的聊天消息 */
+/** 客户端发送的聊天消息（WS 保持纯文本，不变） */
 export interface ChatClientMessage {
   type: 'chat_message'
   request_id: string
@@ -33,6 +49,8 @@ export type ChatServerMessage =
   | { type: 'chat_error'; request_id?: string; error: string }
   | { type: 'chat_push'; message: ChatMessage }
   | { type: 'chat_task_update'; task: ChatTaskSnapshot }
+  | { type: 'chat_message_tagged'; message_id: string; task_id: string }
+  | { type: 'chat_message_deleted'; message_id: string }
 
 /** 任务状态快照（chat_task_update / GET /api/chat/tasks/:id） */
 export interface ChatTaskSnapshot {

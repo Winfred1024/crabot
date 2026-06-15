@@ -132,6 +132,44 @@ class ChatWebSocketClient {
     }
   }
 
+  /** 拉取所有非终态任务快照（进行中任务条数据源）；出错返回空数组，不阻塞主流程 */
+  async getActiveTasks(): Promise<ChatTaskSnapshot[]> {
+    try {
+      const { tasks } = await api.get<{ tasks: ChatTaskSnapshot[] }>('/chat/tasks')
+      return tasks
+    } catch {
+      return []
+    }
+  }
+
+  /** 带附件的消息走 HTTP multipart（WS 保持纯文本）。返回落库后的 user 消息。 */
+  async sendMessageWithAttachments(text: string, files: File[]): Promise<{ message: ChatMessage; request_id: string }> {
+    const request_id = this.generateRequestId()
+    const form = new FormData()
+    form.append('request_id', request_id)
+    form.append('text', text)
+    for (const f of files) form.append('files', f, f.name)
+    const { message } = await api.post<{ message: ChatMessage }>('/chat/messages', form)
+    return { message, request_id }
+  }
+
+  /** 删除单条消息（204 成功，404 消息不存在抛错） */
+  async deleteMessage(messageId: string): Promise<void> {
+    await api.delete(`/chat/messages/${encodeURIComponent(messageId)}`)
+  }
+
+  /** 清空全部聊天记录 */
+  async clearMessages(): Promise<void> {
+    await api.delete('/chat/messages')
+  }
+
+  /** store 相对 URL → 可直接用于 <img>/<a> 的带 token URL；http(s) 原样返回 */
+  mediaSrc(mediaUrl: string): string {
+    if (mediaUrl.startsWith('http://') || mediaUrl.startsWith('https://')) return mediaUrl
+    const token = storage.getToken()
+    return token ? `${mediaUrl}?token=${encodeURIComponent(token)}` : mediaUrl
+  }
+
   private generateRequestId(): string {
     return `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
   }

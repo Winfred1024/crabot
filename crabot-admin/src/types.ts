@@ -1758,11 +1758,47 @@ export interface AdminEventPayloads {
 // Master Chat（管理员聊天）
 // ============================================================================
 
+/** 单个媒体附件引用（对齐 base-protocol MediaItem） */
+export interface MediaItem {
+  /** http(s) URL 或本地绝对路径（同机模块间传递场景） */
+  media_url: string
+  mime_type: string
+  filename?: string
+  size?: number
+}
+
+/** 消息内容（对齐 base-protocol §5.4 MessageContent，admin chat 双向共用） */
+export interface MessageContent {
+  type: 'text' | 'image' | 'file' | 'system_event'
+  text?: string
+  /** 遗留单媒体表达；media 存在时此字段为 media[0] 的镜像 */
+  media_url?: string
+  file_path?: string
+  filename?: string
+  mime_type?: string
+  size?: number
+  /** 多附件数组；存在时为权威 */
+  media?: MediaItem[]
+}
+
+/** MediaStore 配置 */
+export interface MediaStoreConfig {
+  /** 媒体保留天数（1-365），超期被每日清扫删除 */
+  ttl_days: number
+}
+
+/** MediaStore 占用统计 */
+export interface MediaUsage {
+  file_count: number
+  total_bytes: number
+  ttl_days: number
+}
+
 /** 聊天消息 */
 export interface ChatMessage {
   message_id: string
   role: 'user' | 'assistant'
-  content: string
+  content: MessageContent
   request_id?: string
   task_id?: TaskId
   timestamp: string
@@ -1778,15 +1814,7 @@ export interface ChatClientMessage {
 /** send_message RPC（admin-web 伪 channel）入参，对齐 protocol-channel SendMessageParams */
 export interface ChatSendMessageParams {
   session_id: string
-  content: {
-    type: 'text' | 'image' | 'file' | 'system_event'
-    text?: string
-    media_url?: string
-    file_path?: string
-    filename?: string
-    mime_type?: string
-    size?: number
-  }
+  content: MessageContent
   features?: Record<string, unknown>
 }
 
@@ -1807,10 +1835,14 @@ export interface ChatTaskSnapshot {
 
 /** 服务端发送的聊天消息 */
 export interface ChatServerMessage {
-  type: 'chat_reply' | 'chat_status' | 'chat_error' | 'chat_push' | 'chat_task_update'
+  type: 'chat_reply' | 'chat_status' | 'chat_error' | 'chat_push' | 'chat_task_update' | 'chat_message_tagged' | 'chat_message_deleted'
   request_id?: string
   content?: string
   status?: 'processing' | 'completed' | 'failed'
+  /**
+   * chat_reply 携带任务关联时填写；chat_message_tagged 必填。
+   * 对应 protocol-admin §3.20 ChatServerMessage.task_id 字段。
+   */
   task_id?: TaskId
   reply_type?: 'direct_reply' | 'task_created' | 'task_completed' | 'task_failed'
   error?: string
@@ -1818,6 +1850,11 @@ export interface ChatServerMessage {
   message?: ChatMessage
   /** type='chat_task_update'：任务状态快照 */
   task?: ChatTaskSnapshot
+  /**
+   * chat_message_tagged 携带：worker 回复消息的任务归属回填（message_id + task_id）。
+   * chat_message_deleted 携带：已删除消息的 id，前端据此实时移除该消息。
+   */
+  message_id?: string
 }
 
 /** chat_callback RPC 方法参数 */
@@ -1848,7 +1885,13 @@ export interface GetChatHistoryResult {
     platform_message_id: string
     session: { session_id: string; channel_id: string; type: 'private' }
     sender: { friend_id?: string; platform_user_id: string; platform_display_name: string }
-    content: { type: 'text'; text: string }
+    /** 结构化内容，含可选的 media[]（Phase 2 起透传，agent 侧 MessageContent.media 在 Task 7 加） */
+    content: {
+      type: 'text' | 'image' | 'file' | 'system_event'
+      text?: string
+      media_url?: string
+      media?: MediaItem[]
+    }
     features: { is_mention_crab: false }
     platform_timestamp: string
   }>

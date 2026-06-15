@@ -120,6 +120,7 @@ import {
   type UpsertPendingMessageResult,
   type ChatSendMessageParams,
   type ChatSendMessageResult,
+  type ChatTaskSnapshot,
   type ChannelMessageRef,
   type FriendPermissionConfig,
   type GetFriendPermissionResult,
@@ -164,6 +165,7 @@ import {
 } from './schedule-migration.js'
 import { ModuleInstaller } from './module-installer.js'
 import { ChatManager, buildChatTaskSnapshot } from './chat-manager.js'
+import { MediaStore } from './media-store.js'
 import { MCPServerManager, SkillManager, EssentialToolsManager, DuplicateSkillError } from './mcp-skill-manager.js'
 import { SubAgentManager, resolveSubAgentModel } from './subagent-manager.js'
 import { PRESET_VENDORS } from './preset-vendors.js'
@@ -381,6 +383,10 @@ export class AdminModule extends ModuleBase {
 
   // Chat 管理器
   private chatManager: ChatManager | null = null
+
+  // 媒体存储
+  private mediaStore: MediaStore | null = null
+  private mediaSweepTimer: NodeJS.Timeout | null = null
 
   // Channel 配置入口管理（onboarding_methods）
   private onboardingManager: OnboardingManager
@@ -731,13 +737,24 @@ export class AdminModule extends ModuleBase {
     // 初始化 Browser 管理器
     await this.browserManager.loadConfig()
 
-    // 初始化 Chat 管理器
+    // 初始化媒体存储（在 chatManager 之前，Task 6 会把 mediaStore 注入 chatManager）
+    this.mediaStore = new MediaStore(this.adminConfig.data_dir)
+    await this.mediaStore.init()
+    // 启动时补扫一次，覆盖停机期间超期的文件
+    this.mediaStore.sweepExpired().catch(() => {})
+    this.mediaSweepTimer = setInterval(() => {
+      this.mediaStore?.sweepExpired().catch(() => {})
+    }, 24 * 60 * 60 * 1000)
+    this.mediaSweepTimer.unref?.()
+
+    // 初始化 Chat 管理器（mediaStore 已在上方初始化，作为第 6 参注入）
     this.chatManager = new ChatManager(
       this.adminConfig.data_dir,
       this.rpcClient,
       () => this.ensureAgentPort(),
       this.jwtSecret,
       verifyJwtWithEpoch,
+      this.mediaStore!,
     )
     await this.chatManager.loadData()
 
@@ -791,6 +808,9 @@ export class AdminModule extends ModuleBase {
   }
 
   protected override async onStop(): Promise<void> {
+    // 停止媒体存储每日清扫定时器
+    if (this.mediaSweepTimer) clearInterval(this.mediaSweepTimer)
+
     // 停止 waiting_human 超时扫描器
     if (this.waitingHumanScanTimer) clearInterval(this.waitingHumanScanTimer)
 
@@ -945,8 +965,8 @@ export class AdminModule extends ModuleBase {
     const url = new URL(req.url ?? '/', `http://localhost:${this.adminConfig.web_port}`)
     const pathname = url.pathname
 
-    // 认证检查（排除登录接口和静态文件）
-    if (pathname.startsWith('/api/') && pathname !== '/api/auth/login') {
+    // 认证检查（排除登录接口、静态文件、媒体文件端点）
+    if (pathname.startsWith('/api/') && pathname !== '/api/auth/login' && !pathname.startsWith('/api/media/')) {
       const authHeader = req.headers.authorization
       let token: string | null = null
       if (authHeader?.startsWith('Bearer ')) {
@@ -1773,14 +1793,60 @@ export class AdminModule extends ModuleBase {
         return
       }
 
+      // 媒体文件路由（端点内部自行认证，支持 ?token= 供 <img> 引用）
+      if (pathname.startsWith('/api/media/') && req.method === 'GET') {
+        await this.handleGetMediaApi(req, res, url)
+        return
+      }
+
       // Chat 路由
       if (pathname === '/api/chat/messages' && req.method === 'GET') {
         await this.handleGetChatMessagesApi(req, res, url)
         return
       }
 
+      if (pathname === '/api/chat/messages' && req.method === 'POST') {
+        await this.handlePostChatMessageApi(req, res)
+        return
+      }
+
+      // 单条消息删除（必须在清空路由前，路径更具体）
+      if (pathname.startsWith('/api/chat/messages/') && req.method === 'DELETE') {
+        if (!this.chatManager) { sendJson(res, 503, { error: 'chat not ready' }); return }
+        const messageId = decodeURIComponent(pathname.slice('/api/chat/messages/'.length))
+        const ok = await this.chatManager.deleteMessage(messageId)
+        if (!ok) { sendJson(res, 404, { error: 'message not found' }); return }
+        res.writeHead(204); res.end()
+        return
+      }
+
       if (pathname === '/api/chat/messages' && req.method === 'DELETE') {
         await this.handleClearChatMessagesApi(req, res)
+        return
+      }
+
+      if (pathname === '/api/chat/media-usage' && req.method === 'GET') {
+        if (!this.mediaStore) { sendJson(res, 503, { error: 'media store not ready' }); return }
+        sendJson(res, 200, await this.mediaStore.getUsage())
+        return
+      }
+
+      if (pathname === '/api/chat/media-config' && req.method === 'PATCH') {
+        if (!this.mediaStore) { sendJson(res, 503, { error: 'media store not ready' }); return }
+        try {
+          // readJsonBody 放 try 内：非法 JSON 也应回 400 而非 500
+          const body = await this.readJsonBody<{ ttl_days?: number }>(req)
+          await this.mediaStore.setConfig({ ttl_days: Number(body.ttl_days) })
+          sendJson(res, 200, this.mediaStore.getConfig())
+        } catch (err) {
+          sendJson(res, 400, { error: err instanceof Error ? err.message : 'invalid ttl_days' })
+        }
+        return
+      }
+
+      if (pathname === '/api/chat/tasks' && req.method === 'GET') {
+        // 进行中任务条 hydrate：运行中任务可能不在已加载的历史分页里，须全量列出
+        sendJson(res, 200, { tasks: this.listActiveChatTaskSnapshots() })
         return
       }
 
@@ -4778,6 +4844,16 @@ export class AdminModule extends ModuleBase {
     task.updated_at = generateTimestamp()
 
     await this.upsertTask(task)
+
+    // worker 回复消息的任务归属反向回填：agent 出站成功后调本方法记录 task.messages，
+    // source.platform_message_id 即聊天 message_id（admin-web 伪 channel send_message 的返回值）
+    if (
+      task.source.channel_id === 'admin-web' &&
+      params.role === 'agent' &&
+      params.source?.platform_message_id
+    ) {
+      this.chatManager?.tagMessageTask(params.source.platform_message_id, task.id).catch(() => {})
+    }
 
     return { message }
   }
@@ -8465,6 +8541,14 @@ export class AdminModule extends ModuleBase {
     return this.chatManager.handleSendMessage(params)
   }
 
+  /** admin-web 来源的非终态任务快照（进行中任务条数据源） */
+  private listActiveChatTaskSnapshots(): ChatTaskSnapshot[] {
+    const NON_TERMINAL: ReadonlySet<TaskStatus> = new Set(['pending', 'planning', 'executing', 'waiting', 'waiting_human'])
+    return Array.from(this.tasks.values())
+      .filter((t) => t.source.channel_id === 'admin-web' && NON_TERMINAL.has(t.status))
+      .map((t) => buildChatTaskSnapshot(t))
+  }
+
   private async handleGetChatHistory(params: GetChatHistoryParams): Promise<GetChatHistoryResult> {
     if (!this.chatManager) {
       throw new Error('Chat manager not initialized')
@@ -8479,10 +8563,53 @@ export class AdminModule extends ModuleBase {
         sender: msg.role === 'user'
           ? { friend_id: 'master', platform_user_id: 'master', platform_display_name: 'Master' }
           : { friend_id: 'assistant', platform_user_id: 'assistant', platform_display_name: 'Crabot' },
-        content: { type: 'text' as const, text: msg.content },
+        // Phase 2 起透传结构化 content（含 media[]），供 agent 侧 media-resolver 消费
+        content: {
+          type: msg.content.type,
+          ...(msg.content.text !== undefined ? { text: msg.content.text } : {}),
+          ...(msg.content.media_url !== undefined ? { media_url: msg.content.media_url } : {}),
+          ...(msg.content.media !== undefined ? { media: msg.content.media } : {}),
+        },
         features: { is_mention_crab: false as const },
         platform_timestamp: msg.timestamp,
       })),
+    }
+  }
+
+  // ============================================================================
+  // 媒体文件 REST API
+  // ============================================================================
+
+  /** GET /api/media/:id — 自行认证（?token= 或 Authorization header），返回文件字节流 */
+  private async handleGetMediaApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    // 自行认证：?token= 或 Authorization header（与 /ws/chat 同模式）
+    const token = url.searchParams.get('token')
+      ?? (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : null)
+    let ok = false
+    try {
+      ok = !!(token && (await verifyJwtWithEpoch(token, this.jwtSecret, this.adminConfig.data_dir)))
+    } catch { ok = false }
+    if (!ok) {
+      sendJson(res, 401, { error: 'Unauthorized' })
+      return
+    }
+    const id = decodeURIComponent(url.pathname.slice('/api/media/'.length))
+    const resolved = this.mediaStore?.resolve(id)
+    if (!resolved) {
+      sendJson(res, 404, { error: 'media not found or expired' })
+      return
+    }
+    try {
+      const buf = await fs.readFile(resolved.abs_path)
+      res.writeHead(200, {
+        'Content-Type': resolved.mime_type,
+        'Content-Length': buf.length,
+        'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(resolved.filename)}`,
+        'Cache-Control': 'private, max-age=86400',
+      })
+      res.end(buf)
+    } catch {
+      sendJson(res, 404, { error: 'media not found or expired' })
     }
   }
 
@@ -8519,6 +8646,67 @@ export class AdminModule extends ModuleBase {
     await this.chatManager.clearMessages()
     res.writeHead(204)
     res.end()
+  }
+
+  /** POST /api/chat/messages — multipart/form-data 消息入口（文字 + N 附件） */
+  private async handlePostChatMessageApi(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.chatManager) {
+      sendJson(res, 503, { error: 'chat not ready' })
+      return
+    }
+    const MAX_FILE = 25 * 1024 * 1024
+    const MAX_TOTAL = 100 * 1024 * 1024
+    const contentLength = Number(req.headers['content-length'] ?? 0)
+    if (contentLength > MAX_TOTAL) {
+      sendJson(res, 413, { error: '请求体过大（上限 100MB）' })
+      return
+    }
+    try {
+      // 手动缓冲 body 并按累计字节硬熔断：Content-Length 预检对 chunked（无声明长度）
+      // 请求无效，必须在读流时设上限，否则 formData() 会无界缓冲进内存
+      const chunks: Buffer[] = []
+      let totalBytes = 0
+      for await (const chunk of req) {
+        const buf = chunk as Buffer
+        totalBytes += buf.length
+        if (totalBytes > MAX_TOTAL) {
+          sendJson(res, 413, { error: '请求体过大（上限 100MB）' })
+          req.destroy()
+          return
+        }
+        chunks.push(buf)
+      }
+      // Node 18+ 内建 multipart 解析：body 已缓冲为 Buffer，无需 stream duplex
+      const RequestClass = Request as unknown as new (url: string, init: Record<string, unknown>) => { formData(): Promise<{ get(k: string): unknown; getAll(k: string): unknown[] }> }
+      const request = new RequestClass('http://localhost/api/chat/messages', {
+        method: 'POST',
+        headers: req.headers,
+        body: Buffer.concat(chunks),
+      })
+      const form = await request.formData()
+      const text = String(form.get('text') ?? '')
+      const requestId = String(form.get('request_id') ?? '')
+      if (!requestId) {
+        sendJson(res, 400, { error: 'request_id required' })
+        return
+      }
+      const files: Array<{ buffer: Buffer; filename: string; mime_type: string }> = []
+      // File 类在 Node 20+ 全局可用；使用 as unknown 绕过 tsconfig 中未含 DOM lib 的类型限制
+      const FileClass = (globalThis as unknown as { File: new (...args: unknown[]) => { name: string; type: string; arrayBuffer(): Promise<ArrayBuffer> } }).File
+      for (const value of form.getAll('files')) {
+        if (!FileClass || !(value instanceof FileClass)) continue
+        const buffer = Buffer.from(await value.arrayBuffer())
+        if (buffer.length > MAX_FILE) {
+          sendJson(res, 413, { error: `文件 ${value.name} 超过 25MB 上限` })
+          return
+        }
+        files.push({ buffer, filename: value.name, mime_type: value.type || 'application/octet-stream' })
+      }
+      const result = await this.chatManager.handleInboundMessage({ request_id: requestId, text, files })
+      sendJson(res, 200, result)
+    } catch (err) {
+      sendJson(res, 400, { error: err instanceof Error ? err.message : 'invalid multipart request' })
+    }
   }
 
   // ============================================================================

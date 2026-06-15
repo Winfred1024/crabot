@@ -7,7 +7,8 @@ import path from 'node:path'
 import { IncomingMessage } from 'node:http'
 import { Socket } from 'node:net'
 import { WebSocket, WebSocketServer } from 'ws'
-import { generateId, generateTimestamp, type RpcClient } from 'crabot-shared'
+import { generateId, generateTimestamp, type RpcClient, type TaskId } from 'crabot-shared'
+import { MediaStore } from './media-store.js'
 import type {
   ChatMessage,
   ChatClientMessage,
@@ -18,6 +19,8 @@ import type {
   ChatSendMessageResult,
   ChatTaskSnapshot,
   Task,
+  MessageContent,
+  MediaItem,
 } from './types.js'
 
 export class ChatManager {
@@ -33,6 +36,7 @@ export class ChatManager {
     private readonly resolveAgentPort: () => Promise<number>,
     private readonly jwtSecret: string,
     private readonly verifyJwt: (token: string, secret: string, dataDir: string) => Promise<unknown>,
+    private readonly mediaStore: MediaStore,
   ) {
     this.messagesFilePath = path.join(dataDir, 'chat_messages.json')
   }
@@ -44,8 +48,15 @@ export class ChatManager {
   async loadData(): Promise<void> {
     try {
       const data = await fs.readFile(this.messagesFilePath, 'utf-8')
-      const parsed = JSON.parse(data) as ChatMessage[]
-      this.messages = new Map(parsed.map((m) => [m.message_id, m]))
+      // content 字段可能是旧格式（string），需要 hydrate 为 MessageContent
+      const parsed = JSON.parse(data) as Array<Omit<ChatMessage, 'content'> & { content: string | MessageContent }>
+      this.messages = new Map(parsed.map((m) => [
+        m.message_id,
+        {
+          ...m,
+          content: typeof m.content === 'string' ? { type: 'text' as const, text: m.content } : m.content,
+        },
+      ]))
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
         console.error('[ChatManager] Failed to load messages:', error)
@@ -150,24 +161,37 @@ export class ChatManager {
       return
     }
 
-    // 存储用户消息
+    // 存储用户消息（WS 纯文本路径：content 字段包装为 MessageContent）
     const userMessage: ChatMessage = {
       message_id: generateId(),
       role: 'user',
-      content: data.content,
+      content: { type: 'text', text: data.content },
       request_id: data.request_id,
       timestamp: generateTimestamp(),
     }
     this.messages.set(userMessage.message_id, userMessage)
     await this.saveData()
 
+    // WS 纯文本路径：agent 侧 content 与落库 content 相同
+    await this.dispatchToAgent(userMessage, data.request_id, { type: 'text', text: data.content })
+  }
+
+  /**
+   * 向 Agent 发送 process_message（入站双路径共用）。
+   * pendingRequests.set / chat_status / rpcClient.call / catch 推 chat_error 全部在此。
+   */
+  private async dispatchToAgent(
+    userMessage: ChatMessage,
+    requestId: string,
+    agentContent: MessageContent,
+  ): Promise<void> {
     // 记录 pending request
-    this.pendingRequests.set(data.request_id, { timestamp: Date.now() })
+    this.pendingRequests.set(requestId, { timestamp: Date.now() })
 
     // 推送处理中状态
     this.pushToClient({
       type: 'chat_status',
-      request_id: data.request_id,
+      request_id: requestId,
       status: 'processing',
     })
 
@@ -194,10 +218,7 @@ export class ChatManager {
               platform_user_id: 'master',
               platform_display_name: 'Master',
             },
-            content: {
-              type: 'text',
-              text: data.content,
-            },
+            content: agentContent,
             features: {
               is_mention_crab: false,
             },
@@ -206,7 +227,7 @@ export class ChatManager {
           source_type: 'admin_chat',
           callback_info: {
             source_module_id: 'admin-web',
-            request_id: data.request_id,
+            request_id: requestId,
           },
         },
         'admin-web'
@@ -215,11 +236,55 @@ export class ChatManager {
       console.error('[ChatManager] Failed to call Agent:', error)
       this.pushToClient({
         type: 'chat_error',
-        request_id: data.request_id,
+        request_id: requestId,
         error: '系统暂时不可用，请稍后重试',
       })
-      this.pendingRequests.delete(data.request_id)
+      this.pendingRequests.delete(requestId)
     }
+  }
+
+  /** HTTP multipart 入口：文字 + N 附件一条消息（design：2026-06-10-master-chat-redesign Phase 2） */
+  async handleInboundMessage(params: {
+    request_id: string
+    text: string
+    files: Array<{ buffer: Buffer; filename: string; mime_type: string }>
+  }): Promise<{ message: ChatMessage }> {
+    const text = params.text.trim()
+    if (!text && params.files.length === 0) {
+      throw new Error('Empty message')
+    }
+    // 附件落 store，保留两个视图：URL 形态（落库/前端）与绝对路径形态（agent VLM 直读磁盘）
+    const saved = await Promise.all(
+      params.files.map((f) => this.mediaStore.saveBuffer(f.buffer, { filename: f.filename, mime_type: f.mime_type }))
+    )
+    const mediaForStore: MediaItem[] = saved.map((s) => s.item)
+    const mediaForAgent: MediaItem[] = saved.map((s) => ({ ...s.item, media_url: s.abs_path }))
+    const type = mediaForStore.length === 0
+      ? ('text' as const)
+      : mediaForStore.some((m) => m.mime_type.startsWith('image/'))
+        ? ('image' as const)
+        : ('file' as const)
+
+    const userMessage: ChatMessage = {
+      message_id: generateId(),
+      role: 'user',
+      content: {
+        type,
+        ...(text ? { text } : {}),
+        ...(mediaForStore.length > 0 ? { media: mediaForStore, media_url: mediaForStore[0].media_url } : {}),
+      },
+      request_id: params.request_id,
+      timestamp: generateTimestamp(),
+    }
+    this.messages.set(userMessage.message_id, userMessage)
+    await this.saveData()
+
+    await this.dispatchToAgent(userMessage, params.request_id, {
+      type,
+      ...(text ? { text } : {}),
+      ...(mediaForAgent.length > 0 ? { media: mediaForAgent, media_url: mediaForAgent[0].media_url } : {}),
+    })
+    return { message: userMessage }
   }
 
   private pushToClient(message: ChatServerMessage): void {
@@ -239,11 +304,11 @@ export class ChatManager {
   // ==========================================================================
 
   async handleChatCallback(params: ChatCallbackParams): Promise<ChatCallbackResult> {
-    // 存储 assistant 消息
+    // 存储 assistant 消息（chat_callback 仍传 string content，包装为 MessageContent）
     const assistantMessage: ChatMessage = {
       message_id: generateId(),
       role: 'assistant',
-      content: params.content,
+      content: { type: 'text', text: params.content },
       request_id: params.request_id,
       task_id: params.task_id,
       timestamp: generateTimestamp(),
@@ -264,6 +329,12 @@ export class ChatManager {
     // 清理 pending request
     this.pendingRequests.delete(params.request_id)
 
+    // 带任务关联的回执（task_created / supplement）：回填触发它的 user 消息，
+    // 历史重载时消息级任务图标才有数据
+    if (params.task_id) {
+      await this.tagUserMessageByRequestId(params.request_id, params.task_id)
+    }
+
     return { received: true }
   }
 
@@ -271,28 +342,66 @@ export class ChatManager {
   // send_message（admin-web 伪 channel 入口，spec 2026-06-10-master-chat-redesign §4）
   // ==========================================================================
 
-  /** MessageContent → 文本。Phase 1 仅消费 text，媒体降级为占位文本（Phase 2 接入显示） */
-  private contentToText(content: ChatSendMessageParams['content']): string {
-    // system_event 的 text 是协议规定的人类可读 fallback，与 text 同样直接透出
-    if (content.type === 'text' || content.type === 'system_event') return content.text ?? ''
-    const label = content.type === 'image' ? '图片' : '文件'
-    const name = content.filename ?? content.media_url ?? content.file_path ?? ''
-    const caption = content.text ? `\n${content.text}` : ''
-    return `[${label}] ${name}（媒体显示将在后续版本支持）${caption}`
-  }
-
   async handleSendMessage(params: ChatSendMessageParams): Promise<ChatSendMessageResult> {
     if (params.session_id !== 'admin-chat') {
       throw new Error(`Unknown chat session: ${params.session_id}`)
     }
-    const text = this.contentToText(params.content)
-    if (!text.trim()) {
+    const c = params.content
+    if (c.type === 'system_event') {
+      // system_event：text 是协议规定的人类可读 fallback，按纯文本落库
+      return this.storeAssistantMessage({ type: 'text', text: c.text ?? '' })
+    }
+    // 归一：media[] 权威；否则单 media_url / file_path 包装成单元素列表
+    const incoming: Array<Pick<MessageContent, 'media_url' | 'file_path' | 'filename' | 'mime_type'>> =
+      c.media?.length
+        ? c.media.map((m) => ({ media_url: m.media_url, filename: m.filename, mime_type: m.mime_type }))
+        : (c.media_url ?? c.file_path) ? [c] : []
+
+    const media: MediaItem[] = []
+    const failures: string[] = []
+    for (const m of incoming) {
+      try {
+        if (m.media_url?.startsWith('http://') || m.media_url?.startsWith('https://')) {
+          // http(s) URL：直接存引用，不下载
+          media.push({
+            media_url: m.media_url,
+            mime_type: m.mime_type ?? 'application/octet-stream',
+            ...(m.filename !== undefined ? { filename: m.filename } : {}),
+          })
+        } else {
+          // 本地路径：复制进 MediaStore
+          const localPath = m.file_path ?? m.media_url
+          if (!localPath) continue
+          media.push(await this.mediaStore.ingestFile(localPath, {
+            ...(m.filename !== undefined ? { filename: m.filename } : {}),
+            ...(m.mime_type !== undefined ? { mime_type: m.mime_type } : {}),
+          }))
+        }
+      } catch {
+        failures.push(m.filename ?? m.file_path ?? m.media_url ?? '未知附件')
+      }
+    }
+
+    const failureNote = failures.length > 0 ? `\n[附件收存失败: ${failures.join(', ')}]` : ''
+    const text = `${c.text ?? ''}${failureNote}`.trim()
+    if (!text && media.length === 0) {
       throw new Error('Empty message content')
     }
+    const type = media.length === 0
+      ? ('text' as const)
+      : media.some((m) => m.mime_type.startsWith('image/')) ? ('image' as const) : ('file' as const)
+    return this.storeAssistantMessage({
+      type,
+      ...(text ? { text } : {}),
+      ...(media.length > 0 ? { media, media_url: media[0].media_url } : {}),
+    })
+  }
+
+  private async storeAssistantMessage(content: MessageContent): Promise<ChatSendMessageResult> {
     const message: ChatMessage = {
       message_id: generateId(),
       role: 'assistant',
-      content: text,
+      content,
       timestamp: generateTimestamp(),
     }
     this.messages.set(message.message_id, message)
@@ -304,6 +413,30 @@ export class ChatManager {
   /** 任务状态/计划变更推送（index.ts 的状态机钩子调用） */
   pushTaskUpdate(snapshot: ChatTaskSnapshot): void {
     this.pushToClient({ type: 'chat_task_update', task: snapshot })
+  }
+
+  /**
+   * 给已落库消息回填任务归属并广播（消息级任务图标的数据源）。
+   * 返回是否命中。幂等：已是同 task_id 时不重写不重推。
+   */
+  async tagMessageTask(messageId: string, taskId: TaskId): Promise<boolean> {
+    const msg = this.messages.get(messageId)
+    if (!msg) return false
+    if (msg.task_id === taskId) return true
+    this.messages.set(messageId, { ...msg, task_id: taskId })
+    await this.saveData()
+    this.pushToClient({ type: 'chat_message_tagged', message_id: messageId, task_id: taskId })
+    return true
+  }
+
+  /** 按 request_id 回填 user 消息的任务归属（chat_callback 带 task_id 时调用） */
+  async tagUserMessageByRequestId(requestId: string, taskId: TaskId): Promise<void> {
+    for (const msg of this.messages.values()) {
+      if (msg.request_id === requestId && msg.role === 'user') {
+        await this.tagMessageTask(msg.message_id, taskId)
+        return
+      }
+    }
   }
 
   // ==========================================================================
@@ -323,6 +456,15 @@ export class ChatManager {
 
     // 限制数量
     return messages.slice(0, limit)
+  }
+
+  /** 删除单条消息并广播（返回是否命中） */
+  async deleteMessage(messageId: string): Promise<boolean> {
+    if (!this.messages.has(messageId)) return false
+    this.messages.delete(messageId)
+    await this.saveData()
+    this.pushToClient({ type: 'chat_message_deleted', message_id: messageId })
+    return true
   }
 
   async clearMessages(): Promise<void> {

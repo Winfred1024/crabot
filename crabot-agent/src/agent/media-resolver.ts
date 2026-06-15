@@ -54,7 +54,36 @@ async function fetchRemoteImage(url: string): Promise<Buffer | null> {
   }
 }
 
+/** 从一条消息收集待注入 VLM 的图片引用（media[] 权威，回退遗留单 media_url） */
+function collectImageRefs(msg: ChannelMessage): Array<{ url: string; mime?: string }> {
+  const items = msg.content.media
+  if (items && items.length > 0) {
+    return items
+      .filter((m) => m.mime_type.startsWith('image/'))
+      .map((m) => ({ url: m.media_url, mime: m.mime_type }))
+  }
+  if (msg.content.type === 'image' && msg.content.media_url) {
+    return [{ url: msg.content.media_url, ...(msg.content.mime_type !== undefined ? { mime: msg.content.mime_type } : {}) }]
+  }
+  return []
+}
+
+/**
+ * 渲染媒体引用为可读文本标记。
+ * media[] 存在时为权威：多条独立渲染，优先用 filename（store URL 是 agent 读不到的相对路径，
+ * 渲染 filename 降低 LLM 误读）。遗留单 media_url 保持原样。
+ */
 function formatMediaRef(msg: ChannelMessage): string {
+  const items = msg.content.media
+  if (items && items.length > 0) {
+    return items
+      .map((m) =>
+        m.mime_type.startsWith('image/')
+          ? `[图片: ${m.filename ?? m.media_url}]`
+          : `[文件: ${m.filename ?? m.media_url}]`
+      )
+      .join('\n')
+  }
   if (!msg.content.media_url) return ''
   switch (msg.content.type) {
     case 'image':
@@ -101,40 +130,27 @@ export function formatMessageContent(msg: ChannelMessage): string {
 }
 
 /**
- * 从 ChannelMessage 列表中解析图片为 engine ImageBlock
+ * 从 ChannelMessage 列表中解析图片为 engine ImageBlock。
+ * media[] 存在时为权威（支持同一条消息多张图）；回退遗留单 media_url。
  */
 export async function resolveImageBlocks(
   messages: ChannelMessage[]
 ): Promise<ImageBlock[]> {
-  // Fast path: skip all I/O if no image messages present
-  const imageMessages = messages.filter(
-    (msg) => msg.content.type === 'image' && msg.content.media_url
-  )
-  if (imageMessages.length === 0) return []
+  const refs = messages.flatMap(collectImageRefs)
+  if (refs.length === 0) return []
 
-  // Resolve all images in parallel
   const results = await Promise.all(
-    imageMessages.map(async (msg): Promise<ImageBlock | null> => {
-      const url = msg.content.media_url!
-      const isRemote = url.startsWith('http://') || url.startsWith('https://')
-      const buffer = isRemote
-        ? await fetchRemoteImage(url)
-        : await readLocalFile(url)
-
+    refs.map(async (ref): Promise<ImageBlock | null> => {
+      const isRemote = ref.url.startsWith('http://') || ref.url.startsWith('https://')
+      const buffer = isRemote ? await fetchRemoteImage(ref.url) : await readLocalFile(ref.url)
       if (!buffer) return null
-
-      const mediaType = inferMediaType(msg.content.mime_type, url)
+      const mediaType = inferMediaType(ref.mime, ref.url)
       return {
         type: 'image',
-        source: {
-          type: 'base64',
-          media_type: mediaType,
-          data: buffer.toString('base64'),
-        },
+        source: { type: 'base64', media_type: mediaType, data: buffer.toString('base64') },
       }
     })
   )
-
   return results.filter((block): block is ImageBlock => block !== null)
 }
 

@@ -1538,13 +1538,15 @@ export class UnifiedAgent extends ModuleBase {
             // SSOT 重整：waiting_human → executing 的 RPC 已统一收到 deliverHumanResponse 内部
             // （走 transitionTaskStatus helper），admin_chat 不再重复执行。
 
-            // 即时回复（通过 chat_callback）
+            // 即时回复（通过 chat_callback）。带 task_id：让前端把这条 supplement
+            // 人类消息关联到目标任务（消息旁任务状态图标的数据源）
             const replyText = `收到，正在调整：${text.slice(0, 60)}`
             try {
               await this.rpcClient.call(adminPort, 'chat_callback', {
                 request_id: callbackInfo.request_id,
                 reply_type: 'direct_reply',
                 content: replyText,
+                task_id: taskId,
               }, this.config.moduleId)
             } catch (err) {
               console.error(`[${this.config.moduleId}] pushSupplement admin_chat: chat_callback failed: ${err instanceof Error ? err.message : String(err)}`)

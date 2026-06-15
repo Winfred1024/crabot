@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import fs from 'node:fs/promises'
 import AdminModule from './index.js'
-import type { Task, CreateTaskParams, ChatTaskSnapshot } from './types.js'
+import type { Task, CreateTaskParams, ChatTaskSnapshot, ChatMessage } from './types.js'
 
 const TEST_PROTOCOL_PORT = 19828
 const TEST_WEB_PORT = 13028
@@ -108,5 +108,66 @@ describe('chat_task_update push hooks', () => {
     })
     expect(pushed).toHaveLength(1)
     expect(pushed[0].step).toEqual({ index: 0, total: 2, description: '第一步' })
+  })
+
+  it('handleAppendMessage：admin-web 任务 + role=agent + source.platform_message_id → 回填聊天消息 task_id', async () => {
+    // 1. 用 chatManager.handleSendMessage 造一条 assistant 消息（拿到 message_id）
+    const chatMgr = (admin as any).chatManager
+    const sendResult = await chatMgr.handleSendMessage({
+      session_id: 'admin-chat',
+      content: { type: 'text', text: 'worker 产出消息' },
+    })
+    const chatMsgId = sendResult.platform_message_id
+
+    // 2. 创建 admin-web 来源任务
+    const task = await createTask({
+      source: {
+        trigger_type: 'message',
+        origin: 'human',
+        channel_id: 'admin-web',
+        session_id: 'admin-chat',
+      },
+    })
+
+    // 3. 调 handleAppendMessage，带 role=agent + source.platform_message_id
+    await (admin as any).handleAppendMessage({
+      task_id: task.id,
+      role: 'agent',
+      content: 'worker 做完了',
+      source: {
+        channel_id: 'admin-web',
+        platform_message_id: chatMsgId,
+      },
+    })
+
+    // 4. 断言聊天消息的 task_id 已被回填
+    const msgs: ChatMessage[] = chatMgr.getMessages(20)
+    const chatMsg = msgs.find((m: ChatMessage) => m.message_id === chatMsgId)
+    expect(chatMsg?.task_id).toBe(task.id)
+  })
+
+  it('listActiveChatTaskSnapshots：只含 admin-web 来源的非终态任务', async () => {
+    const running = await createTask({
+      title: '进行中的',
+      source: { trigger_type: 'message', origin: 'human', channel_id: 'admin-web', session_id: 'admin-chat' },
+    })
+    const done = await createTask({
+      title: '已完成的',
+      source: { trigger_type: 'message', origin: 'human', channel_id: 'admin-web', session_id: 'admin-chat' },
+    })
+    await (admin as any).handleUpdateTaskStatus({ task_id: done.id, status: 'planning' })
+    await (admin as any).handleUpdateTaskStatus({ task_id: done.id, status: 'executing' })
+    await (admin as any).handleUpdateTaskStatus({ task_id: done.id, status: 'completed' })
+    await createTask({
+      title: '非 admin-web 的',
+      source: { trigger_type: 'message', origin: 'human', channel_id: 'wechat-1', session_id: 's1' },
+    })
+
+    const snapshots = (admin as any).listActiveChatTaskSnapshots()
+    const ids = snapshots.map((s: { task_id: string }) => s.task_id)
+    expect(ids).toContain(running.id)
+    expect(ids).not.toContain(done.id)
+    expect(snapshots.find((s: { task_id: string }) => s.task_id === running.id).title).toBe('进行中的')
+    expect(snapshots.every((s: { title: string }) => s.title !== '非 admin-web 的')).toBe(true)
   })
 })
