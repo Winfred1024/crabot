@@ -84,7 +84,7 @@ const DASHSCOPE_CODING_MODELS: ModelInfo[] = [
   { model_id: 'MiniMax-M2.5', display_name: 'MiniMax M2.5', type: 'llm', supports_vision: false, context_window: 131072 },
 ]
 
-export const PRESET_VENDORS: readonly PresetVendor[] = [
+export const BUILTIN_PRESET_VENDORS: readonly PresetVendor[] = [
   {
     id: 'chatgpt-subscription',
     name: 'ChatGPT 订阅',
@@ -197,7 +197,3 @@ export const PRESET_VENDORS: readonly PresetVendor[] = [
     recommended: true,
   },
 ]
-
-export function findPresetVendor(vendorId: string): PresetVendor | undefined {
-  return PRESET_VENDORS.find((v) => v.id === vendorId)
-}

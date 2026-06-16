@@ -12,9 +12,7 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import yaml from 'js-yaml'
 import type { ApiFormat, ModelInfo, PresetVendor } from './types.js'
-// 内置源：Task 4 会把 PRESET_VENDORS 改名为 BUILTIN_PRESET_VENDORS，
-// 届时此 import 同步更新。本任务先用现名保持 build 绿。
-import { PRESET_VENDORS as BUILTIN } from './preset-vendors.js'
+import { BUILTIN_PRESET_VENDORS as BUILTIN } from './preset-vendors.js'
 
 export interface VendorOverride {
   mode: 'merge' | 'replace'
