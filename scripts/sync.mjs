@@ -8,7 +8,7 @@ import { homedir } from 'node:os'
 import yaml from 'js-yaml'
 import { detectMode } from './lib/mode.mjs'
 import { readInstance, writeInstance, hasInstance } from './lib/instance.mjs'
-import { mergeByName, mergeKindDoc } from './lib/yaml-merge.mjs'
+import { mergeKindDoc } from './lib/yaml-merge.mjs'
 
 const HOME_DIR = resolve(homedir(), '.crabot')
 const ETC_DIR = '/etc/crabot'
