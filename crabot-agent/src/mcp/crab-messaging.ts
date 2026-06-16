@@ -37,7 +37,7 @@ export interface CrabMessagingDeps {
    * Front 调用路径返回 null（front 不能调 ask_human，工具内会拒绝）。
    */
   getTaskContext?: () => TaskContext | null
-  /** 是否啟用飛書文檔讀取工具（有飛書 channel 時才注入） */
+  /** 是否启用飞书文档读取工具（有飞书 channel 时才注入） */
   enableFeishuDocTool?: boolean
 }
 
@@ -183,6 +183,8 @@ const DAILY_REFLECTION_ALLOWED_TOOLS = new Set([
   'get_history',
   'get_message',
   'read_feishu_document',
+  'feishu_raw_get',
+  'feishu_download_file',
 ])
 
 // ============================================================================
@@ -270,9 +272,29 @@ const GET_MESSAGE_SCHEMA = {
 }
 
 const READ_FEISHU_DOCUMENT_SCHEMA = {
-  url: z.string().describe('飛書雲文檔 URL，例如 https://xxx.feishu.cn/docx/TOKEN 或 /wiki/TOKEN 或 /sheets/TOKEN'),
-  channel_id: z.string().optional().describe('飛書 channel 實例 ID（有多個飛書 channel 時必須指定）'),
-  max_chars: z.number().optional().describe('正文最大字符數（默認 50000）'),
+  url: z.string().describe('飞书云文档 URL，例如 https://xxx.feishu.cn/docx/TOKEN 或 /wiki/TOKEN 或 /sheets/TOKEN'),
+  channel_id: z.string().optional().describe('飞书 channel 实例 ID（有多个飞书 channel 时必须指定）'),
+  max_chars: z.number().optional().describe('正文最大字符数（默认 50000）'),
+}
+
+const FEISHU_RAW_GET_SCHEMA = {
+  path: z.string().describe('飞书只读 API 路径，必须以 /open-apis/ 开头，例如 /open-apis/wiki/v2/spaces/get_node?token=xxx&obj_type=wiki'),
+  query: z.record(z.string(), z.string()).optional().describe('可选 query 参数对象'),
+  channel_id: z.string().optional().describe('多个飞书 channel 时指定'),
+}
+
+const FEISHU_DOWNLOAD_FILE_SCHEMA = {
+  file_token: z.string().describe('drive 文件 token（box 开头）'),
+  filename: z.string().optional().describe('文件名，决定本地扩展名'),
+  channel_id: z.string().optional(),
+}
+
+const FEISHU_WRITE_SCHEMA = {
+  method: z.enum(['POST', 'PUT', 'PATCH', 'DELETE']).describe('HTTP 写方法'),
+  path: z.string().describe('飞书 API 路径，必须以 /open-apis/ 开头'),
+  body: z.record(z.string(), z.unknown()).optional().describe('请求体 JSON 对象'),
+  query: z.record(z.string(), z.string()).optional().describe('可选 query 参数'),
+  channel_id: z.string().optional().describe('多个飞书 channel 时指定'),
 }
 
 const FETCH_MEDIA_SCHEMA = {
@@ -286,6 +308,36 @@ export function buildMessagingTools(
 ): MessagingTool[] {
   const { rpcClient, moduleId, getAdminPort, resolveChannelPort } = deps
   const isDailyReflection = deps.getTaskContext?.()?.taskType === 'daily_reflection'
+
+  // 解析飞书 channel port 的公共 helper（供 read_feishu_document / feishu_raw_get / feishu_download_file 共用）
+  async function resolveFeishuChannelPort(args: Record<string, unknown>): Promise<
+    { channelPort: number } | { error_code: string; error: string; available_channels?: string[] }
+  > {
+    let targetChannelId = args.channel_id as string | undefined
+    if (!targetChannelId) {
+      const adminPort = await getAdminPort()
+      let feishuChannels: Array<{ id: string }> = []
+      try {
+        const result = await rpcClient.call<
+          { pagination: { page: number; page_size: number } },
+          { items: Array<{ id: string; implementation_id: string }> }
+        >(adminPort, 'list_channel_instances', { pagination: { page: 1, page_size: 50 } }, moduleId)
+        feishuChannels = result.items.filter(c => c.implementation_id === 'channel-feishu')
+      } catch {
+        return { error_code: 'CHANNEL_UNAVAILABLE', error: '无法获取飞书 channel 列表' }
+      }
+      if (feishuChannels.length === 0) return { error_code: 'CHANNEL_UNAVAILABLE', error: '没有找到飞书 channel，无法读取飞书文档' }
+      if (feishuChannels.length > 1) return { error_code: 'AMBIGUOUS', error: '有多个飞书 channel，请通过 channel_id 参数指定', available_channels: feishuChannels.map(c => c.id) }
+      targetChannelId = feishuChannels[0].id
+    }
+    try {
+      const channelPort = await resolveChannelPort(targetChannelId)
+      return { channelPort }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return { error_code: 'CHANNEL_UNAVAILABLE', error: `飞书 Channel ${targetChannelId} 不可用: ${msg}` }
+    }
+  }
 
   const allTools: MessagingTool[] = [
     // ================================================================
@@ -1127,60 +1179,70 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
     },
 
     // ================================================================
-    // 9. read_feishu_document — 讀取飛書雲文檔正文（有飛書 channel 時才注入）
+    // 9. read_feishu_document — 读取飞书云文档正文（有飞书 channel 时才注入）
     // ================================================================
     ...(deps.enableFeishuDocTool ? [{
       name: 'read_feishu_document',
-      description: '讀取飛書雲文檔正文（支持 docx / wiki / sheets）。傳入飛書文檔 URL，返回標題和純文本正文。遇到權限不足時返回授權指引。注意：讀取 wiki/docx 需要把本應用（或應用所在群）加為文檔/文件夾/知識空間的協作者。',
+      description: '读取飞书云文档正文（支持 docx / wiki / sheets）。传入飞书文档 URL，返回标题和纯文本正文。遇到权限不足时返回授权指引。注意：读取 wiki/docx 需要把本应用（或应用所在群）加为文档/文件夹/知识空间的协作者。',
       schema: READ_FEISHU_DOCUMENT_SCHEMA,
       handler: async (args: Record<string, unknown>) => {
         const url = args.url as string
         const maxChars = typeof args.max_chars === 'number' ? args.max_chars : undefined
-
-        // 解析目標 channel
-        let targetChannelId = args.channel_id as string | undefined
-        if (!targetChannelId) {
-          const adminPort = await getAdminPort()
-          let feishuChannels: Array<{ id: string }> = []
-          try {
-            const result = await rpcClient.call<
-              { pagination: { page: number; page_size: number } },
-              { items: Array<{ id: string; implementation_id: string }> }
-            >(adminPort, 'list_channel_instances', { pagination: { page: 1, page_size: 50 } }, moduleId)
-            feishuChannels = result.items.filter(c => c.implementation_id === 'channel-feishu')
-          } catch {
-            return wrapText({ error_code: 'CHANNEL_UNAVAILABLE', error: '無法獲取飛書 channel 列表' })
-          }
-          if (feishuChannels.length === 0) {
-            return wrapText({ error_code: 'CHANNEL_UNAVAILABLE', error: '沒有找到飛書 channel，無法讀取飛書文檔' })
-          }
-          if (feishuChannels.length > 1) {
-            return wrapText({
-              error_code: 'AMBIGUOUS',
-              error: '有多個飛書 channel，請通過 channel_id 參數指定',
-              available_channels: feishuChannels.map(c => c.id),
-            })
-          }
-          targetChannelId = feishuChannels[0].id
-        }
-
-        let channelPort: number
-        try {
-          channelPort = await resolveChannelPort(targetChannelId)
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : String(err)
-          return wrapText({ error_code: 'CHANNEL_UNAVAILABLE', error: `飛書 Channel ${targetChannelId} 不可用: ${msg}` })
-        }
-
+        const port = await resolveFeishuChannelPort(args)
+        if ('error_code' in port) return wrapText(port)
         try {
           const result = await rpcClient.call<
             { url: string; max_chars?: number },
             { type: string; title: string; text: string; truncated: boolean; url: string }
-          >(channelPort, 'read_document', { url, ...(maxChars !== undefined ? { max_chars: maxChars } : {}) }, moduleId)
+          >(port.channelPort, 'read_document', { url, ...(maxChars !== undefined ? { max_chars: maxChars } : {}) }, moduleId)
           return wrapText(result)
         } catch (err: unknown) {
           return wrapText(translateChannelError(err))
         }
+      },
+    } as MessagingTool] : []),
+
+    // ================================================================
+    // 10. feishu_raw_get — 飞书原生只读 API 逃生门
+    // ================================================================
+    ...(deps.enableFeishuDocTool ? [{
+      name: 'feishu_raw_get',
+      description: '飞书原生只读 API 逃生门：GET 任意 /open-apis 端点。仅当 read_feishu_document 覆盖不到的非常规读场景才用；常规读文档/表格/wiki 一律优先 read_feishu_document。',
+      schema: FEISHU_RAW_GET_SCHEMA,
+      handler: async (args: Record<string, unknown>) => {
+        const port = await resolveFeishuChannelPort(args)
+        if ('error_code' in port) return wrapText(port)
+        try {
+          const result = await rpcClient.call(port.channelPort, 'feishu_get',
+            { path: args.path, ...(args.query ? { query: args.query } : {}) }, moduleId)
+          return wrapText(result)
+        } catch (err: unknown) { return wrapText(translateChannelError(err)) }
+      },
+    } as MessagingTool, {
+      name: 'feishu_download_file',
+      description: '把 drive 文件登记为可下载句柄；返回 handle 后用 fetch_media(handle) 取本地路径再用 Read/Bash 解析。',
+      schema: FEISHU_DOWNLOAD_FILE_SCHEMA,
+      handler: async (args: Record<string, unknown>) => {
+        const port = await resolveFeishuChannelPort(args)
+        if ('error_code' in port) return wrapText(port)
+        try {
+          const result = await rpcClient.call(port.channelPort, 'feishu_download',
+            { file_token: args.file_token, ...(args.filename ? { filename: args.filename } : {}) }, moduleId)
+          return wrapText(result)
+        } catch (err: unknown) { return wrapText(translateChannelError(err)) }
+      },
+    } as MessagingTool, {
+      name: 'feishu_write',
+      description: '飞书原生写操作透传（POST/PUT/PATCH/DELETE）。会真实修改飞书数据（改/删文档、表格、踢人等），多数不可回滚——调用前务必确认这是用户明确要的操作。只读一律用 read_feishu_document / feishu_raw_get。被本 channel 关闭写操作或缺写权限时会返回提示。',
+      schema: FEISHU_WRITE_SCHEMA,
+      handler: async (args: Record<string, unknown>) => {
+        const port = await resolveFeishuChannelPort(args)
+        if ('error_code' in port) return wrapText(port)
+        try {
+          const result = await rpcClient.call(port.channelPort, 'feishu_write',
+            { method: args.method, path: args.path, ...(args.body ? { body: args.body } : {}), ...(args.query ? { query: args.query } : {}) }, moduleId)
+          return wrapText(result)
+        } catch (err: unknown) { return wrapText(translateChannelError(err)) }
       },
     } as MessagingTool] : []),
   ]

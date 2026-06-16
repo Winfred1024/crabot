@@ -287,68 +287,60 @@ export class FeishuClient {
 
   // ── 云文档 ────────────────────────────────────────────────────────────────
 
-  /** docx v1 文档纯文本：GET /open-apis/docx/v1/documents/:id/raw_content */
-  async getDocxRawContent(documentId: string, lang = 0): Promise<string> {
-    const resp = await this.client.request<{ code?: number; msg?: string; data?: { content?: string } }>({
-      url: `/open-apis/docx/v1/documents/${documentId}/raw_content?lang=${lang}`,
-      method: 'GET',
-    })
-    if (resp.code && resp.code !== 0) {
-      throw new FeishuClientError({ code: this.mapDocCode(resp.code), message: resp.msg ?? `docx raw_content failed (code=${resp.code})` })
+  /**
+   * 飞书只读 API 的唯一原语：GET 任意 /open-apis 端点，返回 data 字段。
+   * code 非 0 抛 FeishuClientError（权限码经 mapDocCode → PERMISSION_DENIED）。
+   * 内部被 FeishuDocReader 编排，外部经 feishu_get RPC 当逃生门暴露。
+   */
+  async rawGet<T = unknown>(path: string, query?: Record<string, string | number>): Promise<T> {
+    let url = path
+    if (query && Object.keys(query).length > 0) {
+      const qs = new URLSearchParams()
+      for (const [k, v] of Object.entries(query)) qs.set(k, String(v))
+      url += (path.includes('?') ? '&' : '?') + qs.toString()
     }
-    return resp.data?.content ?? ''
+    const resp = await this.client.request<{ code?: number; msg?: string; data?: T }>({ url, method: 'GET' })
+    if (resp.code && resp.code !== 0) {
+      throw new FeishuClientError({ code: this.mapDocCode(resp.code), message: resp.msg ?? `feishu GET failed (code=${resp.code}) ${path}` })
+    }
+    return (resp.data ?? {}) as T
   }
 
-  /** docx v1 文档元数据（含标题）：GET /open-apis/docx/v1/documents/:id */
-  async getDocxMeta(documentId: string): Promise<{ title: string }> {
-    const resp = await this.client.request<{ code?: number; msg?: string; data?: { document?: { title?: string } } }>({
-      url: `/open-apis/docx/v1/documents/${documentId}`,
-      method: 'GET',
-    })
-    if (resp.code && resp.code !== 0) {
-      throw new FeishuClientError({ code: this.mapDocCode(resp.code), message: resp.msg ?? `docx meta failed (code=${resp.code})` })
+  /**
+   * 飞书写透传原语：非 GET（POST/PUT/PATCH/DELETE）打任意 /open-apis 端点，body 作为 data。
+   * code 非 0 抛 FeishuClientError（权限码经 mapDocCode → PERMISSION_DENIED）。只读请用 rawGet。
+   */
+  async rawRequest<T = unknown>(opts: {
+    method: 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+    path: string
+    body?: unknown
+    query?: Record<string, string | number>
+  }): Promise<T> {
+    let url = opts.path
+    if (opts.query && Object.keys(opts.query).length > 0) {
+      const qs = new URLSearchParams()
+      for (const [k, v] of Object.entries(opts.query)) qs.set(k, String(v))
+      url += (opts.path.includes('?') ? '&' : '?') + qs.toString()
     }
-    return { title: resp.data?.document?.title ?? '' }
+    const resp = await this.client.request<{ code?: number; msg?: string; data?: T }>(
+      { url, method: opts.method, ...(opts.body !== undefined ? { data: opts.body } : {}) })
+    if (resp.code && resp.code !== 0) {
+      throw new FeishuClientError({ code: this.mapDocCode(resp.code), message: resp.msg ?? `feishu ${opts.method} failed (code=${resp.code}) ${opts.path}` })
+    }
+    return (resp.data ?? {}) as T
   }
 
-  /** wiki v2 节点信息：GET /open-apis/wiki/v2/spaces/get_node?token=&obj_type=wiki */
-  async getWikiNode(token: string): Promise<{ obj_token: string; obj_type: string }> {
-    const resp = await this.client.request<{ code?: number; msg?: string; data?: { node?: { obj_token?: string; obj_type?: string } } }>({
-      url: `/open-apis/wiki/v2/spaces/get_node?token=${encodeURIComponent(token)}&obj_type=wiki`,
-      method: 'GET',
-    })
-    if (resp.code && resp.code !== 0) {
-      throw new FeishuClientError({ code: this.mapDocCode(resp.code), message: resp.msg ?? `wiki get_node failed (code=${resp.code})` })
-    }
-    return {
-      obj_token: resp.data?.node?.obj_token ?? '',
-      obj_type: resp.data?.node?.obj_type ?? '',
-    }
-  }
-
-  /** sheets v3 工作表元数据：GET /open-apis/sheets/v3/spreadsheets/:token/sheets/query */
-  async getSheetMeta(spreadsheetToken: string): Promise<{ title: string; sheets: Array<{ sheet_id: string; title: string }> }> {
-    const resp = await this.client.request<{ code?: number; msg?: string; data?: { sheets?: Array<{ sheet_id?: string; title?: string }> } }>({
-      url: `/open-apis/sheets/v3/spreadsheets/${spreadsheetToken}/sheets/query`,
-      method: 'GET',
-    })
-    if (resp.code && resp.code !== 0) {
-      throw new FeishuClientError({ code: this.mapDocCode(resp.code), message: resp.msg ?? `sheets meta failed (code=${resp.code})` })
-    }
-    const sheets = (resp.data?.sheets ?? []).map(s => ({ sheet_id: s.sheet_id ?? '', title: s.title ?? '' }))
-    return { title: sheets[0]?.title ?? '', sheets }
-  }
-
-  /** sheets v2 读取单个 range 的值：GET /open-apis/sheets/v2/spreadsheets/:token/values/:range */
-  async getSheetValues(spreadsheetToken: string, range: string): Promise<unknown[][]> {
-    const resp = await this.client.request<{ code?: number; msg?: string; data?: { valueRange?: { values?: unknown[][] } } }>({
-      url: `/open-apis/sheets/v2/spreadsheets/${spreadsheetToken}/values/${encodeURIComponent(range)}?valueRenderOption=ToString`,
-      method: 'GET',
-    })
-    if (resp.code && resp.code !== 0) {
-      throw new FeishuClientError({ code: this.mapDocCode(resp.code), message: resp.msg ?? `sheets values failed (code=${resp.code})` })
-    }
-    return resp.data?.valueRange?.values ?? []
+  /**
+   * drive 云空间文件下载：GET /open-apis/drive/v1/files/:token/download（SDK drive.v1.file.download）。
+   * 返回二进制 + 从响应头解析的文件名/MIME。流只能消费一次，故一次性读为 Buffer。
+   */
+  async downloadDriveFile(fileToken: string): Promise<{ buffer: Buffer; filename?: string; mimeType?: string }> {
+    const resp = await (this.client as any).drive.v1.file.download({ path: { file_token: fileToken } })
+    const buffer = await streamToBuffer(resp.getReadableStream())
+    const headers = (resp as { headers?: Record<string, string> }).headers ?? {}
+    const filename = parseContentDispositionFilename(headers['content-disposition'])
+    const mimeType = headers['content-type']
+    return { buffer, ...(filename ? { filename } : {}), ...(mimeType ? { mimeType } : {}) }
   }
 
   private mapDocCode(code: number): string {
@@ -393,6 +385,15 @@ async function streamToBuffer(stream: Readable): Promise<Buffer> {
     stream.on('end', () => resolve(Buffer.concat(chunks)))
     stream.on('error', reject)
   })
+}
+
+/** 从 Content-Disposition 头解析文件名，支持 filename* (RFC 5987) 与普通 filename。 */
+function parseContentDispositionFilename(cd?: string): string | undefined {
+  if (!cd) return undefined
+  const star = /filename\*=(?:UTF-8'')?([^;]+)/i.exec(cd)
+  if (star?.[1]) return decodeURIComponent(star[1].replace(/^"|"$/g, ''))
+  const plain = /filename="?([^";]+)"?/i.exec(cd)
+  return plain?.[1]
 }
 
 /**

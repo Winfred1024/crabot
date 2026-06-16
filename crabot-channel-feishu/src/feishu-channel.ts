@@ -35,6 +35,7 @@ import { WsSubscriber } from './ws-subscriber.js'
 import { SessionManager } from './session-manager.js'
 import { MessageStore, type StoredMessage } from './message-store.js'
 import { splitTextByTableLimit } from './card-table-guard.js'
+import { buildFeishuRemediation, writeScopeForPath } from './feishu-remediation.js'
 import {
   detectMentionCrab,
   injectMentionTags,
@@ -111,6 +112,13 @@ export interface FeishuChannelInitConfig {
   feishu: FeishuChannelConfig
 }
 
+const READ_SCOPE_BY_KIND: Record<string, string> = {
+  docx: 'docx:document:readonly',
+  wiki: 'wiki:wiki:readonly',
+  sheets: 'sheets:spreadsheet:readonly',
+  file: 'drive:drive:readonly',
+}
+
 export class FeishuChannel extends ModuleBase {
   private readonly feishuConfig: FeishuChannelConfig
   private readonly dataDir: string
@@ -167,12 +175,14 @@ export class FeishuChannel extends ModuleBase {
     this.mediaFetch = new MediaFetchManager({
       store: this.mediaHandleStore,
       channelId: this.config.moduleId,
-      download: (rec) => this.downloadAndPersistMedia(
-        rec.credential.platform_message_id as string,
-        rec.credential.file_key as string,
-        rec.kind,
-        rec.filename,
-      ),
+      download: (rec) => rec.credential.file_token
+        ? this.downloadDriveFileToDisk(rec.credential.file_token as string, rec.filename)
+        : this.downloadAndPersistMedia(
+            rec.credential.platform_message_id as string,
+            rec.credential.file_key as string,
+            rec.kind,
+            rec.filename,
+          ),
       publishEvent: (event) => this.rpcClient.publishEvent(event, this.config.moduleId).then(() => undefined),
     })
     this.docReader = new FeishuDocReader(this.client)
@@ -444,6 +454,31 @@ export class FeishuChannel extends ModuleBase {
     }
   }
 
+  /** drive 文件落盘。扩展名优先用下载响应头里的文件名，其次 handle 登记时的 filename，拿不到则 .bin。失败返回 null。 */
+  private async downloadDriveFileToDisk(
+    fileToken: string,
+    filenameHint?: string,
+  ): Promise<{ filePath: string; mimeType?: string; size: number } | null> {
+    try {
+      const { buffer, filename, mimeType } = await this.client.downloadDriveFile(fileToken)
+      const nameForExt = filename ?? filenameHint ?? ''
+      const fromName = nameForExt ? path.extname(nameForExt) : ''
+      const ext = fromName && /^\.[A-Za-z0-9]{1,8}$/.test(fromName) ? fromName : '.bin'
+      const filePath = path.join(this.dataDir, 'media', `drive_${fileToken}${ext}`)
+      await fsp.writeFile(filePath, buffer)
+      return { filePath, size: buffer.length, ...(mimeType ? { mimeType } : {}) }
+    } catch (err) {
+      console.warn(`[FeishuChannel] drive download failed for ${fileToken}:`, err)
+      const detail = err instanceof Error ? err.message : String(err)
+      const looksLikePermission = /403|permission|forbidden|99991663|99991672/i.test(detail)
+      const hint = looksLikePermission
+        ? '这通常是权限问题：① 应用缺 drive:drive:readonly 下载权限，或 ② 这个文件没有分享给本应用。' +
+          '解决：在飞书把该文件（或其所在文件夹）分享给应用作为协作者，或到开发者后台开通 drive 读权限并创建版本发布。'
+        : ''
+      throw new Error(`下载飞书文件失败（${detail}）。${hint}`.trim())
+    }
+  }
+
   /**
    * 解析群名：已有 session 且 title 不是 chat_id 占位 → 复用；否则调 getChat；失败 fallback 到 chat_id。
    * 避免新建 session 时把 oc_xxx 当成 title 落盘。
@@ -462,15 +497,15 @@ export class FeishuChannel extends ModuleBase {
   }
 
   /**
-   * 對 text 內容中出現的飛書 URL，嘗試取標題注解（僅輕量取 title，不取全文）。
-   * 失敗降級為 [飛書文檔] url，絕不阻塞消息。
+   * 对 text 内容中出现的飞书 URL，尝试取标题注解（仅轻量取 title，不取全文）。
+   * 失败降级为 [飞书文档] url，绝不阻塞消息。
    */
   private async enrichContentWithDocTitles(content: MessageContent): Promise<MessageContent> {
     if (content.type !== 'text' || !content.text) return content
     const urls = extractFeishuDocUrls(content.text)
     if (urls.length === 0) return content
 
-    // 並行獲取所有 URL 的標題注解，再統一替換
+    // 并行获取所有 URL 的标题注解，再统一替换
     const refs = urls.map(url => ({ url, ref: parseFeishuDocUrl(url)! }))
     const annotations = await Promise.all(refs.map(({ ref }) => this.fetchDocTitleAnnotation(ref)))
 
@@ -495,7 +530,7 @@ export class FeishuChannel extends ModuleBase {
       this.docTitleCache.set(ref.token, { title: meta.title, fetchedAt: Date.now() })
       return docTitleLabel(meta.title)
     } catch {
-      return '[飛書文檔]'
+      return '[飞书文档]'
     }
   }
 
@@ -720,6 +755,9 @@ export class FeishuChannel extends ModuleBase {
     this.registerMethod('read_document', this.handleReadDocument.bind(this))
     this.registerMethod('add_reaction', this.handleAddReaction.bind(this))
     this.registerMethod('fetch_media', this.handleFetchMedia.bind(this))
+    this.registerMethod('feishu_get', this.handleFeishuGet.bind(this))
+    this.registerMethod('feishu_download', this.handleFeishuDownload.bind(this))
+    this.registerMethod('feishu_write', this.handleFeishuWrite.bind(this))
   }
 
   /**
@@ -1324,7 +1362,10 @@ export class FeishuChannel extends ModuleBase {
         domain: this.feishuConfig.domain,
         ...(this.feishuConfig.owner_open_id ? { owner_open_id: this.feishuConfig.owner_open_id } : {}),
       },
-      group: { only_respond_to_mentions: this.feishuConfig.only_respond_to_mentions },
+      group: {
+        only_respond_to_mentions: this.feishuConfig.only_respond_to_mentions,
+        allow_write: this.feishuConfig.allow_write !== false,
+      },
       markdown_format: this.feishuConfig.markdown_format,
       crab_platform_user_id: this.botOpenId ?? '',
     }
@@ -1335,6 +1376,7 @@ export class FeishuChannel extends ModuleBase {
         'credentials.app_id': { hot_reload: false, description: 'App ID，变更需重启' },
         'credentials.domain': { hot_reload: false, description: '接入域，变更需重启' },
         'group.only_respond_to_mentions': { hot_reload: true, description: '群聊仅响应 @ Crabot' },
+        'group.allow_write': { hot_reload: true, description: '允许写操作（POST/PUT/PATCH/DELETE 透传，默认开启；关闭后 agent 无法修改飞书数据）' },
         'markdown_format': { hot_reload: true, description: 'Markdown 渲染开关：auto / on / off' },
       },
     }
@@ -1348,7 +1390,7 @@ export class FeishuChannel extends ModuleBase {
   private handleUpdateConfig(params: {
     config?: {
       credentials?: { app_id?: string; app_secret?: string; domain?: FeishuDomain; owner_open_id?: string }
-      group?: { only_respond_to_mentions?: boolean }
+      group?: { only_respond_to_mentions?: boolean; allow_write?: boolean }
       markdown_format?: MarkdownFormat
     }
   }): { config: Record<string, unknown>; requires_restart: boolean } {
@@ -1376,6 +1418,9 @@ export class FeishuChannel extends ModuleBase {
     if (typeof group.only_respond_to_mentions === 'boolean') {
       this.feishuConfig.only_respond_to_mentions = group.only_respond_to_mentions
     }
+    if (typeof group.allow_write === 'boolean') {
+      this.feishuConfig.allow_write = group.allow_write
+    }
 
     if (incoming.markdown_format && MARKDOWN_FORMAT_VALUES.includes(incoming.markdown_format)) {
       this.feishuConfig.markdown_format = incoming.markdown_format
@@ -1385,30 +1430,96 @@ export class FeishuChannel extends ModuleBase {
     return { config: masked, requires_restart: requiresRestart }
   }
 
-  private async handleReadDocument(params: { url: string; max_chars?: number }): Promise<{
-    type: 'docx' | 'wiki' | 'sheets'
-    title: string
-    text: string
-    truncated: boolean
-    url: string
-  }> {
+  /** 原生只读透传：仅 GET /open-apis/*，授权由 app scope 兜底。 */
+  private async handleFeishuGet(params: { path: string; query?: Record<string, string | number> }): Promise<{ data: unknown }> {
+    const { path: p, query } = params
+    if (!p || typeof p !== 'string' || !p.startsWith('/open-apis/') || p.includes('..')) {
+      throwError('INVALID_ARGUMENT', 'path 必须以 /open-apis/ 开头且不含 ..')
+    }
+    const data = await this.client.rawGet(p, query)
+    return { data }
+  }
+
+  /** 原生写透传：POST/PUT/PATCH/DELETE /open-apis/*。受 allow_write 开关控制；403 给写 scope 引导。 */
+  private async handleFeishuWrite(params: {
+    method: 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+    path: string
+    body?: unknown
+    query?: Record<string, string | number>
+  }): Promise<Record<string, unknown>> {
+    if (this.feishuConfig.allow_write === false) {
+      return {
+        error_code: 'WRITE_DISABLED',
+        message: '这台 crabot 的飞书 channel 关闭了写操作。要开启：去 Admin → 该 channel 配置 → 打开「允许写操作」。',
+      }
+    }
+    const { method, path: p, body, query } = params
+    if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+      throwError('INVALID_ARGUMENT', 'method 必须是 POST/PUT/PATCH/DELETE；只读请用 feishu_get')
+    }
+    if (!p || typeof p !== 'string' || !p.startsWith('/open-apis/') || p.includes('..')) {
+      throwError('INVALID_ARGUMENT', 'path 必须以 /open-apis/ 开头且不含 ..')
+    }
+    try {
+      const data = await this.client.rawRequest({ method, path: p, ...(body !== undefined ? { body } : {}), ...(query ? { query } : {}) })
+      return { data }
+    } catch (err: unknown) {
+      if ((err as { code?: string }).code === 'PERMISSION_DENIED') {
+        const scope = writeScopeForPath(p)
+        if (scope) {
+          const remediation = buildFeishuRemediation({ appId: this.feishuConfig.app_id, domain: this.feishuConfig.domain, missingScope: scope, intent: 'write' })
+          return { error_code: 'PERMISSION_DENIED', message: remediation.message, remediation }
+        }
+        return { error_code: 'PERMISSION_DENIED', message: '飞书拒绝了这个写操作，通常是应用缺该 API 的写权限。请到飞书开发者后台开通对应写权限并创建版本发布，并确认应用是目标资源的协作者。' }
+      }
+      throw err
+    }
+  }
+
+  /** 把 drive file_token 登记为 media handle，agent 再用 fetch_media 取本地路径。 */
+  private async handleFeishuDownload(params: { file_token: string; filename?: string; size?: number }): Promise<{ handle: string; status: 'not_fetched' }> {
+    if (!params.file_token) throwError('INVALID_ARGUMENT', 'file_token is required')
+    const handle = await this.mediaHandleStore.put({
+      kind: 'file',
+      ...(params.filename ? { filename: params.filename } : {}),
+      ...(typeof params.size === 'number' ? { size: params.size } : {}),
+      credential: { file_token: params.file_token },
+    })
+    return { handle, status: 'not_fetched' }
+  }
+
+  private async handleReadDocument(params: { url: string; max_chars?: number }): Promise<Record<string, unknown>> {
     const { url, max_chars } = params
     if (!url || typeof url !== 'string') throwError('INVALID_ARGUMENT', 'url is required')
 
     const ref = parseFeishuDocUrl(url)
     if (!ref) throwError('INVALID_ARGUMENT', `不是飞书云文档 URL：${url}`)
     if (ref.kind === 'unknown') {
-      throwError('UNSUPPORTED', `本期不支持读取此类型飞书文档，支持：docx / wiki / sheets。URL: ${url}`)
+      throwError('UNSUPPORTED', `本期不支持读取此类型飞书文档，支持：docx / wiki / sheets / file。URL: ${url}`)
     }
 
     try {
       const result = await this.docReader.read(ref, { maxChars: max_chars })
+      if (result.type === 'file') {
+        const handle = await this.mediaHandleStore.put({
+          kind: 'file',
+          ...(result.filename ? { filename: result.filename } : {}),
+          credential: { file_token: result.file_token as string },
+        })
+        return { type: 'file', title: result.title, handle, status: 'not_fetched', ...(result.filename ? { filename: result.filename } : {}), url }
+      }
       return { ...result, url }
     } catch (err: unknown) {
       const code = (err as { code?: string }).code ?? ''
       if (code === 'PERMISSION_DENIED') {
-        throwError('PERMISSION_DENIED',
-          `没有读取此文档的权限。请在飞书开发者后台把应用（或应用所在群）加为文档/文件夹/知识空间的协作者。原始错误：${(err as Error).message}`)
+        const missingScope = (err as { missing_scope?: string }).missing_scope
+          ?? READ_SCOPE_BY_KIND[ref!.kind] ?? 'drive:drive:readonly'
+        const remediation = buildFeishuRemediation({
+          appId: this.feishuConfig.app_id,
+          domain: this.feishuConfig.domain,
+          missingScope,
+        })
+        return { error_code: 'PERMISSION_DENIED', message: remediation.message, remediation, url }
       }
       if (code === 'NOT_FOUND') throwError('NOT_FOUND', `文档不存在或已删除：${url}`)
       if (code === 'UNSUPPORTED') throwError('UNSUPPORTED', (err as Error).message)
@@ -1539,7 +1650,7 @@ function throwError(code: string, message: string): never {
 }
 
 function docTitleLabel(title: string): string {
-  return title ? `[飛書文檔·${title}]` : '[飛書文檔]'
+  return title ? `[飞书文档·${title}]` : '[飞书文档]'
 }
 
 function isPermissionDenied(err: unknown): boolean {

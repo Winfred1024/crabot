@@ -44,32 +44,30 @@ export const ONBOARD_SCOPES: readonly string[] = [
   // IM — 必備
   'im:message',
   'im:message:send_as_bot',
-  // im:chat（讀+寫，含 group_info / members 全部子權限）。
-  // 用 :readonly 也能跑當前實現（getChatMembers / listChats / getChat），但飛書
-  // 後端有時對 :readonly 的開通流程有 UI 陷阱（默認勾選但要手動提交開通）；
-  // 直接用 im:chat 一档到位，未來扩展加群成员 / 改群名也不必再走一遍 scope_grant_url。
+  // im:chat（读+写，含 group_info / members 全部子权限）。
+  // 用 :readonly 也能跑当前实现（getChatMembers / listChats / getChat），但飞书
+  // 后端有时对 :readonly 的开通流程有 UI 陷阱（默认勾选但要手动提交开通）；
+  // 直接用 im:chat 一档到位，未来扩展加群成员 / 改群名也不必再走一遍 scope_grant_url。
   'im:chat',
   'im:resource',
-  // 聯繫人 — 必備
+  // 联系人 — 必备
   'contact:user.base:readonly',
   'contact:contact.base:readonly',
-  // 雲文檔只讀 — 必備（P1）
+  // 云文档只读 — 必备（P1）
   'docx:document:readonly',
   'wiki:wiki:readonly',
   'sheets:spreadsheet:readonly',
-  // 前瞻只讀
+  // 前瞻只读
   'bitable:app:readonly',
   'vc:meeting:readonly',
   'calendar:calendar:readonly',
-  // 已砍：drive:drive:readonly / minutes:minutes:readonly
-  //   - 兩者飛書側標"需審核權限"，用戶體驗差（要等飛書人工審批可能幾個工作日）
-  //   - drive 是"讀整個雲空間所有文件"的大權限，當前 feishu-doc-reader 走細粒度
-  //     docx/wiki/sheets 協作者權限就夠，不需要全空間訪問
-  //   - minutes 當前 feishu-doc-reader 沒實現妙記讀取，要的話以後單獨申請
+  // 2026-06-16 放开 drive 读：大文件被飞书自动转 drive，命中率高
+  'drive:drive:readonly',
+  // 已砍：minutes:minutes:readonly（飞书侧标"需审核权限"，feishu-doc-reader 暂未实现妙记读取，要的话以后单独申请）
 ]
 
-export function buildScopeGrantUrl(appId: string, domain: Brand): string {
-  const q = ONBOARD_SCOPES.join(',')
+export function buildScopeGrantUrl(appId: string, domain: Brand, scopes: readonly string[] = ONBOARD_SCOPES): string {
+  const q = scopes.join(',')
   return `${OPEN_BY_DOMAIN[domain]}/app/${appId}/auth?q=${encodeURIComponent(q)}&op_from=openapi&token_type=tenant`
 }
 

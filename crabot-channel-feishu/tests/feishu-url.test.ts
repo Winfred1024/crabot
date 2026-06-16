@@ -35,6 +35,14 @@ describe('parseFeishuDocUrl', () => {
     const r = parseFeishuDocUrl('https://feishu.cn/docx/TOKEN123/')
     expect(r?.token).toBe('TOKEN123')
   })
+
+  it('识别 drive file 链接为 kind=file', () => {
+    expect(parseFeishuDocUrl('https://x.feishu.cn/file/boxcnTOKEN123')).toEqual({ kind: 'file', token: 'boxcnTOKEN123' })
+  })
+
+  it('wiki 链接仍为 kind=wiki（file 判定不误伤 wiki）', () => {
+    expect(parseFeishuDocUrl('https://x.feishu.cn/wiki/WTOKEN')).toEqual({ kind: 'wiki', token: 'WTOKEN' })
+  })
 })
 
 describe('extractFeishuDocUrls', () => {

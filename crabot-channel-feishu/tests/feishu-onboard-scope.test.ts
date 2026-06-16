@@ -12,6 +12,10 @@ describe('ONBOARD_SCOPES', () => {
     expect(ONBOARD_SCOPES).toContain('wiki:wiki:readonly')
     expect(ONBOARD_SCOPES).toContain('sheets:spreadsheet:readonly')
   })
+
+  it('includes drive read scope (大文件被飞书自动转 drive)', () => {
+    expect(ONBOARD_SCOPES).toContain('drive:drive:readonly')
+  })
 })
 
 describe('buildScopeGrantUrl', () => {
@@ -33,5 +37,12 @@ describe('buildScopeGrantUrl', () => {
     for (const scope of ONBOARD_SCOPES) {
       expect(url).toContain(encodeURIComponent(scope))
     }
+  })
+
+  it('只包含传入的 scope 子集（不混入全量默认）', () => {
+    const url = decodeURIComponent(buildScopeGrantUrl('cli_x', 'feishu', ['drive:drive:readonly']))
+    expect(url).toContain('cli_x')
+    expect(url).toContain('drive:drive:readonly')
+    expect(url).not.toContain('im:message')
   })
 })

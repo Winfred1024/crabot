@@ -1,4 +1,4 @@
-export type FeishuDocKind = 'docx' | 'wiki' | 'sheets' | 'unknown'
+export type FeishuDocKind = 'docx' | 'wiki' | 'sheets' | 'file' | 'unknown'
 export interface FeishuDocRef { kind: FeishuDocKind; token: string }
 
 const FEISHU_HOST_RE = /(?:^|\.)(?:feishu\.cn|larksuite\.com)$/
@@ -8,7 +8,7 @@ export function parseFeishuDocUrl(raw: string): FeishuDocRef | null {
   try { u = new URL(raw) } catch { return null }
   if (!FEISHU_HOST_RE.test(u.hostname)) return null
   const segs = u.pathname.split('/').filter(Boolean)
-  const typeIdx = segs.findIndex(s => s === 'docx' || s === 'wiki' || s === 'sheets')
+  const typeIdx = segs.findIndex(s => s === 'docx' || s === 'wiki' || s === 'sheets' || s === 'file')
   if (typeIdx === -1) return { kind: 'unknown', token: '' }
   const kind = segs[typeIdx] as FeishuDocKind
   const token = segs[typeIdx + 1] ?? ''

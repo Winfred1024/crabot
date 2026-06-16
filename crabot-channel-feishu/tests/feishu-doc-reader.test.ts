@@ -3,14 +3,15 @@ import { FeishuDocReader } from '../src/feishu-doc-reader.js'
 import type { FeishuClient } from '../src/feishu-client.js'
 
 function makeClient(overrides: Partial<FeishuClient> = {}): FeishuClient {
-  return {
-    getDocxRawContent: vi.fn(async () => 'docx body text'),
-    getDocxMeta: vi.fn(async () => ({ title: 'My Doc' })),
-    getWikiNode: vi.fn(async () => ({ obj_token: 'docxTOKEN', obj_type: 'docx' })),
-    getSheetMeta: vi.fn(async () => ({ title: 'Sheet1', sheets: [{ sheet_id: 'sh1', title: 'Sheet1' }] })),
-    getSheetValues: vi.fn(async () => [['A1', 'B1'], ['A2', 'B2']]),
-    ...overrides,
-  } as unknown as FeishuClient
+  const rawGet = vi.fn(async (path: string) => {
+    if (path.includes('/raw_content')) return { content: 'docx body text' }
+    if (/\/docx\/v1\/documents\/[^/]+$/.test(path)) return { document: { title: 'My Doc' } }
+    if (path.includes('/wiki/v2/spaces/get_node')) return { node: { obj_token: 'docxTOKEN', obj_type: 'docx' } }
+    if (path.includes('/sheets/query')) return { sheets: [{ sheet_id: 'sh1', title: 'Sheet1' }] }
+    if (path.includes('/values/')) return { valueRange: { values: [['A1', 'B1'], ['A2', 'B2']] } }
+    return {}
+  })
+  return { rawGet, ...overrides } as unknown as FeishuClient
 }
 
 describe('FeishuDocReader.read()', () => {
@@ -32,8 +33,9 @@ describe('FeishuDocReader.read()', () => {
   })
 
   it('throws UNSUPPORTED when wiki resolves to non-docx type', async () => {
-    const client = makeClient({ getWikiNode: vi.fn(async () => ({ obj_token: 'bt', obj_type: 'bitable' })) })
-    const reader = new FeishuDocReader(client)
+    const rawGet = vi.fn(async (path: string) =>
+      path.includes('get_node') ? { node: { obj_token: 'bt', obj_type: 'bitable' } } : {})
+    const reader = new FeishuDocReader({ rawGet } as unknown as FeishuClient)
     await expect(reader.read({ kind: 'wiki', token: 'W' })).rejects.toMatchObject({ code: 'UNSUPPORTED' })
   })
 
@@ -46,8 +48,12 @@ describe('FeishuDocReader.read()', () => {
   })
 
   it('truncates docx content when maxChars exceeded', async () => {
-    const client = makeClient({ getDocxRawContent: vi.fn(async () => 'x'.repeat(200)) })
-    const reader = new FeishuDocReader(client)
+    const rawGet = vi.fn(async (path: string) => {
+      if (path.includes('/raw_content')) return { content: 'x'.repeat(200) }
+      if (/\/docx\/v1\/documents\/[^/]+$/.test(path)) return { document: { title: 'My Doc' } }
+      return {}
+    })
+    const reader = new FeishuDocReader({ rawGet } as unknown as FeishuClient)
     const result = await reader.read({ kind: 'docx', token: 'D' }, { maxChars: 50 })
     expect(result.text.length).toBeLessThanOrEqual(55)
     expect(result.truncated).toBe(true)
@@ -56,6 +62,23 @@ describe('FeishuDocReader.read()', () => {
   it('throws UNSUPPORTED for unknown kind', async () => {
     const reader = new FeishuDocReader(makeClient())
     await expect(reader.read({ kind: 'unknown', token: '' })).rejects.toMatchObject({ code: 'UNSUPPORTED' })
+  })
+
+  it('wiki(file) 节点返回 file descriptor，不抛错，filename 取自节点 title', async () => {
+    const rawGet = vi.fn(async (path: string) =>
+      path.includes('get_node') ? { node: { obj_token: 'boxT', obj_type: 'file', title: 'plan.pptx' } } : {})
+    const reader = new FeishuDocReader({ rawGet } as unknown as FeishuClient)
+    const r = await reader.read({ kind: 'wiki', token: 'W' })
+    expect(r.type).toBe('file')
+    expect(r.file_token).toBe('boxT')
+    expect(r.filename).toBe('plan.pptx')
+  })
+
+  it('drive file 链接直接返回 file descriptor', async () => {
+    const rawGet = vi.fn(async () => ({}))
+    const reader = new FeishuDocReader({ rawGet } as unknown as FeishuClient)
+    const r = await reader.read({ kind: 'file', token: 'boxT' })
+    expect(r.type).toBe('file'); expect(r.file_token).toBe('boxT')
   })
 })
 
@@ -82,5 +105,19 @@ describe('FeishuDocReader.readMeta()', () => {
   it('throws UNSUPPORTED for unknown kind in readMeta', async () => {
     const reader = new FeishuDocReader(makeClient())
     await expect(reader.readMeta({ kind: 'unknown', token: '' })).rejects.toMatchObject({ code: 'UNSUPPORTED' })
+  })
+
+  it('wiki(file) 节点 readMeta 返回 file 类型 + 节点标题作文件名', async () => {
+    const rawGet = vi.fn(async (path: string) =>
+      path.includes('get_node') ? { node: { obj_token: 'boxT', obj_type: 'file', title: 'plan.pptx' } } : {})
+    const reader = new FeishuDocReader({ rawGet } as unknown as FeishuClient)
+    const meta = await reader.readMeta({ kind: 'wiki', token: 'W' })
+    expect(meta).toEqual({ type: 'file', title: 'plan.pptx' })
+  })
+
+  it('直接 file 链接 readMeta 返回空标题不抛错', async () => {
+    const reader = new FeishuDocReader({ rawGet: vi.fn(async () => ({})) } as unknown as FeishuClient)
+    const meta = await reader.readMeta({ kind: 'file', token: 'boxT' })
+    expect(meta).toEqual({ type: 'file', title: '' })
   })
 })

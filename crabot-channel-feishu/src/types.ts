@@ -355,6 +355,8 @@ export interface FeishuChannelConfig {
   only_respond_to_mentions: boolean
   /** bot 发文本时是否按 Markdown 渲染（启用时改用 interactive 卡片 + markdown 元素）。默认 auto */
   markdown_format: MarkdownFormat
+  /** 是否允许写透传（feishu_write）。缺省视为 true（开启）。 */
+  allow_write?: boolean
 }
 
 export interface ListContactsParams {
