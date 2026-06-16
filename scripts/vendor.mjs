@@ -17,7 +17,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
 const ETC_DIR = '/etc/crabot'
 const HOME_DIR = resolve(homedir(), '.crabot')
-const FORMATS = ['openai', 'anthropic', 'gemini', 'openai-responses']
+// 不含 'openai-responses'：ChatGPT 订阅是内置固定 OAuth 流程，不可自定义。
+const FORMATS = ['openai', 'anthropic', 'gemini']
 
 /** 决定 vendor.yaml 落点：system mode → /etc/crabot/defaults；user mode → DATA_DIR/admin。 */
 function resolveTarget() {
@@ -98,9 +99,12 @@ async function cmdAdd(rl, target) {
   const id = (await rl.question('id（唯一标识，如 company-proxy）: ')).trim()
   const name = (await rl.question('显示名称（如 公司内部代理）: ')).trim()
   console.log('协议格式：' + FORMATS.map((f, i) => `${i + 1}) ${f}`).join('  '))
-  const fmtIdx = parseInt((await rl.question('选择格式 [1-4]: ')).trim(), 10)
+  const fmtIdx = parseInt((await rl.question(`选择格式 [1-${FORMATS.length}]: `)).trim(), 10)
   const format = FORMATS[fmtIdx - 1]
-  const endpoint = (await rl.question('endpoint（如 https://llm.corp.internal/v1）: ')).trim()
+  const epHint = format === 'anthropic'
+    ? '裸 host，如 https://claude.corp.internal（Anthropic SDK 自动拼 /v1/messages，不要加 /v1）'
+    : 'OpenAI 兼容端点，末尾通常带 /v1，如 https://llm.corp.internal/v1'
+  const endpoint = (await rl.question(`endpoint（${epHint}）: `)).trim()
   const defaultModelsApi = (format === 'openai' || format === 'gemini') ? '/models' : ''
   const modelsApiAns = (await rl.question(`models_api（回车默认 "${defaultModelsApi || '留空'}"）: `)).trim()
   const models_api = modelsApiAns || defaultModelsApi

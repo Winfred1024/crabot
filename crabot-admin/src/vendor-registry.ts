@@ -19,7 +19,22 @@ export interface VendorOverride {
   vendors: PresetVendor[]
 }
 
-const VALID_FORMATS: readonly ApiFormat[] = ['openai', 'anthropic', 'gemini', 'openai-responses']
+/**
+ * vendor.yaml 里允许自定义的协议格式。
+ * 不含 'openai-responses'——它是 ChatGPT 订阅的内置固定 OAuth 流程（设备码登录、
+ * endpoint 固定 chatgpt.com/backend-api/codex），无法当普通"填 key" vendor 配置，
+ * 因此禁止在 vendor.yaml 里自定义，且内置的此类 vendor 受保护（见 isProtectedVendor）。
+ */
+const CUSTOMIZABLE_FORMATS: readonly ApiFormat[] = ['openai', 'anthropic', 'gemini']
+
+/**
+ * 受保护的内置 vendor：固定流程、不可被 vendor.yaml 覆盖或在 replace 模式下隐藏。
+ * 目前指 openai-responses（ChatGPT 订阅）——它走专门的 OAuth onboarding，
+ * 一旦被 override 干掉会破坏订阅入口。
+ */
+function isProtectedVendor(v: PresetVendor): boolean {
+  return v.format === 'openai-responses'
+}
 
 function isNonEmptyString(v: unknown): v is string {
   return typeof v === 'string' && v.length > 0
@@ -50,7 +65,12 @@ export function validatePresetVendor(raw: unknown): PresetVendor | null {
   if (!isNonEmptyString(v.id)) return null
   if (!isNonEmptyString(v.name)) return null
   if (!isNonEmptyString(v.endpoint)) return null
-  if (typeof v.format !== 'string' || !VALID_FORMATS.includes(v.format as ApiFormat)) return null
+  if (typeof v.format !== 'string' || !CUSTOMIZABLE_FORMATS.includes(v.format as ApiFormat)) {
+    if (v.format === 'openai-responses') {
+      console.warn(`[vendor-registry] 跳过 vendor "${isNonEmptyString(v.id) ? v.id : '?'}"：openai-responses 是内置固定 OAuth 流程，不支持自定义`)
+    }
+    return null
+  }
 
   const vendor: PresetVendor = {
     id: v.id,
@@ -83,12 +103,23 @@ export function resolvePresetVendors(
   override: VendorOverride | null,
 ): PresetVendor[] {
   if (!override) return [...builtin]
-  if (override.mode === 'replace') return [...override.vendors]
-  // merge：同 id 覆盖（保持内置原位次），新 id 追加尾部
-  const overrideById = new Map(override.vendors.map(v => [v.id, v]))
+
+  // 受保护的内置固定流程 vendor（ChatGPT 订阅）：override 不得覆盖其 id，也不得在
+  // replace 模式下隐藏它。先把这些 id 从 override 里剔除，确保任何模式下都拦不掉。
+  const protectedIds = new Set(builtin.filter(isProtectedVendor).map(v => v.id))
+  const safeOverride = override.vendors.filter(v => !protectedIds.has(v.id))
+
+  if (override.mode === 'replace') {
+    // replace 完全接管普通 vendor，但受保护的内置固定流程始终保留（排在最前）
+    const protectedBuiltins = builtin.filter(isProtectedVendor)
+    return [...protectedBuiltins, ...safeOverride]
+  }
+  // merge：同 id 覆盖（保持内置原位次），新 id 追加尾部；受保护项不在 safeOverride 中，
+  // 故 builtin.map 必然保留其内置定义。
+  const overrideById = new Map(safeOverride.map(v => [v.id, v]))
   const merged = builtin.map(v => overrideById.get(v.id) ?? v)
   const builtinIds = new Set(builtin.map(v => v.id))
-  const added = override.vendors.filter(v => !builtinIds.has(v.id))
+  const added = safeOverride.filter(v => !builtinIds.has(v.id))
   return [...merged, ...added]
 }
 

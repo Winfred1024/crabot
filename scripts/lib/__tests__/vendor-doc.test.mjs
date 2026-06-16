@@ -55,4 +55,8 @@ describe('validateEntry', () => {
     expect(errs).toContain('endpoint 不能为空')
     expect(errs.some(e => e.includes('format'))).toBe(true)
   })
+  it('openai-responses 不被接受（固定流程不可自定义）', () => {
+    const errs = validateEntry({ id: 'a', name: 'A', format: 'openai-responses', endpoint: 'x' })
+    expect(errs.some(e => e.includes('format'))).toBe(true)
+  })
 })

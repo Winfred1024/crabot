@@ -47,6 +47,12 @@ describe('validatePresetVendor', () => {
     })
     expect(out!.default_models).toEqual([{ model_id: 'good', display_name: 'G', type: 'llm' }])
   })
+
+  it('format=openai-responses 被拒绝（固定 OAuth 流程不可自定义）', () => {
+    expect(validatePresetVendor({
+      id: 'fake-chatgpt', name: '伪订阅', format: 'openai-responses', endpoint: 'https://evil/codex',
+    })).toBeNull()
+  })
 })
 
 describe('resolvePresetVendors', () => {
@@ -72,6 +78,30 @@ describe('resolvePresetVendors', () => {
       vendors: [{ id: 'corp', name: '公司代理', format: 'openai', endpoint: 'https://corp/v1' }],
     })
     expect(out.map(v => v.id)).toEqual(['corp'])
+  })
+
+  // 受保护：openai-responses（ChatGPT 订阅）固定流程，任何模式都不能被 override 干掉
+  const BUILTIN_PROTECTED: PresetVendor[] = [
+    { id: 'chatgpt-subscription', name: 'ChatGPT 订阅', format: 'openai-responses', endpoint: 'https://chatgpt.com/backend-api/codex', auth_type: 'oauth' },
+    { id: 'openai', name: 'OpenAI', format: 'openai', endpoint: 'https://api.openai.com/v1' },
+  ]
+
+  it('replace：受保护的 openai-responses 内置始终保留', () => {
+    const out = resolvePresetVendors(BUILTIN_PROTECTED, {
+      mode: 'replace',
+      vendors: [{ id: 'corp', name: '公司代理', format: 'openai', endpoint: 'https://corp/v1' }],
+    })
+    expect(out.map(v => v.id)).toEqual(['chatgpt-subscription', 'corp'])
+  })
+
+  it('merge：受保护的 id 不可被同 id override 覆盖', () => {
+    const out = resolvePresetVendors(BUILTIN_PROTECTED, {
+      mode: 'merge',
+      vendors: [{ id: 'chatgpt-subscription', name: '冒名', format: 'openai', endpoint: 'https://evil/v1' }],
+    })
+    const cg = out.find(v => v.id === 'chatgpt-subscription')!
+    expect(cg.name).toBe('ChatGPT 订阅')        // 仍是内置定义
+    expect(cg.format).toBe('openai-responses')  // 未被改成 openai
   })
 })
 
@@ -134,7 +164,7 @@ describe('initVendorRegistry + getPresetVendors + findPresetVendor', () => {
     try { await fn(dir) } finally { await fs.rm(dir, { recursive: true, force: true }) }
   }
 
-  it('replace 模式隐藏内置：findPresetVendor 内置 id 返回 undefined、自定义 id 命中', async () => {
+  it('replace 模式隐藏普通内置，但受保护的 chatgpt-subscription 保留', async () => {
     await withTmpDir(async (dir) => {
       await fs.writeFile(path.join(dir, 'vendor.yaml'), [
         'mode: replace',
@@ -146,9 +176,11 @@ describe('initVendorRegistry + getPresetVendors + findPresetVendor', () => {
       ].join('\n'))
       const { initVendorRegistry, getPresetVendors, findPresetVendor } = await import('./vendor-registry.js')
       await initVendorRegistry(dir)
-      expect(getPresetVendors().map(v => v.id)).toEqual(['corp'])
       expect(findPresetVendor('corp')).toBeDefined()
-      expect(findPresetVendor('openai')).toBeUndefined()
+      expect(findPresetVendor('openai')).toBeUndefined()        // 普通内置被 replace 隐藏
+      expect(findPresetVendor('chatgpt-subscription')).toBeDefined() // 受保护，始终保留
+      // 结果 = 受保护内置 + override 自定义
+      expect(getPresetVendors().map(v => v.id).sort()).toEqual(['chatgpt-subscription', 'corp'])
     })
   })
 

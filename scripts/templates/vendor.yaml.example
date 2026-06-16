@@ -1,21 +1,28 @@
 # Crabot 自定义供应商目录（PresetVendor）
 #
 # 作用：自定义员工在 Admin Web "添加 provider" 下拉里可选的供应商。
-# 这里只配"目录/菜单"，不含任何 API key——员工选中后自己填 key 或扫码 OAuth。
+# 这里只配"目录/菜单"，不含任何 API key——员工选中后自己填 key。
 #
 # 启用：把本文件改名为 vendor.yaml（同目录），或用 `sudo crabot vendor add` 向导编辑。
 # 改动后递增 /etc/crabot/cluster.version，员工下次 `crabot sync` 生效。
+#
+# format 仅支持：openai | anthropic | gemini
+#   - ChatGPT 订阅（openai-responses）是内置的固定 OAuth 登录流程，endpoint 固定、
+#     无法也无需在此配置；它始终保留在下拉里，replace 模式也不会隐藏它。
+# endpoint 规则（容易踩坑）：
+#   - openai / gemini：OpenAI 兼容端点，末尾通常要带 /v1（如 .../v1）
+#   - anthropic：填裸 host 或厂商专用路径，【不要】加 /v1——Anthropic SDK 自动拼 /v1/messages
 
 # mode: merge   → 在内置供应商（OpenAI/Anthropic/Ollama…）基础上增加/覆盖（默认）
-# mode: replace → 完全接管，隐藏所有内置供应商，员工只能看到下面这份
+# mode: replace → 完全接管，隐藏所有内置供应商（ChatGPT 订阅除外），员工只看下面这份
 mode: merge
 
 vendors:
   # 例 1：公司内部 OpenAI 兼容代理。有 /models 端点 → 员工填 key 后自动拉模型列表，
-  #        无需写 default_models。
+  #        无需写 default_models。注意 openai 端点末尾带 /v1。
   - id: company-proxy
     name: 公司内部代理
-    format: openai            # openai | anthropic | gemini | openai-responses
+    format: openai            # openai | anthropic | gemini
     endpoint: https://llm.corp.internal/v1
     models_api: /models
     recommended: true         # 前端置顶（可选）
@@ -25,6 +32,7 @@ vendors:
     # vision_id_prefixes: ['claude-', 'gpt-']                # 可选：这些前缀的模型自动标视觉
 
   # 例 2：无 /models 端点的厂商 → 必须写静态 default_models。
+  #        注意 anthropic 端点是裸 host，不带 /v1。
   - id: internal-anthropic
     name: 公司 Claude 网关
     format: anthropic
