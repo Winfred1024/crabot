@@ -10,7 +10,20 @@
 
 import http from 'node:http'
 import crypto from 'node:crypto'
-import { ModuleBase, type ModuleConfig, generateId, generateTimestamp, type Event } from 'crabot-shared'
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import {
+  ModuleBase,
+  type ModuleConfig,
+  generateId,
+  generateTimestamp,
+  type Event,
+  MediaHandleStore,
+  MediaCleaner,
+  MediaFetchManager,
+  type MediaHandleRecord,
+  type FetchMediaResult,
+} from 'crabot-shared'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { WechatClient } from './wechat-client.js'
 import { formatWechatContent } from './format-wechat-content.js'
@@ -22,6 +35,7 @@ import type {
   WechatChannelConfig,
   ChannelMessage,
   ChannelCapabilities,
+  MessageContent,
   SendMessageParams,
   SendMessageResult,
   GetSessionsParams,
@@ -39,6 +53,7 @@ import type {
   GroupMember,
   ContactItem,
   GroupItem,
+  FetchMediaParams,
 } from './types.js'
 
 export interface WechatChannelInitConfig {
@@ -55,6 +70,10 @@ export class WechatChannel extends ModuleBase {
   private readonly client: WechatClient
   private readonly sessionManager: SessionManager
   private readonly wechatConfig: WechatChannelConfig
+  private readonly dataDir: string
+  private readonly mediaHandleStore: MediaHandleStore
+  private readonly mediaCleaner: MediaCleaner
+  private readonly mediaFetch: MediaFetchManager
 
   // Socket.IO 连接（动态 import，仅 socketio 模式使用）
   private socket: { disconnect(): void; on(event: string, handler: (...args: unknown[]) => void): void } | null = null
@@ -80,8 +99,17 @@ export class WechatChannel extends ModuleBase {
     // 规范化 connector_url：去掉尾部 /puppet-events（如用户从前端复制了完整连接地址）
     const cleanUrl = config.wechat.connector_url.replace(/\/puppet-events\/?$/, '').replace(/\/+$/, '')
     this.wechatConfig = { ...config.wechat, connector_url: cleanUrl }
+    this.dataDir = config.data_dir
     this.client = new WechatClient(cleanUrl, config.wechat.api_key)
     this.sessionManager = new SessionManager(config.module_id, config.data_dir)
+    this.mediaHandleStore = new MediaHandleStore(config.data_dir)
+    this.mediaCleaner = new MediaCleaner(config.data_dir, 7)
+    this.mediaFetch = new MediaFetchManager({
+      store: this.mediaHandleStore,
+      channelId: this.config.moduleId,
+      download: (rec) => this.downloadFromUrl(rec),
+      publishEvent: (event) => this.rpcClient.publishEvent(event, this.config.moduleId).then(() => undefined),
+    })
 
     this.registerMethods()
   }
@@ -100,6 +128,10 @@ export class WechatChannel extends ModuleBase {
       throw error
     }
 
+    // 初始化媒体 store + 清理器
+    await this.mediaHandleStore.init()
+    this.mediaCleaner.startCleanup()
+
     // 启动时从上游重建 group sessions（失败不阻塞启动）
     await this.bootstrapGroupSessions()
 
@@ -112,6 +144,7 @@ export class WechatChannel extends ModuleBase {
   }
 
   protected override async onStop(): Promise<void> {
+    this.mediaCleaner.stopCleanup()
     if (this.socket) {
       this.socket.disconnect()
       this.socket = null
@@ -414,6 +447,7 @@ export class WechatChannel extends ModuleBase {
     this.registerMethod('find_or_create_private_session', this.handleFindOrCreatePrivateSession.bind(this))
     this.registerMethod('get_history', this.handleGetHistory.bind(this))
     this.registerMethod('get_message', this.handleGetMessage.bind(this))
+    this.registerMethod('fetch_media', this.handleFetchMedia.bind(this))
   }
 
   // ============================================================================
@@ -487,6 +521,35 @@ export class WechatChannel extends ModuleBase {
       supports_list_contacts: true,
       supports_list_groups: true,
       supports_list_group_members: true,
+      supports_media_fetch: true,
+    }
+  }
+
+  private async handleFetchMedia(params: FetchMediaParams): Promise<FetchMediaResult> {
+    return this.mediaFetch.fetch(params.handle)
+  }
+
+  /** wechat 媒体下载：HTTP GET 公开 URL（connector 已传图床，无需 token）落盘。 */
+  private async downloadFromUrl(rec: MediaHandleRecord): Promise<{ filePath: string; mimeType?: string; size: number } | null> {
+    const url = rec.credential.url as string
+    try {
+      const res = await fetch(url)
+      if (!res.ok) {
+        console.warn(`[WechatChannel] media download HTTP ${res.status} for ${url}`)
+        return null
+      }
+      const buf = Buffer.from(await res.arrayBuffer())
+      const ext = rec.filename ? path.extname(rec.filename) : ''
+      const safeExt = ext && /^\.[A-Za-z0-9]{1,8}$/.test(ext) ? ext : '.bin'
+      const name = `${crypto.createHash('sha1').update(url).digest('hex')}${safeExt}`
+      const mediaDir = path.join(this.dataDir, 'media')
+      await fs.mkdir(mediaDir, { recursive: true })
+      const filePath = path.join(mediaDir, name)
+      await fs.writeFile(filePath, buf)
+      return { filePath, size: buf.length, ...(rec.mime_type ? { mimeType: rec.mime_type } : {}) }
+    } catch (err) {
+      console.warn(`[WechatChannel] media download failed for ${url}:`, err)
+      return null
     }
   }
 
