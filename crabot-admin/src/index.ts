@@ -15,6 +15,7 @@ import { pipeline } from 'node:stream/promises'
 import { buildBackupOverview } from './openclaw-import/build-overview.js'
 import { runImport, type ImportSelections } from './openclaw-import/run-import.js'
 import { buildImportDeps } from './openclaw-import/build-import-deps.js'
+import { StagedUploadStore } from './openclaw-import/staged-upload-store.js'
 import { BrowserManager } from './browser-manager.js'
 import { PermissionTemplateManager } from './permission-template-manager.js'
 import {
@@ -418,8 +419,9 @@ export class AdminModule extends ModuleBase {
   // Memory v2 REST router
   private memoryV2Router!: ReturnType<typeof createMemoryV2RestRouter>
 
-  // OpenClaw 导入：上传产生的 token → 临时归档文件路径（execute 步取用）
-  private openclawImportTokens: Map<string, string> = new Map()
+  // OpenClaw 导入：上传备份的暂存（带 TTL 清扫，见 staged-upload-store.ts）
+  private openclawImportStore: StagedUploadStore | null = null
+  private openclawImportSweepTimer: NodeJS.Timeout | null = null
 
   // 模块 env 配置缓存
   private moduleEnvConfigCache: Map<string, Record<string, string>> = new Map()
@@ -756,6 +758,14 @@ export class AdminModule extends ModuleBase {
     }, 24 * 60 * 60 * 1000)
     this.mediaSweepTimer.unref?.()
 
+    // OpenClaw 导入暂存：init 清掉重启遗留的孤儿；定时器清扫取消/放弃的暂存
+    this.openclawImportStore = new StagedUploadStore(this.adminConfig.data_dir)
+    await this.openclawImportStore.init()
+    this.openclawImportSweepTimer = setInterval(() => {
+      this.openclawImportStore?.sweepExpired().catch(() => {})
+    }, 5 * 60 * 1000)
+    this.openclawImportSweepTimer.unref?.()
+
     // 初始化 Chat 管理器（mediaStore 已在上方初始化，作为第 6 参注入）
     this.chatManager = new ChatManager(
       this.adminConfig.data_dir,
@@ -819,6 +829,7 @@ export class AdminModule extends ModuleBase {
   protected override async onStop(): Promise<void> {
     // 停止媒体存储每日清扫定时器
     if (this.mediaSweepTimer) clearInterval(this.mediaSweepTimer)
+    if (this.openclawImportSweepTimer) clearInterval(this.openclawImportSweepTimer)
 
     // 停止 waiting_human 超时扫描器
     if (this.waitingHumanScanTimer) clearInterval(this.waitingHumanScanTimer)
@@ -7106,22 +7117,21 @@ export class AdminModule extends ModuleBase {
    * 直接 pipe 落临时文件，绝不 buffer 进内存），解析出备份概览。
    */
   private async handleOpenClawImportParseApi(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const tmpFile = path.join(os.tmpdir(), `openclaw-import-${crypto.randomUUID()}.tar.gz`)
+    const store = this.openclawImportStore!
+    const { token, path: tmpFile } = store.stage()
     try {
       await pipeline(req, createWriteStream(tmpFile))
       const result = await buildBackupOverview(tmpFile)
       if (!result.ok) {
-        await fs.rm(tmpFile, { force: true }).catch(() => undefined)
+        await store.discard(token)
         res.writeHead(400, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: result.error }))
         return
       }
-      const token = crypto.randomUUID()
-      this.openclawImportTokens.set(token, tmpFile)
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ token, overview: result.overview }))
     } catch (err) {
-      await fs.rm(tmpFile, { force: true }).catch(() => undefined)
+      await store.discard(token)
       res.writeHead(400, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'parse failed' }))
     }
@@ -7132,14 +7142,17 @@ export class AdminModule extends ModuleBase {
    * body: { token, selections }
    */
   private async handleOpenClawImportExecuteApi(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const store = this.openclawImportStore!
+    let activeToken: string | undefined
     try {
       const body = await this.readJsonBody<{ token: string; selections: ImportSelections }>(req)
-      const archivePath = this.openclawImportTokens.get(body.token)
+      const archivePath = store.resolve(body.token)
       if (!archivePath) {
         res.writeHead(400, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: '上传 token 已失效，请重新上传备份' }))
         return
       }
+      activeToken = body.token
 
       const memoryPort = await this.getMemoryPort()
       const deps = buildImportDeps({
@@ -7164,15 +7177,15 @@ export class AdminModule extends ModuleBase {
       const tempDir = path.join(os.tmpdir(), `openclaw-import-work-${crypto.randomUUID()}`)
       const summary = await runImport({ archivePath, tempDir, selections: body.selections, deps })
 
-      this.openclawImportTokens.delete(body.token)
-      await fs.rm(archivePath, { force: true }).catch(() => undefined)
       this.triggerPushAfter('openclaw import')
-
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify(summary))
     } catch (err) {
       res.writeHead(400, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'import failed' }))
+    } finally {
+      // 终态清理：成功 / 失败都丢弃暂存归档（取消/放弃由 TTL 清扫兜底）
+      if (activeToken) await store.discard(activeToken)
     }
   }
 
