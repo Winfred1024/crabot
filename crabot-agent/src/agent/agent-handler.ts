@@ -2586,6 +2586,12 @@ export class AgentHandler {
   setBarrierForTask(taskId: TaskId, timeoutMs: number): boolean {
     const queue = this.humanQueues.get(taskId)
     if (!queue) return false
+    // 已挂 barrier 说明该 task 已被 park（如 ask_human 的 24h barrier）。
+    // setupBarriers 的「按住正在干活的 worker」是给无 barrier 的运行态 task 用的；
+    // 对已 park 的 task 再 setBarrier 会因 setBarrier 内部 clearBarrier 而误唤醒它的
+    // waitBarrier 等待者，让它空跑一轮 end_turn。已 park 的 task 只应由发给它的
+    // supplement（pushSupplement → push 带内容）唤醒，这里跳过。
+    if (queue.hasBarrier) return false
     queue.setBarrier(timeoutMs)
     return true
   }

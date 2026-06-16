@@ -1100,10 +1100,12 @@ export class UnifiedAgent extends ModuleBase {
   private setupBarriers(channelId: string, sessionId: string): string[] {
     if (!this.agentHandler) return []
     const taskIds = this.agentHandler.getActiveTasksByOrigin(channelId, sessionId)
-    for (const taskId of taskIds) {
-      this.agentHandler.setBarrierForTask(taskId, BARRIER_TIMEOUT_MS)
-    }
-    return taskIds
+    // 只收集真正 arm 成功的 task：已 park（如 ask_human）的 task 会被 setBarrierForTask
+    // 跳过返回 false，不能进 barrierTaskIds——否则 dispatch 结尾的 clearAllBarriers 会
+    // clearBarrier 把它的 park barrier 清掉、再次误唤醒它。
+    return taskIds.filter((taskId) =>
+      this.agentHandler!.setBarrierForTask(taskId, BARRIER_TIMEOUT_MS),
+    )
   }
 
   private clearAllBarriers(barrierTaskIds: string[]): void {
