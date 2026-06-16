@@ -131,7 +131,7 @@ async function cmdAdd(rl, target) {
   await offerBumpClusterVersion(rl)
 }
 
-async function cmdRemove(target, id) {
+async function cmdRemove(rl, target, id) {
   if (!id) {
     console.error('[vendor] 用法：crabot vendor remove <id>')
     process.exit(1)
@@ -142,10 +142,11 @@ async function cmdRemove(target, id) {
   saveDoc(target.file, next)
   if (!existed) {
     console.log(`[vendor] override 文件中无 id=${id}，未改动。`)
-  } else {
-    console.log(`[vendor] 已从 override 文件移除 ${id}。`)
-    console.log('[vendor] 注意：这只动 override 文件。merge 模式下若该 id 是内置供应商，会重新显形；要隐藏内置请用 `crabot vendor mode replace`。')
+    return
   }
+  console.log(`[vendor] 已从 override 文件移除 ${id}。`)
+  console.log('[vendor] 注意：这只动 override 文件。merge 模式下若该 id 是内置供应商，会重新显形；要隐藏内置请用 `crabot vendor mode replace`。')
+  await offerBumpClusterVersion(rl)
 }
 
 async function cmdMode(rl, target, mode) {
@@ -176,7 +177,7 @@ async function main() {
         await cmdAdd(rl, target)
         break
       case 'remove':
-        await cmdRemove(target, arg)
+        await cmdRemove(rl, target, arg)
         break
       case 'mode':
         await cmdMode(rl, target, arg)
