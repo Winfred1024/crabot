@@ -303,7 +303,7 @@ export class TelegramChannel extends ModuleBase {
       sender_name: senderName,
     })
 
-    const content = await this.convertMessageContent(message)
+    const content = await this.convertMessageContent(message, session.id)
     const isMentionCrab = this.detectBotMention(message)
 
     // 引用回复：把被引用消息以 quote prefix 形式 inline 进当前 text，
@@ -371,7 +371,7 @@ export class TelegramChannel extends ModuleBase {
   // 消息内容转换
   // ============================================================================
 
-  private async convertMessageContent(msg: TgMessage): Promise<MessageContent> {
+  private async convertMessageContent(msg: TgMessage, sessionId: string): Promise<MessageContent> {
     const mediaDir = path.join(this.dataDir, 'media')
 
     if (msg.photo && msg.photo.length > 0) {
@@ -394,22 +394,22 @@ export class TelegramChannel extends ModuleBase {
     }
 
     if (msg.document) {
-      try {
-        const { localPath } = await this.client.downloadFileToLocal(
-          msg.document.file_id,
-          mediaDir
-        )
-        return {
-          type: 'file',
-          text: msg.caption ?? undefined,
-          media_url: localPath,
-          filename: msg.document.file_name,
-          mime_type: msg.document.mime_type,
-          size: msg.document.file_size,
-        }
-      } catch (error) {
-        console.error('[TelegramChannel] Failed to download document:', error)
-        return { type: 'text', text: msg.caption ?? '[文件下载失败]' }
+      const handle = await this.mediaHandleStore.put({
+        kind: 'file',
+        ...(msg.document.file_name !== undefined ? { filename: msg.document.file_name } : {}),
+        ...(msg.document.mime_type !== undefined ? { mime_type: msg.document.mime_type } : {}),
+        ...(msg.document.file_size !== undefined ? { size: msg.document.file_size } : {}),
+        session_id: sessionId,
+        credential: { file_id: msg.document.file_id },
+      })
+      return {
+        type: 'file',
+        ...(msg.caption ? { text: msg.caption } : {}),
+        ...(msg.document.file_name !== undefined ? { filename: msg.document.file_name } : {}),
+        ...(msg.document.mime_type !== undefined ? { mime_type: msg.document.mime_type } : {}),
+        ...(msg.document.file_size !== undefined ? { size: msg.document.file_size } : {}),
+        handle,
+        status: 'not_fetched',
       }
     }
 
