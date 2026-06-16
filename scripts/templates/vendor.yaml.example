@@ -6,11 +6,13 @@
 # 启用：把本文件改名为 vendor.yaml（同目录），或用 `sudo crabot vendor add` 向导编辑。
 # 改动后递增 /etc/crabot/cluster.version，员工下次 `crabot sync` 生效。
 #
-# format 仅支持：openai | anthropic | gemini
-#   - ChatGPT 订阅（openai-responses）是内置的固定 OAuth 登录流程，endpoint 固定、
-#     无法也无需在此配置；它始终保留在下拉里，replace 模式也不会隐藏它。
-# endpoint 规则（容易踩坑）：
-#   - openai / gemini：OpenAI 兼容端点，末尾通常要带 /v1（如 .../v1）
+# format 支持：openai | anthropic | gemini | openai-responses
+#   - openai-responses 是 OpenAI 新一代 Responses API，用普通 endpoint(/v1)+apikey 即可配置。
+#   - 唯一不可自定义的是 auth_type=oauth（如 ChatGPT 订阅那种设备码登录）：endpoint 固定、
+#     无法用 vendor 条目表达；写它会被跳过。内置的 oauth vendor（ChatGPT 订阅）始终保留，
+#     replace 模式也不会隐藏它。
+# endpoint 规则（容易踩坑，endpoint 本质是 base_url）：
+#   - openai / gemini / openai-responses：末尾要带 /v1（如 https://api.openai.com/v1）
 #   - anthropic：填裸 host 或厂商专用路径，【不要】加 /v1——Anthropic SDK 自动拼 /v1/messages
 
 # mode: merge   → 在内置供应商（OpenAI/Anthropic/Ollama…）基础上增加/覆盖（默认）

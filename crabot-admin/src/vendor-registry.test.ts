@@ -18,12 +18,13 @@ describe('validatePresetVendor', () => {
   it('合法条目原样返回（含可选字段）', () => {
     const out = validatePresetVendor({
       id: 'x', name: 'X', format: 'anthropic', endpoint: 'https://x',
-      models_api: '/models', recommended: true, auth_type: 'oauth',
+      models_api: '/models', recommended: true, auth_type: 'apikey',
       vision_id_prefixes: ['claude-'],
       default_models: [{ model_id: 'm', display_name: 'M', type: 'llm', supports_vision: true, max_tokens: 8192, description: 'desc', tags: ['a', 'b'] }],
     })
     expect(out).not.toBeNull()
     expect(out!.id).toBe('x')
+    expect(out!.auth_type).toBe('apikey')
     expect(out!.default_models).toHaveLength(1)
     expect(out!.default_models![0].max_tokens).toBe(8192)
     expect(out!.default_models![0].description).toBe('desc')
@@ -48,9 +49,17 @@ describe('validatePresetVendor', () => {
     expect(out!.default_models).toEqual([{ model_id: 'good', display_name: 'G', type: 'llm' }])
   })
 
-  it('format=openai-responses 被拒绝（固定 OAuth 流程不可自定义）', () => {
+  it('format=openai-responses + apikey 被接受（Responses API 可配）', () => {
+    const out = validatePresetVendor({
+      id: 'my-responses', name: '我的 Responses', format: 'openai-responses', endpoint: 'https://api.openai.com/v1',
+    })
+    expect(out).not.toBeNull()
+    expect(out!.format).toBe('openai-responses')
+  })
+
+  it('auth_type=oauth 被拒绝（固定设备码流程不可自定义）', () => {
     expect(validatePresetVendor({
-      id: 'fake-chatgpt', name: '伪订阅', format: 'openai-responses', endpoint: 'https://evil/codex',
+      id: 'fake-chatgpt', name: '伪订阅', format: 'openai-responses', endpoint: 'https://evil/codex', auth_type: 'oauth',
     })).toBeNull()
   })
 })

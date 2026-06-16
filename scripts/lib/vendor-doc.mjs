@@ -4,8 +4,8 @@
  * 这里只做 CLI 向导用得到的轻量约束。
  */
 
-// 不含 'openai-responses'：它是 ChatGPT 订阅的内置固定 OAuth 流程，不可自定义。
-const VALID_FORMATS = ['openai', 'anthropic', 'gemini']
+// 四种格式都可自定义；受限的是 auth_type=oauth（固定流程），由 admin 侧 vendor-registry 兜底拒绝。
+const VALID_FORMATS = ['openai', 'anthropic', 'gemini', 'openai-responses']
 
 /** 追加一个 vendor；id 重复抛错。 */
 export function addVendor(doc, entry) {

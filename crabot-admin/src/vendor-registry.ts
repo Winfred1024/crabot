@@ -19,21 +19,18 @@ export interface VendorOverride {
   vendors: PresetVendor[]
 }
 
-/**
- * vendor.yaml 里允许自定义的协议格式。
- * 不含 'openai-responses'——它是 ChatGPT 订阅的内置固定 OAuth 流程（设备码登录、
- * endpoint 固定 chatgpt.com/backend-api/codex），无法当普通"填 key" vendor 配置，
- * 因此禁止在 vendor.yaml 里自定义，且内置的此类 vendor 受保护（见 isProtectedVendor）。
- */
-const CUSTOMIZABLE_FORMATS: readonly ApiFormat[] = ['openai', 'anthropic', 'gemini']
+// 四种协议格式都可在 vendor.yaml 自定义（含 openai-responses——它是 OpenAI 新一代
+// Responses API，用普通 endpoint(/v1)+apikey 即可，如 https://api.openai.com/v1）。
+const VALID_FORMATS: readonly ApiFormat[] = ['openai', 'anthropic', 'gemini', 'openai-responses']
 
 /**
  * 受保护的内置 vendor：固定流程、不可被 vendor.yaml 覆盖或在 replace 模式下隐藏。
- * 目前指 openai-responses（ChatGPT 订阅）——它走专门的 OAuth onboarding，
- * 一旦被 override 干掉会破坏订阅入口。
+ * 判据是 auth_type='oauth'（如 ChatGPT 订阅）——它走专门的设备码 OAuth onboarding，
+ * endpoint 固定、无法用普通 vendor 条目表达，一旦被 override 干掉会破坏订阅入口。
+ * 注意：openai-responses **格式本身**是可配的（apikey 模式），受保护的只是 oauth 的那些。
  */
 function isProtectedVendor(v: PresetVendor): boolean {
-  return v.format === 'openai-responses'
+  return v.auth_type === 'oauth'
 }
 
 function isNonEmptyString(v: unknown): v is string {
@@ -65,10 +62,10 @@ export function validatePresetVendor(raw: unknown): PresetVendor | null {
   if (!isNonEmptyString(v.id)) return null
   if (!isNonEmptyString(v.name)) return null
   if (!isNonEmptyString(v.endpoint)) return null
-  if (typeof v.format !== 'string' || !CUSTOMIZABLE_FORMATS.includes(v.format as ApiFormat)) {
-    if (v.format === 'openai-responses') {
-      console.warn(`[vendor-registry] 跳过 vendor "${isNonEmptyString(v.id) ? v.id : '?'}"：openai-responses 是内置固定 OAuth 流程，不支持自定义`)
-    }
+  if (typeof v.format !== 'string' || !VALID_FORMATS.includes(v.format as ApiFormat)) return null
+  // auth_type=oauth（ChatGPT 订阅那种设备码流程）无法用普通 vendor 条目表达，拒绝自定义。
+  if (v.auth_type === 'oauth') {
+    console.warn(`[vendor-registry] 跳过 vendor "${isNonEmptyString(v.id) ? v.id : '?'}"：auth_type=oauth 是内置固定 OAuth 流程，不支持自定义（自定义 vendor 只支持 apikey）`)
     return null
   }
 
@@ -83,7 +80,7 @@ export function validatePresetVendor(raw: unknown): PresetVendor | null {
   if (isNonEmptyString(v.api_key_help_url)) vendor.api_key_help_url = v.api_key_help_url
   if (typeof v.allows_custom_endpoint === 'boolean') vendor.allows_custom_endpoint = v.allows_custom_endpoint
   if (typeof v.recommended === 'boolean') vendor.recommended = v.recommended
-  if (v.auth_type === 'apikey' || v.auth_type === 'oauth') vendor.auth_type = v.auth_type
+  if (v.auth_type === 'apikey') vendor.auth_type = v.auth_type  // oauth 已在上面被拒
   if (Array.isArray(v.vision_id_prefixes)) {
     const prefixes = v.vision_id_prefixes.filter((p): p is string => typeof p === 'string')
     if (prefixes.length > 0) vendor.vision_id_prefixes = prefixes
