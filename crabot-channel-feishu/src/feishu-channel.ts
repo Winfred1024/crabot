@@ -22,6 +22,10 @@ import {
   decideMarkdownEnabled,
   MARKDOWN_FORMAT_VALUES,
   RpcError,
+  MediaHandleStore,
+  MediaCleaner,
+  MediaFetchManager,
+  type FetchMediaResult,
 } from 'crabot-shared'
 
 import { FeishuClient, FeishuClientError, type SendReceive } from './feishu-client.js'
@@ -71,6 +75,7 @@ import type {
   ContactItem,
   GroupItem,
   MentionTarget,
+  FetchMediaParams,
 } from './types.js'
 
 /**
@@ -95,6 +100,7 @@ export type SubscribedEventIdentifier = typeof SUBSCRIBED_EVENTS[number]['identi
 
 const MAX_FILE_SIZE = 30 * 1024 * 1024 // 30MB（飞书附件上限）
 
+
 export interface FeishuChannelInitConfig {
   module_id: string
   module_type: 'channel'
@@ -112,7 +118,10 @@ export class FeishuChannel extends ModuleBase {
   private readonly subscriber: WsSubscriber
   private readonly sessionManager: SessionManager
   private readonly messageStore: MessageStore
+  private readonly mediaHandleStore: MediaHandleStore
+  private readonly mediaCleaner: MediaCleaner
   private readonly docReader: FeishuDocReader
+  private mediaFetch!: MediaFetchManager
 
   private botOpenId: string | null = null
   private botName: string | null = null
@@ -153,6 +162,19 @@ export class FeishuChannel extends ModuleBase {
     })
     this.sessionManager = new SessionManager(config.module_id, config.data_dir)
     this.messageStore = new MessageStore(config.data_dir)
+    this.mediaHandleStore = new MediaHandleStore(config.data_dir)
+    this.mediaCleaner = new MediaCleaner(config.data_dir, 7)
+    this.mediaFetch = new MediaFetchManager({
+      store: this.mediaHandleStore,
+      channelId: this.config.moduleId,
+      download: (rec) => this.downloadAndPersistMedia(
+        rec.credential.platform_message_id as string,
+        rec.credential.file_key as string,
+        rec.kind,
+        rec.filename,
+      ),
+      publishEvent: (event) => this.rpcClient.publishEvent(event, this.config.moduleId).then(() => undefined),
+    })
     this.docReader = new FeishuDocReader(this.client)
 
     fs.mkdirSync(path.join(this.dataDir, 'media'), { recursive: true })
@@ -173,7 +195,9 @@ export class FeishuChannel extends ModuleBase {
       console.warn('[FeishuChannel] getBotInfo failed:', err)
     }
 
+    await this.mediaHandleStore.init()
     this.messageStore.startCleanup()
+    this.mediaCleaner.startCleanup()
 
     const dispatcher = new lark.EventDispatcher({}).register({
       'im.message.receive_v1': (data) => this.safeHandle('message.receive', () => this.handleMessageReceive(data)),
@@ -224,6 +248,7 @@ export class FeishuChannel extends ModuleBase {
 
   protected override async onStop(): Promise<void> {
     this.messageStore.stopCleanup()
+    this.mediaCleaner.stopCleanup()
     await this.subscriber.close()
   }
 
@@ -277,6 +302,11 @@ export class FeishuChannel extends ModuleBase {
       sender_name: senderName || senderOpenId,
     })
 
+    // 文件惰性 handle 在 applyMediaContent（先于此处 session 解析）登记，此处补写 session_id 供慢档事件路由
+    if (content.type === 'file' && content.handle) {
+      await this.mediaHandleStore.setSessionId(content.handle, session.id)
+    }
+
     const platformTimestamp = isoFromMillis(message.create_time) ?? generateTimestamp()
 
     const channelMessage: ChannelMessage = {
@@ -320,7 +350,9 @@ export class FeishuChannel extends ModuleBase {
   }
 
   /**
-   * 把 mapper 输出的 image/file 内容补齐 file_path / mime_type / size，下载失败则降级为文本占位。
+   * 把 mapper 输出的 image/file 内容补齐媒体信息。
+   * - 图片：急切下载（VLM 要内联看图，需本地文件），写 file_path + status=ready
+   * - 非图片文件：惰性——不下载，只登记 handle + 元信息 + status=not_fetched
    */
   private async applyMediaContent(
     mapped: ReturnType<typeof mapMessageContent>,
@@ -333,17 +365,19 @@ export class FeishuChannel extends ModuleBase {
       return {
         ...content,
         file_path: r.filePath,
+        status: 'ready',
         mime_type: r.mimeType ?? content.mime_type,
         ...(r.size !== undefined ? { size: r.size } : {}),
       }
     }
     if (content.type === 'file' && raw?.file_key) {
-      const r = await this.downloadAndPersistMedia(messageId, raw.file_key, 'file', raw.filename)
-      if (!r) {
-        const fname = raw.filename ?? '未知文件'
-        return { type: 'text', text: `[文件 ${fname} 下载失败]` }
-      }
-      return { ...content, file_path: r.filePath }
+      const handle = await this.mediaHandleStore.put({
+        kind: 'file',
+        ...(raw.filename !== undefined ? { filename: raw.filename } : {}),
+        ...(content.size !== undefined ? { size: content.size } : {}),
+        credential: { platform_message_id: messageId, file_key: raw.file_key },
+      })
+      return { ...content, handle, status: 'not_fetched' }
     }
     return content
   }
@@ -685,6 +719,7 @@ export class FeishuChannel extends ModuleBase {
     this.registerMethod('update_config', this.handleUpdateConfig.bind(this))
     this.registerMethod('read_document', this.handleReadDocument.bind(this))
     this.registerMethod('add_reaction', this.handleAddReaction.bind(this))
+    this.registerMethod('fetch_media', this.handleFetchMedia.bind(this))
   }
 
   /**
@@ -706,6 +741,10 @@ export class FeishuChannel extends ModuleBase {
     if (!emoji) throwError('INVALID_ARGUMENT', `Unknown reaction kind: ${params.kind}`)
     await this.client.addReaction(params.platform_message_id, emoji)
     return { added: true }
+  }
+
+  private async handleFetchMedia(params: FetchMediaParams): Promise<FetchMediaResult> {
+    return this.mediaFetch.fetch(params.handle)
   }
 
   private async handleSendMessage(params: SendMessageParams): Promise<SendMessageResult> {
@@ -895,6 +934,7 @@ export class FeishuChannel extends ModuleBase {
       supports_list_contacts: true,
       supports_list_groups: true,
       supports_list_group_members: true,
+      supports_media_fetch: true,
       extensions: [],
     }
   }

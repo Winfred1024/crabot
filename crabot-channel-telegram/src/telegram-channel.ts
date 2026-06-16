@@ -22,6 +22,10 @@ import {
   MARKDOWN_FORMAT_VALUES,
   type MarkdownFormat,
   type TelegramParseMode,
+  MediaHandleStore,
+  MediaCleaner,
+  MediaFetchManager,
+  type FetchMediaResult,
 } from 'crabot-shared'
 import { TelegramClient, TelegramApiError } from './telegram-client.js'
 import { SessionManager } from './session-manager.js'
@@ -48,6 +52,7 @@ import type {
   ListGroupMembersParams,
   ListGroupMembersResult,
   GroupMember,
+  FetchMediaParams,
 } from './types.js'
 
 const MAX_MESSAGE_LENGTH = 4096
@@ -79,6 +84,9 @@ export class TelegramChannel extends ModuleBase {
   private readonly messageStore: MessageStore
   private readonly telegramConfig: TelegramChannelConfig
   private readonly dataDir: string
+  private readonly mediaHandleStore: MediaHandleStore
+  private readonly mediaCleaner: MediaCleaner
+  private readonly mediaFetch: MediaFetchManager
 
   private botUser: TgUser | null = null
   /** Cached lowercase @username for mention detection */
@@ -104,6 +112,26 @@ export class TelegramChannel extends ModuleBase {
     this.client = new TelegramClient(config.telegram.bot_token)
     this.sessionManager = new SessionManager(config.module_id, config.data_dir)
     this.messageStore = new MessageStore(config.data_dir, config.cache)
+    this.mediaHandleStore = new MediaHandleStore(config.data_dir)
+    this.mediaCleaner = new MediaCleaner(config.data_dir, 7)
+    this.mediaFetch = new MediaFetchManager({
+      store: this.mediaHandleStore,
+      channelId: this.config.moduleId,
+      download: async (rec) => {
+        try {
+          const { localPath } = await this.client.downloadFileToLocal(
+            rec.credential.file_id as string,
+            path.join(this.dataDir, 'media'),
+          )
+          const stat = await fs.stat(localPath)
+          return { filePath: localPath, size: stat.size, ...(rec.mime_type ? { mimeType: rec.mime_type } : {}) }
+        } catch (err) {
+          console.warn('[TelegramChannel] media download failed:', err)
+          return null
+        }
+      },
+      publishEvent: (event) => this.rpcClient.publishEvent(event, this.config.moduleId).then(() => undefined),
+    })
 
     this.registerMethods()
   }
@@ -124,7 +152,9 @@ export class TelegramChannel extends ModuleBase {
 
     await fs.mkdir(path.join(this.dataDir, 'media'), { recursive: true })
 
+    await this.mediaHandleStore.init()
     this.messageStore.startCleanup()
+    this.mediaCleaner.startCleanup()
 
     if (this.telegramConfig.mode === 'polling') {
       await this.startPolling()
@@ -136,6 +166,7 @@ export class TelegramChannel extends ModuleBase {
   protected override async onStop(): Promise<void> {
     this.pollingActive = false
     this.messageStore.stopCleanup()
+    this.mediaCleaner.stopCleanup()
 
     if (this.telegramConfig.mode === 'webhook') {
       try {
@@ -272,7 +303,7 @@ export class TelegramChannel extends ModuleBase {
       sender_name: senderName,
     })
 
-    const content = await this.convertMessageContent(message)
+    const content = await this.convertMessageContent(message, session.id)
     const isMentionCrab = this.detectBotMention(message)
 
     // 引用回复：把被引用消息以 quote prefix 形式 inline 进当前 text，
@@ -340,7 +371,7 @@ export class TelegramChannel extends ModuleBase {
   // 消息内容转换
   // ============================================================================
 
-  private async convertMessageContent(msg: TgMessage): Promise<MessageContent> {
+  private async convertMessageContent(msg: TgMessage, sessionId: string): Promise<MessageContent> {
     const mediaDir = path.join(this.dataDir, 'media')
 
     if (msg.photo && msg.photo.length > 0) {
@@ -363,22 +394,22 @@ export class TelegramChannel extends ModuleBase {
     }
 
     if (msg.document) {
-      try {
-        const { localPath } = await this.client.downloadFileToLocal(
-          msg.document.file_id,
-          mediaDir
-        )
-        return {
-          type: 'file',
-          text: msg.caption ?? undefined,
-          media_url: localPath,
-          filename: msg.document.file_name,
-          mime_type: msg.document.mime_type,
-          size: msg.document.file_size,
-        }
-      } catch (error) {
-        console.error('[TelegramChannel] Failed to download document:', error)
-        return { type: 'text', text: msg.caption ?? '[文件下载失败]' }
+      const handle = await this.mediaHandleStore.put({
+        kind: 'file',
+        ...(msg.document.file_name !== undefined ? { filename: msg.document.file_name } : {}),
+        ...(msg.document.mime_type !== undefined ? { mime_type: msg.document.mime_type } : {}),
+        ...(msg.document.file_size !== undefined ? { size: msg.document.file_size } : {}),
+        session_id: sessionId,
+        credential: { file_id: msg.document.file_id },
+      })
+      return {
+        type: 'file',
+        ...(msg.caption ? { text: msg.caption } : {}),
+        ...(msg.document.file_name !== undefined ? { filename: msg.document.file_name } : {}),
+        ...(msg.document.mime_type !== undefined ? { mime_type: msg.document.mime_type } : {}),
+        ...(msg.document.file_size !== undefined ? { size: msg.document.file_size } : {}),
+        handle,
+        status: 'not_fetched',
       }
     }
 
@@ -436,6 +467,7 @@ export class TelegramChannel extends ModuleBase {
     this.registerMethod('update_config', this.handleUpdateConfig.bind(this))
     this.registerMethod('add_reaction', this.handleAddReaction.bind(this))
     this.registerMethod('list_group_members', this.handleListGroupMembers.bind(this))
+    this.registerMethod('fetch_media', this.handleFetchMedia.bind(this))
   }
 
   /**
@@ -618,7 +650,12 @@ export class TelegramChannel extends ModuleBase {
       supports_list_contacts: false,
       supports_list_groups: false,
       supports_list_group_members: true,
+      supports_media_fetch: true,
     }
+  }
+
+  private async handleFetchMedia(params: FetchMediaParams): Promise<FetchMediaResult> {
+    return this.mediaFetch.fetch(params.handle)
   }
 
   private handleGetSessions(params: GetSessionsParams) {

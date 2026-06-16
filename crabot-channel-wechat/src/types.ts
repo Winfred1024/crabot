@@ -71,6 +71,10 @@ export interface MessageContent {
   filename?: string
   mime_type?: string
   size?: number
+  /** 惰性媒体下载句柄（非图片文件 status=not_fetched 时携带，传给 fetch_media RPC） */
+  handle?: string
+  /** 媒体就绪状态：ready / not_fetched / fetching / failed */
+  status?: 'ready' | 'not_fetched' | 'fetching' | 'failed'
 }
 
 export interface SessionPermissions {
@@ -151,6 +155,12 @@ export interface ChannelCapabilities {
   supports_list_groups: boolean
   /** 是否支持 list_group_members */
   supports_list_group_members: boolean
+  /** 是否支持 fetch_media（按需拉取媒体文件） */
+  supports_media_fetch?: boolean
+}
+
+export interface FetchMediaParams {
+  handle: string
 }
 
 export interface SendMessageParams {

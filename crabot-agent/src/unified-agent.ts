@@ -217,6 +217,7 @@ export class UnifiedAgent extends ModuleBase {
         'module_manager.module_stopped',
         'admin.friend_updated',
         'admin.friend_deleted',
+        'media.download_completed',
       ],
     }
 
@@ -491,6 +492,19 @@ export class UnifiedAgent extends ModuleBase {
         // 清除 Friend 缓存
         const friendPayload = event.payload as { friend_id: FriendId }
         this.permissionChecker.clearFriendCache(friendPayload.friend_id)
+        break
+      }
+
+      case 'media.download_completed': {
+        const p = event.payload as { channel_id: string; session_id?: string; handle: string; status: string; error?: string }
+        if (!p.session_id) break
+        const taskIds = this.agentHandler?.getActiveTasksByOrigin(p.channel_id, p.session_id) ?? []
+        const note = p.status === 'ready'
+          ? `媒体 ${p.handle} 已下载完成，再次调用 fetch_media 即可拿到本地路径。`
+          : `媒体 ${p.handle} 下载失败：${p.error ?? '未知错误'}。`
+        for (const taskId of taskIds) {
+          this.agentHandler?.wakeForMediaDownload(taskId, note)
+        }
         break
       }
     }

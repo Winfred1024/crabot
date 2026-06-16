@@ -165,22 +165,21 @@ export function extractLaunchedSubagentId(output: string | undefined): string | 
 }
 
 /**
- * 按 goal mode / async 注入条件决定是否构造 wait_for_signal 工具。
- * 见 `crabot-docs/superpowers/specs/2026-06-07-goal-audit-async-buffered-info-design.md` Task 3。
+ * 构造 wait_for_signal 工具（通用挂起原语，总是注入）。
  *
- * 注入条件：`goalModeEnabled || asyncEnabled`
- *   - goal mode 下 audit 异步跑，worker 无事可干时要能挂起；
- *   - async path 下 subagent 异步跑，worker 等通知也要能挂起。
+ * 旧版本仅在 `goalModeEnabled || asyncEnabled` 时注入，目的是"缩小工具可见面"。
+ * 但 wait_for_signal 是通用挂起原语——"等媒体下载"等新场景也需要它，与 goal/async flag 无关。
+ * 因此改为总是注入；滥用（无 pending 事件且无 timeout_ms 的空挂起）由工具内部预检兜底。
  *
- * 两者都关时不注入，避免普通对话流误调。
+ * `_opts` 保留以维持调用方签名稳定，不需要改注入点。
  *
  * @internal exported for testing
  */
 export function maybeCreateWaitForSignalTool(
-  opts: { readonly goalModeEnabled: boolean; readonly asyncEnabled: boolean },
+  _opts: { readonly goalModeEnabled: boolean; readonly asyncEnabled: boolean },
   deps: WaitForSignalDeps,
 ): ReturnType<typeof createWaitForSignalTool> | undefined {
-  if (!opts.goalModeEnabled && !opts.asyncEnabled) return undefined
+  // 总是注入：wait_for_signal 是通用挂起原语，合法性由内部预检判定。
   return createWaitForSignalTool(deps)
 }
 
@@ -1178,9 +1177,8 @@ export class AgentHandler {
           }))
         }
 
-        // 3k2. wait_for_signal — 通用挂起原语
-        // 注入条件：goalModeEnabled（audit 异步跑时需要挂起等结果）
-        // 或 asyncEnabled（master 私聊 + async subagent 派出后等通知）。
+        // 3k2. wait_for_signal — 通用挂起原语，总是注入
+        // 合法性由工具内部预检判定（无 pending 事件且无 timeout_ms 时拒绝空挂起）。
         // hasActiveAudit：taskState.activeAuditId 非空表示 task 处于"等审态"。
         // hasActiveAsyncSubagent：跟全局 agentAbortControllers 取交集——bg-agent.ts 在 finally 清理 controller，
         // 所以 "id 还在 Map 里" 等价于 "subagent 还没退出"。
@@ -2622,6 +2620,11 @@ export class AgentHandler {
       }
     }
     return result
+  }
+
+  /** 媒体后台下载完成事件 → 唤醒等待中的 worker。纯系统 push（不触发 goal 券 / human 语义）。 */
+  wakeForMediaDownload(taskId: TaskId, note: string): void {
+    this.humanQueues.get(taskId)?.push(`[系统] ${note}`)
   }
 
   getActiveTasksForQuery(): Array<{ task_id: string; started_at: string; title?: string }> {

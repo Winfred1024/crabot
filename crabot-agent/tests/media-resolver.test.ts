@@ -86,3 +86,38 @@ describe('media[] 多图注入', () => {
     expect(out).toContain('[文件: doc.pdf]')
   })
 })
+
+describe('惰性媒体：图片从 file_path 注入 + 文件 status/handle 渲染', () => {
+  beforeAll(async () => {
+    await fs.mkdir(TMP, { recursive: true })
+  })
+  afterAll(async () => {
+    await fs.rm(TMP, { recursive: true, force: true })
+  })
+
+  it('图片用 file_path（无 media_url）也能注入 ImageBlock', async () => {
+    const img = path.resolve(TMP, 'c.png')
+    await fs.writeFile(img, Buffer.from('89504e470d0a1a0a', 'hex'))
+    const blocks = await resolveImageBlocks([
+      msg({ type: 'image', file_path: img, status: 'ready', mime_type: 'image/png' }),
+    ])
+    expect(blocks).toHaveLength(1)
+    expect(blocks[0].source.media_type).toBe('image/png')
+  })
+
+  it('未下载文件渲染含文件名 + 未下载提示 + handle', () => {
+    const out = formatMessageContent(
+      msg({ type: 'file', filename: 'report.pdf', size: 12_000_000, status: 'not_fetched', handle: 'fm_abc123' }),
+    )
+    expect(out).toContain('report.pdf')
+    expect(out).toContain('未下载')
+    expect(out).toContain('fm_abc123')
+  })
+
+  it('已就绪文件渲染暴露可读路径', () => {
+    const out = formatMessageContent(
+      msg({ type: 'file', filename: 'a.pdf', status: 'ready', file_path: '/data/media/om.pdf' }),
+    )
+    expect(out).toContain('/data/media/om.pdf')
+  })
+})

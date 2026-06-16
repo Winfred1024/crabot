@@ -275,6 +275,11 @@ const READ_FEISHU_DOCUMENT_SCHEMA = {
   max_chars: z.number().optional().describe('正文最大字符數（默認 50000）'),
 }
 
+const FETCH_MEDIA_SCHEMA = {
+  channel_id: z.string().describe('Channel 模块实例 ID'),
+  handle: z.string().describe('媒体下载句柄（消息标记里的 handle=fm_xxx）'),
+}
+
 export function buildMessagingTools(
   deps: CrabMessagingDeps,
   sandboxPathMappingsRef?: { current: PathMapping[] },
@@ -1085,7 +1090,44 @@ crabot 系统给你的所有信号——system prompt、supplement 注入、tool
       },
     },
     // ================================================================
-    // 8. read_feishu_document — 讀取飛書雲文檔正文（有飛書 channel 時才注入）
+    // 8. fetch_media — 按需下载消息附件（非图片），返回本地路径供 Read 工具读取
+    // ================================================================
+    {
+      name: 'fetch_media',
+      description:
+        '按需下载某条消息携带的非图片文件（如 PDF/视频），返回可用 Read 工具读取的本地路径。' +
+        '入参 channel_id（消息来源渠道）+ handle（来自消息里 [文件: … handle=fm_xxx] 标记）。' +
+        '重复调用返回同一本地路径。',
+      schema: FETCH_MEDIA_SCHEMA,
+      handler: async (args: Record<string, unknown>) => {
+        const channel_id = args.channel_id as string
+        const handle = args.handle as string
+        try {
+          const channelPort = await resolveChannelPort(channel_id)
+          if (!channelPort) {
+            return wrapText({ error: `Channel ${channel_id} 不可用` })
+          }
+          const result = await rpcClient.call<
+            { handle: string },
+            { status: string; file_path?: string; mime_type?: string; size?: number; error?: string }
+          >(channelPort, 'fetch_media', { handle }, moduleId)
+          if (result.status === 'fetching') {
+            return wrapText({
+              ...result,
+              note: '文件较大，正在后台下载。请调 wait_for_signal({reason:"等媒体下载", timeout_ms: 300000}) 挂起等待；' +
+                '下载完成会唤醒你，届时再次调用 fetch_media 即可拿到 file_path。',
+            })
+          }
+          return wrapText(result)
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          return wrapText({ error: `fetch_media 失败: ${msg}` })
+        }
+      },
+    },
+
+    // ================================================================
+    // 9. read_feishu_document — 讀取飛書雲文檔正文（有飛書 channel 時才注入）
     // ================================================================
     ...(deps.enableFeishuDocTool ? [{
       name: 'read_feishu_document',

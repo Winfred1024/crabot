@@ -141,6 +141,10 @@ export interface MessageContent {
   filename?: string
   mime_type?: string
   size?: number
+  /** 惰性媒体下载句柄（非图片文件 status=not_fetched 时携带，传给 fetch_media RPC） */
+  handle?: string
+  /** 媒体就绪状态：ready / not_fetched / fetching / failed */
+  status?: 'ready' | 'not_fetched' | 'fetching' | 'failed'
 }
 
 export interface SessionPermissions {
@@ -221,6 +225,8 @@ export interface ChannelCapabilities {
   supports_list_groups: boolean
   /** 是否支持 list_group_members；telegram 走降级路径，仍声明 true */
   supports_list_group_members: boolean
+  /** 是否支持惰性媒体获取（fetch_media RPC） */
+  supports_media_fetch?: boolean
 }
 
 export interface GroupMember {
@@ -334,4 +340,8 @@ export interface TelegramChannelConfig {
 export interface TelegramCacheConfig {
   max_days: number
   max_messages_per_session: number
+}
+
+export interface FetchMediaParams {
+  handle: string
 }
