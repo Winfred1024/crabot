@@ -40,7 +40,7 @@ describe('fetch_media 幂等缓存', () => {
     const download = vi.fn(async () => Buffer.from('hello'))
     ;(channel as any).client.downloadResource = download
     const handle = await (channel as any).mediaHandleStore.put({
-      platform_message_id: 'om_c', file_key: 'fk', kind: 'file', filename: 'a.pdf',
+      kind: 'file', filename: 'a.pdf', credential: { platform_message_id: 'om_c', file_key: 'fk' },
     })
     const first = await (channel as any).handleFetchMedia({ handle })
     const second = await (channel as any).handleFetchMedia({ handle })
@@ -54,7 +54,7 @@ describe('fetch_media 幂等缓存', () => {
     const download = vi.fn(async () => Buffer.from('hello'))
     ;(channel as any).client.downloadResource = download
     const handle = await (channel as any).mediaHandleStore.put({
-      platform_message_id: 'om_d', file_key: 'fk', kind: 'file', filename: 'a.pdf',
+      kind: 'file', filename: 'a.pdf', credential: { platform_message_id: 'om_d', file_key: 'fk' },
     })
     const first = await (channel as any).handleFetchMedia({ handle })
     fs.rmSync(first.file_path)

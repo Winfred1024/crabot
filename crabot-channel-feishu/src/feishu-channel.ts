@@ -22,6 +22,10 @@ import {
   decideMarkdownEnabled,
   MARKDOWN_FORMAT_VALUES,
   RpcError,
+  MediaHandleStore,
+  MediaCleaner,
+  MediaFetchManager,
+  type FetchMediaResult,
 } from 'crabot-shared'
 
 import { FeishuClient, FeishuClientError, type SendReceive } from './feishu-client.js'
@@ -30,8 +34,6 @@ import { parseFeishuDocUrl, extractFeishuDocUrls } from './feishu-url.js'
 import { WsSubscriber } from './ws-subscriber.js'
 import { SessionManager } from './session-manager.js'
 import { MessageStore, type StoredMessage } from './message-store.js'
-import { MediaHandleStore, type MediaHandleRecord } from './media-handle-store.js'
-import { MediaCleaner } from './media-cleaner.js'
 import { splitTextByTableLimit } from './card-table-guard.js'
 import {
   detectMentionCrab,
@@ -74,7 +76,6 @@ import type {
   GroupItem,
   MentionTarget,
   FetchMediaParams,
-  FetchMediaResult,
 } from './types.js'
 
 /**
@@ -99,12 +100,6 @@ export type SubscribedEventIdentifier = typeof SUBSCRIBED_EVENTS[number]['identi
 
 const MAX_FILE_SIZE = 30 * 1024 * 1024 // 30MB（飞书附件上限）
 
-/** 入站文件下载上限：超过则 fetch_media 拒绝，防超大文件同步下载卡死 worker / 吃满磁盘。
- *  注意：这与出站发送的 MAX_FILE_SIZE（飞书 30MB 上传上限）是两回事。 */
-const INBOUND_MAX_FILE_SIZE = 100 * 1024 * 1024 // 100MB
-
-/** 入站文件异步阈值：≥ 此值走后台下载 + 完成事件（不阻塞 worker），< 此值同步下完即返回 */
-const MEDIA_ASYNC_THRESHOLD = 10 * 1024 * 1024 // 10MB
 
 export interface FeishuChannelInitConfig {
   module_id: string
@@ -126,9 +121,7 @@ export class FeishuChannel extends ModuleBase {
   private readonly mediaHandleStore: MediaHandleStore
   private readonly mediaCleaner: MediaCleaner
   private readonly docReader: FeishuDocReader
-
-  /** 正在后台下载的 handle，去重防同一文件并发重复下载 */
-  private readonly mediaFetchInProgress = new Set<string>()
+  private mediaFetch!: MediaFetchManager
 
   private botOpenId: string | null = null
   private botName: string | null = null
@@ -171,6 +164,17 @@ export class FeishuChannel extends ModuleBase {
     this.messageStore = new MessageStore(config.data_dir)
     this.mediaHandleStore = new MediaHandleStore(config.data_dir)
     this.mediaCleaner = new MediaCleaner(config.data_dir, 7)
+    this.mediaFetch = new MediaFetchManager({
+      store: this.mediaHandleStore,
+      channelId: this.config.moduleId,
+      download: (rec) => this.downloadAndPersistMedia(
+        rec.credential.platform_message_id as string,
+        rec.credential.file_key as string,
+        rec.kind,
+        rec.filename,
+      ),
+      publishEvent: (event) => this.rpcClient.publishEvent(event, this.config.moduleId).then(() => undefined),
+    })
     this.docReader = new FeishuDocReader(this.client)
 
     fs.mkdirSync(path.join(this.dataDir, 'media'), { recursive: true })
@@ -368,11 +372,10 @@ export class FeishuChannel extends ModuleBase {
     }
     if (content.type === 'file' && raw?.file_key) {
       const handle = await this.mediaHandleStore.put({
-        platform_message_id: messageId,
-        file_key: raw.file_key,
         kind: 'file',
         ...(raw.filename !== undefined ? { filename: raw.filename } : {}),
         ...(content.size !== undefined ? { size: content.size } : {}),
+        credential: { platform_message_id: messageId, file_key: raw.file_key },
       })
       return { ...content, handle, status: 'not_fetched' }
     }
@@ -740,91 +743,8 @@ export class FeishuChannel extends ModuleBase {
     return { added: true }
   }
 
-  /**
-   * 凭 handle 同步下载媒体并返回本地路径。本切片只做同步快档；超大文件的
-   * 慢档（bg-entity + wait_for_signal）见 Phase 1B。
-   */
   private async handleFetchMedia(params: FetchMediaParams): Promise<FetchMediaResult> {
-    const rec = this.mediaHandleStore.get(params.handle)
-    if (!rec) {
-      return { status: 'failed', error: `unknown media handle: ${params.handle}` }
-    }
-    if (rec.size !== undefined && rec.size > INBOUND_MAX_FILE_SIZE) {
-      return {
-        status: 'failed',
-        error: `file too large: ${rec.size} bytes exceeds inbound limit ${INBOUND_MAX_FILE_SIZE} bytes`,
-      }
-    }
-    // 幂等缓存命中：已下载且文件仍在 → 直接返回，不重下
-    if (rec.downloaded_file_path && fs.existsSync(rec.downloaded_file_path)) {
-      return {
-        status: 'ready',
-        file_path: rec.downloaded_file_path,
-        ...(rec.mime_type !== undefined ? { mime_type: rec.mime_type } : {}),
-        ...(rec.size !== undefined ? { size: rec.size } : {}),
-      }
-    }
-    // 大文件：后台异步下载，立即返回 fetching，下载完发 media.download_completed 事件唤醒等待 worker
-    if (rec.size !== undefined && rec.size >= MEDIA_ASYNC_THRESHOLD) {
-      if (!this.mediaFetchInProgress.has(params.handle)) {
-        this.mediaFetchInProgress.add(params.handle)
-        void this.downloadMediaInBackground(params.handle, rec)
-      }
-      return { status: 'fetching' }
-    }
-    const r = await this.downloadAndPersistMedia(
-      rec.platform_message_id,
-      rec.file_key,
-      rec.kind,
-      rec.filename,
-    )
-    if (!r) {
-      return { status: 'failed', error: `download failed for handle ${params.handle}` }
-    }
-    await this.mediaHandleStore.markDownloaded(params.handle, r.filePath)
-    return {
-      status: 'ready',
-      file_path: r.filePath,
-      ...(r.mimeType !== undefined ? { mime_type: r.mimeType } : {}),
-      ...(r.size !== undefined ? { size: r.size } : {}),
-    }
-  }
-
-  /** 后台下载一个媒体，完成（成功/失败）后发 media.download_completed 事件唤醒等待 worker。 */
-  private async downloadMediaInBackground(handle: string, rec: MediaHandleRecord): Promise<void> {
-    let status: 'ready' | 'failed' = 'failed'
-    let error: string | undefined
-    try {
-      const r = await this.downloadAndPersistMedia(rec.platform_message_id, rec.file_key, rec.kind, rec.filename)
-      if (r) {
-        await this.mediaHandleStore.markDownloaded(handle, r.filePath)
-        status = 'ready'
-      } else {
-        error = `download failed for handle ${handle}`
-      }
-    } catch (err) {
-      error = err instanceof Error ? err.message : String(err)
-    } finally {
-      this.mediaFetchInProgress.delete(handle)
-    }
-    const event: Event = {
-      id: generateId(),
-      type: 'media.download_completed',
-      source: this.config.moduleId,
-      payload: {
-        channel_id: this.config.moduleId,
-        ...(rec.session_id ? { session_id: rec.session_id } : {}),
-        handle,
-        status,
-        ...(error ? { error } : {}),
-      },
-      timestamp: generateTimestamp(),
-    }
-    try {
-      await this.rpcClient.publishEvent(event, this.config.moduleId)
-    } catch (err) {
-      console.warn('[FeishuChannel] publish media.download_completed failed:', err)
-    }
+    return this.mediaFetch.fetch(params.handle)
   }
 
   private async handleSendMessage(params: SendMessageParams): Promise<SendMessageResult> {

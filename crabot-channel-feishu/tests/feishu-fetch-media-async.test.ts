@@ -43,8 +43,8 @@ describe('fetch_media 大文件非阻塞 + 完成事件', () => {
     ;(channel as any).client.downloadResource = vi.fn(() => new Promise<Buffer>((res) => { resolveDownload = res }))
 
     const handle = await (channel as any).mediaHandleStore.put({
-      platform_message_id: 'om_big', file_key: 'fk', kind: 'file', filename: 'big.pdf',
-      size: 20 * 1024 * 1024, session_id: 'sess_1',
+      kind: 'file', filename: 'big.pdf', size: 20 * 1024 * 1024, session_id: 'sess_1',
+      credential: { platform_message_id: 'om_big', file_key: 'fk' },
     })
     const res = await (channel as any).handleFetchMedia({ handle })
     expect(res.status).toBe('fetching')
@@ -64,7 +64,8 @@ describe('fetch_media 大文件非阻塞 + 完成事件', () => {
     ;(channel as any).rpcClient.publishEvent = publishEvent
     ;(channel as any).client.downloadResource = vi.fn(async () => { throw new Error('net') })
     const handle = await (channel as any).mediaHandleStore.put({
-      platform_message_id: 'om_f', file_key: 'fk', kind: 'file', filename: 'f.pdf', size: 20 * 1024 * 1024, session_id: 'sess_2',
+      kind: 'file', filename: 'f.pdf', size: 20 * 1024 * 1024, session_id: 'sess_2',
+      credential: { platform_message_id: 'om_f', file_key: 'fk' },
     })
     const res = await (channel as any).handleFetchMedia({ handle })
     expect(res.status).toBe('fetching')
@@ -78,7 +79,8 @@ describe('fetch_media 大文件非阻塞 + 完成事件', () => {
     ;(channel as any).rpcClient.publishEvent = publishEvent
     ;(channel as any).client.downloadResource = vi.fn(async () => Buffer.from('hi'))
     const handle = await (channel as any).mediaHandleStore.put({
-      platform_message_id: 'om_small', file_key: 'fk', kind: 'file', filename: 's.pdf', size: 100, session_id: 'sess_3',
+      kind: 'file', filename: 's.pdf', size: 100, session_id: 'sess_3',
+      credential: { platform_message_id: 'om_small', file_key: 'fk' },
     })
     const res = await (channel as any).handleFetchMedia({ handle })
     expect(res.status).toBe('ready')

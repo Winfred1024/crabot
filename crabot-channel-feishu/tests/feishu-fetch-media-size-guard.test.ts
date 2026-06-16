@@ -40,8 +40,8 @@ describe('fetch_media 入站大小上限保护', () => {
     const download = vi.fn(async () => Buffer.from('x'))
     ;(channel as any).client.downloadResource = download
     const handle = await (channel as any).mediaHandleStore.put({
-      platform_message_id: 'om_big', file_key: 'fk', kind: 'file', filename: 'big.zip',
-      size: 200 * 1024 * 1024,
+      kind: 'file', filename: 'big.zip', size: 200 * 1024 * 1024,
+      credential: { platform_message_id: 'om_big', file_key: 'fk' },
     })
     const res = await (channel as any).handleFetchMedia({ handle })
     expect(res.status).toBe('failed')
@@ -52,7 +52,7 @@ describe('fetch_media 入站大小上限保护', () => {
   it('size 在上限内 → 正常下载返回 ready', async () => {
     ;(channel as any).client.downloadResource = vi.fn(async () => Buffer.from('hello'))
     const handle = await (channel as any).mediaHandleStore.put({
-      platform_message_id: 'om_ok', file_key: 'fk', kind: 'file', filename: 'a.pdf', size: 5,
+      kind: 'file', filename: 'a.pdf', size: 5, credential: { platform_message_id: 'om_ok', file_key: 'fk' },
     })
     const res = await (channel as any).handleFetchMedia({ handle })
     expect(res.status).toBe('ready')
@@ -61,7 +61,7 @@ describe('fetch_media 入站大小上限保护', () => {
   it('size 未知（undefined）→ 不拦截，照常下载', async () => {
     ;(channel as any).client.downloadResource = vi.fn(async () => Buffer.from('hello'))
     const handle = await (channel as any).mediaHandleStore.put({
-      platform_message_id: 'om_unk', file_key: 'fk', kind: 'file', filename: 'a.pdf',
+      kind: 'file', filename: 'a.pdf', credential: { platform_message_id: 'om_unk', file_key: 'fk' },
     })
     const res = await (channel as any).handleFetchMedia({ handle })
     expect(res.status).toBe('ready')

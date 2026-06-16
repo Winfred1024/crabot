@@ -44,7 +44,7 @@ describe('feishu fetch_media RPC', () => {
   it('凭 handle 同步下载并返回 file_path（status=ready）', async () => {
     ;(channel as any).client.downloadResource = vi.fn(async () => Buffer.from('hello'))
     const handle = await (channel as any).mediaHandleStore.put({
-      platform_message_id: 'om_f', file_key: 'file_x', kind: 'file', filename: 'a.pdf',
+      kind: 'file', filename: 'a.pdf', credential: { platform_message_id: 'om_f', file_key: 'file_x' },
     })
     const res = await (channel as any).handleFetchMedia({ handle })
     expect(res.status).toBe('ready')
@@ -61,7 +61,7 @@ describe('feishu fetch_media RPC', () => {
   it('下载抛错 → status=failed 带原因', async () => {
     ;(channel as any).client.downloadResource = vi.fn(async () => { throw new Error('net') })
     const handle = await (channel as any).mediaHandleStore.put({
-      platform_message_id: 'om_g', file_key: 'file_y', kind: 'file', filename: 'b.pdf',
+      kind: 'file', filename: 'b.pdf', credential: { platform_message_id: 'om_g', file_key: 'file_y' },
     })
     const res = await (channel as any).handleFetchMedia({ handle })
     expect(res.status).toBe('failed')

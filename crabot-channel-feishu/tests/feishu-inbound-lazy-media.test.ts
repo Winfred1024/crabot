@@ -60,6 +60,6 @@ describe('飞书入站惰性媒体', () => {
     expect(content.size).toBe(5)
     expect(content.file_path).toBeUndefined()
     expect(download).not.toHaveBeenCalled()
-    expect((channel as any).mediaHandleStore.get(content.handle)?.file_key).toBe('file_x')
+    expect((channel as any).mediaHandleStore.get(content.handle)?.credential?.file_key).toBe('file_x')
   })
 })
