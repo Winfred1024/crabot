@@ -2622,6 +2622,11 @@ export class AgentHandler {
     return result
   }
 
+  /** 媒体后台下载完成事件 → 唤醒等待中的 worker。纯系统 push（不触发 goal 券 / human 语义）。 */
+  wakeForMediaDownload(taskId: TaskId, note: string): void {
+    this.humanQueues.get(taskId)?.push(`[系统] ${note}`)
+  }
+
   getActiveTasksForQuery(): Array<{ task_id: string; started_at: string; title?: string }> {
     // status 字段已从 WorkerTaskState 删除（SSOT 重整 2026-06-09）：admin tasks.json 是 status 权威，
     // 调用方需要 status 自行从 admin 拉。本接口只暴露 agent 内存里的纯执行态字段。
