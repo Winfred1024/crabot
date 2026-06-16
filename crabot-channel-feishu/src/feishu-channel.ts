@@ -30,7 +30,7 @@ import { parseFeishuDocUrl, extractFeishuDocUrls } from './feishu-url.js'
 import { WsSubscriber } from './ws-subscriber.js'
 import { SessionManager } from './session-manager.js'
 import { MessageStore, type StoredMessage } from './message-store.js'
-import { MediaHandleStore } from './media-handle-store.js'
+import { MediaHandleStore, type MediaHandleRecord } from './media-handle-store.js'
 import { MediaCleaner } from './media-cleaner.js'
 import { splitTextByTableLimit } from './card-table-guard.js'
 import {
@@ -103,6 +103,9 @@ const MAX_FILE_SIZE = 30 * 1024 * 1024 // 30MB（飞书附件上限）
  *  注意：这与出站发送的 MAX_FILE_SIZE（飞书 30MB 上传上限）是两回事。 */
 const INBOUND_MAX_FILE_SIZE = 100 * 1024 * 1024 // 100MB
 
+/** 入站文件异步阈值：≥ 此值走后台下载 + 完成事件（不阻塞 worker），< 此值同步下完即返回 */
+const MEDIA_ASYNC_THRESHOLD = 10 * 1024 * 1024 // 10MB
+
 export interface FeishuChannelInitConfig {
   module_id: string
   module_type: 'channel'
@@ -123,6 +126,9 @@ export class FeishuChannel extends ModuleBase {
   private readonly mediaHandleStore: MediaHandleStore
   private readonly mediaCleaner: MediaCleaner
   private readonly docReader: FeishuDocReader
+
+  /** 正在后台下载的 handle，去重防同一文件并发重复下载 */
+  private readonly mediaFetchInProgress = new Set<string>()
 
   private botOpenId: string | null = null
   private botName: string | null = null
@@ -758,6 +764,14 @@ export class FeishuChannel extends ModuleBase {
         ...(rec.size !== undefined ? { size: rec.size } : {}),
       }
     }
+    // 大文件：后台异步下载，立即返回 fetching，下载完发 media.download_completed 事件唤醒等待 worker
+    if (rec.size !== undefined && rec.size >= MEDIA_ASYNC_THRESHOLD) {
+      if (!this.mediaFetchInProgress.has(params.handle)) {
+        this.mediaFetchInProgress.add(params.handle)
+        void this.downloadMediaInBackground(params.handle, rec)
+      }
+      return { status: 'fetching' }
+    }
     const r = await this.downloadAndPersistMedia(
       rec.platform_message_id,
       rec.file_key,
@@ -773,6 +787,43 @@ export class FeishuChannel extends ModuleBase {
       file_path: r.filePath,
       ...(r.mimeType !== undefined ? { mime_type: r.mimeType } : {}),
       ...(r.size !== undefined ? { size: r.size } : {}),
+    }
+  }
+
+  /** 后台下载一个媒体，完成（成功/失败）后发 media.download_completed 事件唤醒等待 worker。 */
+  private async downloadMediaInBackground(handle: string, rec: MediaHandleRecord): Promise<void> {
+    let status: 'ready' | 'failed' = 'failed'
+    let error: string | undefined
+    try {
+      const r = await this.downloadAndPersistMedia(rec.platform_message_id, rec.file_key, rec.kind, rec.filename)
+      if (r) {
+        await this.mediaHandleStore.markDownloaded(handle, r.filePath)
+        status = 'ready'
+      } else {
+        error = `download failed for handle ${handle}`
+      }
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err)
+    } finally {
+      this.mediaFetchInProgress.delete(handle)
+    }
+    const event: Event = {
+      id: generateId(),
+      type: 'media.download_completed',
+      source: this.config.moduleId,
+      payload: {
+        channel_id: this.config.moduleId,
+        ...(rec.session_id ? { session_id: rec.session_id } : {}),
+        handle,
+        status,
+        ...(error ? { error } : {}),
+      },
+      timestamp: generateTimestamp(),
+    }
+    try {
+      await this.rpcClient.publishEvent(event, this.config.moduleId)
+    } catch (err) {
+      console.warn('[FeishuChannel] publish media.download_completed failed:', err)
     }
   }
 
