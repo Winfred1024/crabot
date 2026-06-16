@@ -298,6 +298,12 @@ main() {
       chmod 0644 /etc/crabot/cluster.version
     fi
 
+    # 铺一份供应商目录注释样例（.example 不激活；激活需改名为 vendor.yaml）
+    if [ -f "$INSTALL_DIR/scripts/templates/vendor.yaml.example" ]; then
+      cp "$INSTALL_DIR/scripts/templates/vendor.yaml.example" /etc/crabot/defaults/vendor.yaml.example
+      chmod 0644 /etc/crabot/defaults/vendor.yaml.example
+    fi
+
     # logrotate
     cat > /etc/logrotate.d/crabot <<'LR'
 /home/*/.crabot/data*/logs/*.log {
@@ -367,6 +373,7 @@ LR
     info "     sudo usermod -a -G crabot alice"
     info "     sudo usermod -a -G crabot bob"
     info "  2. (可选) 编辑 /etc/crabot/defaults/provider.yaml 给员工铺默认 LLM"
+    info "  2b. (可选) 自定义员工可选供应商目录：sudo crabot vendor add，或参考 /etc/crabot/defaults/vendor.yaml.example"
     info "  3. 编辑后递增版本：echo \$((\$(cat /etc/crabot/cluster.version)+1)) | sudo tee /etc/crabot/cluster.version"
     info "  4. 通知员工：crabot start 即可"
   else

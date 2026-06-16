@@ -175,7 +175,7 @@ import { ChatManager, buildChatTaskSnapshot } from './chat-manager.js'
 import { MediaStore } from './media-store.js'
 import { MCPServerManager, SkillManager, EssentialToolsManager, DuplicateSkillError } from './mcp-skill-manager.js'
 import { SubAgentManager, resolveSubAgentModel } from './subagent-manager.js'
-import { PRESET_VENDORS } from './preset-vendors.js'
+import { getPresetVendors, initVendorRegistry } from './vendor-registry.js'
 import { Cron } from 'croner'
 import { ScheduleEngine } from './schedule-engine.js'
 import {
@@ -685,6 +685,7 @@ export class AdminModule extends ModuleBase {
 
     // 初始化模型供应商管理器
     await this.modelProviderManager.initialize()
+    await initVendorRegistry(this.adminConfig.data_dir)
 
     // 加载并应用存储的代理配置
     const proxyConfig = this.modelProviderManager.getProxyConfig()
@@ -6190,13 +6191,14 @@ export class AdminModule extends ModuleBase {
   }
 
   private async handleListPresetVendorsApi(_req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const vendors = getPresetVendors()
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({
-      items: PRESET_VENDORS,
+      items: vendors,
       pagination: {
         page: 1,
         page_size: 100,
-        total_items: PRESET_VENDORS.length,
+        total_items: vendors.length,
         total_pages: 1
       }
     }))

@@ -24,7 +24,7 @@ import type {
   ModelType,
   ProxyConfig,
 } from './types.js'
-import { findPresetVendor } from './preset-vendors.js'
+import { findPresetVendor } from './vendor-registry.js'
 
 /**
  * 错误体截断长度。中转/Provider 的 4xx body 经常 >200 字符，截太短看不到根因。

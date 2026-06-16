@@ -90,7 +90,7 @@ try {
 } catch { /* ok */ }
 
 console.log('[init] 拉取 root 默认配置...')
-for (const kind of ['provider', 'agent']) {
+for (const kind of ['provider', 'agent', 'vendor']) {
   const src = join(ETC_DIR, 'defaults', `${kind}.yaml`)
   if (!existsSync(src)) continue
   const raw = readFileSync(src, 'utf-8').trim()
