@@ -1,0 +1,35 @@
+# Crabot 自定义供应商目录（PresetVendor）
+#
+# 作用：自定义员工在 Admin Web "添加 provider" 下拉里可选的供应商。
+# 这里只配"目录/菜单"，不含任何 API key——员工选中后自己填 key 或扫码 OAuth。
+#
+# 启用：把本文件改名为 vendor.yaml（同目录），或用 `sudo crabot vendor add` 向导编辑。
+# 改动后递增 /etc/crabot/cluster.version，员工下次 `crabot sync` 生效。
+
+# mode: merge   → 在内置供应商（OpenAI/Anthropic/Ollama…）基础上增加/覆盖（默认）
+# mode: replace → 完全接管，隐藏所有内置供应商，员工只能看到下面这份
+mode: merge
+
+vendors:
+  # 例 1：公司内部 OpenAI 兼容代理。有 /models 端点 → 员工填 key 后自动拉模型列表，
+  #        无需写 default_models。
+  - id: company-proxy
+    name: 公司内部代理
+    format: openai            # openai | anthropic | gemini | openai-responses
+    endpoint: https://llm.corp.internal/v1
+    models_api: /models
+    recommended: true         # 前端置顶（可选）
+    # api_key_help_url: https://wiki.corp.internal/llm-key   # 可选：申领 key 的指引
+    # docs_url: https://wiki.corp.internal/llm               # 可选
+    # allows_custom_endpoint: true                           # 可选：允许员工改 endpoint
+    # vision_id_prefixes: ['claude-', 'gpt-']                # 可选：这些前缀的模型自动标视觉
+
+  # 例 2：无 /models 端点的厂商 → 必须写静态 default_models。
+  - id: internal-anthropic
+    name: 公司 Claude 网关
+    format: anthropic
+    endpoint: https://claude.corp.internal
+    # auth_type: apikey       # 可选：apikey（默认）| oauth
+    default_models:
+      - { model_id: claude-internal, display_name: 公司 Claude, type: llm, supports_vision: true, context_window: 200000 }
+      - { model_id: claude-internal-fast, display_name: 公司 Claude Fast, type: llm, supports_vision: false, context_window: 200000 }
