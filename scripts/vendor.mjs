@@ -111,7 +111,7 @@ async function cmdAdd(rl, target) {
   const modelsApiAns = (await rl.question(`models_api（拼在 endpoint 后面，只填路径；回车用默认 "${guessedModelsApi}"）: `)).trim()
   const models_api = modelsApiAns || guessedModelsApi
   // 多数 /models 响应不暴露 vision 字段，需靠 id 前缀把这些模型族标成 VLM。
-  const visionAns = (await rl.question('视觉模型 id 前缀（命中则导入时自动标 VLM，逗号分隔，如 claude-,gpt-；回车跳过）: ')).trim()
+  const visionAns = (await rl.question('视觉模型 id 前缀（命中则导入时自动标 VLM，逗号分隔，如 claude-,gpt-,gemini-,kimi-；回车跳过）: ')).trim()
   const vision_id_prefixes = visionAns ? visionAns.split(',').map(s => s.trim()).filter(Boolean) : []
   const recommended = (await rl.question('设为推荐（前端置顶）？[y/N] ')).trim().toLowerCase().startsWith('y')
 

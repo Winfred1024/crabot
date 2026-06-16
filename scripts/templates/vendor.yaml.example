@@ -34,7 +34,7 @@ vendors:
     # api_key_help_url: https://wiki.corp.internal/llm-key   # 可选：申领 key 的指引
     # docs_url: https://wiki.corp.internal/llm               # 可选
     # allows_custom_endpoint: true                           # 可选：允许员工改 endpoint
-    # vision_id_prefixes: ['claude-', 'gpt-']                # 可选：这些前缀的模型自动标视觉
+    # vision_id_prefixes: ['claude-', 'gpt-', 'gemini-', 'kimi-']   # 可选：这些前缀的模型自动标视觉
 
   # 例 2：无 /models 端点的厂商 → 必须写静态 default_models。
   #        注意 anthropic 端点是裸 host，不带 /v1。
