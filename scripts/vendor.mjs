@@ -4,14 +4,17 @@ import './_preflight.mjs'
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { resolve, dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 import { createInterface } from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
 import yaml from 'js-yaml'
 import { detectMode } from './lib/mode.mjs'
-import { readInstance, hasInstance } from './lib/instance.mjs'
+import { resolveCliDataDir } from './lib/instance.mjs'
 import { addVendor, removeVendor, setMode, validateEntry } from './lib/vendor-doc.mjs'
 
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const ROOT = resolve(__dirname, '..')
 const ETC_DIR = '/etc/crabot'
 const HOME_DIR = resolve(homedir(), '.crabot')
 const FORMATS = ['openai', 'anthropic', 'gemini', 'openai-responses']
@@ -21,11 +24,7 @@ function resolveTarget() {
   if (detectMode(ETC_DIR) === 'system') {
     return { mode: 'system', file: join(ETC_DIR, 'defaults', 'vendor.yaml') }
   }
-  if (!hasInstance(HOME_DIR)) {
-    console.error('[vendor] 没有 instance.json；请先 `crabot start` 或 `crabot init`。')
-    process.exit(1)
-  }
-  const dataDir = readInstance(HOME_DIR).data_dir
+  const dataDir = resolveCliDataDir({ homeDir: HOME_DIR, repoRoot: ROOT })
   return { mode: 'user', file: resolve(dataDir, 'admin', 'vendor.yaml') }
 }
 
