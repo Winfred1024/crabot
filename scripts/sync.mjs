@@ -8,7 +8,7 @@ import { homedir } from 'node:os'
 import yaml from 'js-yaml'
 import { detectMode } from './lib/mode.mjs'
 import { readInstance, writeInstance, hasInstance } from './lib/instance.mjs'
-import { mergeByName } from './lib/yaml-merge.mjs'
+import { mergeByName, mergeKindDoc } from './lib/yaml-merge.mjs'
 
 const HOME_DIR = resolve(homedir(), '.crabot')
 const ETC_DIR = '/etc/crabot'
@@ -46,9 +46,9 @@ function loadYaml(path) {
   try { return yaml.load(raw) } catch { return null }
 }
 
-const SLOT_KEY = { provider: 'name', agent: 'slot' }
+const SLOT_KEY = { provider: 'name', agent: 'slot', vendor: 'id' }
 
-for (const kind of ['provider', 'agent']) {
+for (const kind of ['provider', 'agent', 'vendor']) {
   const rootDoc = loadYaml(join(ETC_DIR, 'defaults', `${kind}.yaml`))
   if (!rootDoc) {
     console.log(`[sync]   - ${kind}.yaml: root 无默认，跳过`)
@@ -59,11 +59,11 @@ for (const kind of ['provider', 'agent']) {
 
   // doc 形如 { providers: [...] } 或 { model_slots: [...] }；
   // 容器 key 名沿用 root 的 top-level（约定俗成）
-  const topKey = Object.keys(rootDoc)[0]
+  const topKey =
+    Object.keys(rootDoc).find(k => Array.isArray(rootDoc[k])) ?? Object.keys(rootDoc)[0]
   const rootList = rootDoc[topKey] ?? []
   const userList = (userDoc && userDoc[topKey]) ?? []
-  const merged = mergeByName(rootList, userList, { key: SLOT_KEY[kind] })
-  const out = { [topKey]: merged }
+  const out = mergeKindDoc(rootDoc, userDoc, { key: SLOT_KEY[kind] })
 
   mkdirSync(dirname(userPath), { recursive: true })
   writeFileSync(userPath, yaml.dump(out))
