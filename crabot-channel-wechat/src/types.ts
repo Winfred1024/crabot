@@ -71,6 +71,10 @@ export interface MessageContent {
   filename?: string
   mime_type?: string
   size?: number
+  /** 惰性媒体下载句柄（非图片文件 status=not_fetched 时携带，传给 fetch_media RPC） */
+  handle?: string
+  /** 媒体就绪状态：ready / not_fetched / fetching / failed */
+  status?: 'ready' | 'not_fetched' | 'fetching' | 'failed'
 }
 
 export interface SessionPermissions {
