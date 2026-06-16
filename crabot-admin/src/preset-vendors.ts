@@ -179,7 +179,7 @@ export const PRESET_VENDORS: readonly PresetVendor[] = [
     id: 'xinshu-openai',
     name: 'xinshu (OpenAI 格式)',
     format: 'openai',
-    endpoint: 'https://mirror.xinshu.ai/v1',
+    endpoint: 'https://gpt.xinshu.ai/v1',
     models_api: '/models',
     vision_id_prefixes: ['claude-', 'gpt-'],
     recommended: true,
@@ -189,9 +189,9 @@ export const PRESET_VENDORS: readonly PresetVendor[] = [
     name: 'xinshu (Anthropic 格式)',
     format: 'anthropic',
     // endpoint 是裸 host：Anthropic SDK 会自动拼 /v1/messages
-    endpoint: 'https://mirror.xinshu.ai',
+    endpoint: 'https://gpt.xinshu.ai',
     // 模型列表是 OpenAI 风格的 /v1/models（即使是 Anthropic 协议的 key），
-    // 所以 models_api 自带 /v1 前缀，拼出来仍是 https://mirror.xinshu.ai/v1/models
+    // 所以 models_api 自带 /v1 前缀，拼出来仍是 https://gpt.xinshu.ai/v1/models
     models_api: '/v1/models',
     vision_id_prefixes: ['claude-', 'gpt-'],
     recommended: true,
