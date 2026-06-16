@@ -9,7 +9,7 @@ import { createInterface } from 'node:readline'
 
 import { detectMode } from './upgrade-lib/mode.mjs'
 import { runScript } from './upgrade-lib/runner.mjs'
-import { runMigrations, backupDataDir } from './upgrade-lib/migrate.mjs'
+import { runMigrations } from './upgrade-lib/migrate.mjs'
 import {
   getCurrentVersion,
   getLatestVersion,
@@ -117,11 +117,6 @@ async function runReleaseMode() {
   const url = `https://github.com/smilefufu/crabot/releases/download/${latest}/crabot-${latest}-${platform}.tar.gz`
   const sha256Url = `${url}.sha256`
 
-  const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 15)
-  const backupPath = `${CRABOT_HOME}.backup-${ts}`
-  console.log(`Backing up to ${backupPath} ...`)
-  await backupDataDir(CRABOT_HOME, ts)
-
   await downloadAndExtract({ url, sha256Url, crabotHome: CRABOT_HOME, logger })
 
   console.log('Syncing Python deps ...')
@@ -136,7 +131,6 @@ async function runReleaseMode() {
   await writeVersionFile(CRABOT_HOME, latest)
   console.log('')
   console.log(`Upgraded to ${latest}.`)
-  console.log(`Backup: ${backupPath}/  (delete when stable)`)
 }
 
 async function runSourceMode() {
