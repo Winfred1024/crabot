@@ -58,4 +58,14 @@ describe('MediaHandleStore', () => {
   it('markDownloaded 未知 handle → 静默 no-op', async () => {
     await expect(store.markDownloaded('fm_000000000000', '/x')).resolves.toBeUndefined()
   })
+
+  it('setSessionId 写回 session_id，get 能读到', async () => {
+    const handle = await store.put({ platform_message_id: 'om_s', file_key: 'fk', kind: 'file' })
+    await store.setSessionId(handle, 'sess_123')
+    expect(store.get(handle)?.session_id).toBe('sess_123')
+  })
+
+  it('setSessionId 未知 handle → 静默 no-op', async () => {
+    await expect(store.setSessionId('fm_000000000000', 'sess_x')).resolves.toBeUndefined()
+  })
 })

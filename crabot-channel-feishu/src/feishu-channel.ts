@@ -292,6 +292,11 @@ export class FeishuChannel extends ModuleBase {
       sender_name: senderName || senderOpenId,
     })
 
+    // 文件惰性 handle 在 applyMediaContent（先于此处 session 解析）登记，此处补写 session_id 供慢档事件路由
+    if (content.type === 'file' && content.handle) {
+      await this.mediaHandleStore.setSessionId(content.handle, session.id)
+    }
+
     const platformTimestamp = isoFromMillis(message.create_time) ?? generateTimestamp()
 
     const channelMessage: ChannelMessage = {

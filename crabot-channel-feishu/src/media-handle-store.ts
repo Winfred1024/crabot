@@ -17,6 +17,8 @@ export interface MediaHandleRecord {
   size?: number
   /** 首次下载成功后写回的本地路径；再次 fetch 时若文件仍在则直接返回，避免重下 */
   downloaded_file_path?: string
+  /** crabot 内部 session id；供慢档完成事件按会话路由唤醒等待 task */
+  session_id?: string
 }
 
 export class MediaHandleStore {
@@ -62,6 +64,18 @@ export class MediaHandleStore {
       await this.persist()
     } catch (err) {
       console.warn('[MediaHandleStore] markDownloaded persist failed:', err)
+    }
+  }
+
+  /** 补写 crabot session id（入站时 session 在 applyMediaContent 之后才解析，故分两步）。未知 handle no-op。 */
+  async setSessionId(handle: string, sessionId: string): Promise<void> {
+    const rec = this.map.get(handle)
+    if (!rec) return
+    this.map = new Map(this.map).set(handle, { ...rec, session_id: sessionId })
+    try {
+      await this.persist()
+    } catch (err) {
+      console.warn('[MediaHandleStore] setSessionId persist failed:', err)
     }
   }
 
