@@ -102,18 +102,22 @@ async function cmdAdd(rl, target) {
   const fmtIdx = parseInt((await rl.question(`选择格式 [1-${FORMATS.length}]: `)).trim(), 10)
   const format = FORMATS[fmtIdx - 1]
   const epHint = format === 'anthropic'
-    ? '裸 host，如 https://claude.corp.internal（Anthropic SDK 自动拼 /v1/messages，不要加 /v1）'
-    : 'OpenAI 兼容端点，末尾通常带 /v1，如 https://api.openai.com/v1'
+    ? '裸 host 不带 /v1，如 https://claude.corp.internal'
+    : '带 /v1，如 https://api.openai.com/v1'
   const endpoint = (await rl.question(`endpoint（${epHint}）: `)).trim()
   // models_api 是「拉取模型列表的路径」，会拼到上面的 endpoint 后面：列模型地址 = endpoint + models_api。
   // 只填路径后缀（不要再写一遍 base_url）。回车留空则自动猜一个（猜错最多拉不到，可后续手动改）。
   const guessedModelsApi = format === 'anthropic' ? '/v1/models' : '/models'
   const modelsApiAns = (await rl.question(`models_api（拼在 endpoint 后面，只填路径；回车用默认 "${guessedModelsApi}"）: `)).trim()
   const models_api = modelsApiAns || guessedModelsApi
+  // 多数 /models 响应不暴露 vision 字段，需靠 id 前缀把这些模型族标成 VLM。
+  const visionAns = (await rl.question('视觉模型 id 前缀（命中则导入时自动标 VLM，逗号分隔，如 claude-,gpt-；回车跳过）: ')).trim()
+  const vision_id_prefixes = visionAns ? visionAns.split(',').map(s => s.trim()).filter(Boolean) : []
   const recommended = (await rl.question('设为推荐（前端置顶）？[y/N] ')).trim().toLowerCase().startsWith('y')
 
   const entry = { id, name, format, endpoint }
   if (models_api) entry.models_api = models_api
+  if (vision_id_prefixes.length) entry.vision_id_prefixes = vision_id_prefixes
   if (recommended) entry.recommended = true
 
   const errors = validateEntry(entry)
