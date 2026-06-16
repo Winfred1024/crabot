@@ -100,3 +100,5 @@ export {
   hasMarkdownMarkers,
   markdownToTelegramHtml,
 } from './markdown.js'
+
+export * from './media-fetch/index.js'
