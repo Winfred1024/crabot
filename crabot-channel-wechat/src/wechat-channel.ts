@@ -287,6 +287,9 @@ export class WechatChannel extends ModuleBase {
     const rawContent = event.message.content as Record<string, unknown>
     const { content: formattedContent, features: extraFeatures } = formatWechatContent(msgType, rawContent)
 
+    // 文件（公开 URL）惰性化：登记 handle，图片保持原样
+    const content = await this.lazifyFileContent(formattedContent, session.id)
+
     // 检测 @Crabot
     const atString = (rawContent.at_string as string | undefined) ?? ''
     const isMentionCrab = isGroup && atString.split(',').some(wxid => wxid.trim() === event.puppet.wxid)
@@ -308,7 +311,7 @@ export class WechatChannel extends ModuleBase {
         platform_user_id: event.sender.wxid,
         platform_display_name: event.sender.name,
       },
-      content: formattedContent,
+      content,
       features: {
         is_mention_crab: isMentionCrab,
         ...extraFeatures,
@@ -527,6 +530,24 @@ export class WechatChannel extends ModuleBase {
 
   private async handleFetchMedia(params: FetchMediaParams): Promise<FetchMediaResult> {
     return this.mediaFetch.fetch(params.handle)
+  }
+
+  /**
+   * 把"带公开 URL 的文件"改成惰性 handle 形态（图片不动，仍传 media_url 供 agent 注入）。
+   * type=file 且有 media_url → 登记 handle、改 status=not_fetched、去掉 media_url。
+   */
+  private async lazifyFileContent(content: MessageContent, sessionId: string): Promise<MessageContent> {
+    if (content.type !== 'file' || !content.media_url) return content
+    const handle = await this.mediaHandleStore.put({
+      kind: 'file',
+      ...(content.filename !== undefined ? { filename: content.filename } : {}),
+      ...(content.mime_type !== undefined ? { mime_type: content.mime_type } : {}),
+      ...(content.size !== undefined ? { size: content.size } : {}),
+      session_id: sessionId,
+      credential: { url: content.media_url },
+    })
+    const { media_url: _omit, ...rest } = content
+    return { ...rest, handle, status: 'not_fetched' }
   }
 
   /** wechat 媒体下载：HTTP GET 公开 URL（connector 已传图床，无需 token）落盘。 */
