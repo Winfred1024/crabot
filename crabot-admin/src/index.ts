@@ -6180,13 +6180,14 @@ export class AdminModule extends ModuleBase {
   }
 
   private async handleListPresetVendorsApi(_req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const vendors = getPresetVendors()
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({
-      items: getPresetVendors(),
+      items: vendors,
       pagination: {
         page: 1,
         page_size: 100,
-        total_items: getPresetVendors().length,
+        total_items: vendors.length,
         total_pages: 1
       }
     }))
