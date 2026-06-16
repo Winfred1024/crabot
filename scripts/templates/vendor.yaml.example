@@ -14,6 +14,9 @@
 # endpoint 规则（容易踩坑，endpoint 本质是 base_url）：
 #   - openai / gemini / openai-responses：末尾要带 /v1（如 https://api.openai.com/v1）
 #   - anthropic：填裸 host 或厂商专用路径，【不要】加 /v1——Anthropic SDK 自动拼 /v1/messages
+# models_api：拉取模型列表的路径，拼到 endpoint 后面（列模型地址 = endpoint + models_api）。
+#   只填路径后缀，别再写一遍 base_url。厂商没有列模型接口时省略它、改用下面的 default_models。
+#   （用 `crabot vendor add` 向导时留空，会自动猜一个，比如 openai 类猜 /models；猜错最多拉不到。）
 
 # mode: merge   → 在内置供应商（OpenAI/Anthropic/Ollama…）基础上增加/覆盖（默认）
 # mode: replace → 完全接管，隐藏所有内置供应商（ChatGPT 订阅除外），员工只看下面这份
@@ -24,9 +27,9 @@ vendors:
   #        无需写 default_models。注意 openai 端点末尾带 /v1。
   - id: company-proxy
     name: 公司内部代理
-    format: openai            # openai | anthropic | gemini
+    format: openai            # openai | anthropic | gemini | openai-responses
     endpoint: https://llm.corp.internal/v1
-    models_api: /models
+    models_api: /models       # 拼到 endpoint 后 → https://llm.corp.internal/v1/models
     recommended: true         # 前端置顶（可选）
     # api_key_help_url: https://wiki.corp.internal/llm-key   # 可选：申领 key 的指引
     # docs_url: https://wiki.corp.internal/llm               # 可选
