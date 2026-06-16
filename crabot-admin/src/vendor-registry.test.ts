@@ -20,11 +20,14 @@ describe('validatePresetVendor', () => {
       id: 'x', name: 'X', format: 'anthropic', endpoint: 'https://x',
       models_api: '/models', recommended: true, auth_type: 'oauth',
       vision_id_prefixes: ['claude-'],
-      default_models: [{ model_id: 'm', display_name: 'M', type: 'llm', supports_vision: true }],
+      default_models: [{ model_id: 'm', display_name: 'M', type: 'llm', supports_vision: true, max_tokens: 8192, description: 'desc', tags: ['a', 'b'] }],
     })
     expect(out).not.toBeNull()
     expect(out!.id).toBe('x')
     expect(out!.default_models).toHaveLength(1)
+    expect(out!.default_models![0].max_tokens).toBe(8192)
+    expect(out!.default_models![0].description).toBe('desc')
+    expect(out!.default_models![0].tags).toEqual(['a', 'b'])
   })
 
   it('缺 id / 缺 endpoint / 非法 format → null', () => {

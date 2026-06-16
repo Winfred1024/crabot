@@ -36,6 +36,12 @@ function validateModelInfo(raw: unknown): ModelInfo | null {
   const info: ModelInfo = { model_id: m.model_id, display_name: m.display_name, type: 'llm' }
   if (typeof m.supports_vision === 'boolean') info.supports_vision = m.supports_vision
   if (typeof m.context_window === 'number') info.context_window = m.context_window
+  if (typeof m.max_tokens === 'number') info.max_tokens = m.max_tokens
+  if (isNonEmptyString(m.description)) info.description = m.description
+  if (Array.isArray(m.tags)) {
+    const tags = m.tags.filter((t): t is string => typeof t === 'string')
+    if (tags.length > 0) info.tags = tags
+  }
   return info
 }
 
