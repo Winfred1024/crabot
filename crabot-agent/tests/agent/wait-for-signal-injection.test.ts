@@ -74,12 +74,13 @@ describe('maybeCreateWaitForSignalTool', () => {
     expect(tool?.name).toBe('wait_for_signal')
   })
 
-  it('两者都关 → 不注入（返回 undefined）', () => {
+  it('两者都关 → 仍然注入（门槛已放开，总是注入）', () => {
     const tool = maybeCreateWaitForSignalTool(
       { goalModeEnabled: false, asyncEnabled: false },
       stubDeps,
     )
-    expect(tool).toBeUndefined()
+    expect(tool).toBeDefined()
+    expect(tool?.name).toBe('wait_for_signal')
   })
 
   it('注入的工具透传 deps（hasActiveAsyncSubagent 真正被调）', async () => {
