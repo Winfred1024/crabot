@@ -8,7 +8,7 @@
  * 校验手写（不引 zod，贴合 admin 既有 yaml 加载风格）：坏条目跳过 + warn，
  * 缺失/解析失败回退纯内置，绝不 crash。
  */
-import { promises as fs } from 'node:fs'
+import { promises as fs, existsSync } from 'node:fs'
 import path from 'node:path'
 import yaml from 'js-yaml'
 import type { ApiFormat, ModelInfo, PresetVendor } from './types.js'
@@ -153,12 +153,24 @@ export async function loadVendorOverride(dataDir: string): Promise<VendorOverrid
 // ---- 模块级缓存：admin 启动时 init 一次 ----
 let resolved: PresetVendor[] = [...BUILTIN]
 
-/** admin 启动调用：加载 override 并解析出最终目录。 */
+// system mode 探测信号与 scripts/lib/mode.mjs 的 detectMode 对齐（/etc/crabot/cluster.version）。
+const SYSTEM_CLUSTER_VERSION = '/etc/crabot/cluster.version'
+const SYSTEM_DEFAULTS_DIR = '/etc/crabot/defaults'
+
+/**
+ * admin 启动调用：加载 override 并解析出最终目录。
+ *
+ * vendor 目录完全以 root 为准、不走 sync：
+ *  - system mode（存在 /etc/crabot/cluster.version）→ 直读 root 下发的 /etc/crabot/defaults/vendor.yaml；
+ *  - user mode → 读本地 <DATA_DIR>/admin/vendor.yaml（crabot vendor add 直接写这里）。
+ * root 改动在该员工 admin 下次启动时生效（不做热重载）。
+ */
 export async function initVendorRegistry(dataDir: string): Promise<void> {
-  const override = await loadVendorOverride(dataDir)
+  const sourceDir = existsSync(SYSTEM_CLUSTER_VERSION) ? SYSTEM_DEFAULTS_DIR : dataDir
+  const override = await loadVendorOverride(sourceDir)
   resolved = resolvePresetVendors(BUILTIN, override)
   if (override) {
-    console.log(`[vendor-registry] 已加载 vendor.yaml（mode=${override.mode}，${override.vendors.length} 条），最终 ${resolved.length} 个供应商`)
+    console.log(`[vendor-registry] 已加载 vendor.yaml（来源=${sourceDir}，mode=${override.mode}，${override.vendors.length} 条），最终 ${resolved.length} 个供应商`)
   }
 }
 

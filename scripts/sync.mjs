@@ -46,9 +46,11 @@ function loadYaml(path) {
   try { return yaml.load(raw) } catch { return null }
 }
 
-const SLOT_KEY = { provider: 'name', agent: 'slot', vendor: 'id' }
+// 注：vendor 不走 sync——vendor 目录完全以 root 为准，admin 在 system mode 直读
+// /etc/crabot/defaults/vendor.yaml（见 crabot-admin/src/vendor-registry.ts）。
+const SLOT_KEY = { provider: 'name', agent: 'slot' }
 
-for (const kind of ['provider', 'agent', 'vendor']) {
+for (const kind of ['provider', 'agent']) {
   const rootDoc = loadYaml(join(ETC_DIR, 'defaults', `${kind}.yaml`))
   if (!rootDoc) {
     console.log(`[sync]   - ${kind}.yaml: root 无默认，跳过`)

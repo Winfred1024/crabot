@@ -4,7 +4,7 @@
 # 这里只配"目录/菜单"，不含任何 API key——员工选中后自己填 key。
 #
 # 启用：把本文件改名为 vendor.yaml（同目录），或用 `sudo crabot vendor add` 向导编辑。
-# 改动后递增 /etc/crabot/cluster.version，员工下次 `crabot sync` 生效。
+# 完全以 root 为准，不走 sync：各员工 admin 下次重启时直接读取本文件生效。
 #
 # format 支持：openai | anthropic | gemini | openai-responses
 #   - openai-responses 是 OpenAI 新一代 Responses API，用普通 endpoint(/v1)+apikey 即可配置。

@@ -68,28 +68,13 @@ function printList(doc, file) {
   console.log('')
 }
 
-async function offerBumpClusterVersion(rl) {
-  if (detectMode(ETC_DIR) !== 'system') {
+// vendor 目录完全以 root 为准、不走 sync（admin system mode 直读 /etc/crabot/defaults/vendor.yaml）。
+// 所以写完无需递增 cluster.version，只提示生效方式。
+function reportSaved(target) {
+  if (target.mode === 'system') {
+    console.log('[vendor] 已写入 /etc/crabot/defaults/vendor.yaml。各员工 admin 下次重启后自动生效（无需 sync）。')
+  } else {
     console.log('[vendor] 已写入。下次 `crabot start` 生效。')
-    return
-  }
-  const ans = (await rl.question('[vendor] 递增 /etc/crabot/cluster.version 以便员工 `crabot sync` 拉取？[Y/n] ')).trim().toLowerCase()
-  if (ans === 'n' || ans === 'no') {
-    console.log('[vendor] 未递增版本。员工不会自动拉到本次改动，记得手动递增 cluster.version。')
-    return
-  }
-  const vPath = join(ETC_DIR, 'cluster.version')
-  let cur = 0
-  try { cur = parseInt(readFileSync(vPath, 'utf-8').trim(), 10) || 0 } catch { /* ok */ }
-  try {
-    writeFileSync(vPath, String(cur + 1) + '\n')
-    console.log(`[vendor] cluster.version ${cur} → ${cur + 1}。员工下次 \`crabot sync\` 生效。`)
-  } catch (e) {
-    if (e.code === 'EACCES') {
-      console.error('[vendor] 写 cluster.version 权限拒绝，请用 sudo 重试或手动递增。')
-      return
-    }
-    throw e
   }
 }
 
@@ -138,10 +123,10 @@ async function cmdAdd(rl, target) {
   console.log('提示：如需静态模型列表（default_models），请直接编辑文件或参考 vendor.yaml.example。')
 
   saveDoc(target.file, doc)
-  await offerBumpClusterVersion(rl)
+  reportSaved(target)
 }
 
-async function cmdRemove(rl, target, id) {
+async function cmdRemove(target, id) {
   if (!id) {
     console.error('[vendor] 用法：crabot vendor remove <id>')
     process.exit(1)
@@ -156,10 +141,10 @@ async function cmdRemove(rl, target, id) {
   }
   console.log(`[vendor] 已从 override 文件移除 ${id}。`)
   console.log('[vendor] 注意：这只动 override 文件。merge 模式下若该 id 是内置供应商，会重新显形；要隐藏内置请用 `crabot vendor mode replace`。')
-  await offerBumpClusterVersion(rl)
+  reportSaved(target)
 }
 
-async function cmdMode(rl, target, mode) {
+async function cmdMode(target, mode) {
   const doc = loadDoc(target.file)
   let next
   try {
@@ -170,7 +155,7 @@ async function cmdMode(rl, target, mode) {
   }
   saveDoc(target.file, next)
   console.log(`[vendor] mode → ${mode}`)
-  await offerBumpClusterVersion(rl)
+  reportSaved(target)
 }
 
 async function main() {
@@ -187,10 +172,10 @@ async function main() {
         await cmdAdd(rl, target)
         break
       case 'remove':
-        await cmdRemove(rl, target, arg)
+        await cmdRemove(target, arg)
         break
       case 'mode':
-        await cmdMode(rl, target, arg)
+        await cmdMode(target, arg)
         break
       default:
         console.log('用法：crabot vendor <list|add|remove <id>|mode <merge|replace>>')

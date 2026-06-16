@@ -90,7 +90,8 @@ try {
 } catch { /* ok */ }
 
 console.log('[init] 拉取 root 默认配置...')
-for (const kind of ['provider', 'agent', 'vendor']) {
+// vendor 不在此——vendor 目录完全以 root 为准，admin system mode 直读 /etc/crabot/defaults/vendor.yaml。
+for (const kind of ['provider', 'agent']) {
   const src = join(ETC_DIR, 'defaults', `${kind}.yaml`)
   if (!existsSync(src)) continue
   const raw = readFileSync(src, 'utf-8').trim()
