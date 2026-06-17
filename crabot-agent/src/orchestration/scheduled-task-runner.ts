@@ -60,6 +60,7 @@ export class ScheduledTaskRunner {
   executeScheduledTaskInBackground(
     task: AdminTask,
     workerContext: WorkerAgentContext,
+    opts?: { resumeFrom?: ExecuteTaskParams['resumeFrom'] },
   ): void {
     const run = async () => {
       const adminPort = await this.getAdminPort()
@@ -167,9 +168,16 @@ export class ScheduledTaskRunner {
 
         // worker handler 内部已完成：update_task_status + update_task_outcome + 记忆写入
         if (this.executeTaskFn) {
-          await this.executeTaskFn({ ...taskPayload, related_task_id: task.id })
+          await this.executeTaskFn({
+            ...taskPayload,
+            related_task_id: task.id,
+            ...(opts?.resumeFrom ? { resumeFrom: opts.resumeFrom } : {}),
+          })
         } else {
-          await this.agentHandler!.executeTask(taskPayload)
+          await this.agentHandler!.executeTask({
+            ...taskPayload,
+            ...(opts?.resumeFrom ? { resumeFrom: opts.resumeFrom } : {}),
+          })
         }
       } catch (error) {
         // worker handler 自身崩溃（throw）——兜底：标失败 + 写失败记忆

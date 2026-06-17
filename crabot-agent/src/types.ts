@@ -753,6 +753,16 @@ export interface ExecuteTaskParams {
     }
   }
   context: WorkerAgentContext
+  /**
+   * 无损 resume：从 ResumeCheckpoint 重建 worker loop 初始状态。
+   * 存在时：首轮 initialMessages = [...initialMessages, wakeupMessage]；
+   * todoStore 和 goalRevisionUnlocked 从此处恢复，而非空初始化。
+   */
+  resumeFrom?: {
+    initialMessages: import('./engine/types.js').EngineMessage[]
+    todoItems: import('./agent/worker-todo-store.js').TodoItem[]
+    goalRevisionUnlocked?: boolean
+  }
 }
 
 export interface DeliverHumanResponseParams {

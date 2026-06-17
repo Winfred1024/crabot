@@ -113,6 +113,7 @@ import { createSubmitAuditResultTool } from './goal-auditor-tools.js'
 import { createWaitForSignalTool, type WaitForSignalDeps } from '../mcp/wait-for-signal.js'
 import { createAsyncAuditEndTurnGate } from './end-turn-gate.js'
 import { buildAuditAbortedMarker } from './audit-result-marker.js'
+import { buildResumeWakeupMessage } from '../core/resume-checkpoint.js'
 
 import { reflectStructuredOutcome } from '../orchestration/structured-outcome-reflector.js'
 import { AGENT_VERSION } from '../constants.js'
@@ -642,8 +643,37 @@ export class AgentHandler {
 
     // waiting 循环：loop 结束后检查异步子 agent，若有则等通知再续跑
     let loopResult: RunWorkerLoopResult | undefined
-    let currentInitialMessages: ReadonlyArray<EngineMessage> | undefined
     let currentHumanQueue: HumanMessageQueue | undefined
+
+    // resume 路径：从 checkpoint 恢复 todoStore / goalRevisionUnlocked，
+    // 并把 checkpoint messages + 唤醒消息作为首轮 initialMessages。
+    // runWorkerLoop 检查 activeTasks.get(task_id)——提前写入即可完成 todoStore/goalRevisionUnlocked 的恢复。
+    let currentInitialMessages: ReadonlyArray<EngineMessage> | undefined
+    if (params.resumeFrom) {
+      const { initialMessages, todoItems, goalRevisionUnlocked } = params.resumeFrom
+      // 唤醒消息只注入一次（resume 首轮）；后续 waiting 续跑沿用现有重设逻辑。
+      currentInitialMessages = [...initialMessages, buildResumeWakeupMessage()]
+      // 预建 taskState 让 runWorkerLoop 直接复用（不再用 new TodoStore()）
+      if (!this.activeTasks.has(task.task_id)) {
+        this.activeTasks.set(task.task_id, {
+          taskId: task.task_id,
+          startedAt: new Date().toISOString(),
+          title: task.task_title,
+          triggerType: task.source?.trigger_type === 'scheduled' ? 'scheduled' : 'message',
+          abortController: new AbortController(),
+          pendingHumanMessages: [],
+          taskOrigin: context.task_origin,
+          todoStore: TodoStore.fromItems(todoItems),
+          outboundBuffer: [],
+          activeAuditId: undefined,
+          activeAsyncSubagentIds: new Set<string>(),
+          everSentMessage: false,
+          everBufferedMessage: false,
+          silentNoDeliveryRetries: 0,
+          ...(goalRevisionUnlocked !== undefined ? { goalRevisionUnlocked } : {}),
+        })
+      }
+    }
 
     while (true) {
       try {
