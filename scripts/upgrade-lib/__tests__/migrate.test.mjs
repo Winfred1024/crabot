@@ -41,10 +41,26 @@ describe('scanModules', () => {
     ])
   })
 
-  it('treats missing data SCHEMA_VERSION as null (signals first migration)', () => {
+  it('treats legacy data (files present, no SCHEMA_VERSION) as first migration', () => {
     setupModule('memory', 'v2', null)
+    // 遗留 v0 数据：目录里有真实数据文件，只是没有 SCHEMA_VERSION
+    writeFileSync(join(dataDir, 'memory', 'metadata.db'), 'legacy')
     const result = scanModules(crabotHome, dataDir)
     expect(result[0].dataVersion).toBeNull()
+  })
+
+  it('skips fresh install (data dir empty, no SCHEMA_VERSION)', () => {
+    // setupModule 建了空的 data 目录但没写 SCHEMA_VERSION → 全新安装，无数据可迁移
+    setupModule('memory', 'v2', null)
+    expect(scanModules(crabotHome, dataDir)).toEqual([])
+  })
+
+  it('skips module whose data dir does not exist (e.g. root in system mode)', () => {
+    const moduleDir = join(crabotHome, 'crabot-memory')
+    mkdirSync(moduleDir)
+    writeFileSync(join(moduleDir, 'schema_version'), 'v4')
+    // 不创建 dataDir/memory —— root 不跑实例，数据目录从未存在
+    expect(scanModules(crabotHome, dataDir)).toEqual([])
   })
 
   it('skips modules whose versions match', () => {

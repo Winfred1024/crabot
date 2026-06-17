@@ -7,9 +7,7 @@
 
 import type { Task, TaskStatus } from './types.js'
 
-// 与 index.ts:4355 旧 validTransitions 的差异：新增 pending → failed。
-// 承认 admin 启动期 cleanupStaleInflightTasks 把磁盘上 pending 当僵尸标 failed 是合法语义
-// （旧代码绕过校验直接 mutate，所以这条转换未在 validTransitions 里）。
+// pending → failed 是合法转换（兜底/异常路径会用到）。
 export const VALID_TRANSITIONS: Readonly<Record<TaskStatus, ReadonlyArray<TaskStatus>>> = {
   pending: ['planning', 'failed', 'cancelled'],
   planning: ['executing', 'failed', 'cancelled'],

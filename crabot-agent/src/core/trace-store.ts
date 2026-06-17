@@ -135,6 +135,11 @@ export class TraceStore {
     return this.resumableCheckpoints.get(taskId)
   }
 
+  /** 当前持有的所有可 resume checkpoint 的 taskId（admin 对账孤儿用）。 */
+  getResumableTaskIds(): string[] {
+    return Array.from(this.resumableCheckpoints.keys())
+  }
+
   /** resume 接管成功后调用：从集合移除并删掉 per-task running 文件。 */
   consumeResumableCheckpoint(taskId: string): void {
     this.resumableCheckpoints.delete(taskId)
@@ -209,6 +214,13 @@ export class TraceStore {
     const filePath = path.join(this.persistDir, TraceStore.RUNNING_FLUSH_FILE)
     if (!fs.existsSync(filePath)) return
     try {
+      // 已被 loadResumableCheckpoints 持有的 worker trace（per-task checkpoint 文件）——它在
+      // 等 admin 的 resume 裁决，绝不能在这里被旧的全量加载路径标 failed：否则 UI 显示
+      // FAILED + `[interrupted: agent restarted]`，且 reconciliation 看到 trace=failed 会把
+      // 对应 task 也误标 failed，resume 还没开始就被判死。
+      const resumableTraceIds = new Set(
+        Array.from(this.resumableCheckpoints.values()).map((e) => e.traceId),
+      )
       const content = fs.readFileSync(filePath, 'utf-8')
       for (const line of content.split('\n')) {
         if (!line.trim()) continue
@@ -216,6 +228,8 @@ export class TraceStore {
           const trace = JSON.parse(line) as AgentTrace
           // 已经 endTrace 过的（rebuildIndex 已读到）跳过
           if (this.traceIndex.some(e => e.trace_id === trace.trace_id)) continue
+          // 正在等 resume 裁决的 worker trace 跳过（见上方注释）
+          if (resumableTraceIds.has(trace.trace_id)) continue
           // 标记为 interrupted，写入日期文件让 UI 正确显示
           const now = new Date()
           trace.status = 'failed'

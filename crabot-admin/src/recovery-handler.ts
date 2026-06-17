@@ -9,67 +9,38 @@
  */
 
 import type { CreateTaskParams, Task, TaskStatus } from './types.js'
-import { applyDerivedFields } from './task-state-machine.js'
 
 /**
- * Admin 重启后对磁盘上 loaded tasks 做的状态清扫。
+ * 判断某 task 状态是否「曾进入 worker loop、可能落过 resume checkpoint、重启后需尝试 resume」。
  *
- * 触发场景：admin 进程死后重启（**不一定 agent 也重启**）。磁盘上仍写着
- * status='executing' 之类的"看起来在跑"的任务，但 admin 进程刚活过来，
- * 对应的 worker 进程内存状态早就丢了——任务对调用方而言就是僵尸。
+ * 任何重启（完整 stop/start、agent 崩溃自动重启、admin 单独重启）后，内存里的 worker loop
+ * 都已销毁或可能已销毁。这些状态的任务都可能存在 per-turn 落盘的 resume checkpoint，应由
+ * resume sweep 逐条尝试 `resume_task`——agent 侧据 checkpoint 有无（及 worker 是否仍活）决定
+ * 续跑还是回绝；回绝的才标 failed + 走 recovery 兜底。
  *
- * 处理：把所有"非终态、非 waiting_human"的任务一律标 failed。
- * waiting_human 在这条路径上是例外：admin 重启不代表 agent 也重启，agent 可能仍
- * 活着、其 worker loop 仍 parked 在 humanQueue 上，人类一回复就能正常 resume——
- * 此时标 failed 会误杀活着的 loop。故保留。
- * （agent **自己**重启时则相反：loop 必死，那条路径见 isAgentRestartStale，会把
- * waiting_human 一并标 failed。两条路径处理不同，勿混。）
+ * - executing：主 loop 正在跑
+ * - planning：已进入 worker loop 的规划阶段（也会落 checkpoint）
+ * - waiting：parked 等 async 子 agent
+ * - waiting_human：parked 等人类回复
+ * **不含 pending**：还没被 worker 接走、无 checkpoint，原样留待 dispatcher 重新调度。
  *
- * @returns 新数组 + 实际清扫了几条（用于日志）
+ * 历史：旧实现把「admin 单独重启」（cleanupStaleInflightTasks，即时标 failed）与「agent 重启」
+ * （isAgentRestartStale）拆成两条非对称路径，结果「完整重启」(restart_count=0) 从缝里整个漏掉。
+ * 现统一为「agent 一就绪就对所有 in-flight 态尝试 resume」，不再即时标 failed。
  */
-export function cleanupStaleInflightTasks(
-  tasks: ReadonlyArray<Task>,
-  nowISO: string,
-): { tasks: Task[]; staleCount: number } {
-  const STALE_INFLIGHT: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
-    'pending',
-    'planning',
-    'executing',
-  ])
-  let staleCount = 0
-  const next = tasks.map((task) => {
-    if (!STALE_INFLIGHT.has(task.status)) return task
-    staleCount++
-    return applyDerivedFields(task, 'failed', nowISO, {
-      error: task.error ?? 'admin_restarted_during_task',
-    })
-  })
-  return { tasks: next, staleCount }
-}
-
-/**
- * agent 进程重启后，判断某 task 状态是否属于"依赖已死的 worker loop、需标 failed"的遗留态。
- *
- * agent 重启意味着内存里的 worker loop 全部销毁，对话状态没有落盘 checkpoint。因此：
- * - executing / waiting（等 async 子 agent）：loop 已死，僵尸，标 failed。
- * - waiting_human：loop 同样已死。它的 pending_question 留在 admin，但没有任何机制
- *   在重启后把 parked loop 拉回内存——dispatcher 仍把它列为 supplement 目标，
- *   而 pushSupplement 永远 hasActiveTask=false 兜底成 new_task。一律标 failed，
- *   既让状态诚实，也让它退出 dispatcher 的活跃任务集合（不再被误判成 supplement）。
- * - pending：还没被 worker 接走，无内存状态可丢，原样保留待重新调度。
- * - planning / 终态：维持既有行为，不在此扫除。
- *
- * 注意：仅适用于 **agent 重启** 路径。admin 单独重启时 agent 可能仍活着、loop 仍 parked，
- * 那条路径（cleanupStaleInflightTasks）必须继续保留 waiting_human。
- */
-export function isAgentRestartStale(status: TaskStatus): boolean {
-  return status === 'executing' || status === 'waiting' || status === 'waiting_human'
+export function isResumableInflightStatus(status: TaskStatus): boolean {
+  return (
+    status === 'executing' ||
+    status === 'planning' ||
+    status === 'waiting' ||
+    status === 'waiting_human'
+  )
 }
 
 /**
  * 把 resume_task RPC 的结果按「成功 resume / 需要走 recovery 兜底」分流。
  *
- * 纯函数，方便单元测试。由 runSelfHealingForAgentRestart 调用。
+ * 纯函数，方便单元测试。由 sweepInterruptedTasksForResume 调用。
  */
 export function partitionResumeResults(
   results: ReadonlyArray<{ task: Task; resumed: boolean }>,
@@ -81,23 +52,18 @@ export function partitionResumeResults(
 }
 
 /**
- * 构造 recovery 任务参数。
+ * 构造 recovery 任务参数（resume 失败的兜底）。
  *
- * @param executingTasks 当前所有 status=executing 的任务（含 recovery 标签的）
- * @param restartCount 本次 agent 启动是第几次（0 = 首次启动，>0 = 重启）
+ * @param executingTasks 需要兜底的中断任务（含 recovery 标签的，内部会过滤掉）
  * @param nowISO 当前时间 ISO 串，用于 recovery 任务的标题/描述
  *
- * @returns null 表示不需要 recovery（首次启动或没有非 recovery in-flight 任务）；
+ * @returns null 表示不需要 recovery（没有非 recovery 的中断任务）；
  *          否则返回 CreateTaskParams 直接传给 handleCreateTask。
  */
 export function buildRecoveryTask(
   executingTasks: ReadonlyArray<Task>,
-  restartCount: number,
   nowISO: string
 ): CreateTaskParams | null {
-  // 首次启动不做 recovery（健康冷启动场景）
-  if (restartCount <= 0) return null
-
   // 防雪崩：自带 'recovery' tag 的任务不再为之派生新 recovery
   const interrupted = executingTasks.filter((t) => !t.tags.includes('recovery'))
   if (interrupted.length === 0) return null
