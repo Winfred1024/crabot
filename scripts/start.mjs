@@ -16,7 +16,7 @@ import net from 'node:net'
 import { writePid, clearPid, checkSingleInstance, isPidAlive } from './lib/pid.mjs'
 import { scanModules, applyMigration } from './upgrade-lib/migrate.mjs'
 import { runScript } from './upgrade-lib/runner.mjs'
-import { hasInstance, readInstance, resolveCliDataDir } from './lib/instance.mjs'
+import { hasInstance, resolveCliDataDir } from './lib/instance.mjs'
 import { probeMmHealthy } from './lib/mm-probe.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -157,38 +157,6 @@ if (!existsSync(mmEntry)) {
   process.exit(1)
 }
 
-// system mode 下检测 cluster.version 是否过期
-{
-  const homeCrabot = resolve(homedir(), '.crabot')
-  if (hasInstance(homeCrabot)) {
-    const inst = readInstance(homeCrabot)
-    if (inst.mode === 'system') {
-      let current = 0
-      try { current = parseInt(readFileSync('/etc/crabot/cluster.version', 'utf-8').trim(), 10) || 0 } catch {}
-      const applied = inst.applied_cluster_version ?? 0
-      if (current > applied) {
-        if (DAEMON_MODE) {
-          console.error(`[crabot] cluster config has updates (v${applied}→v${current}). Run \`crabot sync\` first, or use foreground start.`)
-          process.exit(1)
-        }
-        console.log(`[crabot] root 默认配置已更新（版本 ${applied} → ${current}）。是否拉取最新默认？[y/N]`)
-        const answer = (await readStdinLine()).trim().toLowerCase()
-        if (answer === 'y' || answer === 'yes') {
-          const syncEntry = resolve(__dirname, 'sync.mjs')
-          const r = spawnSync(process.execPath, [syncEntry], { stdio: 'inherit', env: { ...process.env } })
-          if (r.status !== 0) {
-            console.error('[crabot] sync failed; aborting start')
-            process.exit(1)
-          }
-        } else {
-          console.log('[crabot] sync skipped; aborting start (run again to retry)')
-          process.exit(1)
-        }
-      }
-    }
-  }
-}
-
 // 单实例预检
 const single = checkSingleInstance(DATA_DIR)
 if (!single.ok) {
@@ -311,15 +279,6 @@ if (!DAEMON_MODE) {
 }
 
 // ── 辅助函数 ──
-
-async function readStdinLine() {
-  return new Promise((res) => {
-    let buf = ''
-    process.stdin.setEncoding('utf-8')
-    process.stdin.once('data', (chunk) => { buf += chunk; res(buf) })
-    process.stdin.resume()
-  })
-}
 
 function createPrompter() {
   if (process.stdin.isTTY) {

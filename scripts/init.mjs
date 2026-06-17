@@ -2,11 +2,10 @@
 
 import './_preflight.mjs'
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, appendFileSync } from 'node:fs'
 import { resolve, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir, hostname, userInfo } from 'node:os'
-import yaml from 'js-yaml'
 import { resolveDataDir } from './lib/data-dir.mjs'
 import { detectMode } from './lib/mode.mjs'
 import { hasInstance, readInstance, writeInstance } from './lib/instance.mjs'
@@ -80,33 +79,13 @@ try {
 const OFF = allocation.offset
 console.log(`[init] 申请端口偏移... ${allocation.reused ? '复用' : '已分配'} OFFSET=${OFF}`)
 
-// 拉取 defaults
+// 数据目录
 const DATA_DIR = resolveDataDir({ offset: OFF })
 mkdirSync(resolve(DATA_DIR, 'admin'), { recursive: true })
 
-let clusterVersion = 0
-try {
-  clusterVersion = parseInt(readFileSync(join(ETC_DIR, 'cluster.version'), 'utf-8').trim(), 10) || 0
-} catch { /* ok */ }
-
-console.log('[init] 拉取 root 默认配置...')
-// vendor 不在此——vendor 目录完全以 root 为准，admin system mode 直读 /etc/crabot/defaults/vendor.yaml。
-for (const kind of ['provider', 'agent']) {
-  const src = join(ETC_DIR, 'defaults', `${kind}.yaml`)
-  if (!existsSync(src)) continue
-  const raw = readFileSync(src, 'utf-8').trim()
-  if (!raw) continue
-  let parsed
-  try { parsed = yaml.load(raw) } catch (e) {
-    console.error(`[init] ${src} 解析失败，跳过：${e.message}`)
-    continue
-  }
-  if (!parsed) continue
-  // 落盘到 user 本地（具体路径与现有 admin 配置存储对齐——此处用 DATA_DIR/admin/<kind>.yaml）
-  const dst = resolve(DATA_DIR, 'admin', `${kind}.yaml`)
-  writeFileSync(dst, raw)
-  console.log(`[init]   - ${kind}.yaml: 已同步`)
-}
+// 注：不再从 /etc/crabot/defaults 拉取 provider/agent 默认配置——那套下发从未接通
+// （落盘的文件没有任何消费方）。唯一真实的 root→员工下发是供应商目录 vendor.yaml，
+// 由 admin 在 system mode 直读 /etc/crabot/defaults/vendor.yaml（无需 init/sync）。
 
 // 写 shell rc
 const shell = process.env.SHELL || ''
@@ -133,7 +112,7 @@ if (toAppend.length > 0) {
 writeInstance(HOME_DIR, {
   mode: 'system',
   port_offset: OFF,
-  applied_cluster_version: clusterVersion,
+  applied_cluster_version: null,
   applied_at: new Date().toISOString(),
   data_dir: DATA_DIR,
   crabot_home: CRABOT_HOME,

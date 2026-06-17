@@ -146,9 +146,11 @@ sudo usermod -a -G crabot alice
 sudo usermod -a -G crabot bob
 # 员工需要重新登录 shell 才能生效
 
-# 4. (可选) 给员工铺默认 LLM Provider
-sudo vi /etc/crabot/defaults/provider.yaml
-sudo bash -c 'echo $(($(cat /etc/crabot/cluster.version)+1)) > /etc/crabot/cluster.version'
+# 4. (可选) 自定义员工"添加 provider"下拉里可选的供应商目录（只配厂商菜单，不含 key）
+sudo crabot vendor add        # 交互向导；也可直接编辑 /etc/crabot/defaults/vendor.yaml
+#   - 完全以 root 为准，无需 sync；各员工 admin 下次重启自动生效
+#   - `crabot vendor mode replace` 可只保留你审批过的厂商（ChatGPT 订阅等 OAuth 内置项始终保留）
+#   - 参考样例：/etc/crabot/defaults/vendor.yaml.example；查看/删除：crabot vendor list / remove <id>
 
 # 5. 后续升级（crabot upgrade 检测 .git 自动选模式，两种模式命令一致）
 #    release 模式：sudo crabot upgrade（下载新 release 包并解压到 /opt/crabot）
@@ -167,7 +169,7 @@ cd crabot
 #    /usr/local/bin/crabot 软链直接指向 $(pwd)/cli.mjs，不会把源码拷到 /opt/crabot
 sudo ./install.sh --system --from-source
 
-# 3. 同 release 模式：加员工到 crabot group、铺默认 LLM Provider、递增 cluster.version
+# 3. 同 release 模式：加员工到 crabot group、(可选) 自定义供应商目录
 #    （见上方第 3、4 步，命令一字不差）
 
 # 4. 后续升级（源码模式相对 release 的核心收益：小补丁两条命令搞定）
@@ -186,7 +188,6 @@ sudo crabot upgrade
 - **管理员不要在源码目录跑 `crabot start`**：员工实例 data 走 `~/.crabot/data-<OFFSET>/`，跟源码无关；但 root `cd /opt/crabot && crabot start` 测试会污染 `/root/.crabot/`
 - **`crabot upgrade` 前要先 `git pull`**：它不会自动 fetch，只负责检测到 `.git` 后跑完整 rebuild + migration
 - **升级前最好让员工先 `crabot stop`**：upgrade 只检查 root 自己 DATA_DIR 的 mm pid，不会拦员工跑着的实例；员工进程读旧文件后 require cache 还在，新代码要等下次重启才生效
-- **代码改动不需要递增 `cluster.version`**：那个版本号只控制员工是否被提示 sync `/etc/crabot/defaults/` 下的默认配置；二进制升级跟它无关
 
 ### 员工视角
 
@@ -196,7 +197,6 @@ sudo crabot upgrade
 $ crabot start
 [init] 检测到 system mode 安装（/opt/crabot）
 [init] 申请端口偏移... 已分配 OFFSET=100
-[init] 拉取 root 默认配置...
 [init] 写入 shell 配置：~/.bashrc
 [init] 完成。请重新登录 shell 或执行 `source ~/.bashrc` 让环境变量生效。
 
@@ -209,8 +209,7 @@ Set admin password: ****
 
 ```bash
 crabot start -d         # 后台启动（日志写到 ~/.crabot/data-<OFF>/logs/，自动轮转）
-crabot status           # 看自己实例的端口/状态/cluster 更新提示
-crabot sync             # 主动接收 root 最新默认配置
+crabot status           # 看自己实例的端口/状态
 crabot stop             # 停掉
 ```
 

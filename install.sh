@@ -372,10 +372,8 @@ LR
     info "  1. 把员工加入 crabot group:"
     info "     sudo usermod -a -G crabot alice"
     info "     sudo usermod -a -G crabot bob"
-    info "  2. (可选) 编辑 /etc/crabot/defaults/provider.yaml 给员工铺默认 LLM"
-    info "  2b. (可选) 自定义员工可选供应商目录：sudo crabot vendor add，或参考 /etc/crabot/defaults/vendor.yaml.example"
-    info "  3. 编辑后递增版本：echo \$((\$(cat /etc/crabot/cluster.version)+1)) | sudo tee /etc/crabot/cluster.version"
-    info "  4. 通知员工：crabot start 即可"
+    info "  2. (可选) 自定义员工可选供应商目录：sudo crabot vendor add，或编辑 /etc/crabot/defaults/vendor.yaml（参考同目录 .example）"
+    info "  3. 通知员工：crabot start 即可（vendor 改动各员工重启 crabot 后自动生效，无需 sync）"
   else
     section "Done!"
     if [ "$NODE_SWITCHED_BY_NVM" = "true" ]; then

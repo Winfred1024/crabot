@@ -47,16 +47,6 @@ const health = {
   admin_rpc: adminAlive, // admin-web 进程同时暴露 web (3000+OFF) 和 RPC (19001+OFF)
 }
 
-let clusterCurrent = null
-let clusterApplied = inst.applied_cluster_version ?? null
-if (inst.mode === 'system') {
-  try {
-    const fs = await import('node:fs')
-    const raw = fs.readFileSync('/etc/crabot/cluster.version', 'utf-8').trim()
-    clusterCurrent = parseInt(raw, 10)
-  } catch { /* ignore */ }
-}
-
 const logsStdout = resolve(DATA_DIR, 'logs/mm.stdout.log')
 const logsStderr = resolve(DATA_DIR, 'logs/mm.stderr.log')
 const hasLogs = existsSync(logsStdout) || existsSync(logsStderr)
@@ -73,11 +63,6 @@ if (JSON_OUT) {
       Object.entries(ENDPOINTS).map(([k, v]) => [k, { url: v.url, healthy: health[k] }])
     ),
     modules,
-    cluster: inst.mode === 'system' ? {
-      current_version: clusterCurrent,
-      applied_version: clusterApplied,
-      updates_pending: clusterCurrent !== null && clusterApplied !== null && clusterCurrent > clusterApplied,
-    } : null,
     logs: hasLogs ? { stdout: logsStdout, stderr: logsStderr } : null,
   }, null, 2))
   process.exit(0)
@@ -111,19 +96,6 @@ if (running && modules) {
   console.log()
 } else if (!running) {
   console.log('  ' + c.dim('Modules: instance not running'))
-  console.log()
-}
-if (inst.mode === 'system') {
-  console.log('  ' + c.bold('Cluster Config'))
-  console.log('  ' + '─'.repeat(54))
-  if (clusterCurrent === null) {
-    console.log('  ' + c.dim('(no /etc/crabot/cluster.version readable)'))
-  } else if (clusterCurrent > (clusterApplied ?? 0)) {
-    console.log(`  Cluster Version   ${clusterCurrent}  (applied: ${clusterApplied}, ${clusterCurrent - (clusterApplied ?? 0)} updates pending)`)
-    console.log('  ' + c.dim('  Run `crabot sync` to apply.'))
-  } else {
-    console.log(`  Cluster Version   ${clusterCurrent}  (applied: ${clusterApplied}, up to date)`)
-  }
   console.log()
 }
 if (hasLogs) {
