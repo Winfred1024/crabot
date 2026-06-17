@@ -105,6 +105,25 @@ export class TraceStore {
     }
   }
 
+  private static runningCheckpointFile(taskId: string): string {
+    return `traces-running-${taskId}.jsonl`
+  }
+
+  /**
+   * 把某 worker trace（含 resume_checkpoint）原子写到 per-task running 文件。
+   * per-turn 调用；tmp+rename 保证崩在写一半时留下上一份完整旧快照。
+   */
+  flushWorkerCheckpoint(taskId: string, traceId: string, checkpoint: import('../types.js').ResumeCheckpoint): void {
+    if (!this.persistDir) return
+    const trace = this.traces.get(traceId)
+    if (!trace) return
+    trace.resume_checkpoint = checkpoint
+    const finalPath = path.join(this.persistDir, TraceStore.runningCheckpointFile(taskId))
+    const tmpPath = finalPath + '.tmp'
+    fs.writeFileSync(tmpPath, JSON.stringify(trace) + '\n', 'utf-8')
+    fs.renameSync(tmpPath, finalPath)
+  }
+
   /**
    * 全量重写 traces-running.jsonl —— 当前所有 status='running' 的 trace。
    * 用 tmp + rename 实现 atomic 替换：进程在写中间被杀，旧文件保持完好。

@@ -749,6 +749,35 @@ describe('TraceStore.appendPromptDump', () => {
   })
 })
 
+describe('flushWorkerCheckpoint', () => {
+  function tmpDir(): string {
+    return fs.mkdtempSync(path.join(os.tmpdir(), 'tracestore-'))
+  }
+
+  it('原子写 per-task 文件，含 messages + worker_state', () => {
+    const dir = tmpDir()
+    const store = new TraceStore(100, dir)
+    const trace = store.startTrace({
+      module_id: 'agent-1',
+      trigger: { type: 'task', summary: 't' },
+      related_task_id: 'task-1',
+    })
+    store.flushWorkerCheckpoint('task-1', trace.trace_id, {
+      agent_version: '1.0.0',
+      system_prompt: 'SP',
+      messages: [{ id: 'm1', role: 'user', content: 'hi', timestamp: 1 }],
+      worker_state: { todo_items: [] },
+    })
+    const file = path.join(dir, 'traces-running-task-1.jsonl')
+    expect(fs.existsSync(file)).toBe(true)
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf-8').trim())
+    expect(parsed.trace_id).toBe(trace.trace_id)
+    expect(parsed.resume_checkpoint.messages).toHaveLength(1)
+    expect(parsed.resume_checkpoint.system_prompt).toBe('SP')
+    expect(fs.existsSync(file + '.tmp')).toBe(false)
+  })
+})
+
 describe('TraceStore getSpansAtDepth', () => {
   it('returns top-level spans with children_count', () => {
     const store = new TraceStore(10)
