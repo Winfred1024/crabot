@@ -57,6 +57,8 @@ import { PromptManager } from './prompt-manager.js'
 import { createLSPManager, type LSPManager } from './lsp/lsp-manager.js'
 import type { BgEntityRecord, BgEntityStatus, BgEntityType } from './engine/bg-entities/types.js'
 import { redactSecrets } from './engine/redact-secrets.js'
+import { isResumable } from './core/resume-checkpoint.js'
+import { AGENT_VERSION } from './constants.js'
 
 const BARRIER_TIMEOUT_MS = 8_000
 
@@ -434,6 +436,7 @@ export class UnifiedAgent extends ModuleBase {
     this.registerMethod('process_message', this.handleProcessMessage.bind(this))
     this.registerMethod('create_task_from_schedule', this.handleCreateTaskFromSchedule.bind(this))
     this.registerMethod('start_recovery_task', this.handleStartRecoveryTask.bind(this))
+    this.registerMethod('resume_task', this.handleResumeTask.bind(this))
 
     // Agent 接口
     this.registerMethod('get_role', this.handleGetRole.bind(this))
@@ -1843,6 +1846,60 @@ export class UnifiedAgent extends ModuleBase {
         message
       )
       throw new Error(`Failed to start recovery task: ${message}`)
+    }
+  }
+
+  private async handleResumeTask(params: { task_id: string }): Promise<{ resumed: boolean; reason?: string }> {
+    const { task_id } = params
+    const entry = this.traceStore.getResumableCheckpoint(task_id)
+    if (!entry) return { resumed: false, reason: 'no_checkpoint' }
+
+    const guard = isResumable(entry.checkpoint, AGENT_VERSION)
+    if (!guard.ok) {
+      this.traceStore.finalizeUnresumedCheckpoint(task_id)
+      return { resumed: false, reason: guard.reason }
+    }
+
+    try {
+      const adminPort = await this.getAdminPort()
+      const { task } = await this.rpcClient.call<
+        { task_id: string },
+        {
+          task: {
+            id: string
+            title: string
+            description?: string
+            priority: string
+            plan?: string
+          }
+        }
+      >(adminPort, 'get_task', { task_id }, this.config.moduleId)
+
+      const workerContext = await this.contextAssembler.assembleScheduledTaskContext()
+
+      this.scheduledTaskRunner.executeScheduledTaskInBackground(
+        {
+          id: task.id,
+          title: task.title,
+          description: task.description ?? '',
+          priority: task.priority,
+          plan: task.plan,
+        },
+        workerContext,
+        {
+          resumeFrom: {
+            initialMessages: [...entry.checkpoint.messages],
+            todoItems: entry.checkpoint.worker_state.todo_items,
+            goalRevisionUnlocked: entry.checkpoint.worker_state.goal_revision_unlocked,
+          },
+        },
+      )
+      this.traceStore.consumeResumableCheckpoint(task_id)
+      return { resumed: true }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      console.error(`[${this.config.moduleId}] resume_task ${task_id} failed: ${msg}`)
+      return { resumed: false, reason: 'resume_error' }
     }
   }
 
