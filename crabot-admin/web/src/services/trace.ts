@@ -61,6 +61,16 @@ export interface AgentSpan {
   details: Record<string, unknown>
 }
 
+/** llm_call span 的 details 附加字段（其余字段仍走 Record<string, unknown>）。 */
+export interface LlmCallSpanDetails {
+  model?: string
+  input_tokens?: number
+  output_tokens?: number
+  /** 本次 llm_call 执行后，Worker 消息数组的累积长度（用于切片本轮产出消息）。 */
+  message_count_after?: number
+  [key: string]: unknown
+}
+
 export interface AgentTrace {
   trace_id: string
   parent_trace_id?: string
@@ -83,6 +93,23 @@ export interface AgentTrace {
     error?: string
   }
   total_usage?: TokenUsage
+  /** Worker trace 恢复检查点：含累积消息快照，供 Task 13/14 UI 切片展示。 */
+  resume_checkpoint?: {
+    agent_version: string
+    system_prompt: string
+    messages: EngineMessageLike[]
+    worker_state: { todo_items: unknown[]; goal_revision_unlocked?: boolean }
+  }
+}
+
+/** Worker Engine 消息的前端宽松镜像（role + content/toolResults）。 */
+export interface EngineMessageLike {
+  id: string
+  role: 'user' | 'assistant'
+  content?: string | unknown[]
+  toolResults?: unknown[]
+  timestamp: number
+  stopReason?: string
 }
 
 /** 列表场景使用的轻量级索引（不含 spans，含汇总 token）。 */
