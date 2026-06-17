@@ -10,8 +10,6 @@ import { describe, it, expect, vi } from 'vitest'
 import { ScheduledTaskRunner } from '../../src/orchestration/scheduled-task-runner.js'
 import { MemoryWriter } from '../../src/orchestration/memory-writer.js'
 import type {
-  ExecuteTaskParams,
-  ExecuteTaskResult,
   WorkerAgentContext,
 } from '../../src/types.js'
 

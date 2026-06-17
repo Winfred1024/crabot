@@ -1,5 +1,5 @@
 import type { LLMAdapter } from './llm-adapter'
-import type { ToolDefinition, EngineTurnEvent, EngineResult, EngineOptions, ContentBlock, HumanMessageQueueLike, ToolPermissionConfig } from './types'
+import type { ToolDefinition, EngineTurnEvent, EngineResult, ContentBlock, HumanMessageQueueLike, ToolPermissionConfig } from './types'
 import type { AgentTrace, WorkerAgentContext } from '../types'
 import type { TraceStore } from '../core/trace-store'
 import { runEngine } from './query-loop'
