@@ -14,6 +14,7 @@ import type {
   TaskId,
   ScheduleId,
 } from 'crabot-shared'
+import type { EngineMessage } from './engine/types.js'
 
 // ============================================================================
 // 配置
@@ -951,6 +952,8 @@ export interface LlmCallDetails {
   /** 1-indexed；存在表示本轮由"沉默 end_turn 追问"机制触发 */
   forced_summary_attempt?: number
   usage?: TokenUsage
+  /** 该 turn 结束时 messages[] 的长度，供 trace UI 把 span 映射到 messages 切片。 */
+  message_count_after?: number
 }
 
 export interface ToolCallDetails {
@@ -1077,6 +1080,24 @@ export interface AgentSpan {
   details: AgentSpanDetails
 }
 
+/** worker trace 上的 resume 快照（仅 trigger.type==='task' 的 worker trace 填）。 */
+export interface WorkerStateSnapshot {
+  /** todoStore 序列化（就地 merge 无法从 messages 重建） */
+  todo_items: import('./agent/worker-todo-store.js').TodoItem[]
+  /** 改目标券是否已解锁（可选，丢了顶多改目标被门控一次） */
+  goal_revision_unlocked?: boolean
+}
+
+export interface ResumeCheckpoint {
+  /** agent 构建版本，upgrade 不匹配时拒绝 resume */
+  agent_version: string
+  /** 调试展示用；resume 时现重建、不回放 */
+  system_prompt: string
+  /** 累积快照（latest-wins，干净 turn 边界） */
+  messages: EngineMessage[]
+  worker_state: WorkerStateSnapshot
+}
+
 export interface AgentTrace {
   trace_id: string
   parent_trace_id?: string
@@ -1105,6 +1126,8 @@ export interface AgentTrace {
   }
   /** trace 结束时由 trace-store 从所有 llm_call span 聚合得出 */
   total_usage?: TokenUsage
+  /** worker resume 快照；per-turn 覆盖写，仅 worker trace 有。 */
+  resume_checkpoint?: ResumeCheckpoint
 }
 
 export interface TraceCallback {
