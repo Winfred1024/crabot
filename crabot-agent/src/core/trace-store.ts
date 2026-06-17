@@ -140,8 +140,23 @@ export class TraceStore {
     return Array.from(this.resumableCheckpoints.keys())
   }
 
-  /** resume 接管成功后调用：从集合移除并删掉 per-task running 文件。 */
+  /** resume 接管成功后调用：finalize 旧（重启前）trace + 从集合移除 + 删 per-task 文件。 */
   consumeResumableCheckpoint(taskId: string): void {
+    // finalize 旧 trace（loadResumableCheckpoints 载入、loadRunningTraces 跳过留下的、status=running）。
+    // 不 finalize 它就会成「永远 running」的幽灵 trace，在 UI 上误显示成「当前」。resumed run
+    // 用的是另起的新 trace，旧 trace 在此定格为「已被 resume 接管」。
+    const entry = this.resumableCheckpoints.get(taskId)
+    if (entry) {
+      const trace = this.traces.get(entry.traceId)
+      if (trace && trace.status === 'running') {
+        const now = new Date()
+        trace.status = 'completed'
+        trace.ended_at = now.toISOString()
+        trace.duration_ms = now.getTime() - new Date(trace.started_at).getTime()
+        trace.outcome = { summary: '[已被 resume 接管，见新 trace]' }
+        this.persistTrace(trace)
+      }
+    }
     this.resumableCheckpoints.delete(taskId)
     if (!this.persistDir) return
     const file = path.join(this.persistDir, TraceStore.runningCheckpointFile(taskId))

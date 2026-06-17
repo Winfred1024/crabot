@@ -810,6 +810,11 @@ export interface WorkerTaskState {
    */
   activeTraceId?: string
   /**
+   * resume checkpoint 用：worker 执行上下文子集（权限/身份/场景），决定 resumed worker
+   * 拿回原工具集 + 投递目标 + report mode。runWorkerLoop 开始后从 context 快照写入。
+   */
+  resumeWorkerContext?: ResumeWorkerContext
+  /**
    * "改目标券"：人类 supplement 到达时置 true（上限 1，不叠加）。
    * set_task_goal 重设已有 goal 时消费它——没券不许 worker 自改目标（反 specification-gaming）。
    */
@@ -1108,6 +1113,22 @@ export interface WorkerStateSnapshot {
   goal_revision_unlocked?: boolean
 }
 
+/**
+ * resume 时必须复原的「worker 执行身份/权限上下文」子集。
+ *
+ * 决定 worker 能用哪些工具、消息往哪投、用什么 report mode 的全部输入都在这里。
+ * 缺了它们，resumed worker 会落进 FAIL_CLOSED_TOOL_ACCESS（几乎无工具）+ 投递到
+ * SYSTEM_SESSION（联系不到原会话）。endpoints / memories / sandbox 这类可重新拉取
+ * 或会过期的字段**不**存，resume 时由 assembleScheduledTaskContext 重新装配。
+ */
+export interface ResumeWorkerContext {
+  task_origin?: TaskOrigin
+  sender_friend?: Friend
+  memory_permissions?: WorkerAgentContext['memory_permissions']
+  resolved_permissions?: ResolvedPermissions
+  scene_profile?: RuntimeSceneProfile
+}
+
 export interface ResumeCheckpoint {
   /** agent 构建版本，upgrade 不匹配时拒绝 resume */
   agent_version: string
@@ -1116,6 +1137,8 @@ export interface ResumeCheckpoint {
   /** 累积快照（latest-wins，干净 turn 边界） */
   messages: EngineMessage[]
   worker_state: WorkerStateSnapshot
+  /** worker 执行上下文子集；缺失（旧 checkpoint）时 resume 回退到从 task.source 重建 task_origin */
+  worker_context?: ResumeWorkerContext
 }
 
 export interface AgentTrace {

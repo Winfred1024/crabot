@@ -1309,6 +1309,15 @@ export class AgentHandler {
       const messagesRef: EngineMessagesRef = { current: [] }
       // resume checkpoint 用：让 onStop（优雅停机）能通过 taskState 拿到最新快照。
       taskState.messagesRef = messagesRef
+      // 快照 worker 执行上下文子集（权限/身份/场景）——resumed worker 据此复原工具集 + 投递
+      // 目标 + report mode。缺了它 resumed worker 会落进 FAIL_CLOSED（几乎无工具）。
+      taskState.resumeWorkerContext = {
+        task_origin: context.task_origin,
+        sender_friend: context.sender_friend,
+        memory_permissions: context.memory_permissions,
+        resolved_permissions: context.resolved_permissions,
+        scene_profile: context.scene_profile,
+      }
       // traceId 存 taskState + traceStore 存 Map，供 flushActiveCheckpoints（onStop 路径）补 flush。
       if (traceContext) {
         taskState.activeTraceId = traceContext.traceId
@@ -1693,6 +1702,7 @@ export class AgentHandler {
                   todo_items: [...taskState.todoStore.list()],
                   goal_revision_unlocked: taskState.goalRevisionUnlocked,
                 },
+                ...(taskState.resumeWorkerContext ? { worker_context: taskState.resumeWorkerContext } : {}),
               })
             }
 
@@ -2643,6 +2653,7 @@ export class AgentHandler {
             todo_items: [...taskState.todoStore.list()],
             goal_revision_unlocked: taskState.goalRevisionUnlocked,
           },
+          ...(taskState.resumeWorkerContext ? { worker_context: taskState.resumeWorkerContext } : {}),
         })
       } catch (err) {
         // best-effort，停机路径不抛

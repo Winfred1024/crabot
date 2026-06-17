@@ -1907,12 +1907,15 @@ export class UnifiedAgent extends ModuleBase {
         }
       >(adminPort, 'get_task', { task_id }, this.config.moduleId)
 
-      const workerContext = await this.contextAssembler.assembleScheduledTaskContext()
+      // 基础 context：endpoints / memories / time_windows 等可重新拉取的部分由
+      // assembleScheduledTaskContext 现装配（不存进 checkpoint，避免过期）。
+      const baseContext = await this.contextAssembler.assembleScheduledTaskContext()
 
-      // 从 task.source 重建 task_origin，确保 resumed worker 的消息投递回原会话。
-      // origin='human' 或 'admin_chat' 的任务必有 channel_id / session_id；
-      // origin='system' 的任务无 channel_id → task_origin 保持 undefined（system session 兜底）。
-      const taskOrigin: TaskOrigin | undefined =
+      // 关键：用 checkpoint 里存的「worker 执行上下文子集」覆盖回执行身份/权限/场景，
+      // 让 resumed worker 拿回和原任务一样的工具集 + 投递目标 + report mode。
+      // 缺失（旧 checkpoint）时回退到从 task.source 重建 task_origin（仅修投递，工具仍可能受限）。
+      const wc = entry.checkpoint.worker_context
+      const fallbackOrigin: TaskOrigin | undefined =
         task.source?.channel_id && task.source?.session_id
           ? {
               channel_id: task.source.channel_id as TaskOrigin['channel_id'],
@@ -1923,9 +1926,14 @@ export class UnifiedAgent extends ModuleBase {
             }
           : undefined
 
-      const workerContextWithOrigin: WorkerAgentContext = taskOrigin
-        ? { ...workerContext, task_origin: taskOrigin }
-        : workerContext
+      const resumedContext: WorkerAgentContext = {
+        ...baseContext,
+        ...(wc?.task_origin ?? fallbackOrigin ? { task_origin: wc?.task_origin ?? fallbackOrigin } : {}),
+        ...(wc?.sender_friend ? { sender_friend: wc.sender_friend } : {}),
+        ...(wc?.memory_permissions ? { memory_permissions: wc.memory_permissions } : {}),
+        ...(wc?.resolved_permissions ? { resolved_permissions: wc.resolved_permissions } : {}),
+        ...(wc?.scene_profile ? { scene_profile: wc.scene_profile } : {}),
+      }
 
       this.scheduledTaskRunner.executeScheduledTaskInBackground(
         {
@@ -1934,7 +1942,7 @@ export class UnifiedAgent extends ModuleBase {
           priority: task.priority,
           plan: task.plan,
         },
-        workerContextWithOrigin,
+        resumedContext,
         {
           resumeFrom: {
             initialMessages: [...entry.checkpoint.messages],
