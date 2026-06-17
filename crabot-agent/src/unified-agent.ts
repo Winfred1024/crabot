@@ -57,7 +57,7 @@ import { PromptManager } from './prompt-manager.js'
 import { createLSPManager, type LSPManager } from './lsp/lsp-manager.js'
 import type { BgEntityRecord, BgEntityStatus, BgEntityType } from './engine/bg-entities/types.js'
 import { redactSecrets } from './engine/redact-secrets.js'
-import { isResumable } from './core/resume-checkpoint.js'
+import { isResumable, redactCheckpoint } from './core/resume-checkpoint.js'
 import { AGENT_VERSION } from './constants.js'
 
 const BARRIER_TIMEOUT_MS = 8_000
@@ -2537,6 +2537,15 @@ export class UnifiedAgent extends ModuleBase {
     const trace = await this.traceStore.getFullTrace(params.trace_id)
     if (!trace) {
       throw new Error(`Trace not found: ${params.trace_id}`)
+    }
+    if (trace.resume_checkpoint) {
+      const secrets = [...this.knownSecrets]
+      return {
+        trace: {
+          ...trace,
+          resume_checkpoint: redactCheckpoint(trace.resume_checkpoint, secrets),
+        },
+      }
     }
     return { trace }
   }
