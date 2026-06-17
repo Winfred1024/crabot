@@ -1468,18 +1468,6 @@ export class AgentHandler {
             },
             getConversationLog: () => [...conversationLog],
           }),
-          ...(traceContext ? {
-            onPromptDump: (event) => {
-              traceContext.traceStore.appendPromptDump({
-                trace_id: traceContext.traceId,
-                iteration: event.turn,
-                source: 'worker',
-                model: event.model,
-                system_prompt: event.systemPrompt,
-                messages: event.messages,
-              })
-            },
-          } : {}),
           onSystemInjection: (event) => {
             // 系统注入（supplement / overdue / forced_summary / stop_hook）作为 trace 上的 tool-call 风格 span 暴露
             const label = `__system_${event.type}__`

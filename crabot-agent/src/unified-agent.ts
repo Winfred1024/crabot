@@ -657,13 +657,11 @@ export class UnifiedAgent extends ModuleBase {
         this.sendDispatcherImmediateReply(session.channel_id, session.session_id, text)
 
       const traceCallbackPrivate = this.buildDispatchTraceCallback(trace.trace_id)
-      const dumpPromptPrivate = this.buildDispatchPromptDumpCallback(trace.trace_id)
       const { actions } = await dispatch(dispatchCtx, {
         adapter: adapterFromSdkEnv(this.sdkEnvWorker),
         modelId: this.sdkEnvWorker.modelId,
         sendErrorToUser,
         trace: traceCallbackPrivate,
-        dumpPrompt: dumpPromptPrivate,
         quotedPrefetchDeps: this.buildQuotedPrefetchDeps(),
         timezone: this.getTimezone(),
         laneBatchSize: messages.length,
@@ -875,13 +873,11 @@ export class UnifiedAgent extends ModuleBase {
         this.sendDispatcherImmediateReply(session.channel_id, sessionId, text)
 
       const traceCallbackGroup = this.buildDispatchTraceCallback(trace.trace_id)
-      const dumpPromptGroup = this.buildDispatchPromptDumpCallback(trace.trace_id)
       const { actions } = await dispatch(dispatchCtx, {
         adapter: adapterFromSdkEnv(this.sdkEnvWorker),
         modelId: this.sdkEnvWorker.modelId,
         sendErrorToUser,
         trace: traceCallbackGroup,
-        dumpPrompt: dumpPromptGroup,
         quotedPrefetchDeps: this.buildQuotedPrefetchDeps(),
         timezone: this.getTimezone(),
         laneBatchSize: batch.length,
@@ -1525,13 +1521,11 @@ export class UnifiedAgent extends ModuleBase {
       }
 
       const traceCallbackAdmin = this.buildDispatchTraceCallback(trace.trace_id)
-      const dumpPromptAdmin = this.buildDispatchPromptDumpCallback(trace.trace_id)
       const { actions } = await dispatch(dispatchCtx, {
         adapter: adapterFromSdkEnv(this.sdkEnvWorker),
         modelId: this.sdkEnvWorker.modelId,
         sendErrorToUser,
         trace: traceCallbackAdmin,
-        dumpPrompt: dumpPromptAdmin,
         quotedPrefetchDeps: this.buildQuotedPrefetchDeps(),
         timezone: this.getTimezone(),
       })
@@ -2208,23 +2202,6 @@ export class UnifiedAgent extends ModuleBase {
       rpcClient: this.rpcClient,
       moduleId: this.config.moduleId,
       resolveChannelPort: (channelId) => this.getChannelPort(channelId),
-    }
-  }
-
-  /**
-   * 构建 dispatcher 的 prompt dump 回调，每次 LLM 调用前把完整 prompt 落到
-   * prompts-*.jsonl，trace_id 由本闭包带；caller 三处复用。
-   */
-  private buildDispatchPromptDumpCallback(
-    traceId: string,
-  ): (record: { span_id?: string; attempt: number; model: string; system_prompt: string; messages: ReadonlyArray<unknown> }) => void {
-    const store = this.traceStore
-    return (record) => {
-      store.appendPromptDump({
-        trace_id: traceId,
-        source: 'dispatcher',
-        ...record,
-      })
     }
   }
 

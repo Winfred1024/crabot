@@ -36,7 +36,7 @@ export interface ForkEngineParams {
   readonly abortSignal?: AbortSignal
   /** Callback for sub-agent turns */
   readonly onTurn?: (event: EngineTurnEvent) => void
-  /** Per-LLM-call full prompt dump callback；调用方通常包到 TraceStore.appendPromptDump 落盘 prompts-*.jsonl */
+  /** Per-LLM-call full prompt dump callback（可选） */
   readonly onPromptDump?: EngineOptions['onPromptDump']
   /** Whether the sub-agent's model supports vision (image inputs) */
   readonly supportsVision?: boolean
@@ -256,7 +256,6 @@ export function createSubAgentTool(config: SubAgentToolConfig): ToolDefinition {
       const tc = config.traceConfig
       let subTrace: AgentTrace | undefined
       let subTraceCallback: ((event: EngineTurnEvent) => void) | undefined
-      let subPromptDump: EngineOptions['onPromptDump']
 
       if (tc) {
         subTrace = tc.traceStore.startTrace({
@@ -269,16 +268,6 @@ export function createSubAgentTool(config: SubAgentToolConfig): ToolDefinition {
           parent_span_id: tc.parentSpanId,
           related_task_id: tc.relatedTaskId,
         })
-        subPromptDump = (event) => {
-          tc.traceStore.appendPromptDump({
-            trace_id: subTrace!.trace_id,
-            iteration: event.turn,
-            source: 'subagent',
-            model: event.model,
-            system_prompt: event.systemPrompt,
-            messages: event.messages,
-          })
-        }
 
         // onTurn fires post-hoc (after LLM + tools), so back-date span timestamps
         // with engine-measured ms to keep the waterfall accurate.
@@ -360,7 +349,6 @@ export function createSubAgentTool(config: SubAgentToolConfig): ToolDefinition {
           parentContext: input.context !== undefined ? String(input.context) : undefined,
           abortSignal: callContext.abortSignal,
           onTurn: subTraceCallback,
-          ...(subPromptDump ? { onPromptDump: subPromptDump } : {}),
           supportsVision: config.supportsVision,
           humanMessageQueue: childQueue,
           hookRegistry: config.hookRegistry,

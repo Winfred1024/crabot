@@ -315,9 +315,7 @@ export interface EngineOptions {
   readonly onSystemInjection?: (event: SystemInjectionEvent) => void
   /**
    * 每次 LLM 调用前的完整 prompt 拍照回调（可选）。engine 在 callNonStreaming 前调一次，
-   * 把当前 systemPrompt + messages 数组暴露给 caller。caller 通常包装成
-   * `TraceStore.appendPromptDump` 落盘 prompts-*.jsonl 用于 debug——trace span 里只有
-   * 摘要，出现 "agent 为啥这么干" 类问题时需要还原完整 prompt。
+   * 把当前 systemPrompt + messages 数组暴露给 caller。
    *
    * `turn` 与 `onTurn.turnNumber` 对齐（即将开始的这一轮，1-based）。messages 是 engine
    * 当前 working set 的 readonly 视图——caller 不得修改。
