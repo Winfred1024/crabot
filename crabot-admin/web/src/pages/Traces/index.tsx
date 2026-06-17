@@ -34,6 +34,7 @@ import { StatusDot, TriggerBadge, AuditBadge, TraceChip, TraceLink } from './Tra
 import { SpanTree } from './SpanTree'
 import { StatusBar } from './StatusBar'
 import { ManualCleanupDialog, AutoCleanupSettingsDialog } from './CleanupDialogs'
+import { MessageBlocks } from './MessageBlocks'
 
 // ============================================================================
 // 本地 type（仅主组件用）
@@ -206,10 +207,14 @@ function TraceDetailPanel({
   onNavigateTrace?: (traceId: string) => void
 }) {
   const [expandedDetails, setExpandedDetails] = useState<Set<string>>(new Set())
+  const [convExpanded, setConvExpanded] = useState(false)
+  const [sysPromptExpanded, setSysPromptExpanded] = useState(false)
 
   // 切换 trace 时清空展开状态
   useEffect(() => {
     setExpandedDetails(new Set())
+    setConvExpanded(false)
+    setSysPromptExpanded(false)
   }, [trace?.trace_id])
 
   const toggleDetail = useCallback((spanId: string) => {
@@ -368,21 +373,125 @@ function TraceDetailPanel({
         )}
       </div>
 
+      {/* Task trace 对话区（仅 trigger.type==='task' 且有 resume_checkpoint 时渲染） */}
+      {trace.trigger.type === 'task' && trace.resume_checkpoint && (() => {
+        const cp = trace.resume_checkpoint
+        return (
+          <div
+            style={{
+              borderBottom: '1px solid var(--border)',
+              background: 'var(--bg-secondary)',
+            }}
+          >
+            {/* 对话区折叠标题行 */}
+            <button
+              onClick={() => setConvExpanded((v) => !v)}
+              style={{
+                width: '100%',
+                textAlign: 'left',
+                padding: '10px 16px',
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                fontSize: 13,
+                fontWeight: 600,
+                color: 'var(--text-primary)',
+              }}
+            >
+              <span style={{ color: 'var(--primary-light)', fontSize: 12 }}>{convExpanded ? '▾' : '▸'}</span>
+              对话（{cp.messages.length} 条消息）
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400, marginLeft: 4 }}>
+                · 来自 resume_checkpoint
+              </span>
+            </button>
+            {convExpanded && (
+              <div style={{ padding: '0 16px 12px' }}>
+                {/* System Prompt 折叠项 */}
+                <div style={{ marginBottom: 10 }}>
+                  <button
+                    onClick={() => setSysPromptExpanded((v) => !v)}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: 'var(--primary-light)',
+                      cursor: 'pointer',
+                      padding: 0,
+                      fontSize: 12,
+                      fontFamily: 'var(--font-body)',
+                    }}
+                  >
+                    {sysPromptExpanded ? '▾' : '▸'} System Prompt
+                  </button>
+                  {sysPromptExpanded && (
+                    <pre
+                      style={{
+                        marginTop: 6,
+                        maxHeight: 320,
+                        overflow: 'auto',
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: 12,
+                        background: 'var(--bg-primary)',
+                        border: '1px solid var(--border)',
+                        padding: '6px 8px',
+                        borderRadius: 4,
+                        color: 'var(--text-primary)',
+                        lineHeight: 1.55,
+                      }}
+                    >
+                      {cp.system_prompt}
+                    </pre>
+                  )}
+                </div>
+                {/* 完整消息列表 */}
+                <MessageBlocks messages={cp.messages} />
+              </div>
+            )}
+          </div>
+        )
+      })()}
+
       {/* Span 树 */}
-      <div>
-        {trace.spans.length === 0 ? (
-          <div style={{ padding: 16, color: 'var(--text-muted)', fontSize: 13 }}>暂无 Span 数据</div>
-        ) : (
-          <SpanTree
-            spans={trace.spans}
-            parentSpanId={undefined}
-            depth={0}
-            expandedDetails={expandedDetails}
-            toggleDetail={toggleDetail}
-            onNavigateTrace={onNavigateTrace}
-          />
-        )}
-      </div>
+      {(() => {
+        // 计算 orderedLlmSpans：所有 llm_call span 按 started_at 排序，携带 message_count_after
+        const orderedLlmSpans = trace.resume_checkpoint
+          ? trace.spans
+              .filter((s) => s.type === 'llm_call')
+              .sort((a, b) => {
+                if (a.started_at < b.started_at) return -1
+                if (a.started_at > b.started_at) return 1
+                return 0
+              })
+              .map((s) => ({
+                span_id: s.span_id,
+                message_count_after: (s.details as { message_count_after?: number }).message_count_after,
+              }))
+          : undefined
+        const messages = trace.resume_checkpoint?.messages
+
+        return (
+          <div>
+            {trace.spans.length === 0 ? (
+              <div style={{ padding: 16, color: 'var(--text-muted)', fontSize: 13 }}>暂无 Span 数据</div>
+            ) : (
+              <SpanTree
+                spans={trace.spans}
+                parentSpanId={undefined}
+                depth={0}
+                expandedDetails={expandedDetails}
+                toggleDetail={toggleDetail}
+                onNavigateTrace={onNavigateTrace}
+                messages={messages}
+                orderedLlmSpans={orderedLlmSpans}
+              />
+            )}
+          </div>
+        )
+      })()}
     </div>
   )
 }
