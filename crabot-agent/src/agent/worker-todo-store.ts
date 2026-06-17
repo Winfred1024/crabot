@@ -50,6 +50,16 @@ export class TodoStore {
     return lines.join('\n')
   }
 
+  toJSON(): TodoItem[] {
+    return this.list().map(t => ({ ...t }))
+  }
+
+  static fromItems(items: ReadonlyArray<TodoItem>): TodoStore {
+    const store = new TodoStore()
+    store.replace(items)   // 复用现有校验
+    return store
+  }
+
   // --- validation helpers ---
 
   private validate(todos: ReadonlyArray<TodoItem>): void {
