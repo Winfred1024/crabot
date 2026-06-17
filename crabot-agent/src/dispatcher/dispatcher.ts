@@ -27,17 +27,6 @@ export interface DispatchDeps {
   readonly maxParseRetries?: number
   /** trace 写入回调（可选）。注入后 dispatch() 在 DispatchContext 指定的 trace 下写 dispatch_call span。 */
   readonly trace?: DispatchTraceCallback
-  /**
-   * 每次 LLM 调用前的完整 prompt 拍照回调（可选）。注入后 dispatch() 在每次 attempt
-   * 调 LLM 前把 systemPrompt + messages 暴露给 caller。仅用于 debug。
-   */
-  readonly dumpPrompt?: (record: {
-    span_id?: string
-    attempt: number
-    model: string
-    system_prompt: string
-    messages: ReadonlyArray<unknown>
-  }) => void
   /** 调用方注入的 batch 大小（SessionLane take 整批时传入）。仅用于 dispatch_call span 观测。 */
   readonly laneBatchSize?: number
   /**
@@ -103,15 +92,6 @@ export async function dispatch(ctx: DispatchContext, deps: DispatchDeps): Promis
       role: 'user',
       content: userContent,
       timestamp: Date.now(),
-    }
-    if (deps.dumpPrompt) {
-      deps.dumpPrompt({
-        ...(span ? { span_id: span.span_id } : {}),
-        attempt,
-        model: deps.modelId,
-        system_prompt: systemPrompt,
-        messages: [userMessage],
-      })
     }
     try {
       const response = await callNonStreaming(deps.adapter, {

@@ -35,10 +35,7 @@ function setupRunner() {
   const rpcCall = vi.fn().mockResolvedValue({ data: { status: 'ok' } })
   const rpcClient: any = { call: rpcCall }
   const memoryWriter = new MemoryWriter(rpcClient, 'agent-1', () => 18000)
-  const executeTaskFn = vi.fn<
-    [ExecuteTaskParams & { related_task_id?: string }],
-    Promise<ExecuteTaskResult & { trace_id?: string }>
-  >().mockResolvedValue({
+  const executeTaskFn = vi.fn().mockResolvedValue({
     task_id: 'task-x' as any,
     outcome: 'completed' as const,
   })

@@ -36,8 +36,6 @@ export interface ForkEngineParams {
   readonly abortSignal?: AbortSignal
   /** Callback for sub-agent turns */
   readonly onTurn?: (event: EngineTurnEvent) => void
-  /** Per-LLM-call full prompt dump callback（可选） */
-  readonly onPromptDump?: EngineOptions['onPromptDump']
   /** Whether the sub-agent's model supports vision (image inputs) */
   readonly supportsVision?: boolean
   readonly humanMessageQueue?: HumanMessageQueueLike
@@ -96,7 +94,6 @@ export async function forkEngine(params: ForkEngineParams): Promise<ForkEngineRe
       ...(params.maxTokens !== undefined ? { maxTokens: params.maxTokens } : {}),
       abortSignal: params.abortSignal,
       onTurn: params.onTurn,
-      ...(params.onPromptDump ? { onPromptDump: params.onPromptDump } : {}),
       supportsVision: params.supportsVision,
       humanMessageQueue: params.humanMessageQueue,
       hookRegistry: params.hookRegistry,

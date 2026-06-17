@@ -1262,7 +1262,7 @@ export interface GlobalModelConfig {
    * 自动清理的保留 task 个数；null/undefined = 不按个数清理。
    *
    * 按 admin task.completed_at 倒序拉终态 task（status ∈ {completed, failed, cancelled}），
-   * 取第 N 个的 completed_at 所在日期 D，删除 D 之前的 traces-*.jsonl + prompts-*.jsonl + admin tasks。
+   * 取第 N 个的 completed_at 所在日期 D，删除 D 之前的 traces-*.jsonl + admin tasks。
    * 文件粒度按天 → 实际保留 task 数 ≥ N。活跃 task 不计入配额（活跃不能清）。
    *
    * spec 2026-06-09-task-trace-tool-unification.md §4.4。旧字段 trace_retention_count 已删；

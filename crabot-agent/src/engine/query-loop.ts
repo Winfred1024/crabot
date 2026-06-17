@@ -336,16 +336,6 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
     }
     const llmStartedAtMs = Date.now()
     let llmCallMs = 0
-    if (options.onPromptDump) {
-      // 即将开始的这一轮：turn 与 onTurn.turnNumber 对齐（onTurn 在 totalTurns++ 之后触发，
-      // 我们在 totalTurns++ 之前，所以这里 +1）。
-      options.onPromptDump({
-        turn: totalTurns + 1,
-        systemPrompt: currentSystemPrompt,
-        messages,
-        model: options.model,
-      })
-    }
     try {
       response = await callNonStreaming(adapter, {
         messages,

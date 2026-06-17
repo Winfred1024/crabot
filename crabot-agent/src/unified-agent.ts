@@ -1814,7 +1814,6 @@ export class UnifiedAgent extends ModuleBase {
           task: {
             id: string
             title: string
-            description?: string
             priority: string
             plan?: string
           }
@@ -1831,7 +1830,6 @@ export class UnifiedAgent extends ModuleBase {
         {
           id: task.id,
           title: task.title,
-          description: task.description ?? '',
           priority: task.priority,
           plan: task.plan,
         },
@@ -1868,7 +1866,6 @@ export class UnifiedAgent extends ModuleBase {
           task: {
             id: string
             title: string
-            description?: string
             priority: string
             plan?: string
             source?: {
@@ -1906,7 +1903,6 @@ export class UnifiedAgent extends ModuleBase {
         {
           id: task.id,
           title: task.title,
-          description: task.description ?? '',
           priority: task.priority,
           plan: task.plan,
         },
