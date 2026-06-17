@@ -66,20 +66,24 @@ export class ScheduledTaskRunner {
       const adminPort = await this.getAdminPort()
 
       // 推进任务状态：pending → planning → executing
-      try {
-        await this.rpcClient.call(
-          adminPort, 'update_task_status',
-          { task_id: task.id, status: 'planning' },
-          this.moduleId
-        )
-        await this.rpcClient.call(
-          adminPort, 'update_task_status',
-          { task_id: task.id, status: 'executing' },
-          this.moduleId
-        )
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err)
-        console.error(`[ScheduledTaskRunner] Failed to transition scheduled task ${task.id} to executing: ${msg}`)
+      // resume 路径（resumeFrom 存在）时任务已是 executing，跳过冗余转换，
+      // 避免 executing→planning 不合法转换触发状态机拒绝日志。
+      if (!opts?.resumeFrom) {
+        try {
+          await this.rpcClient.call(
+            adminPort, 'update_task_status',
+            { task_id: task.id, status: 'planning' },
+            this.moduleId
+          )
+          await this.rpcClient.call(
+            adminPort, 'update_task_status',
+            { task_id: task.id, status: 'executing' },
+            this.moduleId
+          )
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err)
+          console.error(`[ScheduledTaskRunner] Failed to transition scheduled task ${task.id} to executing: ${msg}`)
+        }
       }
 
       // memory_maintenance 直接走 RPC，不经 Worker

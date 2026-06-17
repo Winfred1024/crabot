@@ -187,3 +187,64 @@ describe('ScheduledTaskRunner trigger_message construction (Task 7)', () => {
     expect(msg.content.text).toBe('')
   })
 })
+
+describe('ScheduledTaskRunner — M3: resumeFrom 时跳过 planning/executing 状态转换', () => {
+  it('resumeFrom 存在时：不向 admin 发送 update_task_status(planning/executing)', async () => {
+    const { runner, executeTaskFn, rpcCall } = setupRunner()
+
+    runner.executeScheduledTaskInBackground(
+      {
+        id: 'task-resume',
+        title: 'resume 任务',
+        description: '续办',
+        priority: 'normal',
+      },
+      makeWorkerContext(),
+      {
+        resumeFrom: {
+          initialMessages: [{ id: 'm1', role: 'user' as const, content: 'hi', timestamp: 1 }],
+          todoItems: [],
+          goalRevisionUnlocked: false,
+        },
+      },
+    )
+
+    await waitForExecute(executeTaskFn)
+
+    // rpcCall 只应被 executeTaskFn 内部调用（如有），不应有 update_task_status(planning/executing)
+    const statusCalls = rpcCall.mock.calls.filter(
+      (c: unknown[]) => c[1] === 'update_task_status'
+    )
+    const planningOrExecuting = statusCalls.filter(
+      (c: unknown[]) => {
+        const body = c[2] as { status?: string }
+        return body.status === 'planning' || body.status === 'executing'
+      }
+    )
+    expect(planningOrExecuting).toHaveLength(0)
+  })
+
+  it('resumeFrom 不存在时：正常发送 planning 和 executing 状态转换', async () => {
+    const { runner, executeTaskFn, rpcCall } = setupRunner()
+
+    runner.executeScheduledTaskInBackground(
+      {
+        id: 'task-normal',
+        title: '普通任务',
+        description: '描述',
+        priority: 'normal',
+      },
+      makeWorkerContext(),
+      // opts 不传（无 resumeFrom）
+    )
+
+    await waitForExecute(executeTaskFn)
+
+    const statusCalls = rpcCall.mock.calls.filter(
+      (c: unknown[]) => c[1] === 'update_task_status'
+    )
+    const statuses = statusCalls.map((c: unknown[]) => (c[2] as { status?: string }).status)
+    expect(statuses).toContain('planning')
+    expect(statuses).toContain('executing')
+  })
+})

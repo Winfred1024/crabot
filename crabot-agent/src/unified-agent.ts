@@ -1871,11 +1871,36 @@ export class UnifiedAgent extends ModuleBase {
             description?: string
             priority: string
             plan?: string
+            source?: {
+              origin?: 'human' | 'system' | 'admin_chat'
+              channel_id?: string
+              session_id?: string
+              friend_id?: string
+              trigger_type: string
+            }
           }
         }
       >(adminPort, 'get_task', { task_id }, this.config.moduleId)
 
       const workerContext = await this.contextAssembler.assembleScheduledTaskContext()
+
+      // 从 task.source 重建 task_origin，确保 resumed worker 的消息投递回原会话。
+      // origin='human' 或 'admin_chat' 的任务必有 channel_id / session_id；
+      // origin='system' 的任务无 channel_id → task_origin 保持 undefined（system session 兜底）。
+      const taskOrigin: TaskOrigin | undefined =
+        task.source?.channel_id && task.source?.session_id
+          ? {
+              channel_id: task.source.channel_id as TaskOrigin['channel_id'],
+              session_id: task.source.session_id as TaskOrigin['session_id'],
+              ...(task.source.friend_id
+                ? { friend_id: task.source.friend_id as TaskOrigin['friend_id'] }
+                : {}),
+            }
+          : undefined
+
+      const workerContextWithOrigin: WorkerAgentContext = taskOrigin
+        ? { ...workerContext, task_origin: taskOrigin }
+        : workerContext
 
       this.scheduledTaskRunner.executeScheduledTaskInBackground(
         {
@@ -1885,7 +1910,7 @@ export class UnifiedAgent extends ModuleBase {
           priority: task.priority,
           plan: task.plan,
         },
-        workerContext,
+        workerContextWithOrigin,
         {
           resumeFrom: {
             initialMessages: [...entry.checkpoint.messages],
@@ -1899,6 +1924,8 @@ export class UnifiedAgent extends ModuleBase {
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
       console.error(`[${this.config.moduleId}] resume_task ${task_id} failed: ${msg}`)
+      // M2: resume_error 时清理 checkpoint，防止文件永驻磁盘被反复加载
+      this.traceStore.finalizeUnresumedCheckpoint(task_id)
       return { resumed: false, reason: 'resume_error' }
     }
   }
