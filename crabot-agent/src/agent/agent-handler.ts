@@ -113,8 +113,10 @@ import { createSubmitAuditResultTool } from './goal-auditor-tools.js'
 import { createWaitForSignalTool, type WaitForSignalDeps } from '../mcp/wait-for-signal.js'
 import { createAsyncAuditEndTurnGate } from './end-turn-gate.js'
 import { buildAuditAbortedMarker } from './audit-result-marker.js'
+import { buildResumeWakeupMessage } from '../core/resume-checkpoint.js'
 
 import { reflectStructuredOutcome } from '../orchestration/structured-outcome-reflector.js'
+import { AGENT_VERSION } from '../constants.js'
 
 import * as fs from 'fs'
 import * as path from 'path'
@@ -468,6 +470,8 @@ export class AgentHandler {
   private readonly bgCursorMap = new Map<string, number>()
   /** AbortControllers for running bg sub-agents (key=entity_id); shared with BgToolDeps + SubAgentBgContext */
   private readonly agentAbortControllers = new Map<string, AbortController>()
+  /** resume checkpoint 用：per-task traceStore 引用（与 traceContext.traceStore 同引用，onStop 补 flush 用） */
+  private readonly taskTraceStores = new Map<TaskId, import('../core/trace-store').TraceStore>()
   /** updateSkills 防抖去重 —— 同 admin 重复推同样的 skills 列表跳过赋值 */
   private lastSkillsHash: string = ''
   /**
@@ -639,8 +643,37 @@ export class AgentHandler {
 
     // waiting 循环：loop 结束后检查异步子 agent，若有则等通知再续跑
     let loopResult: RunWorkerLoopResult | undefined
-    let currentInitialMessages: ReadonlyArray<EngineMessage> | undefined
     let currentHumanQueue: HumanMessageQueue | undefined
+
+    // resume 路径：从 checkpoint 恢复 todoStore / goalRevisionUnlocked，
+    // 并把 checkpoint messages + 唤醒消息作为首轮 initialMessages。
+    // runWorkerLoop 检查 activeTasks.get(task_id)——提前写入即可完成 todoStore/goalRevisionUnlocked 的恢复。
+    let currentInitialMessages: ReadonlyArray<EngineMessage> | undefined
+    if (params.resumeFrom) {
+      const { initialMessages, todoItems, goalRevisionUnlocked } = params.resumeFrom
+      // 唤醒消息只注入一次（resume 首轮）；后续 waiting 续跑沿用现有重设逻辑。
+      currentInitialMessages = [...initialMessages, buildResumeWakeupMessage()]
+      // 预建 taskState 让 runWorkerLoop 直接复用（不再用 new TodoStore()）
+      if (!this.activeTasks.has(task.task_id)) {
+        this.activeTasks.set(task.task_id, {
+          taskId: task.task_id,
+          startedAt: new Date().toISOString(),
+          title: task.task_title,
+          triggerType: task.source?.trigger_type === 'scheduled' ? 'scheduled' : 'message',
+          abortController: new AbortController(),
+          pendingHumanMessages: [],
+          taskOrigin: context.task_origin,
+          todoStore: TodoStore.fromItems(todoItems),
+          outboundBuffer: [],
+          activeAuditId: undefined,
+          activeAsyncSubagentIds: new Set<string>(),
+          everSentMessage: false,
+          everBufferedMessage: false,
+          silentNoDeliveryRetries: 0,
+          ...(goalRevisionUnlocked !== undefined ? { goalRevisionUnlocked } : {}),
+        })
+      }
+    }
 
     while (true) {
       try {
@@ -1274,6 +1307,13 @@ export class AgentHandler {
       // 总是创建：即使本任务不启用 digest（silent / text_forward），engine 维护
       // 它无副作用，留出钩子方便日后其他 observer 复用。
       const messagesRef: EngineMessagesRef = { current: [] }
+      // resume checkpoint 用：让 onStop（优雅停机）能通过 taskState 拿到最新快照。
+      taskState.messagesRef = messagesRef
+      // traceId 存 taskState + traceStore 存 Map，供 flushActiveCheckpoints（onStop 路径）补 flush。
+      if (traceContext) {
+        taskState.activeTraceId = traceContext.traceId
+        this.taskTraceStores.set(task.task_id, traceContext.traceStore)
+      }
 
       // 创建进度汇报（根据会话场景分支）
       let textForwardMode = false
@@ -1468,18 +1508,6 @@ export class AgentHandler {
             },
             getConversationLog: () => [...conversationLog],
           }),
-          ...(traceContext ? {
-            onPromptDump: (event) => {
-              traceContext.traceStore.appendPromptDump({
-                trace_id: traceContext.traceId,
-                iteration: event.turn,
-                source: 'worker',
-                model: event.model,
-                system_prompt: event.systemPrompt,
-                messages: event.messages,
-              })
-            },
-          } : {}),
           onSystemInjection: (event) => {
             // 系统注入（supplement / overdue / forced_summary / stop_hook）作为 trace 上的 tool-call 风格 span 暴露
             const label = `__system_${event.type}__`
@@ -1616,6 +1644,7 @@ export class AgentHandler {
                   toolCallsCount: event.toolCalls.length > 0 ? event.toolCalls.length : undefined,
                   ...(event.forcedSummaryAttempt !== undefined ? { forcedSummaryAttempt: event.forcedSummaryAttempt } : {}),
                   ...(event.usage ? { usage: llmUsageToTrace(event.usage) } : {}),
+                  messageCountAfter: messagesRef.current.length,
                 },
                 llmEndedAtMs,
               )
@@ -1652,6 +1681,21 @@ export class AgentHandler {
               }
             }
 
+            // resume checkpoint：每 turn 结束时原子落盘（干净 turn 边界）。
+            // traceContext.traceId 是本 worker loop 的 trace id（由 unified-agent 在
+            // startTrace 后传入）。仅 worker trace 有 traceContext，front 路径无。
+            if (traceContext && task.task_id) {
+              traceContext.traceStore.flushWorkerCheckpoint(task.task_id, traceContext.traceId, {
+                agent_version: AGENT_VERSION,
+                system_prompt: messagesRef.systemPrompt ?? '',
+                messages: messagesRef.current.slice() as import('../engine/types.js').EngineMessage[],
+                worker_state: {
+                  todo_items: [...taskState.todoStore.list()],
+                  goal_revision_unlocked: taskState.goalRevisionUnlocked,
+                },
+              })
+            }
+
             // Caller hook: trigger flow uses this to detect send_message
             opts?.onAfterTurn?.(event)
           },
@@ -1682,6 +1726,7 @@ export class AgentHandler {
         this.humanQueues.delete(task.task_id)
         this.activeTasks.delete(task.task_id)
         this.liveSnapshots.delete(task.task_id)
+        this.taskTraceStores.delete(task.task_id)
         // Kill all transient shells owned by this task (persistent shells survive)
         this.transientShells.killAllOwnedBy(task.task_id)
         // Clean up cursor map entries for this task to avoid memory leak
@@ -1703,6 +1748,7 @@ export class AgentHandler {
     this.humanQueues.delete(taskId)
     this.activeTasks.delete(taskId)
     this.liveSnapshots.delete(taskId)
+    this.taskTraceStores.delete(taskId)
     this.transientShells.killAllOwnedBy(taskId)
     for (const key of this.bgCursorMap.keys()) {
       if (key.startsWith(`${taskId}:`)) {
@@ -2574,6 +2620,35 @@ export class AgentHandler {
     const taskState = this.activeTasks.get(taskId)
     if (taskState) {
       taskState.abortController.abort()
+    }
+  }
+
+  /**
+   * 优雅停机时对所有活跃 worker task 补一次 resume checkpoint flush。
+   * 覆盖 per-turn flush 的"最后一 turn 到 onStop 之间的窗口"，让 crabot stop 场景也无损。
+   * 由 UnifiedAgent.onStop 调用。
+   */
+  flushActiveCheckpoints(): void {
+    for (const [taskId, taskState] of this.activeTasks) {
+      const traceId = taskState.activeTraceId
+      const traceStore = this.taskTraceStores.get(taskId)
+      const messagesRef = taskState.messagesRef
+      if (!traceId || !traceStore || !messagesRef) continue
+      try {
+        traceStore.flushWorkerCheckpoint(taskId, traceId, {
+          agent_version: AGENT_VERSION,
+          system_prompt: messagesRef.systemPrompt ?? '',
+          messages: messagesRef.current.slice() as import('../engine/types.js').EngineMessage[],
+          worker_state: {
+            todo_items: [...taskState.todoStore.list()],
+            goal_revision_unlocked: taskState.goalRevisionUnlocked,
+          },
+        })
+      } catch (err) {
+        // best-effort，停机路径不抛
+        const msg = err instanceof Error ? err.message : String(err)
+        log(`[flushActiveCheckpoints] task=${taskId} failed (non-fatal): ${msg}`)
+      }
     }
   }
 

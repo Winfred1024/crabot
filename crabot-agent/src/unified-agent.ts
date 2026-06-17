@@ -57,6 +57,8 @@ import { PromptManager } from './prompt-manager.js'
 import { createLSPManager, type LSPManager } from './lsp/lsp-manager.js'
 import type { BgEntityRecord, BgEntityStatus, BgEntityType } from './engine/bg-entities/types.js'
 import { redactSecrets } from './engine/redact-secrets.js'
+import { isResumable, redactCheckpoint } from './core/resume-checkpoint.js'
+import { AGENT_VERSION } from './constants.js'
 
 const BARRIER_TIMEOUT_MS = 8_000
 
@@ -434,6 +436,7 @@ export class UnifiedAgent extends ModuleBase {
     this.registerMethod('process_message', this.handleProcessMessage.bind(this))
     this.registerMethod('create_task_from_schedule', this.handleCreateTaskFromSchedule.bind(this))
     this.registerMethod('start_recovery_task', this.handleStartRecoveryTask.bind(this))
+    this.registerMethod('resume_task', this.handleResumeTask.bind(this))
 
     // Agent 接口
     this.registerMethod('get_role', this.handleGetRole.bind(this))
@@ -657,13 +660,11 @@ export class UnifiedAgent extends ModuleBase {
         this.sendDispatcherImmediateReply(session.channel_id, session.session_id, text)
 
       const traceCallbackPrivate = this.buildDispatchTraceCallback(trace.trace_id)
-      const dumpPromptPrivate = this.buildDispatchPromptDumpCallback(trace.trace_id)
       const { actions } = await dispatch(dispatchCtx, {
         adapter: adapterFromSdkEnv(this.sdkEnvWorker),
         modelId: this.sdkEnvWorker.modelId,
         sendErrorToUser,
         trace: traceCallbackPrivate,
-        dumpPrompt: dumpPromptPrivate,
         quotedPrefetchDeps: this.buildQuotedPrefetchDeps(),
         timezone: this.getTimezone(),
         laneBatchSize: messages.length,
@@ -875,13 +876,11 @@ export class UnifiedAgent extends ModuleBase {
         this.sendDispatcherImmediateReply(session.channel_id, sessionId, text)
 
       const traceCallbackGroup = this.buildDispatchTraceCallback(trace.trace_id)
-      const dumpPromptGroup = this.buildDispatchPromptDumpCallback(trace.trace_id)
       const { actions } = await dispatch(dispatchCtx, {
         adapter: adapterFromSdkEnv(this.sdkEnvWorker),
         modelId: this.sdkEnvWorker.modelId,
         sendErrorToUser,
         trace: traceCallbackGroup,
-        dumpPrompt: dumpPromptGroup,
         quotedPrefetchDeps: this.buildQuotedPrefetchDeps(),
         timezone: this.getTimezone(),
         laneBatchSize: batch.length,
@@ -1525,13 +1524,11 @@ export class UnifiedAgent extends ModuleBase {
       }
 
       const traceCallbackAdmin = this.buildDispatchTraceCallback(trace.trace_id)
-      const dumpPromptAdmin = this.buildDispatchPromptDumpCallback(trace.trace_id)
       const { actions } = await dispatch(dispatchCtx, {
         adapter: adapterFromSdkEnv(this.sdkEnvWorker),
         modelId: this.sdkEnvWorker.modelId,
         sendErrorToUser,
         trace: traceCallbackAdmin,
-        dumpPrompt: dumpPromptAdmin,
         quotedPrefetchDeps: this.buildQuotedPrefetchDeps(),
         timezone: this.getTimezone(),
       })
@@ -1817,7 +1814,6 @@ export class UnifiedAgent extends ModuleBase {
           task: {
             id: string
             title: string
-            description?: string
             priority: string
             plan?: string
           }
@@ -1834,7 +1830,6 @@ export class UnifiedAgent extends ModuleBase {
         {
           id: task.id,
           title: task.title,
-          description: task.description ?? '',
           priority: task.priority,
           plan: task.plan,
         },
@@ -1849,6 +1844,85 @@ export class UnifiedAgent extends ModuleBase {
         message
       )
       throw new Error(`Failed to start recovery task: ${message}`)
+    }
+  }
+
+  private async handleResumeTask(params: { task_id: string }): Promise<{ resumed: boolean; reason?: string }> {
+    const { task_id } = params
+    const entry = this.traceStore.getResumableCheckpoint(task_id)
+    if (!entry) return { resumed: false, reason: 'no_checkpoint' }
+
+    const guard = isResumable(entry.checkpoint, AGENT_VERSION)
+    if (!guard.ok) {
+      this.traceStore.finalizeUnresumedCheckpoint(task_id)
+      return { resumed: false, reason: guard.reason }
+    }
+
+    try {
+      const adminPort = await this.getAdminPort()
+      const { task } = await this.rpcClient.call<
+        { task_id: string },
+        {
+          task: {
+            id: string
+            title: string
+            priority: string
+            plan?: string
+            source?: {
+              origin?: 'human' | 'system' | 'admin_chat'
+              channel_id?: string
+              session_id?: string
+              friend_id?: string
+              trigger_type: string
+            }
+          }
+        }
+      >(adminPort, 'get_task', { task_id }, this.config.moduleId)
+
+      const workerContext = await this.contextAssembler.assembleScheduledTaskContext()
+
+      // 从 task.source 重建 task_origin，确保 resumed worker 的消息投递回原会话。
+      // origin='human' 或 'admin_chat' 的任务必有 channel_id / session_id；
+      // origin='system' 的任务无 channel_id → task_origin 保持 undefined（system session 兜底）。
+      const taskOrigin: TaskOrigin | undefined =
+        task.source?.channel_id && task.source?.session_id
+          ? {
+              channel_id: task.source.channel_id as TaskOrigin['channel_id'],
+              session_id: task.source.session_id as TaskOrigin['session_id'],
+              ...(task.source.friend_id
+                ? { friend_id: task.source.friend_id as TaskOrigin['friend_id'] }
+                : {}),
+            }
+          : undefined
+
+      const workerContextWithOrigin: WorkerAgentContext = taskOrigin
+        ? { ...workerContext, task_origin: taskOrigin }
+        : workerContext
+
+      this.scheduledTaskRunner.executeScheduledTaskInBackground(
+        {
+          id: task.id,
+          title: task.title,
+          priority: task.priority,
+          plan: task.plan,
+        },
+        workerContextWithOrigin,
+        {
+          resumeFrom: {
+            initialMessages: [...entry.checkpoint.messages],
+            todoItems: entry.checkpoint.worker_state.todo_items,
+            goalRevisionUnlocked: entry.checkpoint.worker_state.goal_revision_unlocked,
+          },
+        },
+      )
+      this.traceStore.consumeResumableCheckpoint(task_id)
+      return { resumed: true }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      console.error(`[${this.config.moduleId}] resume_task ${task_id} failed: ${msg}`)
+      // M2: resume_error 时清理 checkpoint，防止文件永驻磁盘被反复加载
+      this.traceStore.finalizeUnresumedCheckpoint(task_id)
+      return { resumed: false, reason: 'resume_error' }
     }
   }
 
@@ -2212,23 +2286,6 @@ export class UnifiedAgent extends ModuleBase {
   }
 
   /**
-   * 构建 dispatcher 的 prompt dump 回调，每次 LLM 调用前把完整 prompt 落到
-   * prompts-*.jsonl，trace_id 由本闭包带；caller 三处复用。
-   */
-  private buildDispatchPromptDumpCallback(
-    traceId: string,
-  ): (record: { span_id?: string; attempt: number; model: string; system_prompt: string; messages: ReadonlyArray<unknown> }) => void {
-    const store = this.traceStore
-    return (record) => {
-      store.appendPromptDump({
-        trace_id: traceId,
-        source: 'dispatcher',
-        ...record,
-      })
-    }
-  }
-
-  /**
    * 构造 dispatcher reactToTriggerMessage 闭包。
    * dispatcher 接住消息后调 channel.add_reaction(kind='acknowledged')。
    * channel 不支持 add_reaction（如 wechat 未注册此 RPC）时 RPC 自身会抛 method-not-found，
@@ -2441,7 +2498,7 @@ export class UnifiedAgent extends ModuleBase {
         return span.span_id
       },
 
-      onLlmCallEnd(spanId: string, result: { stopReason?: string; outputSummary?: string; toolCallsCount?: number; fullInput?: string; fullOutput?: string; error?: string; forcedSummaryAttempt?: number }, endedAtMs?: number): void {
+      onLlmCallEnd(spanId: string, result: { stopReason?: string; outputSummary?: string; toolCallsCount?: number; error?: string; forcedSummaryAttempt?: number; usage?: import('./types.js').TokenUsage; messageCountAfter?: number }, endedAtMs?: number): void {
         store.endSpan(
           traceId,
           spanId,
@@ -2450,9 +2507,9 @@ export class UnifiedAgent extends ModuleBase {
             stop_reason: result.stopReason,
             output_summary: redactSecrets(result.error ?? result.outputSummary ?? '', secrets),
             tool_calls_count: result.toolCallsCount,
-            full_input: result.fullInput ? redactSecrets(result.fullInput, secrets) : undefined,
-            full_output: result.fullOutput ? redactSecrets(result.fullOutput, secrets) : undefined,
             forced_summary_attempt: result.forcedSummaryAttempt,
+            ...(result.usage ? { usage: result.usage } : {}),
+            ...(result.messageCountAfter !== undefined ? { message_count_after: result.messageCountAfter } : {}),
           } as Partial<import('./types.js').LlmCallDetails>,
           endedAtMs,
         )
@@ -2503,6 +2560,15 @@ export class UnifiedAgent extends ModuleBase {
     const trace = await this.traceStore.getFullTrace(params.trace_id)
     if (!trace) {
       throw new Error(`Trace not found: ${params.trace_id}`)
+    }
+    if (trace.resume_checkpoint) {
+      const secrets = [...this.knownSecrets]
+      return {
+        trace: {
+          ...trace,
+          resume_checkpoint: redactCheckpoint(trace.resume_checkpoint, secrets),
+        },
+      }
     }
     return { trace }
   }
@@ -2743,6 +2809,10 @@ export class UnifiedAgent extends ModuleBase {
   }
 
   protected override async onStop(): Promise<void> {
+    // 优雅停机前补一次所有活跃 worker task 的 resume checkpoint flush，
+    // 让 crabot stop 场景的停机窗口（最后一 turn 到进程退出之间）也无损。
+    this.agentHandler?.flushActiveCheckpoints()
+
     this.sessionManager.stopCleanup()
     this.attentionScheduler.stopAll()
     this.traceStore.stopFlushTimer()

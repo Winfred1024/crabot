@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react'
-import { traceService, type AgentSpan, type TokenUsage } from '../../services/trace'
+import { traceService, type AgentSpan, type TokenUsage, type EngineMessageLike } from '../../services/trace'
 import { Tooltip } from '../../components/Common/Tooltip'
 import { spanTypeBg, spanTypeLabel, statusColor, formatDuration, formatTokens, detailSummary } from './utils'
 import { SpanDetailPanel } from './SpanDetailPanel'
@@ -21,9 +21,13 @@ export interface SpanRowProps {
   expandedDetails: Set<string>
   toggleDetail: (spanId: string) => void
   onNavigateTrace?: (traceId: string) => void
+  /** Worker trace 累积消息快照（来自 resume_checkpoint.messages）。 */
+  messages?: ReadonlyArray<EngineMessageLike>
+  /** 所有 llm_call span 按出现顺序排列，带 message_count_after 字段。 */
+  orderedLlmSpans?: ReadonlyArray<{ span_id: string; message_count_after?: number }>
 }
 
-export const SpanRow: React.FC<SpanRowProps> = ({ span, spans, depth, expandedDetails, toggleDetail, onNavigateTrace }) => {
+export const SpanRow: React.FC<SpanRowProps> = ({ span, spans, depth, expandedDetails, toggleDetail, onNavigateTrace, messages, orderedLlmSpans }) => {
   const [expanded, setExpanded] = useState(depth < 2)
   const [childTrace, setChildTrace] = useState<ChildTraceState>({ status: 'idle' })
   const hasChildren = spans.some((s) => s.parent_span_id === span.span_id)
@@ -188,7 +192,19 @@ export const SpanRow: React.FC<SpanRowProps> = ({ span, spans, depth, expandedDe
           {span.status === 'completed' ? '✓' : span.status === 'failed' ? '✗' : '…'}
         </span>
       </div>
-      {showDetail && <SpanDetailPanel span={span} onNavigateTrace={onNavigateTrace} />}
+      {showDetail && (
+        <SpanDetailPanel
+          span={span}
+          onNavigateTrace={onNavigateTrace}
+          messages={messages}
+          orderedLlmSpans={orderedLlmSpans}
+          spanIndexInLlm={
+            orderedLlmSpans != null
+              ? orderedLlmSpans.findIndex((s) => s.span_id === span.span_id)
+              : undefined
+          }
+        />
+      )}
       {expanded && hasChildren && (
         <SpanTree
           spans={spans}
@@ -197,6 +213,8 @@ export const SpanRow: React.FC<SpanRowProps> = ({ span, spans, depth, expandedDe
           expandedDetails={expandedDetails}
           toggleDetail={toggleDetail}
           onNavigateTrace={onNavigateTrace}
+          messages={messages}
+          orderedLlmSpans={orderedLlmSpans}
         />
       )}
       {childTrace.status === 'loading' && (
@@ -249,7 +267,11 @@ export const SpanTree: React.FC<{
   expandedDetails: Set<string>
   toggleDetail: (spanId: string) => void
   onNavigateTrace?: (traceId: string) => void
-}> = ({ spans, parentSpanId, depth = 0, expandedDetails, toggleDetail, onNavigateTrace }) => {
+  /** Worker trace 累积消息快照（透传给 SpanRow → SpanDetailPanel）。 */
+  messages?: ReadonlyArray<EngineMessageLike>
+  /** 所有 llm_call span 按出现顺序排列（透传给 SpanRow → SpanDetailPanel）。 */
+  orderedLlmSpans?: ReadonlyArray<{ span_id: string; message_count_after?: number }>
+}> = ({ spans, parentSpanId, depth = 0, expandedDetails, toggleDetail, onNavigateTrace, messages, orderedLlmSpans }) => {
   const children = spans.filter((s) => s.parent_span_id === parentSpanId)
   if (children.length === 0) return null
   return (
@@ -263,6 +285,8 @@ export const SpanTree: React.FC<{
           expandedDetails={expandedDetails}
           toggleDetail={toggleDetail}
           onNavigateTrace={onNavigateTrace}
+          messages={messages}
+          orderedLlmSpans={orderedLlmSpans}
         />
       ))}
     </>

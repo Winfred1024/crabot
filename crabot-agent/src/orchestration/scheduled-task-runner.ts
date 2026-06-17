@@ -60,25 +60,30 @@ export class ScheduledTaskRunner {
   executeScheduledTaskInBackground(
     task: AdminTask,
     workerContext: WorkerAgentContext,
+    opts?: { resumeFrom?: ExecuteTaskParams['resumeFrom'] },
   ): void {
     const run = async () => {
       const adminPort = await this.getAdminPort()
 
       // 推进任务状态：pending → planning → executing
-      try {
-        await this.rpcClient.call(
-          adminPort, 'update_task_status',
-          { task_id: task.id, status: 'planning' },
-          this.moduleId
-        )
-        await this.rpcClient.call(
-          adminPort, 'update_task_status',
-          { task_id: task.id, status: 'executing' },
-          this.moduleId
-        )
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err)
-        console.error(`[ScheduledTaskRunner] Failed to transition scheduled task ${task.id} to executing: ${msg}`)
+      // resume 路径（resumeFrom 存在）时任务已是 executing，跳过冗余转换，
+      // 避免 executing→planning 不合法转换触发状态机拒绝日志。
+      if (!opts?.resumeFrom) {
+        try {
+          await this.rpcClient.call(
+            adminPort, 'update_task_status',
+            { task_id: task.id, status: 'planning' },
+            this.moduleId
+          )
+          await this.rpcClient.call(
+            adminPort, 'update_task_status',
+            { task_id: task.id, status: 'executing' },
+            this.moduleId
+          )
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err)
+          console.error(`[ScheduledTaskRunner] Failed to transition scheduled task ${task.id} to executing: ${msg}`)
+        }
       }
 
       // memory_maintenance 直接走 RPC，不经 Worker
@@ -167,9 +172,16 @@ export class ScheduledTaskRunner {
 
         // worker handler 内部已完成：update_task_status + update_task_outcome + 记忆写入
         if (this.executeTaskFn) {
-          await this.executeTaskFn({ ...taskPayload, related_task_id: task.id })
+          await this.executeTaskFn({
+            ...taskPayload,
+            related_task_id: task.id,
+            ...(opts?.resumeFrom ? { resumeFrom: opts.resumeFrom } : {}),
+          })
         } else {
-          await this.agentHandler!.executeTask(taskPayload)
+          await this.agentHandler!.executeTask({
+            ...taskPayload,
+            ...(opts?.resumeFrom ? { resumeFrom: opts.resumeFrom } : {}),
+          })
         }
       } catch (error) {
         // worker handler 自身崩溃（throw）——兜底：标失败 + 写失败记忆

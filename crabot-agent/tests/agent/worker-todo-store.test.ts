@@ -92,4 +92,10 @@ describe('TodoStore', () => {
     expect(text).toContain('[>] b: validate (in_progress)')
     expect(text).not.toContain('old done')
   })
+
+  it('fromItems 还原 + toJSON 往返一致', () => {
+    const items = [{ id: 'a', content: 'x', status: 'in_progress' as const }]
+    const s = TodoStore.fromItems(items)
+    expect(s.toJSON()).toEqual(items)
+  })
 })

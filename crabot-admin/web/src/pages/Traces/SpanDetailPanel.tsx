@@ -2,12 +2,15 @@ import React from 'react'
 import {
   type AgentSpan,
   type TokenUsage,
+  type EngineMessageLike,
   totalPromptTokens,
   cacheHitRate,
 } from '../../services/trace'
 import { Tooltip } from '../../components/Common/Tooltip'
 import { formatDateTimeLocal, formatDuration, formatTokens, agentLoopLabel } from './utils'
 import { TraceLink } from './TraceTable'
+import { MessageBlocks } from './MessageBlocks'
+import { sliceSpanMessages } from './messageSlicing'
 
 // ============================================================================
 // 子组件：SpanDetailPanel — 单个 span 的详情展开
@@ -16,7 +19,13 @@ import { TraceLink } from './TraceTable'
 export const SpanDetailPanel: React.FC<{
   span: AgentSpan
   onNavigateTrace?: (traceId: string) => void
-}> = ({ span, onNavigateTrace }) => {
+  /** Worker trace 累积消息快照（来自 resume_checkpoint.messages）。无则退回旧 summary 行。 */
+  messages?: ReadonlyArray<EngineMessageLike>
+  /** 所有 llm_call span 按出现顺序排列，带 message_count_after 字段。 */
+  orderedLlmSpans?: ReadonlyArray<{ span_id: string; message_count_after?: number }>
+  /** 当前 span 在 orderedLlmSpans 中的下标（-1 或 undefined 表示不在列表中）。 */
+  spanIndexInLlm?: number
+}> = ({ span, onNavigateTrace, messages, orderedLlmSpans, spanIndexInLlm }) => {
   const d = span.details as Record<string, unknown>
   const rows: { label: string; value: string | React.ReactNode; monospace?: boolean }[] = []
 
@@ -91,6 +100,23 @@ export const SpanDetailPanel: React.FC<{
     }
     if (d.input_summary) rows.push({ label: 'Input', value: String(d.input_summary), monospace: true })
     if (d.output_summary) rows.push({ label: 'Output', value: String(d.output_summary), monospace: true })
+
+    // 本轮产出切片：仅当有完整消息快照 + 本 span 在 llm_call 列表中 + 有 message_count_after 时渲染
+    const hasSliceData =
+      messages != null &&
+      orderedLlmSpans != null &&
+      spanIndexInLlm != null &&
+      spanIndexInLlm >= 0 &&
+      (d.message_count_after as number | undefined) != null
+    if (hasSliceData) {
+      const slice = sliceSpanMessages(messages!, orderedLlmSpans!, spanIndexInLlm!)
+      if (slice.length > 0) {
+        rows.push({
+          label: '本轮产出',
+          value: <MessageBlocks messages={slice} />,
+        })
+      }
+    }
   }
 
   if (span.type === 'tool_call') {

@@ -385,30 +385,6 @@ describe('TraceStore.getDiskUsage', () => {
     }
   })
 
-  // Regression：cleanupOldTraces 会同时清 traces-* 和 prompts-* 两类文件，但
-  // 早期 getDiskUsage 只统计 traces-*，导致 Admin Web /traces 页面"占用 154 MB"
-  // 看似很小，实际磁盘上 prompts-*.jsonl 累积了 2.9 GB，用户磁盘 100% 满才
-  // 发现。统计口径必须跟 cleanup 一致。
-  it('counts prompts-*.jsonl bytes (must align with cleanup scope)', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-disk-prompts-'))
-    try {
-      const store = new TraceStore(10, dir)
-      // 一次 startTrace 产生一个 traces-YYYY-MM-DD.jsonl
-      const t = store.startTrace({ module_id: 'a', trigger: { type: 'message', summary: 'm' } })
-      store.endTrace(t.trace_id, 'completed')
-      const tracesOnly = store.getDiskUsage().total_bytes
-
-      // 放一个 prompts-*.jsonl 进同目录，模拟 dumpLLMPrompt 落盘的结果。
-      const today = new Date().toISOString().slice(0, 10)
-      const promptsContent = 'x'.repeat(5000)
-      fs.writeFileSync(path.join(dir, `prompts-${today}.jsonl`), promptsContent)
-
-      const withPrompts = store.getDiskUsage().total_bytes
-      expect(withPrompts).toBeGreaterThanOrEqual(tracesOnly + 5000)
-    } finally {
-      fs.rmSync(dir, { recursive: true })
-    }
-  })
 })
 
 describe('TraceStore.cleanupOldTraces', () => {
@@ -491,70 +467,6 @@ describe('TraceStore.cleanupOldTraces', () => {
     }
   })
 
-  it('also deletes prompts-*.jsonl for past-cutoff dates (kept together)', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-clean-prompts-'))
-    try {
-      const oldDate = new Date(Date.now() - 86400_000 * 60)
-      const oldDateStr = oldDate.toISOString().slice(0, 10)
-      const tracesFile = `traces-${oldDateStr}.jsonl`
-      const promptsFile = `prompts-${oldDateStr}.jsonl`
-      fs.writeFileSync(path.join(dir, tracesFile), JSON.stringify({
-        trace_id: 'old1', module_id: 'a', started_at: oldDate.toISOString(),
-        status: 'completed', trigger: { type: 'message', summary: 'old' }, spans: [],
-      }) + '\n')
-      fs.writeFileSync(path.join(dir, promptsFile), JSON.stringify({
-        timestamp: oldDate.toISOString(), trace_id: 'old1', source: 'worker',
-        system_prompt: 'sys', messages: [],
-      }) + '\n')
-
-      const store = new TraceStore(10, dir)
-      const result = store.cleanupOldTraces(30, false)
-
-      // affected_count 仍是 trace 条数（prompts 文件不计入）
-      expect(result.affected_count).toBe(1)
-      expect(result.deleted_trace_ids).toEqual(['old1'])
-      // 两个文件都被删
-      expect(fs.existsSync(path.join(dir, tracesFile))).toBe(false)
-      expect(fs.existsSync(path.join(dir, promptsFile))).toBe(false)
-    } finally {
-      fs.rmSync(dir, { recursive: true })
-    }
-  })
-
-  it('does not delete prompts-*.jsonl that are within retention', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-clean-prompts-keep-'))
-    try {
-      const todayStr = new Date().toISOString().slice(0, 10)
-      const promptsFile = `prompts-${todayStr}.jsonl`
-      fs.writeFileSync(path.join(dir, promptsFile), JSON.stringify({
-        timestamp: new Date().toISOString(), trace_id: 'new1', source: 'worker',
-        system_prompt: 'sys', messages: [],
-      }) + '\n')
-
-      const store = new TraceStore(10, dir)
-      const result = store.cleanupOldTraces(30, false)
-      expect(result.affected_count).toBe(0)
-      expect(fs.existsSync(path.join(dir, promptsFile))).toBe(true)
-    } finally {
-      fs.rmSync(dir, { recursive: true })
-    }
-  })
-
-  it('dryRun=true does not delete prompts-*.jsonl either', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-clean-prompts-dry-'))
-    try {
-      const oldDate = new Date(Date.now() - 86400_000 * 60)
-      const oldDateStr = oldDate.toISOString().slice(0, 10)
-      const promptsFile = `prompts-${oldDateStr}.jsonl`
-      fs.writeFileSync(path.join(dir, promptsFile), 'x\n')
-
-      const store = new TraceStore(10, dir)
-      store.cleanupOldTraces(30, true)
-      expect(fs.existsSync(path.join(dir, promptsFile))).toBe(true)
-    } finally {
-      fs.rmSync(dir, { recursive: true })
-    }
-  })
 })
 
 describe('TraceStore.cleanupOldTracesByCount', () => {
@@ -619,25 +531,6 @@ describe('TraceStore.cleanupOldTracesByCount', () => {
     }
   })
 
-  it('also deletes matching prompts-*.jsonl', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-clean-count-prompts-'))
-    try {
-      writeTracesFile(dir, '2026-05-01', ['old1'])
-      writeTracesFile(dir, '2026-06-01', ['new1'])
-      fs.writeFileSync(path.join(dir, 'prompts-2026-05-01.jsonl'), 'x\n')
-      fs.writeFileSync(path.join(dir, 'prompts-2026-06-01.jsonl'), 'y\n')
-
-      const store = new TraceStore(10, dir)
-      const result = store.cleanupOldTracesByCount(1, false)
-      expect(result.affected_count).toBe(1)
-      expect(result.deleted_trace_ids).toEqual(['old1'])
-      expect(fs.existsSync(path.join(dir, 'prompts-2026-05-01.jsonl'))).toBe(false)
-      expect(fs.existsSync(path.join(dir, 'prompts-2026-06-01.jsonl'))).toBe(true)
-    } finally {
-      fs.rmSync(dir, { recursive: true })
-    }
-  })
-
   it('returns zero when maxCount <= 0', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-clean-count-zero-'))
     try {
@@ -666,86 +559,55 @@ describe('TraceStore.cleanupOldTracesByCount', () => {
   })
 })
 
-describe('TraceStore.appendPromptDump', () => {
-  it('appends to prompts-YYYY-MM-DD.jsonl in persistDir', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-prompt-append-'))
-    try {
-      const store = new TraceStore(10, dir)
-      store.appendPromptDump({
-        trace_id: 'tr-1',
-        span_id: 'sp-1',
-        iteration: 3,
-        attempt: 0,
-        source: 'worker',
-        model: 'claude-x',
-        system_prompt: 'system text',
-        messages: [{ role: 'user', content: 'hello' }],
-      })
+describe('flushWorkerCheckpoint', () => {
+  function tmpDir(): string {
+    return fs.mkdtempSync(path.join(os.tmpdir(), 'tracestore-'))
+  }
 
-      const todayStr = new Date().toISOString().slice(0, 10)
-      const fpath = path.join(dir, `prompts-${todayStr}.jsonl`)
-      expect(fs.existsSync(fpath)).toBe(true)
-      const lines = fs.readFileSync(fpath, 'utf-8').trim().split('\n')
-      expect(lines.length).toBe(1)
-      const rec = JSON.parse(lines[0])
-      expect(rec.trace_id).toBe('tr-1')
-      expect(rec.span_id).toBe('sp-1')
-      expect(rec.iteration).toBe(3)
-      expect(rec.attempt).toBe(0)
-      expect(rec.source).toBe('worker')
-      expect(rec.model).toBe('claude-x')
-      expect(rec.system_prompt).toBe('system text')
-      expect(rec.messages).toEqual([{ role: 'user', content: 'hello' }])
-      expect(typeof rec.timestamp).toBe('string')
-    } finally {
-      fs.rmSync(dir, { recursive: true })
-    }
+  it('原子写 per-task 文件，含 messages + worker_state', () => {
+    const dir = tmpDir()
+    const store = new TraceStore(100, dir)
+    const trace = store.startTrace({
+      module_id: 'agent-1',
+      trigger: { type: 'task', summary: 't' },
+      related_task_id: 'task-1',
+    })
+    store.flushWorkerCheckpoint('task-1', trace.trace_id, {
+      agent_version: '1.0.0',
+      system_prompt: 'SP',
+      messages: [{ id: 'm1', role: 'user', content: 'hi', timestamp: 1 }],
+      worker_state: { todo_items: [] },
+    })
+    const file = path.join(dir, 'traces-running-task-1.jsonl')
+    expect(fs.existsSync(file)).toBe(true)
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf-8').trim())
+    expect(parsed.trace_id).toBe(trace.trace_id)
+    expect(parsed.resume_checkpoint.messages).toHaveLength(1)
+    expect(parsed.resume_checkpoint.system_prompt).toBe('SP')
+    expect(fs.existsSync(file + '.tmp')).toBe(false)
   })
+})
 
-  it('omits undefined optional fields from the JSONL record', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-prompt-omit-'))
-    try {
-      const store = new TraceStore(10, dir)
-      store.appendPromptDump({
-        trace_id: 'tr-2',
-        source: 'dispatcher',
-        system_prompt: 'sys',
-        messages: [],
-      })
-
-      const todayStr = new Date().toISOString().slice(0, 10)
-      const lines = fs.readFileSync(path.join(dir, `prompts-${todayStr}.jsonl`), 'utf-8').trim().split('\n')
-      const rec = JSON.parse(lines[0])
-      expect('span_id' in rec).toBe(false)
-      expect('iteration' in rec).toBe(false)
-      expect('attempt' in rec).toBe(false)
-      expect('model' in rec).toBe(false)
-    } finally {
-      fs.rmSync(dir, { recursive: true })
+describe('loadResumableCheckpoints', () => {
+  it('启动时把 per-task running 文件读进可 resume 集合，不写日期文件', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tracestore-'))
+    const trace = {
+      trace_id: 'tr-1', module_id: 'agent-1', started_at: new Date(0).toISOString(),
+      status: 'running', trigger: { type: 'task', summary: 't' }, related_task_id: 'task-9',
+      spans: [],
+      resume_checkpoint: { agent_version: '1.0.0', system_prompt: 'SP',
+        messages: [{ id: 'm1', role: 'user', content: 'hi', timestamp: 1 }], worker_state: { todo_items: [] } },
     }
-  })
+    fs.writeFileSync(path.join(dir, 'traces-running-task-9.jsonl'), JSON.stringify(trace) + '\n')
 
-  it('appends multiple records into the same daily file', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-prompt-multi-'))
-    try {
-      const store = new TraceStore(10, dir)
-      store.appendPromptDump({ trace_id: 'tr-a', source: 'worker', system_prompt: '', messages: [] })
-      store.appendPromptDump({ trace_id: 'tr-b', source: 'subagent', system_prompt: '', messages: [] })
+    const store = new TraceStore(100, dir)
+    const cp = store.getResumableCheckpoint('task-9')
+    expect(cp).toBeDefined()
+    expect(cp!.checkpoint.messages).toHaveLength(1)
+    const today = new Date().toISOString().slice(0, 10)
+    expect(fs.existsSync(path.join(dir, `traces-${today}.jsonl`))).toBe(false)
 
-      const todayStr = new Date().toISOString().slice(0, 10)
-      const lines = fs.readFileSync(path.join(dir, `prompts-${todayStr}.jsonl`), 'utf-8').trim().split('\n')
-      expect(lines.length).toBe(2)
-      expect(JSON.parse(lines[0]).trace_id).toBe('tr-a')
-      expect(JSON.parse(lines[1]).trace_id).toBe('tr-b')
-    } finally {
-      fs.rmSync(dir, { recursive: true })
-    }
-  })
-
-  it('no-op when persistDir is not configured', () => {
-    const store = new TraceStore(10)
-    // Should not throw
-    store.appendPromptDump({ trace_id: 'tr-x', source: 'worker', system_prompt: '', messages: [] })
+    fs.rmSync(dir, { recursive: true, force: true })
   })
 })
 
@@ -788,5 +650,17 @@ describe('TraceStore getSpansAtDepth', () => {
     const result = store.getSpansAtDepth(trace.trace_id, { parent_span_id: loopSpan.span_id })
     expect(result.spans).toHaveLength(2)
     expect(result.spans.map(s => s.span_id)).toEqual([llm1.span_id, llm2.span_id])
+  })
+})
+
+describe('prompts 退役', () => {
+  it('TraceStore 不再暴露 appendPromptDump', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-prompts-retire-'))
+    try {
+      const store = new TraceStore(100, dir)
+      expect((store as unknown as Record<string, unknown>).appendPromptDump).toBeUndefined()
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

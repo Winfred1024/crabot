@@ -14,6 +14,7 @@ import type {
   TaskId,
   ScheduleId,
 } from 'crabot-shared'
+import type { EngineMessage, EngineMessagesRef } from './engine/types.js'
 
 // ============================================================================
 // 配置
@@ -752,6 +753,16 @@ export interface ExecuteTaskParams {
     }
   }
   context: WorkerAgentContext
+  /**
+   * 无损 resume：从 ResumeCheckpoint 重建 worker loop 初始状态。
+   * 存在时：首轮 initialMessages = [...initialMessages, wakeupMessage]；
+   * todoStore 和 goalRevisionUnlocked 从此处恢复，而非空初始化。
+   */
+  resumeFrom?: {
+    initialMessages: import('./engine/types.js').EngineMessage[]
+    todoItems: import('./agent/worker-todo-store.js').TodoItem[]
+    goalRevisionUnlocked?: boolean
+  }
 }
 
 export interface DeliverHumanResponseParams {
@@ -788,6 +799,16 @@ export interface WorkerTaskState {
   taskOrigin?: TaskOrigin
   /** Per-task mutable todo plan store; created on task start, dropped on cleanup. */
   todoStore: import('./agent/worker-todo-store.js').TodoStore
+  /**
+   * engine 每轮刷新的对话快照引用。runWorkerLoop 创建后写入，onStop 补 flush 用。
+   * undefined = loop 还未启动（不应发生）或已清理。
+   */
+  messagesRef?: EngineMessagesRef
+  /**
+   * 本 worker loop 对应的 trace id。runWorkerLoop 开始后写入，onStop 补 flush 用。
+   * undefined = loop 还未启动或已清理。
+   */
+  activeTraceId?: string
   /**
    * "改目标券"：人类 supplement 到达时置 true（上限 1，不叠加）。
    * set_task_goal 重设已有 goal 时消费它——没券不许 worker 自改目标（反 specification-gaming）。
@@ -951,6 +972,8 @@ export interface LlmCallDetails {
   /** 1-indexed；存在表示本轮由"沉默 end_turn 追问"机制触发 */
   forced_summary_attempt?: number
   usage?: TokenUsage
+  /** 该 turn 结束时 messages[] 的长度，供 trace UI 把 span 映射到 messages 切片。 */
+  message_count_after?: number
 }
 
 export interface ToolCallDetails {
@@ -1077,6 +1100,24 @@ export interface AgentSpan {
   details: AgentSpanDetails
 }
 
+/** worker trace 上的 resume 快照（仅 trigger.type==='task' 的 worker trace 填）。 */
+export interface WorkerStateSnapshot {
+  /** todoStore 序列化（就地 merge 无法从 messages 重建） */
+  todo_items: import('./agent/worker-todo-store.js').TodoItem[]
+  /** 改目标券是否已解锁（可选，丢了顶多改目标被门控一次） */
+  goal_revision_unlocked?: boolean
+}
+
+export interface ResumeCheckpoint {
+  /** agent 构建版本，upgrade 不匹配时拒绝 resume */
+  agent_version: string
+  /** 调试展示用；resume 时现重建、不回放 */
+  system_prompt: string
+  /** 累积快照（latest-wins，干净 turn 边界） */
+  messages: EngineMessage[]
+  worker_state: WorkerStateSnapshot
+}
+
 export interface AgentTrace {
   trace_id: string
   parent_trace_id?: string
@@ -1105,6 +1146,8 @@ export interface AgentTrace {
   }
   /** trace 结束时由 trace-store 从所有 llm_call span 聚合得出 */
   total_usage?: TokenUsage
+  /** worker resume 快照；per-turn 覆盖写，仅 worker trace 有。 */
+  resume_checkpoint?: ResumeCheckpoint
 }
 
 export interface TraceCallback {
@@ -1119,7 +1162,7 @@ export interface TraceCallback {
   /** `startedAtMs`/`endedAtMs` back-date spans for post-hoc callers (e.g.
    * agent-handler's onTurn fires after the LLM call already completed). */
   onLlmCallStart(iteration: number, inputSummary: string, attempt?: number, startedAtMs?: number): string
-  onLlmCallEnd(spanId: string, result: { stopReason?: string; outputSummary?: string; toolCallsCount?: number; fullInput?: string; fullOutput?: string; error?: string; forcedSummaryAttempt?: number; usage?: TokenUsage }, endedAtMs?: number): void
+  onLlmCallEnd(spanId: string, result: { stopReason?: string; outputSummary?: string; toolCallsCount?: number; error?: string; forcedSummaryAttempt?: number; usage?: TokenUsage; messageCountAfter?: number }, endedAtMs?: number): void
   onToolCallStart(toolName: string, inputSummary: string, startedAtMs?: number): string
   /**
    * `childTraceId` 标识由本次工具调用派生出的子 trace（如 `delegate_task` 派 subagent）。
