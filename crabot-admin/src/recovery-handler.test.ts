@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildRecoveryTask, cleanupStaleInflightTasks, isAgentRestartStale } from './recovery-handler.js'
+import { buildRecoveryTask, cleanupStaleInflightTasks, isAgentRestartStale, partitionResumeResults } from './recovery-handler.js'
 import type { Task, TaskStatus } from './types.js'
 import { assertTaskInvariants } from './task-state-machine.js'
 
@@ -144,5 +144,42 @@ describe('isAgentRestartStale', () => {
     expect(isAgentRestartStale('completed')).toBe(false)
     expect(isAgentRestartStale('failed')).toBe(false)
     expect(isAgentRestartStale('cancelled')).toBe(false)
+  })
+})
+
+describe('partitionResumeResults', () => {
+  const t = (id: string) => ({ id, status: 'executing', tags: [] } as unknown as Task)
+
+  it('按 resumed 分流', () => {
+    const r = partitionResumeResults([
+      { task: t('a'), resumed: true },
+      { task: t('b'), resumed: false },
+    ])
+    expect(r.resumed.map((x) => x.id)).toEqual(['a'])
+    expect(r.needRecovery.map((x) => x.id)).toEqual(['b'])
+  })
+
+  it('全部 resumed', () => {
+    const r = partitionResumeResults([
+      { task: t('x'), resumed: true },
+      { task: t('y'), resumed: true },
+    ])
+    expect(r.resumed.map((x) => x.id)).toEqual(['x', 'y'])
+    expect(r.needRecovery).toHaveLength(0)
+  })
+
+  it('全部 needRecovery', () => {
+    const r = partitionResumeResults([
+      { task: t('p'), resumed: false },
+      { task: t('q'), resumed: false },
+    ])
+    expect(r.resumed).toHaveLength(0)
+    expect(r.needRecovery.map((x) => x.id)).toEqual(['p', 'q'])
+  })
+
+  it('空输入返回两个空数组', () => {
+    const r = partitionResumeResults([])
+    expect(r.resumed).toHaveLength(0)
+    expect(r.needRecovery).toHaveLength(0)
   })
 })

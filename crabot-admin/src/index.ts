@@ -196,7 +196,7 @@ import {
 } from './onboarding-master.js'
 import type { Onboarder } from 'crabot-shared'
 import { tailLogFile } from './module-log-tail.js'
-import { buildRecoveryTask, cleanupStaleInflightTasks, isAgentRestartStale } from './recovery-handler.js'
+import { buildRecoveryTask, cleanupStaleInflightTasks, isAgentRestartStale, partitionResumeResults } from './recovery-handler.js'
 import {
   VALID_TRANSITIONS,
   applyDerivedFields,
@@ -4559,35 +4559,58 @@ export class AdminModule extends ModuleBase {
   private async runSelfHealingForAgentRestart(restartCount: number): Promise<void> {
     if (restartCount <= 0) return
 
-    // agent 重启后内存里的 worker loop 全部销毁：executing / waiting（等 async 子 agent）/
-    // waiting_human（等人类回复但已无 loop 接收，详见 isAgentRestartStale）一律算僵尸，标 failed。
+    // agent 重启后内存里的 worker loop 全部销毁：executing / waiting / waiting_human 一律算僵尸。
     const inFlight = Array.from(this.tasks.values()).filter((t) => isAgentRestartStale(t.status))
     if (inFlight.length === 0) return
 
-    const interrupted = inFlight.filter((t) => !t.tags.includes('recovery'))
+    // 1. 先尝试无损 resume（仅非 recovery task；recovery 自身不 resume，防雪崩）
+    const candidates = inFlight.filter((t) => !t.tags.includes('recovery'))
+    const results: { task: Task; resumed: boolean }[] = []
+    for (const t of candidates) {
+      let resumed = false
+      try {
+        const r = await this.callAgentRpc<{ task_id: string }, { resumed?: boolean }>(
+          'resume_task',
+          { task_id: t.id },
+        )
+        resumed = r?.resumed === true
+      } catch (err) {
+        console.warn(`[Admin] Self-healing: resume_task ${t.id} RPC failed: ${(err as Error).message}`)
+      }
+      results.push({ task: t, resumed })
+    }
+    const { resumed, needRecovery } = partitionResumeResults(results)
+    if (resumed.length > 0) {
+      console.log(
+        `[Admin] Self-healing: resumed ${resumed.length} task(s): ${resumed.map((t) => t.id).join(', ')}`,
+      )
+      // resumed 的保持 executing（agent 已接管），不动状态
+    }
 
-    // 1. 把所有 in-flight 任务（含 recovery 自身）置 failed
-    for (const t of inFlight) {
+    // 2. 不能 resume 的（含 recovery 自身）→ 标 failed
+    const toFail = [...needRecovery, ...inFlight.filter((t) => t.tags.includes('recovery'))]
+    for (const t of toFail) {
       this.applyStatusTransition(t, 'failed', { error: 'agent_restarted_during_execution' })
     }
-    console.log(`[Admin] Self-healing: marked ${inFlight.length} task(s) as failed (incl. ${inFlight.length - interrupted.length} recovery task)`)
+    if (toFail.length > 0) {
+      console.log(`[Admin] Self-healing: marked ${toFail.length} task(s) as failed`)
+    }
 
+    // 3. 对 needRecovery 走旧兜底（buildRecoveryTask 内部已跳过 recovery 标签的）
     const now = generateTimestamp()
-
-    // 2. 生成 recovery 任务（防雪崩：跳过自身就是 recovery 的）
-    const params = buildRecoveryTask(interrupted, restartCount, now)
+    const params = buildRecoveryTask(needRecovery, restartCount, now)
     if (params) {
       const { task } = await this.handleCreateTask(params)
-      console.log(`[Admin] Self-healing: created recovery task ${task.id} for ${interrupted.length} interrupted task(s)`)
-
-      // 3. RPC 推 agent 立即开跑（照 schedule 路径：admin 主动 push，不依赖事件订阅）。
-      // 历史 bug：agent 没订 admin.task_created，单靠 handleCreateTask 的 publishAdminEvent
-      // 不会让 task 跑起来——recovery 永远停在 pending，自愈机制半失败。
+      console.log(
+        `[Admin] Self-healing: created recovery task ${task.id} for ${needRecovery.length} non-resumable task(s)`,
+      )
       this.callAgentRpc('start_recovery_task', { task_id: task.id })
-        .then(() => console.log(`[Admin] Self-healing: recovery task ${task.id} dispatched to agent`))
-        .catch((err: Error) => console.warn(`[Admin] Self-healing: start_recovery_task RPC failed for ${task.id}: ${err.message}`))
+        .then(() => console.log(`[Admin] Self-healing: recovery task ${task.id} dispatched`))
+        .catch((err: Error) =>
+          console.warn(`[Admin] Self-healing: start_recovery_task failed: ${(err as Error).message}`),
+        )
     } else {
-      console.log(`[Admin] Self-healing: no recovery task needed (no non-recovery interrupted tasks)`)
+      console.log(`[Admin] Self-healing: no recovery task needed`)
     }
 
     // 4. 持久化任务变更

@@ -67,6 +67,20 @@ export function isAgentRestartStale(status: TaskStatus): boolean {
 }
 
 /**
+ * 把 resume_task RPC 的结果按「成功 resume / 需要走 recovery 兜底」分流。
+ *
+ * 纯函数，方便单元测试。由 runSelfHealingForAgentRestart 调用。
+ */
+export function partitionResumeResults(
+  results: ReadonlyArray<{ task: Task; resumed: boolean }>,
+): { resumed: Task[]; needRecovery: Task[] } {
+  const resumed: Task[] = []
+  const needRecovery: Task[] = []
+  for (const r of results) (r.resumed ? resumed : needRecovery).push(r.task)
+  return { resumed, needRecovery }
+}
+
+/**
  * 构造 recovery 任务参数。
  *
  * @param executingTasks 当前所有 status=executing 的任务（含 recovery 标签的）
