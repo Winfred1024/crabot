@@ -778,6 +778,29 @@ describe('flushWorkerCheckpoint', () => {
   })
 })
 
+describe('loadResumableCheckpoints', () => {
+  it('启动时把 per-task running 文件读进可 resume 集合，不写日期文件', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tracestore-'))
+    const trace = {
+      trace_id: 'tr-1', module_id: 'agent-1', started_at: new Date(0).toISOString(),
+      status: 'running', trigger: { type: 'task', summary: 't' }, related_task_id: 'task-9',
+      spans: [],
+      resume_checkpoint: { agent_version: '1.0.0', system_prompt: 'SP',
+        messages: [{ id: 'm1', role: 'user', content: 'hi', timestamp: 1 }], worker_state: { todo_items: [] } },
+    }
+    fs.writeFileSync(path.join(dir, 'traces-running-task-9.jsonl'), JSON.stringify(trace) + '\n')
+
+    const store = new TraceStore(100, dir)
+    const cp = store.getResumableCheckpoint('task-9')
+    expect(cp).toBeDefined()
+    expect(cp!.checkpoint.messages).toHaveLength(1)
+    const today = new Date().toISOString().slice(0, 10)
+    expect(fs.existsSync(path.join(dir, `traces-${today}.jsonl`))).toBe(false)
+
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+})
+
 describe('TraceStore getSpansAtDepth', () => {
   it('returns top-level spans with children_count', () => {
     const store = new TraceStore(10)

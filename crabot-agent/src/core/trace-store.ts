@@ -71,12 +71,19 @@ export class TraceStore {
   private flushTimer?: ReturnType<typeof setInterval>
   private static readonly RUNNING_FLUSH_FILE = 'traces-running.jsonl'
 
+  // ── Worker checkpoint resume 集合 ──────────────────────
+  // flushWorkerCheckpoint 把 worker trace（含 resume_checkpoint）原子写到
+  // traces-running-<taskId>.jsonl。启动时 loadResumableCheckpoints 把这些文件
+  // 读进此 Map，等 admin 裁决（HOLD，不立即标 failed）。
+  private resumableCheckpoints = new Map<string, { traceId: string; checkpoint: import('../types.js').ResumeCheckpoint }>()
+
   constructor(maxSize = 100, persistDir?: string) {
     this.maxSize = maxSize
     this.persistDir = persistDir
     if (persistDir) {
       fs.mkdirSync(persistDir, { recursive: true })
       this.rebuildIndex()
+      this.loadResumableCheckpoints()
       this.loadRunningTraces()
     }
   }
@@ -122,6 +129,56 @@ export class TraceStore {
     const tmpPath = finalPath + '.tmp'
     fs.writeFileSync(tmpPath, JSON.stringify(trace) + '\n', 'utf-8')
     fs.renameSync(tmpPath, finalPath)
+  }
+
+  getResumableCheckpoint(taskId: string): { traceId: string; checkpoint: import('../types.js').ResumeCheckpoint } | undefined {
+    return this.resumableCheckpoints.get(taskId)
+  }
+
+  /** resume 接管成功后调用：从集合移除并删掉 per-task running 文件。 */
+  consumeResumableCheckpoint(taskId: string): void {
+    this.resumableCheckpoints.delete(taskId)
+    if (!this.persistDir) return
+    const file = path.join(this.persistDir, TraceStore.runningCheckpointFile(taskId))
+    try { if (fs.existsSync(file)) fs.unlinkSync(file) } catch { /* best effort */ }
+  }
+
+  /** admin 放弃 resume 时调用：finalize 成 failed 落日期文件 + 清 running 文件。 */
+  finalizeUnresumedCheckpoint(taskId: string): void {
+    const entry = this.resumableCheckpoints.get(taskId)
+    if (entry) {
+      const trace = this.traces.get(entry.traceId)
+      if (trace && trace.status === 'running') {
+        const now = new Date()
+        trace.status = 'failed'
+        trace.ended_at = now.toISOString()
+        trace.outcome = { summary: '[interrupted: agent restarted, not resumed]' }
+        this.persistTrace(trace)
+      }
+    }
+    this.consumeResumableCheckpoint(taskId)
+  }
+
+  /**
+   * 启动时把 per-task running 文件（traces-running-<taskId>.jsonl）读进
+   * resumableCheckpoints 集合。不修改文件、不写日期文件——等 admin 裁决。
+   */
+  private loadResumableCheckpoints(): void {
+    if (!this.persistDir) return
+    const files = fs.readdirSync(this.persistDir)
+      .filter(f => f.startsWith('traces-running-') && f.endsWith('.jsonl'))
+    for (const file of files) {
+      const taskId = file.slice('traces-running-'.length, -'.jsonl'.length)
+      try {
+        const content = fs.readFileSync(path.join(this.persistDir, file), 'utf-8').trim()
+        if (!content) continue
+        const trace = JSON.parse(content) as import('../types.js').AgentTrace
+        if (!trace.resume_checkpoint) continue
+        this.resumableCheckpoints.set(taskId, { traceId: trace.trace_id, checkpoint: trace.resume_checkpoint })
+        this.traces.set(trace.trace_id, trace)
+        if (!this.order.includes(trace.trace_id)) this.order.push(trace.trace_id)
+      } catch { /* skip malformed */ }
+    }
   }
 
   /**
@@ -187,7 +244,7 @@ export class TraceStore {
       // 字节 offset，不能进 traceIndex（getFullTrace 走 offset 读会乱）。
       // in-flight 由 loadRunningTraces 单独加载到内存 Map。
       const files = fs.readdirSync(this.persistDir)
-        .filter(f => f.startsWith('traces-') && f.endsWith('.jsonl') && f !== TraceStore.RUNNING_FLUSH_FILE)
+        .filter(f => f.startsWith('traces-') && f.endsWith('.jsonl') && f !== TraceStore.RUNNING_FLUSH_FILE && !f.startsWith('traces-running-'))
         .sort()
 
       for (const file of files) {
@@ -635,7 +692,7 @@ export class TraceStore {
       // 显示的"占用"严重低估（prompts-*.jsonl 每天 100-700MB，几天就 GB 级），
       // 用户磁盘满了才察觉。
       const files = fs.readdirSync(this.persistDir)
-        .filter(f => (f.startsWith('traces-') || f.startsWith('prompts-')) && f.endsWith('.jsonl'))
+        .filter(f => (f.startsWith('traces-') || f.startsWith('prompts-')) && f.endsWith('.jsonl') && !f.startsWith('traces-running-'))
       for (const file of files) {
         const stat = fs.statSync(path.join(this.persistDir, file))
         totalBytes += stat.size
@@ -741,8 +798,9 @@ export class TraceStore {
     try {
       // 同时清 traces-YYYY-MM-DD.jsonl 和 prompts-YYYY-MM-DD.jsonl —— 后者是
       // appendPromptDump 写入的 LLM 完整 prompt 拍照，跟 trace 同生命周期。
+      // 排除 traces-running-<taskId>.jsonl（per-task checkpoint 文件，由 consumeResumableCheckpoint/finalizeUnresumedCheckpoint 管理）
       const files = fs.readdirSync(this.persistDir)
-        .filter(f => (f.startsWith('traces-') || f.startsWith('prompts-')) && f.endsWith('.jsonl'))
+        .filter(f => (f.startsWith('traces-') || f.startsWith('prompts-')) && f.endsWith('.jsonl') && !f.startsWith('traces-running-'))
       for (const file of files) {
         const prefix = file.startsWith('traces-') ? 'traces-' : 'prompts-'
         const dateStr = file.slice(prefix.length, prefix.length + 10)
