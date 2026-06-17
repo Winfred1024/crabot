@@ -14,7 +14,7 @@ import type {
   TaskId,
   ScheduleId,
 } from 'crabot-shared'
-import type { EngineMessage } from './engine/types.js'
+import type { EngineMessage, EngineMessagesRef } from './engine/types.js'
 
 // ============================================================================
 // 配置
@@ -790,6 +790,16 @@ export interface WorkerTaskState {
   /** Per-task mutable todo plan store; created on task start, dropped on cleanup. */
   todoStore: import('./agent/worker-todo-store.js').TodoStore
   /**
+   * engine 每轮刷新的对话快照引用。runWorkerLoop 创建后写入，onStop 补 flush 用。
+   * undefined = loop 还未启动（不应发生）或已清理。
+   */
+  messagesRef?: EngineMessagesRef
+  /**
+   * 本 worker loop 对应的 trace id。runWorkerLoop 开始后写入，onStop 补 flush 用。
+   * undefined = loop 还未启动或已清理。
+   */
+  activeTraceId?: string
+  /**
    * "改目标券"：人类 supplement 到达时置 true（上限 1，不叠加）。
    * set_task_goal 重设已有 goal 时消费它——没券不许 worker 自改目标（反 specification-gaming）。
    */
@@ -1142,7 +1152,7 @@ export interface TraceCallback {
   /** `startedAtMs`/`endedAtMs` back-date spans for post-hoc callers (e.g.
    * agent-handler's onTurn fires after the LLM call already completed). */
   onLlmCallStart(iteration: number, inputSummary: string, attempt?: number, startedAtMs?: number): string
-  onLlmCallEnd(spanId: string, result: { stopReason?: string; outputSummary?: string; toolCallsCount?: number; fullInput?: string; fullOutput?: string; error?: string; forcedSummaryAttempt?: number; usage?: TokenUsage }, endedAtMs?: number): void
+  onLlmCallEnd(spanId: string, result: { stopReason?: string; outputSummary?: string; toolCallsCount?: number; error?: string; forcedSummaryAttempt?: number; usage?: TokenUsage; messageCountAfter?: number }, endedAtMs?: number): void
   onToolCallStart(toolName: string, inputSummary: string, startedAtMs?: number): string
   /**
    * `childTraceId` 标识由本次工具调用派生出的子 trace（如 `delegate_task` 派 subagent）。

@@ -115,6 +115,7 @@ import { createAsyncAuditEndTurnGate } from './end-turn-gate.js'
 import { buildAuditAbortedMarker } from './audit-result-marker.js'
 
 import { reflectStructuredOutcome } from '../orchestration/structured-outcome-reflector.js'
+import { AGENT_VERSION } from '../constants.js'
 
 import * as fs from 'fs'
 import * as path from 'path'
@@ -468,6 +469,8 @@ export class AgentHandler {
   private readonly bgCursorMap = new Map<string, number>()
   /** AbortControllers for running bg sub-agents (key=entity_id); shared with BgToolDeps + SubAgentBgContext */
   private readonly agentAbortControllers = new Map<string, AbortController>()
+  /** resume checkpoint 用：per-task traceStore 引用（与 traceContext.traceStore 同引用，onStop 补 flush 用） */
+  private readonly taskTraceStores = new Map<TaskId, import('../core/trace-store').TraceStore>()
   /** updateSkills 防抖去重 —— 同 admin 重复推同样的 skills 列表跳过赋值 */
   private lastSkillsHash: string = ''
   /**
@@ -1274,6 +1277,13 @@ export class AgentHandler {
       // 总是创建：即使本任务不启用 digest（silent / text_forward），engine 维护
       // 它无副作用，留出钩子方便日后其他 observer 复用。
       const messagesRef: EngineMessagesRef = { current: [] }
+      // resume checkpoint 用：让 onStop（优雅停机）能通过 taskState 拿到最新快照。
+      taskState.messagesRef = messagesRef
+      // traceId 存 taskState + traceStore 存 Map，供 flushActiveCheckpoints（onStop 路径）补 flush。
+      if (traceContext) {
+        taskState.activeTraceId = traceContext.traceId
+        this.taskTraceStores.set(task.task_id, traceContext.traceStore)
+      }
 
       // 创建进度汇报（根据会话场景分支）
       let textForwardMode = false
@@ -1604,6 +1614,7 @@ export class AgentHandler {
                   toolCallsCount: event.toolCalls.length > 0 ? event.toolCalls.length : undefined,
                   ...(event.forcedSummaryAttempt !== undefined ? { forcedSummaryAttempt: event.forcedSummaryAttempt } : {}),
                   ...(event.usage ? { usage: llmUsageToTrace(event.usage) } : {}),
+                  messageCountAfter: messagesRef.current.length,
                 },
                 llmEndedAtMs,
               )
@@ -1640,6 +1651,21 @@ export class AgentHandler {
               }
             }
 
+            // resume checkpoint：每 turn 结束时原子落盘（干净 turn 边界）。
+            // traceContext.traceId 是本 worker loop 的 trace id（由 unified-agent 在
+            // startTrace 后传入）。仅 worker trace 有 traceContext，front 路径无。
+            if (traceContext && task.task_id) {
+              traceContext.traceStore.flushWorkerCheckpoint(task.task_id, traceContext.traceId, {
+                agent_version: AGENT_VERSION,
+                system_prompt: messagesRef.systemPrompt ?? '',
+                messages: messagesRef.current.slice() as import('../engine/types.js').EngineMessage[],
+                worker_state: {
+                  todo_items: [...taskState.todoStore.list()],
+                  goal_revision_unlocked: taskState.goalRevisionUnlocked,
+                },
+              })
+            }
+
             // Caller hook: trigger flow uses this to detect send_message
             opts?.onAfterTurn?.(event)
           },
@@ -1670,6 +1696,7 @@ export class AgentHandler {
         this.humanQueues.delete(task.task_id)
         this.activeTasks.delete(task.task_id)
         this.liveSnapshots.delete(task.task_id)
+        this.taskTraceStores.delete(task.task_id)
         // Kill all transient shells owned by this task (persistent shells survive)
         this.transientShells.killAllOwnedBy(task.task_id)
         // Clean up cursor map entries for this task to avoid memory leak
@@ -1691,6 +1718,7 @@ export class AgentHandler {
     this.humanQueues.delete(taskId)
     this.activeTasks.delete(taskId)
     this.liveSnapshots.delete(taskId)
+    this.taskTraceStores.delete(taskId)
     this.transientShells.killAllOwnedBy(taskId)
     for (const key of this.bgCursorMap.keys()) {
       if (key.startsWith(`${taskId}:`)) {
@@ -2562,6 +2590,35 @@ export class AgentHandler {
     const taskState = this.activeTasks.get(taskId)
     if (taskState) {
       taskState.abortController.abort()
+    }
+  }
+
+  /**
+   * 优雅停机时对所有活跃 worker task 补一次 resume checkpoint flush。
+   * 覆盖 per-turn flush 的"最后一 turn 到 onStop 之间的窗口"，让 crabot stop 场景也无损。
+   * 由 UnifiedAgent.onStop 调用。
+   */
+  flushActiveCheckpoints(): void {
+    for (const [taskId, taskState] of this.activeTasks) {
+      const traceId = taskState.activeTraceId
+      const traceStore = this.taskTraceStores.get(taskId)
+      const messagesRef = taskState.messagesRef
+      if (!traceId || !traceStore || !messagesRef) continue
+      try {
+        traceStore.flushWorkerCheckpoint(taskId, traceId, {
+          agent_version: AGENT_VERSION,
+          system_prompt: messagesRef.systemPrompt ?? '',
+          messages: messagesRef.current.slice() as import('../engine/types.js').EngineMessage[],
+          worker_state: {
+            todo_items: [...taskState.todoStore.list()],
+            goal_revision_unlocked: taskState.goalRevisionUnlocked,
+          },
+        })
+      } catch (err) {
+        // best-effort，停机路径不抛
+        const msg = err instanceof Error ? err.message : String(err)
+        log(`[flushActiveCheckpoints] task=${taskId} failed (non-fatal): ${msg}`)
+      }
     }
   }
 

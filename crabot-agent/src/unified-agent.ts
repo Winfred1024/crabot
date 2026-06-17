@@ -2418,7 +2418,7 @@ export class UnifiedAgent extends ModuleBase {
         return span.span_id
       },
 
-      onLlmCallEnd(spanId: string, result: { stopReason?: string; outputSummary?: string; toolCallsCount?: number; fullInput?: string; fullOutput?: string; error?: string; forcedSummaryAttempt?: number }, endedAtMs?: number): void {
+      onLlmCallEnd(spanId: string, result: { stopReason?: string; outputSummary?: string; toolCallsCount?: number; error?: string; forcedSummaryAttempt?: number; usage?: import('./types.js').TokenUsage; messageCountAfter?: number }, endedAtMs?: number): void {
         store.endSpan(
           traceId,
           spanId,
@@ -2427,9 +2427,9 @@ export class UnifiedAgent extends ModuleBase {
             stop_reason: result.stopReason,
             output_summary: redactSecrets(result.error ?? result.outputSummary ?? '', secrets),
             tool_calls_count: result.toolCallsCount,
-            full_input: result.fullInput ? redactSecrets(result.fullInput, secrets) : undefined,
-            full_output: result.fullOutput ? redactSecrets(result.fullOutput, secrets) : undefined,
             forced_summary_attempt: result.forcedSummaryAttempt,
+            ...(result.usage ? { usage: result.usage } : {}),
+            ...(result.messageCountAfter !== undefined ? { message_count_after: result.messageCountAfter } : {}),
           } as Partial<import('./types.js').LlmCallDetails>,
           endedAtMs,
         )
@@ -2720,6 +2720,10 @@ export class UnifiedAgent extends ModuleBase {
   }
 
   protected override async onStop(): Promise<void> {
+    // 优雅停机前补一次所有活跃 worker task 的 resume checkpoint flush，
+    // 让 crabot stop 场景的停机窗口（最后一 turn 到进程退出之间）也无损。
+    this.agentHandler?.flushActiveCheckpoints()
+
     this.sessionManager.stopCleanup()
     this.attentionScheduler.stopAll()
     this.traceStore.stopFlushTimer()
