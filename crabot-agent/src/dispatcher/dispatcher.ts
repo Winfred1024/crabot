@@ -29,8 +29,7 @@ export interface DispatchDeps {
   readonly trace?: DispatchTraceCallback
   /**
    * 每次 LLM 调用前的完整 prompt 拍照回调（可选）。注入后 dispatch() 在每次 attempt
-   * 调 LLM 前把 systemPrompt + userMessage 落到 prompts-*.jsonl（trace_id / source
-   * 由 caller 闭包带）。仅用于 debug。
+   * 调 LLM 前把 systemPrompt + messages 暴露给 caller。仅用于 debug。
    */
   readonly dumpPrompt?: (record: {
     span_id?: string
