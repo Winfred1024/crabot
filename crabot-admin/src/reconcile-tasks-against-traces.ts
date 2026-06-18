@@ -14,7 +14,7 @@
  *
  * 修复策略：检测到"task 仍活跃 + 所有 trace 终态 + 距上次更新 > minStaleAgeMs"时，
  * 按 trace.outcome 决定切 completed/failed。reconciliation 不修 status=pending 的 task
- * （刚创建还没起 worker 的，留给 cleanupStaleInflightTasks 路径处理）。
+ * （刚创建还没起 worker 的，留给 dispatcher 重新调度）。
  */
 
 import type { Task, TaskStatus } from './types.js'
@@ -87,7 +87,6 @@ export async function reconcileTasksAgainstTraces(input: ReconcileInput): Promis
     }
 
     // 无 trace：可能是 task 刚建还没 spawn 第一条 trace。保守跳过。
-    // （注：cleanupStaleInflightTasks 在 admin 启动期处理 pending 僵尸，这里不抢它的活）
     if (traces.length === 0) continue
 
     // 任一 trace 仍 running → task 真在跑，不对账

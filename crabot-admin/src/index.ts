@@ -196,7 +196,7 @@ import {
 } from './onboarding-master.js'
 import type { Onboarder } from 'crabot-shared'
 import { tailLogFile } from './module-log-tail.js'
-import { buildRecoveryTask, cleanupStaleInflightTasks, isAgentRestartStale, partitionResumeResults } from './recovery-handler.js'
+import { buildRecoveryTask, isResumableInflightStatus, partitionResumeResults } from './recovery-handler.js'
 import {
   VALID_TRANSITIONS,
   applyDerivedFields,
@@ -670,9 +670,17 @@ export class AdminModule extends ModuleBase {
     // 加载数据（filePath 已在 constructor 初始化）
     await this.loadData()
     this.dataLoaded = true
-
-    // loadData 内对 in-flight 任务做了 failed 清扫；落盘以免下次启动重复清扫已经 failed 的同一条
     await this.saveTasks()
+
+    // Resume sweep 兜底触发：若 agent 的 module_started 在 dataLoaded 之前就到了（被守卫跳过），
+    // 这里补一次。仅当 agent 已就绪（agentPort 已写）才跑——否则 RPC 会失败、把 in-flight 误判
+    // 成 needRecovery；agent 没起来就等它的 module_started 事件触发。sweep 幂等（worker-alive +
+    // checkpoint 守卫），与事件触发重复执行也安全。
+    if (this.agentPort) {
+      this.sweepInterruptedTasksForResume(0).catch((err: Error) => {
+        console.warn(`[Admin] Resume sweep (post-loadData) failed: ${err.message}`)
+      })
+    }
 
     // 初始化系统权限模板
     await this.initSystemTemplates()
@@ -898,9 +906,10 @@ export class AdminModule extends ModuleBase {
             console.warn(`[Admin] Failed to push config to ${module_id}:`, err.message)
           })
 
-          // Self-healing：扫 in-flight 任务标 failed + 生成 recovery 任务
-          this.runSelfHealingForAgentRestart(restartCount).catch((err: Error) => {
-            console.warn(`[Admin] Self-healing for ${module_id} failed: ${err.message}`)
+          // Resume sweep：agent 一就绪即对所有 in-flight 任务尝试无损 resume，
+          // 失败的才标 failed + 生成 recovery 兜底。**任何 restart_count 都跑**（含完整重启=0）。
+          this.sweepInterruptedTasksForResume(restartCount).catch((err: Error) => {
+            console.warn(`[Admin] Resume sweep for ${module_id} failed: ${err.message}`)
           })
         }
         // 新启动的模块推送代理配置
@@ -4024,18 +4033,18 @@ export class AdminModule extends ModuleBase {
       console.log('[Admin] No existing schedules data')
     }
 
-    // Task 加载 + 重启清扫：admin 重启时 pending/planning/executing 一律 failed。
-    // waiting_human 例外保留——admin 重启不代表 agent 也重启，其 worker loop 可能仍活着、
-    // parked 在 humanQueue 上，人类一回复即可 resume（详见 cleanupStaleInflightTasks）。
-    // agent 自己重启的清扫是另一条路径（runSelfHealingForAgentRestart），那里 waiting_human 会被标 failed。
+    // Task 加载：loadData **不再即时把 in-flight 任务标 failed**。
+    // 重启恢复统一交给 resume sweep（sweepInterruptedTasksForResume，agent 一就绪即触发）：
+    // 对所有 in-flight 态尝试无损 resume，失败的才标 failed + 走 recovery 兜底。
+    // 历史：旧的「admin 重启即时标 failed」(cleanupStaleInflightTasks) 会在完整重启时
+    // 抢先把 executing 杀掉，使 resume 永远等不到自己的任务（restart_count=0 那条 bug 根因之一）。
     try {
       const tasksData = await fs.readFile(this.tasksFilePath, 'utf-8')
       const loaded = JSON.parse(tasksData) as Task[]
-      const { tasks: cleaned, staleCount } = cleanupStaleInflightTasks(loaded, generateTimestamp())
 
       // 修正历史脏数据（旧版本绕过 applyStatusTransition 的路径留下的残留字段）
       let repairCount = 0
-      const repairedTasks = cleaned.map((t) => {
+      const repairedTasks = loaded.map((t) => {
         const { task: repaired, fixes } = repairTaskInvariants(t)
         if (fixes.length > 0) {
           repairCount++
@@ -4054,7 +4063,6 @@ export class AdminModule extends ModuleBase {
 
       console.log(
         `[Admin] Loaded ${this.tasks.size} tasks` +
-        (staleCount > 0 ? `, marked ${staleCount} in-flight task(s) failed (admin restart)` : '') +
         (repairCount > 0 ? `, repaired ${repairCount} legacy dirty task(s)` : ''),
       )
     } catch (err) {
@@ -4556,12 +4564,16 @@ export class AdminModule extends ModuleBase {
    *
    * @param restartCount agent 此次启动是第几次（0=首次，不做 self-healing）
    */
-  private async runSelfHealingForAgentRestart(restartCount: number): Promise<void> {
-    if (restartCount <= 0) return
+  private async sweepInterruptedTasksForResume(restartCount: number): Promise<void> {
+    // dataLoaded 未完时（启动早期 module_started 抢跑）跳过——loadData 完成后还有兜底触发。
+    if (!this.dataLoaded) return
 
-    // agent 重启后内存里的 worker loop 全部销毁：executing / waiting / waiting_human 一律算僵尸。
-    const inFlight = Array.from(this.tasks.values()).filter((t) => isAgentRestartStale(t.status))
+    // **不再按 restart_count 门控**：完整重启（restart_count=0，admin+agent 一起重启）是用户
+    // 主场景，必须也走 resume；agent 一就绪即对所有 in-flight 态尝试无损 resume。冷启动无
+    // in-flight 任务时下面 inFlight.length===0 自然 return，安全。restartCount 仅用于日志。
+    const inFlight = Array.from(this.tasks.values()).filter((t) => isResumableInflightStatus(t.status))
     if (inFlight.length === 0) return
+    console.log(`[Admin] Resume sweep: ${inFlight.length} in-flight task(s) to recover (restart_count=${restartCount})`)
 
     // 1. 先尝试无损 resume（仅非 recovery task；recovery 自身不 resume，防雪崩）
     const candidates = inFlight.filter((t) => !t.tags.includes('recovery'))
@@ -4598,7 +4610,7 @@ export class AdminModule extends ModuleBase {
 
     // 3. 对 needRecovery 走旧兜底（buildRecoveryTask 内部已跳过 recovery 标签的）
     const now = generateTimestamp()
-    const params = buildRecoveryTask(needRecovery, restartCount, now)
+    const params = buildRecoveryTask(needRecovery, now)
     if (params) {
       const { task } = await this.handleCreateTask(params)
       console.log(
@@ -4615,6 +4627,12 @@ export class AdminModule extends ModuleBase {
 
     // 4. 持久化任务变更
     await this.saveData()
+
+    // 5. 孤儿 checkpoint 对账：sweep 已对每条 in-flight 任务调过 resume_task（消费或 finalize 了
+    //    它们的 checkpoint）。让 agent 把「仍持有 checkpoint 但不在 in-flight 集」的——即停机期间
+    //    已完结、admin 不再认的——finalize 掉，杜绝 per-task 文件永驻磁盘。best-effort。
+    this.callAgentRpc('finalize_orphan_checkpoints', { keep_task_ids: inFlight.map((t) => t.id) })
+      .catch((err: Error) => console.warn(`[Admin] finalize_orphan_checkpoints failed: ${err.message}`))
   }
 
   private async handleListTasks(params: ListTasksParams): Promise<{ items: Task[]; pagination: { page: number; page_size: number; total_items: number; total_pages: number } }> {

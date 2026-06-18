@@ -437,6 +437,7 @@ export class UnifiedAgent extends ModuleBase {
     this.registerMethod('create_task_from_schedule', this.handleCreateTaskFromSchedule.bind(this))
     this.registerMethod('start_recovery_task', this.handleStartRecoveryTask.bind(this))
     this.registerMethod('resume_task', this.handleResumeTask.bind(this))
+    this.registerMethod('finalize_orphan_checkpoints', this.handleFinalizeOrphanCheckpoints.bind(this))
 
     // Agent 接口
     this.registerMethod('get_role', this.handleGetRole.bind(this))
@@ -1847,8 +1848,35 @@ export class UnifiedAgent extends ModuleBase {
     }
   }
 
+  /**
+   * 对账孤儿 checkpoint：admin resume sweep 跑完后调用，传入它当前所有 in-flight task_id。
+   * agent 把「持有 checkpoint 但不在该集合里」的（admin 已不认、停机期间已完结的）finalize 掉，
+   * 防止 per-task checkpoint 文件永驻磁盘（孤儿泄漏）。
+   */
+  private handleFinalizeOrphanCheckpoints(params: { keep_task_ids: string[] }): { finalized: string[] } {
+    const keep = new Set(params.keep_task_ids ?? [])
+    const finalized: string[] = []
+    for (const taskId of this.traceStore.getResumableTaskIds()) {
+      if (!keep.has(taskId)) {
+        this.traceStore.finalizeUnresumedCheckpoint(taskId)
+        finalized.push(taskId)
+      }
+    }
+    if (finalized.length > 0) {
+      console.log(`[${this.config.moduleId}] finalized ${finalized.length} orphan checkpoint(s)`)
+    }
+    return { finalized }
+  }
+
   private async handleResumeTask(params: { task_id: string }): Promise<{ resumed: boolean; reason?: string }> {
     const { task_id } = params
+
+    // worker-alive 守卫：admin 单独重启时 agent 没重启、worker loop 仍在内存里跑这条 task。
+    // 此时绝不能据 checkpoint 再起第二个 loop（会双重执行 + 双发消息）——直接当作已 resumed。
+    if (this.agentHandler?.hasActiveTask(task_id)) {
+      return { resumed: true }
+    }
+
     const entry = this.traceStore.getResumableCheckpoint(task_id)
     if (!entry) return { resumed: false, reason: 'no_checkpoint' }
 
@@ -1879,12 +1907,15 @@ export class UnifiedAgent extends ModuleBase {
         }
       >(adminPort, 'get_task', { task_id }, this.config.moduleId)
 
-      const workerContext = await this.contextAssembler.assembleScheduledTaskContext()
+      // 基础 context：endpoints / memories / time_windows 等可重新拉取的部分由
+      // assembleScheduledTaskContext 现装配（不存进 checkpoint，避免过期）。
+      const baseContext = await this.contextAssembler.assembleScheduledTaskContext()
 
-      // 从 task.source 重建 task_origin，确保 resumed worker 的消息投递回原会话。
-      // origin='human' 或 'admin_chat' 的任务必有 channel_id / session_id；
-      // origin='system' 的任务无 channel_id → task_origin 保持 undefined（system session 兜底）。
-      const taskOrigin: TaskOrigin | undefined =
+      // 关键：用 checkpoint 里存的「worker 执行上下文子集」覆盖回执行身份/权限/场景，
+      // 让 resumed worker 拿回和原任务一样的工具集 + 投递目标 + report mode。
+      // 缺失（旧 checkpoint）时回退到从 task.source 重建 task_origin（仅修投递，工具仍可能受限）。
+      const wc = entry.checkpoint.worker_context
+      const fallbackOrigin: TaskOrigin | undefined =
         task.source?.channel_id && task.source?.session_id
           ? {
               channel_id: task.source.channel_id as TaskOrigin['channel_id'],
@@ -1895,9 +1926,14 @@ export class UnifiedAgent extends ModuleBase {
             }
           : undefined
 
-      const workerContextWithOrigin: WorkerAgentContext = taskOrigin
-        ? { ...workerContext, task_origin: taskOrigin }
-        : workerContext
+      const resumedContext: WorkerAgentContext = {
+        ...baseContext,
+        ...(wc?.task_origin ?? fallbackOrigin ? { task_origin: wc?.task_origin ?? fallbackOrigin } : {}),
+        ...(wc?.sender_friend ? { sender_friend: wc.sender_friend } : {}),
+        ...(wc?.memory_permissions ? { memory_permissions: wc.memory_permissions } : {}),
+        ...(wc?.resolved_permissions ? { resolved_permissions: wc.resolved_permissions } : {}),
+        ...(wc?.scene_profile ? { scene_profile: wc.scene_profile } : {}),
+      }
 
       this.scheduledTaskRunner.executeScheduledTaskInBackground(
         {
@@ -1906,7 +1942,7 @@ export class UnifiedAgent extends ModuleBase {
           priority: task.priority,
           plan: task.plan,
         },
-        workerContextWithOrigin,
+        resumedContext,
         {
           resumeFrom: {
             initialMessages: [...entry.checkpoint.messages],

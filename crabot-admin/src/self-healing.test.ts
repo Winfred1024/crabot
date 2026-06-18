@@ -1,8 +1,11 @@
 /**
- * Admin 模块 - runSelfHealingForAgentRestart 端到端行为测试
+ * Admin 模块 - sweepInterruptedTasksForResume 端到端行为测试
  *
- * 验证 self-healing 路径走 applyStatusTransition 后，
- * waiting_human / waiting 任务被标 failed 时不会残留 *_at 字段。
+ * 验证：
+ * 1. resume sweep 走 applyStatusTransition 后，waiting_human / waiting 任务被标 failed
+ *    时不残留 *_at 字段（callAgentRpc 在死 MM 下失败 → resume false → 兜底 failed）。
+ * 2. **完整重启（restart_count=0）也跑 sweep**，且 resume 成功的任务保持 executing 不被误杀
+ *    —— 这是「完整重启 stop/start 不 resume」根因的回归测试。
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
@@ -14,7 +17,7 @@ const TEST_PROTOCOL_PORT = 19821
 const TEST_WEB_PORT = 13021
 const TEST_DATA_DIR = './test-data/admin-self-healing-test'
 
-describe('runSelfHealingForAgentRestart through applyStatusTransition', () => {
+describe('sweepInterruptedTasksForResume through applyStatusTransition', () => {
   let admin: AdminModule
 
   beforeAll(async () => {
@@ -50,7 +53,6 @@ describe('runSelfHealingForAgentRestart through applyStatusTransition', () => {
   })
 
   it('clears waiting_human_at and pending_question when waiting_human → failed', async () => {
-    // 准备：构造一个 waiting_human task
     const { task } = await (admin as any).handleCreateTask({
       title: 't',
       description: 'd',
@@ -65,8 +67,8 @@ describe('runSelfHealingForAgentRestart through applyStatusTransition', () => {
       pending_question: 'q?',
     })
 
-    // 触发 self-healing
-    await (admin as any).runSelfHealingForAgentRestart(1)
+    // 触发 resume sweep（死 MM → resume_task RPC 失败 → 兜底 failed）
+    await (admin as any).sweepInterruptedTasksForResume(1)
 
     const healed = (admin as any).tasks.get(task.id)
     expect(healed.status).toBe('failed')
@@ -88,11 +90,43 @@ describe('runSelfHealingForAgentRestart through applyStatusTransition', () => {
     await (admin as any).handleUpdateTaskStatus({ task_id: task.id, status: 'executing' })
     await (admin as any).handleUpdateTaskStatus({ task_id: task.id, status: 'waiting' })
 
-    await (admin as any).runSelfHealingForAgentRestart(1)
+    await (admin as any).sweepInterruptedTasksForResume(1)
 
     const healed = (admin as any).tasks.get(task.id)
     expect(healed.status).toBe('failed')
     expect(healed.waiting_at).toBeUndefined()
     expect(() => assertTaskInvariants(healed)).not.toThrow()
+  })
+
+  it('完整重启 restart_count=0 也尝试 resume，resumed 任务保持 executing（回归）', async () => {
+    const { task } = await (admin as any).handleCreateTask({
+      title: 't',
+      description: 'd',
+      priority: 'normal',
+      source: { trigger_type: 'manual', origin: 'human' },
+    })
+    await (admin as any).handleUpdateTaskStatus({ task_id: task.id, status: 'planning' })
+    await (admin as any).handleUpdateTaskStatus({ task_id: task.id, status: 'executing' })
+
+    // 桩：记录 resume_task 调用并返回 resumed:true（模拟 agent 成功接管）
+    const calls: Array<{ method: string; params: any }> = []
+    const originalRpc = (admin as any).callAgentRpc.bind(admin)
+    ;(admin as any).callAgentRpc = async (method: string, params: any) => {
+      calls.push({ method, params })
+      if (method === 'resume_task') return { resumed: true }
+      return {}
+    }
+
+    try {
+      // restart_count=0（完整重启）—— 旧实现这里直接 return 空转，resume_task 永不调用
+      await (admin as any).sweepInterruptedTasksForResume(0)
+    } finally {
+      ;(admin as any).callAgentRpc = originalRpc
+    }
+
+    // 核心断言：完整重启下 resume_task 被调用（不再空转）
+    expect(calls.some((c) => c.method === 'resume_task' && c.params.task_id === task.id)).toBe(true)
+    // resumed 成功 → 任务保持 executing，不被标 failed
+    expect((admin as any).tasks.get(task.id).status).toBe('executing')
   })
 })
