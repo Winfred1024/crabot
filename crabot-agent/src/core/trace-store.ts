@@ -648,7 +648,11 @@ export class TraceStore {
           fronts.push(t)
           break
         case 'task':
-          worker = t
+          // 一个 task 可能有多条 worker trace（resume 后旧 trace 被接管、另起新 trace）。
+          // traces 已按 started_at DESC 排序——取最新那条；若更老的那条仍 running（罕见边界），
+          // 优先 running。这样 UI「当前」显示的是真正在跑的 resumed run，而非被接管的旧 trace。
+          if (!worker) worker = t
+          else if (t.status === 'running' && worker.status !== 'running') worker = t
           break
         case 'sub_agent_call':
           subagents.push(t)
