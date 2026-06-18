@@ -61,6 +61,11 @@ function buildAdmin(deps: {
       throw new Error('no global llm')
     },
   }
+  // subagents 现也由 get_agent_config 下发（buildSubAgentConfigsForPush 调 subAgentManager）；
+  // 本测试只验 mcp/skills，stub 成无 enabled subagent 即可。
+  admin.subAgentManager = {
+    listEnabled: () => [],
+  }
   admin.config = { moduleId: 'test-admin' }
   return admin
 }

@@ -6743,6 +6743,12 @@ export class AdminModule extends ModuleBase {
       return agentConfig
     })
 
+    // subagents：startup pull 时就带上（与 pushConfigToAgentModules 同源 buildSubAgentConfigsForPush）。
+    // 历史 bug：subagents 只走 push 不走 get_agent_config → agent 启动时 this.subAgents 为空，
+    // worker loop 在 push 送达前 snapshot 就拿到空列表 → goal 审计找不到 builtin-goal-auditor →
+    // end-turn gate fail open → goal 任务没满足目标就被放完成。startup 就带上从根上消除该 race。
+    const subagents = await this.buildSubAgentConfigsForPush(config, resolvedModelConfig)
+
     return {
       config: {
         ...config,
@@ -6763,6 +6769,7 @@ export class AdminModule extends ModuleBase {
             return true
           })
           .map((s) => this.skillManager.toAgentConfig(s)),
+        subagents,
       },
     }
   }
