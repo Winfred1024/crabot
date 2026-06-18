@@ -1754,6 +1754,10 @@ export class AgentHandler {
    * 由 executeTask 等待循环结束后调用。
    */
   private cleanupWorkerLoopResources(taskId: string): void {
+    // worker loop 终结 → 删 per-task checkpoint 文件，避免它作为孤儿留盘：
+    // 否则下次重启会被当 in-flight 处理（已完成的 trace 被 orphan 对账误标 failed）。
+    // 必须在删 taskTraceStores 之前取到 store。
+    this.taskTraceStores.get(taskId)?.clearCheckpointFile(taskId)
     this.humanQueues.get(taskId)?.clearBarrier()
     this.humanQueues.delete(taskId)
     this.activeTasks.delete(taskId)

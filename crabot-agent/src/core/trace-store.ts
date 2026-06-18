@@ -140,6 +140,21 @@ export class TraceStore {
     return Array.from(this.resumableCheckpoints.keys())
   }
 
+  /**
+   * worker loop 终结（completed/failed）时调用：删 per-task running 文件 + 移除可 resume 集合项。
+   * **不** finalize/改任何 trace（trace 由 handleExecuteTask 的 endTrace 正常收尾）。
+   *
+   * 关键：不在 worker 结束时删这个文件，已完成任务的 checkpoint 就成孤儿——下次重启
+   * loadResumableCheckpoints 把它（文件里 status 仍是 running）当 in-flight 载入，orphan
+   * 对账再把这条**已完成**的 trace 误标 failed。
+   */
+  clearCheckpointFile(taskId: string): void {
+    this.resumableCheckpoints.delete(taskId)
+    if (!this.persistDir) return
+    const file = path.join(this.persistDir, TraceStore.runningCheckpointFile(taskId))
+    try { if (fs.existsSync(file)) fs.unlinkSync(file) } catch { /* best effort */ }
+  }
+
   /** resume 接管成功后调用：finalize 旧（重启前）trace + 从集合移除 + 删 per-task 文件。 */
   consumeResumableCheckpoint(taskId: string): void {
     // finalize 旧 trace（loadResumableCheckpoints 载入、loadRunningTraces 跳过留下的、status=running）。
