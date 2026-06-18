@@ -1596,6 +1596,8 @@ export interface AgentInstanceConfig {
 /** Agent 实例配置的解析后格式（RPC 返回给 Agent，model_config 已从引用解析为连接信息） */
 export interface ResolvedAgentConfig extends Omit<AgentInstanceConfig, 'model_config'> {
   model_config: Record<string, LLMConnectionInfo>
+  /** startup pull 时一并下发已解析的 subagents（与 push 同源），避免 agent 启动期 subagents 空窗 */
+  subagents?: SubAgentConfig[]
 }
 
 // Agent 实现管理 API 参数类型
