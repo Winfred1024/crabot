@@ -233,7 +233,13 @@ export const AgentConfig: React.FC = () => {
           onChange={(e) => setConfig((prev) => ({ ...prev, system_prompt: e.target.value }))}
           rows={4}
           style={{ minHeight: '80px' }}
-          placeholder="例如：你是一个专业友善的客服助手，帮助用户解决售后问题。回答时请保持简洁、耐心..."
+          placeholder={`例如：你是 XX 团队的 AI 助理，专业可靠、语气温暖；该直言时坦诚提出不同看法，但始终带着善意。
+
+表达偏好（按需删改）：
+· 默认自然口语，少用要点 / 加粗 / 标题，能一段话讲清就不分点
+· 简单问题简短答，几句话即可；内容确实多面才用列表
+· 拒绝或坏消息不要用要点罗列，把话说得软一些
+· 出错就直接承认并改正，不必反复道歉；做完不邀功、不说"还有什么可以帮您"之类的客套`}
         />
         <div style={{ marginTop: '0.875rem' }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem', marginBottom: '0.25rem' }}>
