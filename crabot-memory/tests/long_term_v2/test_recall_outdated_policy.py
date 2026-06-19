@@ -1,4 +1,6 @@
 """P1: 召回过时 honor 测试。"""
+import asyncio
+
 from src.long_term_v2.schema import (
     MemoryEntry, MemoryFrontmatter, SourceRef, ImportanceFactors,
 )
@@ -131,3 +133,33 @@ def test_policy_include_outdated_passes_through():
     cands = [{"id": "m2", "maturity": "stale", "invalidated_by": None, "score": 0.9}]
     out = p._apply_outdated_policy(cands, include_outdated=True)
     assert [c["id"] for c in out] == ["m2"]
+
+
+class _SpyPipeline:
+    def __init__(self):
+        self.captured = None
+
+    async def recall(self, **kwargs):
+        self.captured = kwargs
+        return []
+
+
+def test_search_long_term_forwards_include_outdated():
+    from src.long_term_v2.rpc import LongTermV2Rpc
+
+    rpc = LongTermV2Rpc.__new__(LongTermV2Rpc)
+    rpc.pipeline = _SpyPipeline()
+    rpc.index = _FakeIndex({})
+    rpc.store = _FakeStore({})
+    asyncio.run(rpc.search_long_term({"query": "q", "include_outdated": True}))
+    assert rpc.pipeline.captured["include_outdated"] is True
+
+
+def test_search_long_term_defaults_include_outdated_false():
+    from src.long_term_v2.rpc import LongTermV2Rpc
+    rpc = LongTermV2Rpc.__new__(LongTermV2Rpc)
+    rpc.pipeline = _SpyPipeline()
+    rpc.index = _FakeIndex({})
+    rpc.store = _FakeStore({})
+    asyncio.run(rpc.search_long_term({"query": "q"}))
+    assert rpc.pipeline.captured["include_outdated"] is False
