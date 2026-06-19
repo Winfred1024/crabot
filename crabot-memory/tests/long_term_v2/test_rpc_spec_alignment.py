@@ -42,6 +42,7 @@ EXPECTED_V2_RPC_METHODS = frozenset({
     "restore_memory",
     "get_confirmed_snapshot",
     "get_entry_version",
+    "get_memory_graph",
 })
 
 

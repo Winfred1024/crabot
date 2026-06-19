@@ -331,6 +331,42 @@ class LongTermV2Rpc:
         capture_params["maturity"] = params.get("maturity")  # default_maturity_fresh 兜底
         return await self.write_long_term(capture_params)
 
+    async def get_memory_graph(self, params: dict) -> dict:
+        """聚合长期记忆图：节点（条目 + 实体）+ 边（link/membership/source_case/invalidated/version）。"""
+        status = params.get("status", "confirmed")
+        rows = self.index.list_entries(status=status, limit=10000, offset=0)
+        nodes, edges = [], []
+        entity_seen = {}
+        for r in rows:
+            loc = self.index.locate(r["id"])
+            if not loc:
+                continue
+            st, ty, _ = loc
+            entry = self.store.read(st, ty, r["id"])
+            fm = entry.frontmatter
+            nodes.append({
+                "id": fm.id, "kind": "memory", "type": fm.type, "brief": fm.brief,
+                "status": st, "maturity": fm.maturity, "invalidated": fm.invalidated_by is not None,
+            })
+            for ent in fm.entities:
+                if ent.id not in entity_seen:
+                    entity_seen[ent.id] = {"id": ent.id, "kind": "entity",
+                                           "entity_type": ent.type, "name": ent.name}
+                edges.append({"source": fm.id, "target": ent.id, "edge_type": "membership"})
+            for lk in fm.links:
+                edges.append({"source": fm.id, "target": lk.target,
+                              "edge_type": "link", "relation": lk.relation})
+            if fm.lesson_meta:
+                for cid in fm.lesson_meta.source_cases:
+                    edges.append({"source": fm.id, "target": cid, "edge_type": "source_case"})
+            if fm.invalidated_by:
+                edges.append({"source": fm.id, "target": fm.invalidated_by, "edge_type": "invalidated"})
+            for pv in fm.prev_version_ids:
+                edges.append({"source": fm.id, "target": pv.split("#")[0], "edge_type": "version"})
+        nodes.extend(entity_seen.values())
+        return {"nodes": nodes, "edges": edges,
+                "stats": {"node_count": len(nodes), "edge_count": len(edges)}}
+
     async def run_maintenance(self, params: dict) -> dict:
         scope = params.get("scope", "all")
         now_iso = params.get("now_iso") or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
