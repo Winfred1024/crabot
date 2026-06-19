@@ -56,7 +56,7 @@ class RecallPipeline:
 
     async def recall(
         self, query: str, k: int, filters: Optional[Dict[str, Any]] = None,
-        recent_entities: Optional[List[dict]] = None,
+        recent_entities: Optional[List[dict]] = None, include_outdated: bool = False,
     ) -> List[Dict[str, Any]]:
         filters = filters or {}
         timings: Dict[str, float] = {}
@@ -95,6 +95,7 @@ class RecallPipeline:
         # ─── enrich with metadata for boost + rerank ───
         t_enrich = time.perf_counter()
         candidates = self._enrich(fused, in_time_window_ids=set(bi_temporal_ids))
+        candidates = self._apply_outdated_policy(candidates, include_outdated)
         candidates = apply_type_boost(candidates)
         candidates = candidates[:20]  # rerank a bounded slice
         timings["enrich_boost_ms"] = (time.perf_counter() - t_enrich) * 1000
@@ -246,3 +247,29 @@ class RecallPipeline:
         if nxt:
             return self._resolve_live(nxt, _depth + 1, _seen)
         return (status, type_, entry)
+
+    def _apply_outdated_policy(self, candidates, include_outdated: bool):
+        """剔除 stale/retired；把被 invalidated_by 取代的条目替换为 successor。
+        include_outdated=True 时原样返回（反思清理流程用）。"""
+        if include_outdated:
+            return candidates
+        present = {c["id"] for c in candidates}
+        out, added = [], set()
+        for c in candidates:
+            if c.get("maturity") in _OUTDATED_MATURITY:
+                continue
+            inv = c.get("invalidated_by")
+            if inv:
+                live = self._resolve_live(inv)
+                if live is None:
+                    continue  # successor 已消失 → 不泄露被取代条目
+                status, type_, entry = live
+                sid = entry.frontmatter.id
+                if sid in added or (sid in present and sid != c["id"]):
+                    continue  # successor 已在结果/候选里 → 去重，丢旧
+                c = self._enrich_one(sid, status, type_, entry, score=c["score"])
+            if c["id"] in added:
+                continue
+            added.add(c["id"])
+            out.append(c)
+        return out

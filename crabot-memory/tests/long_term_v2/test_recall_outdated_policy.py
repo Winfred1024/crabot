@@ -83,3 +83,51 @@ def test_resolve_live_breaks_cycle():
         {"mem-l-a": ("confirmed", "fact"), "mem-l-b": ("confirmed", "fact")},
     )
     assert p._resolve_live("mem-l-a") is None
+
+
+def test_policy_drops_stale_and_retired():
+    p = _pipeline({}, {})
+    cands = [
+        {"id": "m1", "maturity": "confirmed", "invalidated_by": None, "score": 1.0},
+        {"id": "m2", "maturity": "stale", "invalidated_by": None, "score": 0.9},
+        {"id": "m3", "maturity": "retired", "invalidated_by": None, "score": 0.8},
+    ]
+    out = p._apply_outdated_policy(cands, include_outdated=False)
+    assert [c["id"] for c in out] == ["m1"]
+
+
+def test_policy_replaces_invalidated_with_successor():
+    succ = _mk("mem-l-new")
+    p = _pipeline({"mem-l-new": succ}, {"mem-l-new": ("confirmed", "fact")})
+    cands = [{"id": "mem-l-old", "maturity": "confirmed",
+              "invalidated_by": "mem-l-new", "score": 0.7}]
+    out = p._apply_outdated_policy(cands, include_outdated=False)
+    assert len(out) == 1
+    assert out[0]["id"] == "mem-l-new"
+    assert out[0]["score"] == 0.7  # 继承旧条目的分数
+
+
+def test_policy_drops_invalidated_when_successor_gone():
+    p = _pipeline({}, {})  # successor 不存在
+    cands = [{"id": "mem-l-old", "maturity": "confirmed",
+              "invalidated_by": "mem-l-gone", "score": 0.7}]
+    out = p._apply_outdated_policy(cands, include_outdated=False)
+    assert out == []
+
+
+def test_policy_dedups_when_successor_already_present():
+    succ = _mk("mem-l-new")
+    p = _pipeline({"mem-l-new": succ}, {"mem-l-new": ("confirmed", "fact")})
+    cands = [
+        {"id": "mem-l-new", "maturity": "confirmed", "invalidated_by": None, "score": 1.0},
+        {"id": "mem-l-old", "maturity": "confirmed", "invalidated_by": "mem-l-new", "score": 0.7},
+    ]
+    out = p._apply_outdated_policy(cands, include_outdated=False)
+    assert [c["id"] for c in out] == ["mem-l-new"]
+
+
+def test_policy_include_outdated_passes_through():
+    p = _pipeline({}, {})
+    cands = [{"id": "m2", "maturity": "stale", "invalidated_by": None, "score": 0.9}]
+    out = p._apply_outdated_policy(cands, include_outdated=True)
+    assert [c["id"] for c in out] == ["m2"]
