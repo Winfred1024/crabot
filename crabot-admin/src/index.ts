@@ -9632,7 +9632,7 @@ export class AdminModule extends ModuleBase {
   }
 
   private async handleBackupExportApi(
-    req: IncomingMessage,
+    _req: IncomingMessage,
     res: ServerResponse,
     url: URL,
   ): Promise<void> {
