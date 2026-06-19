@@ -5,7 +5,7 @@
 import { isBackupCategory } from './categories.js'
 import type { BackupCategory, BackupManifest } from './types.js'
 
-export const CURRENT_BACKUP_SCHEMA_VERSION = 1
+export const CURRENT_BACKUP_SCHEMA_VERSION = 1 as const
 
 export function buildManifest(params: {
   categories: BackupCategory[]
@@ -14,7 +14,7 @@ export function buildManifest(params: {
   createdAt: string
 }): BackupManifest {
   return {
-    schemaVersion: 1,
+    schemaVersion: CURRENT_BACKUP_SCHEMA_VERSION,
     product: 'crabot',
     runtimeVersion: params.runtimeVersion,
     createdAt: params.createdAt,
