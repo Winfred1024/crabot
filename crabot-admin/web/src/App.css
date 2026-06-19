@@ -7391,6 +7391,35 @@ input[type="radio"]:disabled {
   color: var(--text-primary);
 }
 
+.mem-graph__zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.mem-graph__zoom-btn {
+  min-width: 1.9rem;
+  height: 1.6rem;
+  padding: 0 0.5rem;
+  font-size: 0.8rem;
+  color: var(--text-primary);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.mem-graph__zoom-btn:hover {
+  border-color: var(--text-secondary);
+}
+
+.mem-graph__zoom-level {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  min-width: 2.6rem;
+  text-align: right;
+}
+
 .mem-graph__toggles {
   display: flex;
   flex-wrap: wrap;
