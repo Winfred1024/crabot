@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 _UPDATABLE_FIELDS = frozenset({
     "brief", "tags", "entities", "maturity",
     "importance_factors", "invalidated_by", "lesson_meta", "observation",
+    "links",
 })
 
 # 各 type 的 maturity 高熟度终态——patch 改到这些值时 status 必须同步到 confirmed。
