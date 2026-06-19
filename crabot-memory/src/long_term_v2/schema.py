@@ -16,6 +16,7 @@ Maturity = Union[FactMaturity, LessonMaturity, ConceptMaturity]
 
 MemType = Literal["fact", "lesson", "concept"]
 EntityType = Literal["friend", "project", "topic", "event", "location", "organization"]
+LinkRelation = Literal["related", "refines", "depends_on", "part_of"]
 
 _TYPE_MATURITY: dict = {
     "fact": set(get_args(FactMaturity)),
@@ -90,6 +91,11 @@ class Observation(BaseModel):
     stale_check_count: int = 0
 
 
+class MemoryLink(BaseModel):
+    target: str                # 指向的 mem-id
+    relation: LinkRelation
+
+
 class MemoryFrontmatter(BaseModel):
     id: str
     type: MemType
@@ -109,6 +115,7 @@ class MemoryFrontmatter(BaseModel):
     observation: Optional[Observation] = None
     version: int = 1
     prev_version_ids: List[str] = Field(default_factory=list)
+    links: List[MemoryLink] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _check_maturity_matches_type(self) -> "MemoryFrontmatter":
