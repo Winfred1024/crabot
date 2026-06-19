@@ -1,6 +1,16 @@
 # Crabot 项目进度
 
-> 最后更新：2026-06-11 — Master Chat 重构 Phase 2+3 完成并合并 main（三期收官）
+> 最后更新：2026-06-19 — Crabot 备份导出 Plan 1 实现完成（worktree，未合 main）
+
+## 2026-06-19 — Crabot 备份/迁移 Plan 1：导出（worktree `crabot-backup-export`，未合 main）
+
+设计/计划：`crabot-docs/superpowers/specs/2026-06-19-crabot-backup-migration-design.md` + `crabot-docs/superpowers/plans/2026-06-19-crabot-backup-export.md`。本质=泛化 OpenClaw 导入机器，备份/迁移走同一套在线 additive 导入。
+
+- **导出已实现**：`crabot-admin/src/backup/`（types→categories→scrub-secrets→manifest→gather→pack→export-archive 七模块）+ Admin 端点 `GET /api/backup/{options,export}`（真流式下载）+ Admin Web `/backup` 页面 + CLI `crabot backup`（bootstrap，离线可用）
+- 类别（粗粒度）：config / channels(+friends) / skills / memory / tasks；密钥默认 scrub，`--include-secrets`/勾选含入并强提示；归档 `crabot-backup-<ts>.tar.gz`（manifest.json + payload/）
+- memory：长期记忆走 `long_term/` markdown 文件复制；短期记忆在线经 `export_memories` RPC、CLI 离线跳过
+- 验证：19 单测（真文件 I/O + tar round-trip）全绿、CLI 端到端产出有效归档、前端 build 绿、整体终审通过
+- **待办**：Task 10 浏览器端到端自测（需 live 环境，被运行中实例挡住，未做）；**Plan 2 = 导入**（在线 additive、skip/overwrite 冲突策略、跨版本门控、向导 UI）尚未开始
 
 ## 2026-06-11 — Master Chat 重构 Phase 2+3（已合并 main，merge 7be178d）
 
