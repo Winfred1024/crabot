@@ -12,6 +12,7 @@ import type {
 } from './types.js'
 import { createToolAccessConfig, createCliAccessConfig, CLI_DOMAINS } from './types.js'
 import { generateId, generateTimestamp } from 'crabot-shared'
+import type { OnConflict } from './backup/import/import-types.js'
 
 export class PermissionTemplateManager {
   private templates: Map<string, PermissionTemplate> = new Map()
@@ -133,6 +134,13 @@ export class PermissionTemplateManager {
 
   get(id: string): PermissionTemplate | undefined {
     return this.templates.get(id)
+  }
+
+  upsertById(template: PermissionTemplate, onConflict: OnConflict): 'imported' | 'overwritten' | 'skipped' {
+    const exists = this.templates.has(template.id)
+    if (exists && onConflict === 'skip') return 'skipped'
+    this.templates.set(template.id, template)
+    return exists ? 'overwritten' : 'imported'
   }
 
   create(params: CreatePermissionTemplateParams): PermissionTemplate {
