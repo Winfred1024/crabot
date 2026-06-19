@@ -23,14 +23,18 @@ def _mk(mem_id, type_="fact", maturity="confirmed", invalidated_by=None):
 
 
 class _FakeIndex:
-    def __init__(self, locs):
+    def __init__(self, locs, links=None):
         self._locs = locs  # id -> (status, type)
+        self._links = links or {}  # source_id -> [{"target","relation"}]
 
     def locate(self, mid):
         if mid in self._locs:
             s, t = self._locs[mid]
             return (s, t, f"/{mid}.md")
         return None
+
+    def find_links_from(self, sid):
+        return list(self._links.get(sid, []))
 
 
 class _FakeStore:
@@ -182,3 +186,30 @@ def test_policy_drops_when_successor_itself_stale():
               "invalidated_by": "mem-l-new", "score": 0.7}]
     out = p._apply_outdated_policy(cands, include_outdated=False)
     assert out == []
+
+
+def test_expand_graph_pulls_one_hop_neighbors():
+    # 种子 s 有一条 link → n（relation=related）；n 是 confirmed
+    n = _mk("mem-l-n")
+    idx = _FakeIndex({"mem-l-n": ("confirmed", "fact")}, links={"mem-l-s": [{"target": "mem-l-n", "relation": "related"}]})
+    p = RecallPipeline(store=_FakeStore({"mem-l-n": n}), index=idx)
+    seeds = [{"id": "mem-l-s", "maturity": "confirmed", "invalidated_by": None, "score": 1.0, "type": "fact"}]
+    out = p._expand_graph(seeds)
+    ids = [c["id"] for c in out]
+    assert "mem-l-s" in ids and "mem-l-n" in ids
+    nb = next(c for c in out if c["id"] == "mem-l-n")
+    assert nb["expanded"] is True
+    assert nb["via_relation"] == "related"
+    assert nb["score"] < 1.0  # 降权
+
+
+def test_expand_graph_dedups_existing():
+    n = _mk("mem-l-n")
+    idx = _FakeIndex({"mem-l-n": ("confirmed", "fact")}, links={"mem-l-s": [{"target": "mem-l-n", "relation": "related"}]})
+    p = RecallPipeline(store=_FakeStore({"mem-l-n": n}), index=idx)
+    seeds = [
+        {"id": "mem-l-s", "maturity": "confirmed", "invalidated_by": None, "score": 1.0, "type": "fact"},
+        {"id": "mem-l-n", "maturity": "confirmed", "invalidated_by": None, "score": 0.9, "type": "fact"},
+    ]
+    out = p._expand_graph(seeds)
+    assert [c["id"] for c in out].count("mem-l-n") == 1  # 已存在不重复加

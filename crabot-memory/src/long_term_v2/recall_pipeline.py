@@ -29,6 +29,11 @@ _MAX_INVALIDATION_HOPS = 8
 # 召回默认剔除的衰退态 maturity。
 _OUTDATED_MATURITY = frozenset({"stale", "retired"})
 
+# 图扩展（默认关）：单次召回最多纳入的扩展邻居数。
+_EXPAND_MAX = 5
+# 扩展节点相对种子的分数降权。
+_EXPAND_DECAY = 0.6
+
 
 def _tokenize(text: str) -> list:
     out = []
@@ -57,6 +62,7 @@ class RecallPipeline:
     async def recall(
         self, query: str, k: int, filters: Optional[Dict[str, Any]] = None,
         recent_entities: Optional[List[dict]] = None, include_outdated: bool = False,
+        enable_graph_expansion: bool = False,
     ) -> List[Dict[str, Any]]:
         filters = filters or {}
         timings: Dict[str, float] = {}
@@ -96,6 +102,8 @@ class RecallPipeline:
         t_enrich = time.perf_counter()
         candidates = self._enrich(fused, in_time_window_ids=set(bi_temporal_ids))
         candidates = self._apply_outdated_policy(candidates, include_outdated)
+        if enable_graph_expansion:
+            candidates = self._expand_graph(candidates)
         candidates = apply_type_boost(candidates)
         candidates = candidates[:20]  # rerank a bounded slice
         timings["enrich_boost_ms"] = (time.perf_counter() - t_enrich) * 1000
@@ -275,3 +283,36 @@ class RecallPipeline:
             added.add(c["id"])
             out.append(c)
         return out
+
+    def _expand_graph(self, candidates):
+        """沿 links 扩展种子的 1 跳邻居，纳入候选池（降权、标 expanded/via_relation）。
+        默认仅由 recall(enable_graph_expansion=True) 调用。"""
+        present = {c["id"] for c in candidates}
+        added = list(candidates)
+        budget = _EXPAND_MAX
+        for seed in candidates:
+            if budget <= 0:
+                break
+            for link in self.index.find_links_from(seed["id"]):
+                if budget <= 0:
+                    break
+                tid = link["target"]
+                if tid in present:
+                    continue
+                loc = self.index.locate(tid)
+                if not loc:
+                    continue
+                status, type_, _ = loc
+                if status == "trash":
+                    continue
+                entry = self.store.read(status, type_, tid)
+                enriched = self._enrich_one(
+                    tid, status, type_, entry,
+                    score=seed["score"] * _EXPAND_DECAY,
+                )
+                enriched["expanded"] = True
+                enriched["via_relation"] = link["relation"]
+                present.add(tid)
+                added.append(enriched)
+                budget -= 1
+        return added
