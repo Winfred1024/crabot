@@ -70,4 +70,60 @@ describe('gatherCategories', () => {
       gatherCategories({ staging, selection: { categories: ['config'], includeSecrets: true }, deps: deps() }),
     ).resolves.toBeUndefined()
   })
+
+  it('过滤内置 subagents/templates，只导用户自建', async () => {
+    await fs.writeFile(
+      path.join(adminDir, 'subagents.json'),
+      JSON.stringify([
+        { id: 'builtin-x', name: 'bx', is_builtin: true },
+        { id: 'user-y', name: 'uy', is_builtin: false },
+      ]),
+    )
+    await fs.writeFile(
+      path.join(adminDir, 'templates.json'),
+      JSON.stringify([
+        { id: 'sys-t', is_system: true },
+        { id: 'usr-t', is_system: false },
+      ]),
+    )
+    await gatherCategories({
+      staging, selection: { categories: ['config'], includeSecrets: true }, deps: deps(),
+    })
+    const subs = JSON.parse(
+      await fs.readFile(path.join(staging, 'payload', 'config', 'subagents.json'), 'utf-8'),
+    )
+    expect(subs.map((s: { id: string }) => s.id)).toEqual(['user-y'])
+    const tmpls = JSON.parse(
+      await fs.readFile(path.join(staging, 'payload', 'config', 'templates.json'), 'utf-8'),
+    )
+    expect(tmpls.map((t: { id: string }) => t.id)).toEqual(['usr-t'])
+  })
+
+  it('skills 目录只拷保留条目对应子目录（按 name）', async () => {
+    await fs.writeFile(
+      path.join(adminDir, 'skills.json'),
+      JSON.stringify([
+        { id: 'builtin-skill-a', name: 'a', is_builtin: true },
+        { id: 'usr-skill-b', name: 'b', is_builtin: false },
+      ]),
+    )
+    await fs.mkdir(path.join(adminDir, 'skills', 'a'), { recursive: true })
+    await fs.writeFile(path.join(adminDir, 'skills', 'a', 'SKILL.md'), '# a')
+    await fs.mkdir(path.join(adminDir, 'skills', 'b'), { recursive: true })
+    await fs.writeFile(path.join(adminDir, 'skills', 'b', 'SKILL.md'), '# b')
+    await gatherCategories({
+      staging, selection: { categories: ['skills'], includeSecrets: true }, deps: deps(),
+    })
+    const skillsJson = JSON.parse(
+      await fs.readFile(path.join(staging, 'payload', 'skills', 'skills.json'), 'utf-8'),
+    )
+    expect(skillsJson.map((s: { id: string }) => s.id)).toEqual(['usr-skill-b'])
+    await expect(
+      fs.access(path.join(staging, 'payload', 'skills', 'skills', 'a')),
+    ).rejects.toThrow()
+    const keptDir = await fs.readFile(
+      path.join(staging, 'payload', 'skills', 'skills', 'b', 'SKILL.md'), 'utf-8',
+    )
+    expect(keptDir).toBe('# b')
+  })
 })

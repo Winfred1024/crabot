@@ -23,6 +23,7 @@ import fs from 'fs/promises'
 import path from 'path'
 import { generateId, generateTimestamp } from 'crabot-shared'
 import type { SubAgentRegistryEntry, ModelRole } from './types.js'
+import type { OnConflict } from './backup/import/import-types.js'
 
 export type CreateSubAgentParams = Omit<
   SubAgentRegistryEntry,
@@ -251,6 +252,14 @@ export class SubAgentManager {
       if (e.name === name) return e
     }
     return undefined
+  }
+
+  async upsertById(entry: SubAgentRegistryEntry, onConflict: OnConflict): Promise<'imported' | 'overwritten' | 'skipped'> {
+    const exists = this.entries.has(entry.id)
+    if (exists && onConflict === 'skip') return 'skipped'
+    this.entries.set(entry.id, entry)
+    await this.save()
+    return exists ? 'overwritten' : 'imported'
   }
 
   async create(params: CreateSubAgentParams): Promise<SubAgentRegistryEntry> {

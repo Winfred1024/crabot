@@ -145,3 +145,40 @@ describe('PermissionTemplateManager.normalize 补缺失 cli_access', () => {
     }
   })
 })
+
+describe('PermissionTemplateManager.upsertById', () => {
+  const makeTemplate = (id: string, name: string): PermissionTemplate => ({
+    id,
+    name,
+    is_system: false,
+    tool_access: createToolAccessConfig(false),
+    cli_access: createCliAccessConfig('none'),
+    storage: null,
+    memory_scopes: [],
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  })
+
+  it('新 id → 返回 imported，get 可查到', () => {
+    const mgr = new PermissionTemplateManager()
+    const result = mgr.upsertById(makeTemplate('tpl-import-1', 'Guest'), 'skip')
+    expect(result).toBe('imported')
+    expect(mgr.get('tpl-import-1')?.name).toBe('Guest')
+  })
+
+  it('同 id + skip → 返回 skipped，值不变', () => {
+    const mgr = new PermissionTemplateManager()
+    mgr.upsertById(makeTemplate('tpl-import-2', 'Original'), 'skip')
+    const result = mgr.upsertById(makeTemplate('tpl-import-2', 'Updated'), 'skip')
+    expect(result).toBe('skipped')
+    expect(mgr.get('tpl-import-2')?.name).toBe('Original')
+  })
+
+  it('同 id + overwrite → 返回 overwritten，值更新', () => {
+    const mgr = new PermissionTemplateManager()
+    mgr.upsertById(makeTemplate('tpl-import-3', 'Original'), 'skip')
+    const result = mgr.upsertById(makeTemplate('tpl-import-3', 'Updated'), 'overwrite')
+    expect(result).toBe('overwritten')
+    expect(mgr.get('tpl-import-3')?.name).toBe('Updated')
+  })
+})

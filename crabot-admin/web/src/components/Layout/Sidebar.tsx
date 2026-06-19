@@ -38,7 +38,7 @@ const navSections: NavSection[] = [
       { to: '/channels/config', label: 'Channel 配置', match: '/channels' },
       { to: '/schedules', label: '计划任务', match: '/schedules' },
       { to: '/bg-entities', label: '长跑实体', match: '/bg-entities' },
-      { to: '/migrate/openclaw', label: '从 OpenClaw 迁移', match: '/migrate/openclaw' },
+      { to: '/migrate/openclaw', label: '导入', match: '/migrate/openclaw' },
       { to: '/backup', label: '导出备份', match: '/backup' },
       { to: '/settings', label: '全局设置', match: '/settings' },
     ],

@@ -13,7 +13,6 @@ export const CATEGORY_PATHS: Record<BackupCategory, CategoryPath[]> = {
     { rel: 'global_model_config.json', kind: 'file' },
     { rel: 'model_providers.json', kind: 'file' },
     { rel: 'agent-instances.json', kind: 'file' },
-    { rel: 'agent-implementations.json', kind: 'file' },
     { rel: 'agent-configs', kind: 'dir' },
     { rel: 'templates.json', kind: 'file' },
     { rel: 'subagents.json', kind: 'file' },
@@ -23,12 +22,13 @@ export const CATEGORY_PATHS: Record<BackupCategory, CategoryPath[]> = {
   ],
   channels: [
     { rel: 'channel-instances.json', kind: 'file' },
-    { rel: 'channel-implementations.json', kind: 'file' },
     { rel: 'channel-configs', kind: 'dir' },
     { rel: 'friends.json', kind: 'file' },
     { rel: 'friend-permission-configs.json', kind: 'file' },
   ],
   skills: [
+    // skills.json 必须排在 skills 目录前：gather 先从 skills.json 算出保留的 skill name 集，
+    // 再据此只拷对应子目录。重排会导致 skills/ 子目录被静默全部跳过。
     { rel: 'skills.json', kind: 'file' },
     { rel: 'skills', kind: 'dir' },
   ],

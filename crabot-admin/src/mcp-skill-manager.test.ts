@@ -3,7 +3,8 @@ import { promises as fs } from 'fs'
 import path from 'path'
 import os from 'os'
 import AdmZip from 'adm-zip'
-import { SkillManager } from './mcp-skill-manager.js'
+import { SkillManager, MCPServerManager } from './mcp-skill-manager.js'
+import type { MCPServerRegistryEntry } from './mcp-skill-manager.js'
 
 describe('installSkillFromDirectory', () => {
   let tmpRoot: string
@@ -643,5 +644,54 @@ describe('skill 目录用 name 不用 UUID（Anthropic 标准）', () => {
     expect(await fs.readFile(path.join(e.skill_dir, 'scripts', 'foo.py'), 'utf-8')).toBe('foo')
     // 旧 UUID 目录应不存在
     expect(await fs.access(uuidDir).then(() => true).catch(() => false)).toBe(false)
+  })
+})
+
+describe('MCPServerManager.upsertById', () => {
+  let tmpData: string
+  let manager: MCPServerManager
+
+  const makeEntry = (id: string, name: string): MCPServerRegistryEntry => ({
+    id,
+    name,
+    transport: 'stdio',
+    command: 'node',
+    args: ['server.js'],
+    is_builtin: false,
+    is_essential: false,
+    can_disable: true,
+    enabled: true,
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+  })
+
+  beforeEach(async () => {
+    tmpData = await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-upsert-'))
+    manager = new MCPServerManager(tmpData)
+    await manager.initialize()
+  })
+
+  afterEach(async () => {
+    await fs.rm(tmpData, { recursive: true, force: true })
+  })
+
+  it('新 id → 返回 imported，list 中可查到', async () => {
+    const result = await manager.upsertById(makeEntry('mcp-import-1', 'my-server'), 'skip')
+    expect(result).toBe('imported')
+    expect(manager.get('mcp-import-1')?.name).toBe('my-server')
+  })
+
+  it('同 id + skip → 返回 skipped，值不变', async () => {
+    await manager.upsertById(makeEntry('mcp-import-2', 'Original'), 'skip')
+    const result = await manager.upsertById(makeEntry('mcp-import-2', 'Updated'), 'skip')
+    expect(result).toBe('skipped')
+    expect(manager.get('mcp-import-2')?.name).toBe('Original')
+  })
+
+  it('同 id + overwrite → 返回 overwritten，值更新', async () => {
+    await manager.upsertById(makeEntry('mcp-import-3', 'Original'), 'skip')
+    const result = await manager.upsertById(makeEntry('mcp-import-3', 'Updated'), 'overwrite')
+    expect(result).toBe('overwritten')
+    expect(manager.get('mcp-import-3')?.name).toBe('Updated')
   })
 })

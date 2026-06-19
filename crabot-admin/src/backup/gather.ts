@@ -7,6 +7,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { CATEGORY_PATHS } from './categories.js'
 import { scrubProvidersJson, scrubChannelConfigJson } from './scrub-secrets.js'
+import { filterUserRecords, type BuiltinFlagField } from './builtin-filter.js'
 import type { BackupCategory, BackupSelection } from './types.js'
 
 export type GatherDeps = {
@@ -22,6 +23,43 @@ async function exists(p: string): Promise<boolean> {
     return true
   } catch {
     return false
+  }
+}
+
+/** 需按记录过滤内置的 JSON 数组文件 → 内置标记字段。 */
+const BUILTIN_FILTERED: Record<string, BuiltinFlagField> = {
+  'schedules.json': 'is_builtin',
+  'subagents.json': 'is_builtin',
+  'skills.json': 'is_builtin',
+  'mcp-servers.json': 'is_builtin',
+  'templates.json': 'is_system',
+}
+
+/** 读 JSON 数组、过滤内置、写回筛后数组；返回保留记录（含 name，供 skills 目录子集用）。 */
+async function copyFilteredJsonArray(
+  srcDir: string, destDir: string, rel: string, flagField: BuiltinFlagField,
+): Promise<Array<Record<string, unknown>>> {
+  const src = path.join(srcDir, rel)
+  if (!(await exists(src))) return []
+  const rows = JSON.parse(await fs.readFile(src, 'utf-8')) as Array<Record<string, unknown>>
+  const { kept } = filterUserRecords(rows, flagField)
+  const dest = path.join(destDir, rel)
+  await fs.mkdir(path.dirname(dest), { recursive: true })
+  await fs.writeFile(dest, JSON.stringify(kept, null, 2))
+  return kept
+}
+
+/** skills/ 目录：只拷保留 skill 的子目录（子目录名 = skill 记录的 name）。 */
+async function copySkillDirsSubset(
+  srcDir: string, destDir: string, keptNames: Set<string>,
+): Promise<void> {
+  const src = path.join(srcDir, 'skills')
+  if (!(await exists(src))) return
+  const dest = path.join(destDir, 'skills')
+  await fs.mkdir(dest, { recursive: true })
+  for (const name of await fs.readdir(src)) {
+    if (!keptNames.has(name)) continue
+    await fs.cp(path.join(src, name), path.join(dest, name), { recursive: true })
   }
 }
 
@@ -78,9 +116,22 @@ async function gatherOne(
     }
     return
   }
+  let keptSkillNames: Set<string> | null = null
   for (const cp of CATEGORY_PATHS[category]) {
     if (cp.kind === 'file') {
-      await copyFileWithScrub(deps.adminDataDir, destDir, cp.rel, selection.includeSecrets)
+      const flagField = BUILTIN_FILTERED[cp.rel]
+      if (flagField) {
+        const kept = await copyFilteredJsonArray(deps.adminDataDir, destDir, cp.rel, flagField)
+        if (cp.rel === 'skills.json') {
+          keptSkillNames = new Set(
+            kept.map((r) => r.name).filter((n): n is string => typeof n === 'string'),
+          )
+        }
+      } else {
+        await copyFileWithScrub(deps.adminDataDir, destDir, cp.rel, selection.includeSecrets)
+      }
+    } else if (cp.rel === 'skills') {
+      await copySkillDirsSubset(deps.adminDataDir, destDir, keptSkillNames ?? new Set())
     } else {
       await copyDirWithScrub(deps.adminDataDir, destDir, cp.rel, selection.includeSecrets)
     }

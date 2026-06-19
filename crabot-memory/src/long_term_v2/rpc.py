@@ -19,9 +19,11 @@ from src.long_term_v2.schema import (
     new_memory_id,
     utc_now_iso_z,
 )
+from src.long_term_v2.markdown_io import load_entry
 from src.long_term_v2.paths import entry_path
 from src.long_term_v2.recall_pipeline import RecallPipeline
 from src.long_term_v2.agentic_tools import AgenticTools
+from src.types import ImportLongTermParams
 
 
 logger = logging.getLogger(__name__)
@@ -600,3 +602,29 @@ class LongTermV2Rpc:
         entry = self.store.read("inbox", type_, mem_id)
         self.index.upsert(entry, path=new_path, status="inbox")
         return {"id": mem_id, "status": "ok"}
+
+    async def import_long_term(self, params: dict) -> dict:
+        """导入长期记忆条目（wire 格式 {status, markdown}）：load_entry → store.write → index.upsert。
+        mode=merge 跳过已存在 id；mode=replace 覆盖。dedup 跨 status 按 frontmatter.id。
+        """
+        p = ImportLongTermParams(**params)
+        existing = {row[2] for row in self.store.list_all()}
+        imported = 0
+        skipped = 0
+        overwritten = 0
+        for item in p.entries:
+            entry = load_entry(item["markdown"])
+            status = item["status"]
+            mem_id = entry.frontmatter.id
+            if mem_id in existing:
+                if p.mode == "merge":
+                    skipped += 1
+                    continue
+                overwritten += 1
+            else:
+                imported += 1
+            self.store.write(entry, status=status)
+            path = entry_path(self.store.data_root, status, entry.frontmatter.type, entry.frontmatter.id)
+            self.index.upsert(entry, path=path, status=status)
+            existing.add(mem_id)
+        return {"imported": imported, "skipped": skipped, "overwritten": overwritten}

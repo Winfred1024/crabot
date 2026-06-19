@@ -130,6 +130,12 @@ class ImportMemoriesParams(BaseModel):
     data: Dict[str, Any]
 
 
+class ImportLongTermParams(BaseModel):
+    """导入长期记忆参数"""
+    entries: list[dict]
+    mode: Literal["merge", "replace"] = "merge"  # "merge" 跳过已存在 id；"replace" 覆盖
+
+
 # ============================================================================
 # 健康检查
 # ============================================================================

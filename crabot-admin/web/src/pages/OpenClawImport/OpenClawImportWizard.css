@@ -302,6 +302,40 @@
   flex-shrink: 0;
 }
 
+/* ── Crabot 导入结果表格 ───────────────────────────── */
+.oci-result-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.84rem;
+  margin-top: var(--space-2);
+}
+.oci-result-table th {
+  text-align: left;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: var(--space-2) var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+.oci-result-table td {
+  padding: var(--space-2) var(--space-2);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  vertical-align: middle;
+}
+.oci-result-table tr:last-child td { border-bottom: none; }
+.oci-result-tr.is-ok td { color: var(--text-primary); }
+.oci-result-tr.is-skip td { opacity: 0.6; }
+.oci-result-tr.is-err td { color: var(--error); }
+.oci-result-id {
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  word-break: break-all;
+}
+.oci-result-reason { color: var(--text-muted); font-size: 0.78rem; }
+
 @keyframes oci-rise {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }

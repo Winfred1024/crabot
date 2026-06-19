@@ -19,6 +19,12 @@ import { StagedUploadStore } from './openclaw-import/staged-upload-store.js'
 import { BACKUP_CATEGORIES, DEFAULT_CATEGORIES } from './backup/categories.js'
 import { exportArchive } from './backup/export-archive.js'
 import type { BackupCategory } from './backup/types.js'
+import { validateBackupManifest } from './backup/manifest.js'
+import { runCrabotImport, type ImportDeps } from './backup/import/run-import.js'
+import type { ImportStatus, OnConflict, ImportItemResult } from './backup/import/import-types.js'
+import { shouldDisableOnImport } from './backup/import/schedule-arm.js'
+import { readArchiveTextFile, listArchiveEntries } from './openclaw-import/archive-reader.js'
+import { extractArchiveSubtree } from './openclaw-import/extract-subtree.js'
 import { BrowserManager } from './browser-manager.js'
 import { PermissionTemplateManager } from './permission-template-manager.js'
 import {
@@ -106,6 +112,7 @@ import {
   type AgentInstanceConfig,
   type ResolvedAgentConfig,
   type SubAgentConfig,
+  type SubAgentRegistryEntry,
   type CreateAgentInstanceParams,
   type UpdateAgentInstanceParams,
   type UpdateAgentConfigParams,
@@ -176,7 +183,13 @@ import {
 import { ModuleInstaller } from './module-installer.js'
 import { ChatManager, buildChatTaskSnapshot } from './chat-manager.js'
 import { MediaStore } from './media-store.js'
-import { MCPServerManager, SkillManager, EssentialToolsManager, DuplicateSkillError } from './mcp-skill-manager.js'
+import {
+  MCPServerManager,
+  SkillManager,
+  EssentialToolsManager,
+  DuplicateSkillError,
+  type MCPServerRegistryEntry,
+} from './mcp-skill-manager.js'
 import { SubAgentManager, resolveSubAgentModel } from './subagent-manager.js'
 import { getPresetVendors, initVendorRegistry } from './vendor-registry.js'
 import { Cron } from 'croner'
@@ -1494,6 +1507,14 @@ export class AdminModule extends ModuleBase {
       }
       if (pathname === '/api/backup/export' && req.method === 'GET') {
         await this.handleBackupExportApi(req, res, url)
+        return
+      }
+      if (pathname === '/api/backup/import/overview' && req.method === 'POST') {
+        await this.handleBackupImportOverviewApi(req, res)
+        return
+      }
+      if (pathname === '/api/backup/import/execute' && req.method === 'POST') {
+        await this.handleBackupImportExecuteApi(req, res)
         return
       }
 
@@ -9742,6 +9763,325 @@ export class AdminModule extends ModuleBase {
   private async handleBackupOptionsApi(res: ServerResponse): Promise<void> {
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ categories: BACKUP_CATEGORIES, defaults: DEFAULT_CATEGORIES }))
+  }
+
+  // ============================================================================
+  // 备份导入 API 处理方法（Crabot 原生备份；OpenClaw 备份由 overview 分流回旧入口）
+  // ============================================================================
+
+  /**
+   * POST /api/backup/import/overview — 流式接收上传的 .tar.gz，暂存后读 manifest.json 判定来源：
+   *   - Crabot 备份且 manifest 合法 → { product:'crabot', staged_id, categories }
+   *   - OpenClaw 备份（product 非 crabot）→ { product:'openclaw' }（前端转去 /api/openclaw-import/*）
+   *   - manifest 缺失 / 损坏 → 400 中文错误
+   */
+  private async handleBackupImportOverviewApi(
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    const store = this.openclawImportStore!
+    const { token, path: tmpFile } = store.stage()
+    try {
+      await pipeline(req, createWriteStream(tmpFile))
+      const manifestText = await readArchiveTextFile(tmpFile, 'manifest.json')
+      if (manifestText === null) {
+        await store.discard(token)
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: '备份归档缺少 manifest.json，不是有效的 Crabot 备份' }))
+        return
+      }
+      let raw: unknown
+      try {
+        raw = JSON.parse(manifestText)
+      } catch {
+        await store.discard(token)
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'manifest.json 解析失败，备份可能已损坏' }))
+        return
+      }
+      // 非 Crabot 备份（典型为 OpenClaw 备份）：保留暂存交给 OpenClaw 旧入口处理由前端发起，
+      // 这里直接丢弃本次暂存（OpenClaw 流程会重新上传 parse），只回报 product 让前端分流。
+      if ((raw as { product?: unknown }).product !== 'crabot') {
+        await store.discard(token)
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ product: 'openclaw' }))
+        return
+      }
+      const validation = validateBackupManifest(raw)
+      if (!validation.ok) {
+        await store.discard(token)
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: validation.error }))
+        return
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ product: 'crabot', staged_id: token, categories: validation.categories }))
+    } catch (err) {
+      await store.discard(token)
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: err instanceof Error ? err.message : '解析备份失败' }))
+    }
+  }
+
+  /**
+   * POST /api/backup/import/execute — body { staged_id, categories, on_conflict }。
+   * 接线 ImportDeps（onConflict 绑进闭包）→ runCrabotImport → 返回汇总；用后即焚暂存归档。
+   */
+  private async handleBackupImportExecuteApi(
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    const store = this.openclawImportStore!
+    let activeToken: string | undefined
+    try {
+      const body = await this.readJsonBody<{
+        staged_id: string
+        categories: string[]
+        on_conflict: OnConflict
+      }>(req)
+      const archivePath = store.resolve(body.staged_id)
+      if (!archivePath) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: '上传 token 已失效，请重新上传备份' }))
+        return
+      }
+      activeToken = body.staged_id
+      const onConflict: OnConflict = body.on_conflict === 'overwrite' ? 'overwrite' : 'skip'
+      const categories = (body.categories ?? []).filter((c): c is BackupCategory =>
+        (BACKUP_CATEGORIES as readonly string[]).includes(c))
+
+      const deps = this.buildCrabotImportDeps(archivePath, onConflict)
+      const summary = await runCrabotImport({ archivePath, categories, onConflict, deps })
+
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(summary))
+    } catch (err) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: err instanceof Error ? err.message : '导入失败' }))
+    } finally {
+      if (activeToken) await store.discard(activeToken)
+    }
+  }
+
+  /**
+   * 把 onConflict 绑进闭包，组装 runCrabotImport 所需的 ImportDeps。
+   * provider/mcp/subagent/template/channel 走各 manager 的 upsertById（Phase B）；
+   * friend/task/sessionConfig/schedule 直接对 this.<Map> 单条 upsert（finalize 时 saveData 落盘）。
+   */
+  private buildCrabotImportDeps(archivePath: string, onConflict: OnConflict): ImportDeps {
+    // 标记是否真的导入了 agent-instance：仅在导入时才在 finalize 重载 AgentManager 内存态，
+    // 避免对未涉及 agent 的导入触发不必要的 re-initialize。
+    let agentInstanceTouched = false
+
+    return {
+      upsertProvider: async (r) => this.modelProviderManager.upsertById(r as ModelProvider, onConflict),
+      upsertMcp: async (r) => this.mcpServerManager.upsertById(r as MCPServerRegistryEntry, onConflict),
+      upsertSubagent: async (r) => this.subAgentManager.upsertById(r as SubAgentRegistryEntry, onConflict),
+      upsertTemplate: async (r) => this.permissionTemplateManager.upsertById(r as PermissionTemplate, onConflict),
+      upsertChannel: async (r) => {
+        const inst = r as ChannelInstance
+        const cfgText = await readArchiveTextFile(
+          archivePath,
+          `payload/channels/channel-configs/${inst.id}.json`,
+        )
+        const config = cfgText ? (JSON.parse(cfgText) as Record<string, string>) : null
+        return this.channelManager.upsertInstanceById(inst, config, onConflict)
+      },
+      upsertFriend: async (r) => this.upsertImportedRecord(this.friends as Map<string, { id: string }>, r as { id: string }, onConflict),
+      upsertTask: async (r) => this.upsertImportedRecord(this.tasks as unknown as Map<string, { id: string }>, r as { id: string }, onConflict),
+      upsertSessionConfig: async (r) => {
+        // session-configs 导出格式为 { session_id, config } 数组（见 saveDataImpl），按 session_id 归并。
+        const entry = r as { session_id: string; config: SessionPermissionConfig }
+        const exists = this.sessionConfigs.has(entry.session_id)
+        if (exists && onConflict === 'skip') return 'skipped'
+        this.sessionConfigs.set(entry.session_id, entry.config)
+        return exists ? 'overwritten' : 'imported'
+      },
+      upsertAgentInstance: async (r) => {
+        const inst = r as AgentInstance
+        const status = await this.upsertImportedAgentInstance(inst, archivePath, onConflict)
+        if (status !== 'skipped') agentInstanceTouched = true
+        return status
+      },
+      upsertSchedule: async (r) => {
+        const sched = r as Schedule
+        if (shouldDisableOnImport(sched, Date.now())) sched.enabled = false
+        const exists = this.schedules.has(sched.id)
+        if (exists && onConflict === 'skip') return 'skipped'
+        this.schedules.set(sched.id, sched)
+        // update = remove+add，幂等地重建定时器（覆盖已有 id 时不留重复 timer）。
+        if (sched.enabled) this.scheduleEngine.update(sched.id, sched)
+        else this.scheduleEngine.remove(sched.id)
+        return exists ? 'overwritten' : 'imported'
+      },
+      importSkills: async (archivePath2, oc) => this.importSkillsFromArchive(archivePath2, oc),
+      importMemory: async (archivePath2, oc) => this.importMemoryFromArchive(archivePath2, oc),
+      finalize: async () => {
+        await this.saveData()
+        await this.saveTasks()
+        if (agentInstanceTouched) {
+          // 文件已直接落盘，重载 AgentManager 内存态使 Admin 列表/解析与磁盘一致。
+          await this.agentManager.initialize()
+        }
+        this.triggerPushAfter('crabot import')
+      },
+    }
+  }
+
+  /**
+   * 对内存 Map 做单条按 id 归并：exists+skip → 'skipped'；否则 set，返回 'overwritten' / 'imported'。
+   * 落盘交给 finalize 的 saveData/saveTasks。
+   */
+  private upsertImportedRecord<T extends { id: string }>(
+    map: Map<string, T>,
+    record: T,
+    onConflict: OnConflict,
+  ): ImportStatus {
+    const exists = map.has(record.id)
+    if (exists && onConflict === 'skip') return 'skipped'
+    map.set(record.id, record)
+    return exists ? 'overwritten' : 'imported'
+  }
+
+  /**
+   * 导入单个 agent 实例：写 agent-instances.json（按 id 归并）+ agent-configs/<id>.json（随实例）。
+   * AgentManager 内存态在 finalize 里统一 reload，这里只做磁盘归并。
+   */
+  private async upsertImportedAgentInstance(
+    instance: AgentInstance,
+    archivePath: string,
+    onConflict: OnConflict,
+  ): Promise<ImportStatus> {
+    const dataDir = this.adminConfig.data_dir
+    const instancesPath = path.join(dataDir, 'agent-instances.json')
+    let existing: AgentInstance[] = []
+    try {
+      existing = JSON.parse(await fs.readFile(instancesPath, 'utf-8')) as AgentInstance[]
+      if (!Array.isArray(existing)) existing = []
+    } catch {
+      existing = []
+    }
+    const exists = existing.some((i) => i.id === instance.id)
+    if (exists && onConflict === 'skip') return 'skipped'
+
+    const merged = exists
+      ? existing.map((i) => (i.id === instance.id ? instance : i))
+      : [...existing, instance]
+    await this.atomicWriteFile(instancesPath, JSON.stringify(merged, null, 2))
+
+    // 随实例写 agent-configs/<id>.json（归档里可能不存在，缺失则不写）。
+    const cfgText = await readArchiveTextFile(
+      archivePath,
+      `payload/config/agent-configs/${instance.id}.json`,
+    )
+    if (cfgText !== null) {
+      const configsDir = path.join(dataDir, 'agent-configs')
+      await fs.mkdir(configsDir, { recursive: true })
+      await this.atomicWriteFile(path.join(configsDir, `${instance.id}.json`), cfgText)
+    }
+    return exists ? 'overwritten' : 'imported'
+  }
+
+  /**
+   * 解归档内 payload/skills/skills/<name> 各子目录到临时 dir，逐个 importFromLocalPath。
+   * onConflict='skip' 时遇重名 skill 抛 DuplicateSkillError → 记 'skipped'。
+   */
+  private async importSkillsFromArchive(
+    archivePath: string,
+    onConflict: OnConflict,
+  ): Promise<ImportItemResult[]> {
+    const results: ImportItemResult[] = []
+    const entries = await listArchiveEntries(archivePath)
+    const prefix = 'payload/skills/skills/'
+    // 收集顶层 skill 目录名（prefix 之后的第一段）。
+    const skillNames = new Set<string>()
+    for (const entry of entries) {
+      if (!entry.startsWith(prefix)) continue
+      const rest = entry.slice(prefix.length)
+      const name = rest.split('/')[0]
+      if (name) skillNames.add(name)
+    }
+    if (skillNames.size === 0) return results
+
+    const workRoot = path.join(os.tmpdir(), `crabot-import-skills-${crypto.randomUUID()}`)
+    try {
+      for (const name of skillNames) {
+        const destDir = path.join(workRoot, name)
+        try {
+          await extractArchiveSubtree(archivePath, `${prefix}${name}`, destDir)
+          const { was_overwrite } = await this.skillManager.importFromLocalPath(
+            destDir,
+            onConflict === 'overwrite',
+          )
+          results.push({ kind: 'skill', id: name, status: was_overwrite ? 'overwritten' : 'imported' })
+        } catch (err) {
+          if (err instanceof DuplicateSkillError) {
+            results.push({ kind: 'skill', id: name, status: 'skipped' })
+          } else {
+            results.push({ kind: 'skill', id: name, status: 'failed', reason: String(err) })
+          }
+        }
+      }
+    } finally {
+      await fs.rm(workRoot, { recursive: true, force: true }).catch(() => undefined)
+    }
+    return results
+  }
+
+  /**
+   * 导入记忆：长期 payload/memory/long_term/<status>/<type>/<id>.md → RPC import_long_term；
+   * 短期 payload/memory/short_term.json → RPC import_memories。
+   * onConflict='overwrite' → mode='replace'；否则 mode='merge'。
+   */
+  private async importMemoryFromArchive(
+    archivePath: string,
+    onConflict: OnConflict,
+  ): Promise<ImportItemResult[]> {
+    const results: ImportItemResult[] = []
+    const mode = onConflict === 'overwrite' ? 'replace' : 'merge'
+    const memoryPort = await this.getMemoryPort()
+
+    // 长期记忆：只取顶层 entry（status/type/id.md），跳过 *.versions/ 版本旁路。
+    const entries = await listArchiveEntries(archivePath)
+    const ltPrefix = 'payload/memory/long_term/'
+    const ltEntries: Array<{ status: string; markdown: string }> = []
+    for (const entry of entries) {
+      if (!entry.startsWith(ltPrefix) || !entry.endsWith('.md')) continue
+      if (entry.includes('.versions/')) continue
+      const segs = entry.split('/')
+      // payload / memory / long_term / <status> / <type> / <id>.md = 6 段
+      if (segs.length !== 6) continue
+      const status = segs[3]
+      const markdown = await readArchiveTextFile(archivePath, entry)
+      if (markdown !== null) ltEntries.push({ status, markdown })
+    }
+    if (ltEntries.length > 0) {
+      try {
+        const res = await this.rpcClient.call<
+          { entries: Array<{ status: string; markdown: string }>; mode: string },
+          { imported: number; skipped: number; overwritten: number }
+        >(memoryPort, 'import_long_term', { entries: ltEntries, mode }, this.config.moduleId)
+        results.push({ kind: 'memory', id: 'long_term', status: 'imported',
+          reason: `imported=${res.imported} skipped=${res.skipped} overwritten=${res.overwritten}` })
+      } catch (err) {
+        results.push({ kind: 'memory', id: 'long_term', status: 'failed', reason: String(err) })
+      }
+    }
+
+    // 短期记忆：整份 short_term.json 作为 export_memories 的 data 喂回 import_memories。
+    const shortText = await readArchiveTextFile(archivePath, 'payload/memory/short_term.json')
+    if (shortText !== null) {
+      try {
+        const data = JSON.parse(shortText)
+        await this.rpcClient.call<{ data: unknown; mode: string }, unknown>(
+          memoryPort, 'import_memories', { data, mode }, this.config.moduleId,
+        )
+        results.push({ kind: 'memory', id: 'short_term', status: 'imported' })
+      } catch (err) {
+        results.push({ kind: 'memory', id: 'short_term', status: 'failed', reason: String(err) })
+      }
+    }
+    return results
   }
 
   private async handleBackupExportApi(

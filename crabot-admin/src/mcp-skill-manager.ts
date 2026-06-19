@@ -9,6 +9,7 @@ import path from 'path'
 import { randomBytes } from 'node:crypto'
 import AdmZip from 'adm-zip'
 import { generateId, generateTimestamp } from 'crabot-shared'
+import type { OnConflict } from './backup/import/import-types.js'
 
 const MAX_FILE_SIZE_BYTES = 1 * 1024 * 1024  // 1MB 单文件上限
 const MAX_TOTAL_SIZE_BYTES = 5 * 1024 * 1024 // 5MB 总大小上限
@@ -280,6 +281,14 @@ export class MCPServerManager {
     if (entry.is_builtin) throw new Error(`Cannot delete built-in MCP Server "${entry.name}"`)
     this.servers.delete(id)
     await this.save()
+  }
+
+  async upsertById(entry: MCPServerRegistryEntry, onConflict: OnConflict): Promise<'imported' | 'overwritten' | 'skipped'> {
+    const exists = this.servers.has(entry.id)
+    if (exists && onConflict === 'skip') return 'skipped'
+    this.servers.set(entry.id, entry)
+    await this.save()
+    return exists ? 'overwritten' : 'imported'
   }
 
   /**

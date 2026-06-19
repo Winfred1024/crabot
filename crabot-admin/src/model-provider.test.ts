@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'fs/promises'
 import path from 'path'
 import { ModelProviderManager } from './model-provider-manager.js'
-import type { CreateModelProviderParams } from './types.js'
+import type { CreateModelProviderParams, ModelProvider } from './types.js'
 
 describe('ModelProviderManager', () => {
   const testDataDir = path.join(process.cwd(), 'test-data', 'model-provider-test')
@@ -333,6 +333,44 @@ describe('ModelProviderManager', () => {
       const config = newManager.getGlobalConfig()
       expect(config.default_llm_provider_id).toBe('provider-1')
       expect(config.default_llm_model_id).toBe('model-1')
+    })
+  })
+
+  describe('upsertById', () => {
+    const makeProvider = (id: string, name: string): ModelProvider => ({
+      id,
+      name,
+      type: 'manual',
+      format: 'openai',
+      endpoint: 'http://localhost:11434/v1',
+      api_key: 'key',
+      models: [],
+      status: 'active',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    })
+
+    it('新 id → 返回 imported，可查到', async () => {
+      const p = makeProvider('provider-import-1', 'Test Import')
+      const result = await manager.upsertById(p, 'skip')
+      expect(result).toBe('imported')
+      expect(manager.getProvider('provider-import-1')?.name).toBe('Test Import')
+    })
+
+    it('同 id + skip → 返回 skipped，值不变', async () => {
+      const p = makeProvider('provider-import-2', 'Original')
+      await manager.upsertById(p, 'skip')
+      const result = await manager.upsertById(makeProvider('provider-import-2', 'Updated'), 'skip')
+      expect(result).toBe('skipped')
+      expect(manager.getProvider('provider-import-2')?.name).toBe('Original')
+    })
+
+    it('同 id + overwrite → 返回 overwritten，值更新', async () => {
+      const p = makeProvider('provider-import-3', 'Original')
+      await manager.upsertById(p, 'skip')
+      const result = await manager.upsertById(makeProvider('provider-import-3', 'Updated'), 'overwrite')
+      expect(result).toBe('overwritten')
+      expect(manager.getProvider('provider-import-3')?.name).toBe('Updated')
     })
   })
 })

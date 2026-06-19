@@ -188,6 +188,7 @@ class MemoryModule:
             "restore_memory": self._lt_v2_rpc.restore_memory,
             "get_entry_version": self._lt_v2_rpc.get_entry_version,
             "report_task_feedback": self._lt_v2_rpc.report_task_feedback,
+            "import_long_term": self._lt_v2_rpc.import_long_term,
         }
 
         handler = handlers.get(method)
