@@ -83,11 +83,13 @@ class LongTermV2Rpc:
         k = int(params.get("k", 10))
         filters = params.get("filters", {}) or {}
         include = params.get("include", "brief")
+        include_outdated = bool(params.get("include_outdated", False))
         recent_entities = params.get("recent_entities") or []
         task_id = params.get("task_id")  # NEW: 召回所属 task，反馈链路用
 
         results = await self.pipeline.recall(
             query=query, k=k, filters=filters, recent_entities=recent_entities,
+            include_outdated=include_outdated,
         )
 
         # Phase 3 T18: bump use_count for lesson hits only.

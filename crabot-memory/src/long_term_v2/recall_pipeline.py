@@ -24,6 +24,11 @@ logger = logging.getLogger(__name__)
 # 低于阈值时 step3 rerank 已排好序，直接返回。
 _COT_MIN_CANDIDATES = 8
 
+# 跟随 invalidated_by 链的最大跳数，防环/防失控。
+_MAX_INVALIDATION_HOPS = 8
+# 召回默认剔除的衰退态 maturity。
+_OUTDATED_MATURITY = frozenset({"stale", "retired"})
+
 
 def _tokenize(text: str) -> list:
     out = []
@@ -51,7 +56,7 @@ class RecallPipeline:
 
     async def recall(
         self, query: str, k: int, filters: Optional[Dict[str, Any]] = None,
-        recent_entities: Optional[List[dict]] = None,
+        recent_entities: Optional[List[dict]] = None, include_outdated: bool = False,
     ) -> List[Dict[str, Any]]:
         filters = filters or {}
         timings: Dict[str, float] = {}
@@ -90,6 +95,7 @@ class RecallPipeline:
         # ─── enrich with metadata for boost + rerank ───
         t_enrich = time.perf_counter()
         candidates = self._enrich(fused, in_time_window_ids=set(bi_temporal_ids))
+        candidates = self._apply_outdated_policy(candidates, include_outdated)
         candidates = apply_type_boost(candidates)
         candidates = candidates[:20]  # rerank a bounded slice
         timings["enrich_boost_ms"] = (time.perf_counter() - t_enrich) * 1000
@@ -199,17 +205,73 @@ class RecallPipeline:
                 continue
             status, type_, _ = loc
             entry = self.store.read(status, type_, mid)
-            fm = entry.frontmatter
-            out.append({
-                "id": mid,
-                "type": type_,
-                "status": status,
-                "brief": fm.brief,
-                "score": fused_score,
-                "paths": sorted(paths),
-                "in_time_window": mid in in_time_window_ids,
-                "invalidated": fm.invalidated_by is not None,
-                "use_count": (fm.lesson_meta.use_count if fm.lesson_meta else 0),
-                "outcome": (fm.lesson_meta.outcome if fm.lesson_meta else None),
-            })
+            out.append(self._enrich_one(
+                mid, status, type_, entry, score=fused_score,
+                paths=sorted(paths), in_time_window=mid in in_time_window_ids,
+            ))
+        return out
+
+    def _enrich_one(self, mid, status, type_, entry, *, score,
+                    paths=None, in_time_window=False) -> Dict[str, Any]:
+        fm = entry.frontmatter
+        return {
+            "id": mid,
+            "type": type_,
+            "status": status,
+            "maturity": fm.maturity,
+            "brief": fm.brief,
+            "score": score,
+            "paths": paths if paths is not None else [],
+            "in_time_window": in_time_window,
+            "invalidated": fm.invalidated_by is not None,
+            "invalidated_by": fm.invalidated_by,
+            "use_count": (fm.lesson_meta.use_count if fm.lesson_meta else 0),
+            "outcome": (fm.lesson_meta.outcome if fm.lesson_meta else None),
+        }
+
+    def _resolve_live(self, mem_id, _depth: int = 0, _seen=None):
+        """沿 invalidated_by 跟随到最新的、非 trash、未被取代的条目。
+        返回 (status, type_, entry)；若链断/进 trash/不存在/成环则 None。"""
+        _seen = _seen if _seen is not None else set()
+        if mem_id in _seen or _depth > _MAX_INVALIDATION_HOPS:
+            return None
+        _seen.add(mem_id)
+        loc = self.index.locate(mem_id)
+        if not loc:
+            return None
+        status, type_, _ = loc
+        if status == "trash":
+            return None
+        entry = self.store.read(status, type_, mem_id)
+        nxt = entry.frontmatter.invalidated_by
+        if nxt:
+            return self._resolve_live(nxt, _depth + 1, _seen)
+        if entry.frontmatter.maturity in _OUTDATED_MATURITY:
+            return None
+        return (status, type_, entry)
+
+    def _apply_outdated_policy(self, candidates, include_outdated: bool):
+        """剔除 stale/retired；把被 invalidated_by 取代的条目替换为 successor。
+        include_outdated=True 时原样返回（反思清理流程用）。"""
+        if include_outdated:
+            return candidates
+        present = {c["id"] for c in candidates}
+        out, added = [], set()
+        for c in candidates:
+            if c.get("maturity") in _OUTDATED_MATURITY:
+                continue
+            inv = c.get("invalidated_by")
+            if inv:
+                live = self._resolve_live(inv)
+                if live is None:
+                    continue  # successor 已消失 → 不泄露被取代条目
+                status, type_, entry = live
+                sid = entry.frontmatter.id
+                if sid in added or (sid in present and sid != c["id"]):
+                    continue  # successor 已在结果/候选里 → 去重，丢旧
+                c = self._enrich_one(sid, status, type_, entry, score=c["score"])
+            if c["id"] in added:
+                continue
+            added.add(c["id"])
+            out.append(c)
         return out
