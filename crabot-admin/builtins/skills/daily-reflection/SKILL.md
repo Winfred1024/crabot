@@ -115,6 +115,29 @@ mcp__crab-memory__quick_capture({
 - 好：`"macOS 终端输入中文时键盘模拟不可行，必须使用剪贴板(pbcopy+Cmd+V)"`
 - 差：`"在飞书操作时遇到了中文输入问题并解决了"`
 
+### 第五步 b：批量建链
+
+**目的**：给近期 confirmed 条目之间建立**有类型的关联链接**，让长期记忆从孤立条目长成知识图谱，供后续召回时沿链补全上下文。
+
+1. **取数**：用 `mcp__crab-memory__list_entries({ status: "confirmed", limit: 50, offset: 0 })` 翻页拿待处理的 confirmed 条目；也可只对本轮新写入的条目处理（或复用 `mcp__crab-memory__list_recent` 拿近期新增）。逐页推进 offset 直到取完。
+
+2. **找候选**：对每条目标条目，调 `mcp__crab-memory__search_long_term({ query: <该条 brief>, filters: { status: "confirmed" }, k: 5 })` 拉相关候选。
+
+3. **LLM 判定**：逐个候选判断该条目与候选**是否确有关联关系**。在确有关系时，从下方 4 个 relation 中选 **0 或 1 个最贴切**的；**没有明确关系就不建链**。
+
+4. **写入**：`mcp__crab-memory__set_memory_links({ id: <该条目 id>, links: [{ target: <候选 id>, relation: <relation> }] })`。
+
+**relation 受控词表（只能取以下 4 个之一）**：
+
+- `related`：A 与 B 泛泛相关，但说不出更具体的结构关系。**兜底用，慎用**——能用下面 3 个更具体的就别退回 related。
+- `refines`：A 细化 / 深化 B（同一主题下 A 更具体、更深入）。该用：A 是 B 的进阶说明 / 更细颗粒的版本。
+- `depends_on`：A 以 B 为前提、依赖 B 才成立。该用：不先满足 B，A 的结论就不成立。
+- `part_of`：A 是 B 的组成部分。该用：A 是 B 这个更大整体里的一块；不该用：A 只是和 B 话题接近（那是 related）。
+
+5. **去重**：不与该条目**已有 links** 重复；也不与既有结构关系（`source_cases` / `invalidated_by`）重复造边。
+
+6. **适度**：宁缺毋滥。避免给每条都堆一堆 `related`，只在关系明确时建链。
+
 ### 第六步：生成报告（落 outcome，不外发）
 
 生成结构化报告作为 **task outcome**（task 的执行结果，落库后由 Admin UI / get_task_details 查看），内容包含：
