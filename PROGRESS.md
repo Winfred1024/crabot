@@ -1,8 +1,19 @@
 # Crabot 项目进度
 
-> 最后更新：2026-06-19 — Crabot 备份导出 Plan 1 实现完成（worktree，未合 main）
+> 最后更新：2026-06-19 — Crabot 备份导入 Plan 2 实现完成（worktree `crabot-backup-import`，未合 main）
 
-## 2026-06-19 — Crabot 备份/迁移 Plan 1：导出（worktree `crabot-backup-export`，未合 main）
+## 2026-06-19 — Crabot 备份/迁移 Plan 2：导入（worktree `crabot-backup-import`，未合 main）
+
+设计/计划：`crabot-docs/superpowers/specs/2026-06-19-crabot-backup-import-design.md` + `crabot-docs/superpowers/plans/2026-06-19-crabot-backup-import.md`。
+
+- **导入已实现**：归档按 id 记录级合并回运行中实例（skip/overwrite），保 id 不断交叉引用。统一「导入」向导（泛化原 OpenClaw 向导，按 manifest `product` 自动分流 crabot/openclaw）+ CLI `crabot import`（离线）。
+- **Phase A 导出补强**：gather 改按记录过滤内置（`is_builtin`/`is_system`/`type==='builtin'`），移除 agent/channel implementations 类别条目——归档只含用户自建项。
+- **Phase B 导入核心**：`mergeById` 纯函数 + `schedule-arm`（过期 once 置 disabled）+ `read-archive-category` + 各 manager `upsertById`（provider/channel/mcp/subagent/template）+ memory `import_long_term` RPC（写回 long_term + 同步索引）+ `runCrabotImport` 编排。
+- **Phase C 入口**：Admin `/api/backup/import/{overview,execute}`（overview 按 product 分流，execute 接 ImportDeps）+ 向导泛化 + CLI `crabot import`。
+- **验证**：单测全绿（backup 套件 44 + memory pytest 3 + 各 manager upsert）；**离线 CLI 全链路 round-trip 27 项不变量全 PASS**（id 保留 / 内置过滤 / 密钥 scrub / 过期 once 禁用 / 跨引用完好 / skip·overwrite / memory·skill 落盘）；round-trip 中发现并修复 CLI skill_dir 跨机器断链 bug。
+- **待办**：Admin Web 在线导入 + memory RPC 在线路径 + scheduleEngine arm 的**浏览器端到端自测**（需 live 环境，被运行中实例挡住，未做）；C1 review 标注的两处跟进——导入引用非内置 agent-implementation 会孤儿（当前全内置不触发）、agent reload 用 `initialize()` 有幂等再入副作用。
+
+## 2026-06-19 — Crabot 备份/迁移 Plan 1：导出（已合 main，merge 481e058）
 
 设计/计划：`crabot-docs/superpowers/specs/2026-06-19-crabot-backup-migration-design.md` + `crabot-docs/superpowers/plans/2026-06-19-crabot-backup-export.md`。本质=泛化 OpenClaw 导入机器，备份/迁移走同一套在线 additive 导入。
 
