@@ -24,6 +24,11 @@ logger = logging.getLogger(__name__)
 # 低于阈值时 step3 rerank 已排好序，直接返回。
 _COT_MIN_CANDIDATES = 8
 
+# 跟随 invalidated_by 链的最大跳数，防环/防失控。
+_MAX_INVALIDATION_HOPS = 8
+# 召回默认剔除的衰退态 maturity。
+_OUTDATED_MATURITY = frozenset({"stale", "retired"})
+
 
 def _tokenize(text: str) -> list:
     out = []
@@ -222,3 +227,22 @@ class RecallPipeline:
             "use_count": (fm.lesson_meta.use_count if fm.lesson_meta else 0),
             "outcome": (fm.lesson_meta.outcome if fm.lesson_meta else None),
         }
+
+    def _resolve_live(self, mem_id, _depth: int = 0, _seen=None):
+        """沿 invalidated_by 跟随到最新的、非 trash、未被取代的条目。
+        返回 (status, type_, entry)；若链断/进 trash/不存在/成环则 None。"""
+        _seen = _seen if _seen is not None else set()
+        if mem_id in _seen or _depth > _MAX_INVALIDATION_HOPS:
+            return None
+        _seen.add(mem_id)
+        loc = self.index.locate(mem_id)
+        if not loc:
+            return None
+        status, type_, _ = loc
+        if status == "trash":
+            return None
+        entry = self.store.read(status, type_, mem_id)
+        nxt = entry.frontmatter.invalidated_by
+        if nxt:
+            return self._resolve_live(nxt, _depth + 1, _seen)
+        return (status, type_, entry)

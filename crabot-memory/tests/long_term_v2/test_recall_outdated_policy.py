@@ -49,3 +49,37 @@ def test_enrich_exposes_maturity_and_invalidated_by():
     out = p._enrich([("mem-l-aaa", 1.0, ["sparse"])], in_time_window_ids=set())
     assert out[0]["maturity"] == "stale"
     assert out[0]["invalidated_by"] == "mem-l-bbb"
+
+
+def test_resolve_live_follows_chain_to_newest():
+    a = _mk("mem-l-a", invalidated_by="mem-l-b")
+    b = _mk("mem-l-b", invalidated_by="mem-l-c")
+    c = _mk("mem-l-c")  # 终点：无 invalidated_by
+    p = _pipeline(
+        {"mem-l-a": a, "mem-l-b": b, "mem-l-c": c},
+        {"mem-l-a": ("confirmed", "fact"), "mem-l-b": ("confirmed", "fact"),
+         "mem-l-c": ("confirmed", "fact")},
+    )
+    live = p._resolve_live("mem-l-a")
+    assert live is not None
+    assert live[2].frontmatter.id == "mem-l-c"
+
+
+def test_resolve_live_returns_none_when_successor_in_trash():
+    a = _mk("mem-l-a", invalidated_by="mem-l-b")
+    b = _mk("mem-l-b")
+    p = _pipeline(
+        {"mem-l-a": a, "mem-l-b": b},
+        {"mem-l-a": ("confirmed", "fact"), "mem-l-b": ("trash", "fact")},
+    )
+    assert p._resolve_live("mem-l-a") is None
+
+
+def test_resolve_live_breaks_cycle():
+    a = _mk("mem-l-a", invalidated_by="mem-l-b")
+    b = _mk("mem-l-b", invalidated_by="mem-l-a")
+    p = _pipeline(
+        {"mem-l-a": a, "mem-l-b": b},
+        {"mem-l-a": ("confirmed", "fact"), "mem-l-b": ("confirmed", "fact")},
+    )
+    assert p._resolve_live("mem-l-a") is None
