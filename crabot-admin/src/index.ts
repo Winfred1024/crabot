@@ -4316,10 +4316,9 @@ export class AdminModule extends ModuleBase {
    *
    * 反思（daily-reflection）已会增量建链；本端点是给人类"立刻全量重建 / 冷启动回填"用。
    *
-   * 拾取说明：task 建出来即 status=pending。pending 任务不会被 agent 自动接进 worker loop
-   * （参见 agent unified-agent.ts handleStartRecoveryTask 注释——admin.task_created 事件无人订阅），
-   * 目前 agent 仅对 recovery / schedule 两条专用 hand-off RPC 接管 pending 任务。本端点刻意
-   * 不复用 recovery 专用 RPC，只产出 pending 任务，等待通用拾取机制 / 人工派发。
+   * 派发：建出 pending 任务后立即用通用 start_task RPC 派发给 agent 后台执行（与 self-healing
+   * recovery 同一条 hand-off 路径，复用 unified-agent.handleStartTask → executeScheduledTaskInBackground，
+   * 即每日反思的同一执行引擎）。await 派发以便 agent 不可用时端点显式报错，而非静默留下不跑的 pending 任务。
    */
   private async handleRebuildMemoryGraph(): Promise<{ task_id: string }> {
     const params: CreateTaskParams = {
@@ -4338,6 +4337,8 @@ export class AdminModule extends ModuleBase {
       },
     }
     const { task } = await this.handleCreateTask(params)
+    // 通用派发：让 agent 后台真正执行这条任务（非静默 pending）。
+    await this.callAgentRpc('start_task', { task_id: task.id })
     return { task_id: task.id }
   }
 

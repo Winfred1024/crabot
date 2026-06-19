@@ -375,8 +375,22 @@ describe('Admin Web API', () => {
   })
 
   describe('POST /api/memory/v2/graph/rebuild', () => {
-    it('creates a pending memory_rebuild worker task and returns its task_id', async () => {
+    it('creates a memory_rebuild worker task and dispatches it via start_task', async () => {
       const token = await loginAndGetToken()
+
+      // agent 端口就绪（>0 时 ensureAgentPort 直接返回，跳过 resolve）+ stub start_task 派发
+      admin['agentPort'] = 19002
+      const callSpy = vi
+        .spyOn(admin['rpcClient'], 'call')
+        .mockImplementation(async (_port, method, params) => {
+          if (method === 'start_task') {
+            return {
+              task_id: (params as { task_id: string }).task_id,
+              assigned_worker: 'worker-1',
+            } as never
+          }
+          return {} as never
+        })
 
       const response = await makeWebRequest<{ task_id: string }>(
         TEST_WEB_PORT,
@@ -392,12 +406,19 @@ describe('Admin Web API', () => {
 
       const task = admin['tasks'].get(response.body.task_id as never)
       expect(task).toBeDefined()
-      expect(task!.status).toBe('pending')
       expect(task!.tags).toContain('memory_rebuild')
       expect(task!.title).toBe('重建长期记忆图谱')
       expect(task!.source).toEqual({ origin: 'system', trigger_type: 'manual' })
       expect(task!.messages[0]?.role).toBe('human')
       expect(task!.messages[0]?.content).toContain('set_memory_links')
+
+      // 关键：任务通过通用 start_task RPC 被真正派发给 agent 后台执行（不是静默 pending）
+      expect(callSpy).toHaveBeenCalledWith(
+        19002,
+        'start_task',
+        { task_id: response.body.task_id },
+        expect.anything(),
+      )
     })
   })
 
