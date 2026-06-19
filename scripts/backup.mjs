@@ -15,14 +15,23 @@ const ROOT = resolve(__dirname, '..')
 const HOME_DIR = resolve(homedir(), '.crabot')
 const importPath = (p) => import(pathToFileURL(p).href)
 
+function requireValue(argv, i, flag) {
+  const v = argv[i]
+  if (v === undefined) {
+    console.error(`[crabot] ${flag} 需要一个参数`)
+    process.exit(1)
+  }
+  return v
+}
+
 function parseArgs(argv) {
   const out = { categories: null, includeSecrets: false, yes: false, outPath: null }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
-    if (a === '--include') out.categories = argv[++i]?.split(',').filter(Boolean) ?? []
+    if (a === '--include') out.categories = requireValue(argv, ++i, '--include').split(',').filter(Boolean)
     else if (a === '--include-secrets') out.includeSecrets = true
     else if (a === '--yes' || a === '-y') out.yes = true
-    else if (a === '--out') out.outPath = argv[++i]
+    else if (a === '--out') out.outPath = requireValue(argv, ++i, '--out')
   }
   return out
 }
