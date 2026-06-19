@@ -5,7 +5,7 @@ import { useToast } from '../../../contexts/ToastContext'
 import {
   memoryV2Service,
   type MemoryType, type MemoryStatus, type MemoryEntryV2,
-  type EvolutionMode, type CreateEntryParams,
+  type EvolutionMode, type CreateEntryParams, type MemoryGraphData,
 } from '../../../services/memoryV2'
 import { TypeChips } from './components/TypeChips'
 import { StatusChips } from './components/StatusChips'
@@ -20,8 +20,9 @@ import { BatchActionBar } from './components/BatchActionBar'
 import { MaintenanceDropdown, type MaintenanceScope } from './components/MaintenanceDropdown'
 import { SearchBox, type SearchMode } from './components/SearchBox'
 import { DiffReviewModal } from './components/DiffReviewModal'
+import { MemoryGraphPanel } from './components/MemoryGraphPanel'
 
-type TopTab = 'all' | 'observation'
+type TopTab = 'all' | 'observation' | 'graph'
 type DrawerState =
   | { kind: 'closed' }
   | { kind: 'view'; entry: MemoryEntryV2 }
@@ -66,6 +67,9 @@ export const MemoryV2Page: React.FC = () => {
 
   const [rebuildingGraph, setRebuildingGraph] = useState(false)
 
+  const [graphData, setGraphData] = useState<MemoryGraphData | null>(null)
+  const [graphLoading, setGraphLoading] = useState(false)
+
   useEffect(() => {
     const p = new URLSearchParams(loc.search)
     p.set('tab', tab)
@@ -104,8 +108,21 @@ export const MemoryV2Page: React.FC = () => {
     try { const r = await memoryV2Service.getObservationPending(); setObservationCount(r.items.length) } catch { /* ignore */ }
   }, [])
 
+  const refreshGraph = useCallback(async () => {
+    setGraphLoading(true)
+    try {
+      const r = await memoryV2Service.getMemoryGraph()
+      setGraphData(r)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '加载图谱失败')
+    } finally {
+      setGraphLoading(false)
+    }
+  }, [toast])
+
   useEffect(() => { refreshEntries() }, [refreshEntries])
   useEffect(() => { refreshMode(); refreshObservation() }, [refreshMode, refreshObservation])
+  useEffect(() => { if (tab === 'graph') refreshGraph() }, [tab, refreshGraph])
 
   function toggleSelect(id: string) {
     setSelectedIds(prev => {
@@ -271,6 +288,13 @@ export const MemoryV2Page: React.FC = () => {
             <span>观察期</span>
             <span className={'mem-tab__count' + (observationCount > 0 ? ' mem-tab__count--warn' : '')}>({observationCount})</span>
           </button>
+          <button
+            type="button"
+            className={'mem-tab ' + (tab === 'graph' ? 'mem-tab--active' : '')}
+            onClick={() => setTab('graph')}
+          >
+            <span>图谱</span>
+          </button>
         </nav>
 
         {tab === 'all' ? (
@@ -306,8 +330,16 @@ export const MemoryV2Page: React.FC = () => {
                     />}
             </div>
           </>
-        ) : (
+        ) : tab === 'observation' ? (
           <ObservationPendingPanel />
+        ) : (
+          <div className="mem-list-panel">
+            {graphLoading && !graphData
+              ? <div className="mem-list-panel__loading">· · · 加载图谱中 · · ·</div>
+              : !graphData || graphData.nodes.length === 0
+                ? <div className="mem-list-panel__empty">暂无图谱，可点右上角「重建记忆图谱」生成关联</div>
+                : <MemoryGraphPanel data={graphData} />}
+          </div>
         )}
 
         <MemoryDrawer
