@@ -4,7 +4,7 @@
 
 import './_preflight.mjs'
 
-import { resolve, join, dirname } from 'node:path'
+import { resolve, join, dirname, sep } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
@@ -284,9 +284,15 @@ async function main() {
         (e) => e.startsWith(ltPrefix) && !e.includes('/.versions/') && !e.endsWith('/')
       )
 
+      const memoryRoot = resolve(memoryDataDir)
       for (const entry of ltEntries) {
         const relPath = entry.slice('payload/memory/'.length) // long_term/<status>/<type>/<id>.md
         const destPath = join(memoryDataDir, relPath)
+        // zip-slip 防护：归档条目可能含 ../，确保落点在 memoryDataDir 内
+        if (resolve(destPath) !== memoryRoot && !resolve(destPath).startsWith(memoryRoot + sep)) {
+          results.push({ kind: 'memory', id: relPath, status: 'failed', reason: 'unsafe-path' })
+          continue
+        }
         try {
           const text = await readArchiveTextFile(archive, entry)
           if (text === null) continue
