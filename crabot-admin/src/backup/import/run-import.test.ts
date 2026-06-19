@@ -74,4 +74,29 @@ describe('runCrabotImport', () => {
     expect(summary.results.find((r) => r.id === 't1')?.status).toBe('failed')
     expect(summary.results.find((r) => r.id === 't2')?.status).toBe('imported')
   })
+
+  it('importSkills 抛错时仍调 finalize 并记 error', async () => {
+    const archive = await makeArchive({ skills: { 'skills.json': [{ id: 's1' }] } })
+    let finalized = false
+    const summary = await runCrabotImport({
+      archivePath: archive, categories: ['skills'], onConflict: 'skip',
+      deps: {
+        importSkills: async () => { throw new Error('skill boom') },
+        finalize: async () => { finalized = true },
+      },
+    })
+    expect(finalized).toBe(true)
+    expect(summary.errors.some((e) => e.includes('skills'))).toBe(true)
+  })
+
+  it('选中 channels 但缺 upsertChannel → 记 error', async () => {
+    const archive = await makeArchive({
+      channels: { 'channel-instances.json': [{ id: 'c1' }] },
+    })
+    const summary = await runCrabotImport({
+      archivePath: archive, categories: ['channels'], onConflict: 'skip',
+      deps: { finalize: async () => {} },
+    })
+    expect(summary.errors.some((e) => e.includes('channel'))).toBe(true)
+  })
 })

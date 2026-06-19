@@ -52,47 +52,68 @@ export async function runCrabotImport(params: {
   const errors: string[] = []
   const selected = new Set(categories)
 
-  for (const item of SIMPLE_ARRAY_IMPORT) {
-    if (!selected.has(item.category)) continue
-    const rows = await readJsonArrayFromArchive(archivePath, item.file)
-    if (rows.length === 0) continue
-    const upsert = deps[item.depKey] as UpsertFn | undefined
-    if (!upsert) {
-      errors.push(`缺少 ${item.kind} 的导入处理器`)
-      continue
-    }
-    for (const row of rows) {
-      const id = (row as { id?: string }).id ?? ''
-      try {
-        const status = await upsert(row)
-        results.push({ kind: item.kind, id, status })
-      } catch (err) {
-        results.push({ kind: item.kind, id, status: 'failed', reason: String(err) })
+  // 注：以下导出文件不走本表，由 C1 的 deps 接线特殊处理或刻意不导入：
+  //   - global_model_config.json（单对象非数组，C1 特殊落地）
+  //   - agent-configs/<id>.json（随 agent-instance 由 upsertAgentInstance 一并写）
+  //   - channel-configs/<id>.json（随 channel 实例由 upsertChannel 一并写）
+  //   - friend-permission-configs.json（按 friend_id 而非 id，留 C1 决定）
+  //   - vendor.yaml（system mode 由 root 管，不导入）
+  try {
+    for (const item of SIMPLE_ARRAY_IMPORT) {
+      if (!selected.has(item.category)) continue
+      const rows = await readJsonArrayFromArchive(archivePath, item.file)
+      if (rows.length === 0) continue
+      const upsert = deps[item.depKey] as UpsertFn | undefined
+      if (!upsert) {
+        errors.push(`缺少 ${item.kind} 的导入处理器`)
+        continue
+      }
+      for (const row of rows) {
+        const id = (row as { id?: string }).id ?? ''
+        try {
+          const status = await upsert(row)
+          results.push({ kind: item.kind, id, status })
+        } catch (err) {
+          results.push({ kind: item.kind, id, status: 'failed', reason: String(err) })
+        }
       }
     }
-  }
 
-  // channels 实例（带 config）单独走 upsertChannel
-  if (selected.has('channels') && deps.upsertChannel) {
-    const rows = await readJsonArrayFromArchive(archivePath, 'payload/channels/channel-instances.json')
-    for (const row of rows) {
-      const id = (row as { id?: string }).id ?? ''
-      try {
-        const status = await deps.upsertChannel(row)
-        results.push({ kind: 'channel', id, status })
-      } catch (err) {
-        results.push({ kind: 'channel', id, status: 'failed', reason: String(err) })
+    // channels 实例（带 config）单独走 upsertChannel
+    if (selected.has('channels')) {
+      if (!deps.upsertChannel) {
+        errors.push('缺少 channel 的导入处理器')
+      } else {
+        const rows = await readJsonArrayFromArchive(archivePath, 'payload/channels/channel-instances.json')
+        for (const row of rows) {
+          const id = (row as { id?: string }).id ?? ''
+          try {
+            const status = await deps.upsertChannel(row)
+            results.push({ kind: 'channel', id, status })
+          } catch (err) {
+            results.push({ kind: 'channel', id, status: 'failed', reason: String(err) })
+          }
+        }
       }
     }
-  }
 
-  if (selected.has('skills') && deps.importSkills) {
-    results.push(...(await deps.importSkills(archivePath, onConflict)))
+    if (selected.has('skills') && deps.importSkills) {
+      try {
+        results.push(...(await deps.importSkills(archivePath, onConflict)))
+      } catch (err) {
+        errors.push(`skills 导入失败：${String(err)}`)
+      }
+    }
+    if (selected.has('memory') && deps.importMemory) {
+      try {
+        results.push(...(await deps.importMemory(archivePath, onConflict)))
+      } catch (err) {
+        errors.push(`memory 导入失败：${String(err)}`)
+      }
+    }
+  } finally {
+    // 无论中途是否抛错，finalize（save + reload + push）都要跑，避免半落盘不刷新
+    await deps.finalize()
   }
-  if (selected.has('memory') && deps.importMemory) {
-    results.push(...(await deps.importMemory(archivePath, onConflict)))
-  }
-
-  await deps.finalize()
   return { results, errors }
 }
