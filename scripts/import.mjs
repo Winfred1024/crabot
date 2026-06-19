@@ -257,14 +257,16 @@ async function main() {
           continue
         }
 
-        // 归并 skills.json 记录
+        // 归并 skills.json 记录：skill_dir 改成目标机器的落地路径，
+        // 否则会残留源机器的绝对路径，跨机器导入后 SkillManager 找不到目录
+        const destRecord = { ...record, skill_dir: skillDestDir }
         if (alreadyExists) {
           const idx = store.arr.findIndex((r) => (r.id ?? r.name) === id)
-          if (idx >= 0) store.arr[idx] = record
-          else store.arr.push(record)
+          if (idx >= 0) store.arr[idx] = destRecord
+          else store.arr.push(destRecord)
           results.push({ kind: 'skill', id, status: 'overwritten' })
         } else {
-          store.arr.push(record)
+          store.arr.push(destRecord)
           store.keys.add(id)
           results.push({ kind: 'skill', id, status: 'imported' })
         }
