@@ -45,3 +45,5 @@ export const DEFAULT_CATEGORIES: BackupCategory[] = ['config', 'channels', 'skil
 export function isBackupCategory(v: string): v is BackupCategory {
   return (BACKUP_CATEGORIES as readonly string[]).includes(v)
 }
+
+export { BACKUP_CATEGORIES } from './types.js'
