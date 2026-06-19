@@ -8,7 +8,7 @@ import http, { type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
-import { createWriteStream } from 'node:fs'
+import { createReadStream, createWriteStream } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pipeline } from 'node:stream/promises'
@@ -9671,13 +9671,14 @@ export class AdminModule extends ModuleBase {
           exportShortTermMemory,
         },
       })
-      const buf = await fs.readFile(outPath)
+      const { size } = await fs.stat(outPath)
       res.writeHead(200, {
         'Content-Type': 'application/gzip',
         'Content-Disposition': `attachment; filename="crabot-backup-${ts}.tar.gz"`,
-        'Content-Length': String(buf.length),
+        'Content-Length': String(size),
       })
-      res.end(buf)
+      // 真流式：从磁盘直接 pipe 到响应，避免把整份归档读进 admin 进程内存
+      await pipeline(createReadStream(outPath), res)
     } catch (err) {
       console.error('[Backup] 导出失败:', err)
       if (!res.headersSent) {
