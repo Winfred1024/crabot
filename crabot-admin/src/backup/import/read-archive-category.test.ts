@@ -15,6 +15,11 @@ describe('readJsonArrayFromArchive', () => {
       path.join(staging, 'payload', 'tasks', 'tasks.json'),
       JSON.stringify([{ id: 't1' }, { id: 't2' }]),
     )
+    // 一个内容为 JSON 对象（非数组）的文件，用于覆盖 Array.isArray===false 分支
+    await fs.writeFile(
+      path.join(staging, 'payload', 'tasks', 'obj.json'),
+      JSON.stringify({ not: 'an-array' }),
+    )
     const out = await fs.mkdtemp(path.join(os.tmpdir(), 'imp-read-out-'))
     archive = path.join(out, 'a.tar.gz')
     await tar.c({ gzip: true, file: archive, cwd: staging }, await fs.readdir(staging))
@@ -30,8 +35,8 @@ describe('readJsonArrayFromArchive', () => {
     expect(rows).toEqual([])
   })
 
-  it('非数组内容返回空数组', async () => {
-    const rows = await readJsonArrayFromArchive(archive, 'manifest.json')
+  it('非数组内容（JSON 对象）返回空数组', async () => {
+    const rows = await readJsonArrayFromArchive(archive, 'payload/tasks/obj.json')
     expect(rows).toEqual([])
   })
 })
