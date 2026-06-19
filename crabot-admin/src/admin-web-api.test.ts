@@ -374,6 +374,33 @@ describe('Admin Web API', () => {
     })
   })
 
+  describe('POST /api/memory/v2/graph/rebuild', () => {
+    it('creates a pending memory_rebuild worker task and returns its task_id', async () => {
+      const token = await loginAndGetToken()
+
+      const response = await makeWebRequest<{ task_id: string }>(
+        TEST_WEB_PORT,
+        '/api/memory/v2/graph/rebuild',
+        'POST',
+        {},
+        token,
+      )
+
+      expect(response.statusCode).toBe(200)
+      expect(typeof response.body.task_id).toBe('string')
+      expect(response.body.task_id.length).toBeGreaterThan(0)
+
+      const task = admin['tasks'].get(response.body.task_id as never)
+      expect(task).toBeDefined()
+      expect(task!.status).toBe('pending')
+      expect(task!.tags).toContain('memory_rebuild')
+      expect(task!.title).toBe('重建长期记忆图谱')
+      expect(task!.source).toEqual({ origin: 'system', trigger_type: 'manual' })
+      expect(task!.messages[0]?.role).toBe('human')
+      expect(task!.messages[0]?.content).toContain('set_memory_links')
+    })
+  })
+
   describe('PATCH /api/scene-profiles/:key', () => {
     it('trims label/content and preserves existing label when blank value is submitted', async () => {
       const token = await loginAndGetToken()
