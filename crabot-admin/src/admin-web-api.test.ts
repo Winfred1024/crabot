@@ -422,6 +422,24 @@ describe('Admin Web API', () => {
     })
   })
 
+  describe('POST /api/memory/v2/graph/data', () => {
+    it('透传 get_memory_graph 返回图谱数据', async () => {
+      const token = await loginAndGetToken()
+      vi.spyOn(admin['rpcClient'], 'resolve').mockResolvedValue([
+        { module_id: 'memory-test', module_type: 'memory', version: '0.1.0', port: 19001 },
+      ] as any)
+      const fakeGraph = { nodes: [{ id: 'mem-l-a', kind: 'memory' }], edges: [], stats: { node_count: 1, edge_count: 0 } }
+      vi.spyOn(admin['rpcClient'], 'call').mockImplementation(async (_port, method) => {
+        if (method === 'get_memory_graph') return fakeGraph as any
+        return {} as any
+      })
+      const res = await makeWebRequest<typeof fakeGraph>(TEST_WEB_PORT, '/api/memory/v2/graph/data', 'POST', {}, token)
+      expect(res.statusCode).toBe(200)
+      expect(res.body.stats.node_count).toBe(1)
+      expect(res.body.nodes[0].id).toBe('mem-l-a')
+    })
+  })
+
   describe('PATCH /api/scene-profiles/:key', () => {
     it('trims label/content and preserves existing label when blank value is submitted', async () => {
       const token = await loginAndGetToken()

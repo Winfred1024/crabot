@@ -109,6 +109,31 @@ export interface ObservationPendingItem {
   observation_fail_count?: number
 }
 
+export interface MemoryGraphNode {
+  id: string
+  kind: 'memory' | 'entity'
+  type?: string
+  brief?: string
+  status?: string
+  maturity?: string
+  invalidated?: boolean
+  entity_type?: string
+  name?: string
+}
+
+export interface MemoryGraphEdge {
+  source: string
+  target: string
+  edge_type: 'link' | 'membership' | 'source_case' | 'invalidated' | 'version'
+  relation?: string
+}
+
+export interface MemoryGraphData {
+  nodes: MemoryGraphNode[]
+  edges: MemoryGraphEdge[]
+  stats: { node_count: number; edge_count: number }
+}
+
 function buildQuery(params: Record<string, string | number | string[] | undefined>): string {
   const search = new URLSearchParams()
   Object.entries(params).forEach(([k, v]) => {
@@ -194,5 +219,9 @@ export const memoryV2Service = {
 
   async rebuildMemoryGraph(): Promise<{ task_id: string }> {
     return api.post('/memory/v2/graph/rebuild', {})
+  },
+
+  async getMemoryGraph(): Promise<MemoryGraphData> {
+    return api.post('/memory/v2/graph/data', {})
   },
 }
