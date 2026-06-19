@@ -129,7 +129,6 @@ export const BackupExportPage: React.FC = () => {
         </section>
 
         <div className="bx-footer">
-          <span />
           <button
             className="btn btn-primary btn-lg"
             disabled={selected.size === 0 || busy}
