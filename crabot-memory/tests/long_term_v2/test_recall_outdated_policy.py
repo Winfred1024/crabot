@@ -163,3 +163,22 @@ def test_search_long_term_defaults_include_outdated_false():
     rpc.store = _FakeStore({})
     asyncio.run(rpc.search_long_term({"query": "q"}))
     assert rpc.pipeline.captured["include_outdated"] is False
+
+
+def test_resolve_live_returns_none_when_successor_stale():
+    a = _mk("mem-l-a", invalidated_by="mem-l-b")
+    b = _mk("mem-l-b", maturity="stale")
+    p = _pipeline(
+        {"mem-l-a": a, "mem-l-b": b},
+        {"mem-l-a": ("confirmed", "fact"), "mem-l-b": ("confirmed", "fact")},
+    )
+    assert p._resolve_live("mem-l-a") is None
+
+
+def test_policy_drops_when_successor_itself_stale():
+    succ = _mk("mem-l-new", maturity="stale")
+    p = _pipeline({"mem-l-new": succ}, {"mem-l-new": ("confirmed", "fact")})
+    cands = [{"id": "mem-l-old", "maturity": "confirmed",
+              "invalidated_by": "mem-l-new", "score": 0.7}]
+    out = p._apply_outdated_policy(cands, include_outdated=False)
+    assert out == []

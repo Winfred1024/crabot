@@ -246,6 +246,8 @@ class RecallPipeline:
         nxt = entry.frontmatter.invalidated_by
         if nxt:
             return self._resolve_live(nxt, _depth + 1, _seen)
+        if entry.frontmatter.maturity in _OUTDATED_MATURITY:
+            return None
         return (status, type_, entry)
 
     def _apply_outdated_policy(self, candidates, include_outdated: bool):
