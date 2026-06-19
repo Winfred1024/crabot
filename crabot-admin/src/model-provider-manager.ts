@@ -24,6 +24,7 @@ import type {
   ModelType,
   ProxyConfig,
 } from './types.js'
+import type { OnConflict } from './backup/import/import-types.js'
 import { findPresetVendor } from './vendor-registry.js'
 
 /**
@@ -365,6 +366,14 @@ export class ModelProviderManager {
     await this.saveProviders()
 
     console.log(`[ModelProviderManager] Deleted provider ${id}`)
+  }
+
+  async upsertById(provider: ModelProvider, onConflict: OnConflict): Promise<'imported' | 'overwritten' | 'skipped'> {
+    const exists = this.providers.has(provider.id)
+    if (exists && onConflict === 'skip') return 'skipped'
+    this.providers.set(provider.id, provider)
+    await this.saveProviders()
+    return exists ? 'overwritten' : 'imported'
   }
 
   // ============================================================================
