@@ -8,7 +8,7 @@ import http, { type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
-import { createWriteStream } from 'node:fs'
+import { createReadStream, createWriteStream } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pipeline } from 'node:stream/promises'
@@ -16,6 +16,9 @@ import { buildBackupOverview } from './openclaw-import/build-overview.js'
 import { runImport, type ImportSelections } from './openclaw-import/run-import.js'
 import { buildImportDeps } from './openclaw-import/build-import-deps.js'
 import { StagedUploadStore } from './openclaw-import/staged-upload-store.js'
+import { BACKUP_CATEGORIES, DEFAULT_CATEGORIES } from './backup/categories.js'
+import { exportArchive } from './backup/export-archive.js'
+import type { BackupCategory } from './backup/types.js'
 import { BrowserManager } from './browser-manager.js'
 import { PermissionTemplateManager } from './permission-template-manager.js'
 import {
@@ -1481,6 +1484,16 @@ export class AdminModule extends ModuleBase {
       }
       if (pathname === '/api/openclaw-import/execute' && req.method === 'POST') {
         await this.handleOpenClawImportExecuteApi(req, res)
+        return
+      }
+
+      // 备份导出
+      if (pathname === '/api/backup/options' && req.method === 'GET') {
+        await this.handleBackupOptionsApi(res)
+        return
+      }
+      if (pathname === '/api/backup/export' && req.method === 'GET') {
+        await this.handleBackupExportApi(req, res, url)
         return
       }
 
@@ -9654,6 +9667,75 @@ export class AdminModule extends ModuleBase {
       }
     } catch (error) {
       throw error
+    }
+  }
+
+  // ============================================================================
+  // 备份导出 API 处理方法
+  // ============================================================================
+
+  private async handleBackupOptionsApi(res: ServerResponse): Promise<void> {
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ categories: BACKUP_CATEGORIES, defaults: DEFAULT_CATEGORIES }))
+  }
+
+  private async handleBackupExportApi(
+    _req: IncomingMessage,
+    res: ServerResponse,
+    url: URL,
+  ): Promise<void> {
+    const requested = (url.searchParams.get('categories') ?? '').split(',').filter(Boolean)
+    const categories = requested.filter((c): c is BackupCategory =>
+      (BACKUP_CATEGORIES as readonly string[]).includes(c)) as BackupCategory[]
+    const includeSecrets = url.searchParams.get('includeSecrets') === 'true'
+
+    if (categories.length === 0) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: '至少选择一个类别' }))
+      return
+    }
+
+    const ts = new Date().toISOString().replace(/[:.]/g, '-')
+    const outPath = path.join(os.tmpdir(), `crabot-backup-${ts}.tar.gz`)
+    const stagingRoot = path.join(os.tmpdir(), `crabot-backup-staging-${ts}`)
+    try {
+      const memoryDataDir = path.join(this.adminConfig.data_dir, '..', 'memory')
+      let exportShortTermMemory: (() => Promise<unknown>) | undefined
+      if (categories.includes('memory')) {
+        exportShortTermMemory = async () => {
+          const memoryPort = await this.getMemoryPort()
+          return this.rpcClient.call(memoryPort, 'export_memories', {}, this.config.moduleId)
+        }
+      }
+      await exportArchive({
+        selection: { categories, includeSecrets },
+        outPath,
+        stagingRoot,
+        runtimeVersion: process.env.CRABOT_VERSION ?? 'dev',
+        createdAt: new Date().toISOString(),
+        deps: {
+          adminDataDir: this.adminConfig.data_dir,
+          memoryDataDir,
+          exportShortTermMemory,
+        },
+      })
+      const { size } = await fs.stat(outPath)
+      res.writeHead(200, {
+        'Content-Type': 'application/gzip',
+        'Content-Disposition': `attachment; filename="crabot-backup-${ts}.tar.gz"`,
+        'Content-Length': String(size),
+      })
+      // 真流式：从磁盘直接 pipe 到响应，避免把整份归档读进 admin 进程内存
+      await pipeline(createReadStream(outPath), res)
+    } catch (err) {
+      console.error('[Backup] 导出失败:', err)
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: '导出失败' }))
+      }
+    } finally {
+      await fs.rm(outPath, { force: true })
+      await fs.rm(stagingRoot, { recursive: true, force: true })
     }
   }
 }
