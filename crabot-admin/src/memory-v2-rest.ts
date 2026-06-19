@@ -185,6 +185,13 @@ export function createMemoryV2RestRouter(deps: MemoryV2RestRouterDeps) {
       return { status: 200, body: { ran, report } }
     }
 
+    // POST /api/memory/v2/graph/data — 透传 get_memory_graph 返回图谱 nodes+edges
+    if (method === 'POST' && pathname === '/api/memory/v2/graph/data') {
+      const parsed = body ? JSON.parse(body) : {}
+      const result = await rpcClient.call(port, 'get_memory_graph', parsed, moduleId)
+      return { status: 200, body: result }
+    }
+
     return { status: 404, body: { error: 'Not found' } }
   }
 

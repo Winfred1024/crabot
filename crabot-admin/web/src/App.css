@@ -7366,3 +7366,147 @@ input[type="radio"]:disabled {
   border: 1px solid var(--border);
   border-radius: 4px;
 }
+
+/* ── Memory graph panel ─────────────────────────────── */
+.mem-graph {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.mem-graph__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.mem-graph__stat {
+  font-size: 0.85rem;
+  color: var(--text-primary);
+}
+
+.mem-graph__toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.85rem;
+}
+
+.mem-graph__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.mem-graph__swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.mem-graph__body {
+  display: flex;
+  gap: 0.75rem;
+  align-items: stretch;
+}
+
+.mem-graph__canvas {
+  flex: 1;
+  min-width: 0;
+  height: 520px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  color: var(--text-muted);
+}
+
+.mem-graph__detail {
+  width: 240px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.mem-graph__detail-empty {
+  padding: 0.85rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.mem-graph__detail-card {
+  padding: 0.85rem;
+  background: var(--surface);
+  border: 1px solid var(--border-highlight);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.mem-graph__detail-kind {
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--primary-light);
+}
+
+.mem-graph__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.mem-graph__field-label {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}
+
+.mem-graph__field-value {
+  font-size: 0.82rem;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.mem-graph__field-value--mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
+.mem-graph__legend {
+  padding: 0.85rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.mem-graph__legend-title {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  margin-bottom: 0.15rem;
+}
+
+.mem-graph__legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}

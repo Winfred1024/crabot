@@ -374,6 +374,72 @@ describe('Admin Web API', () => {
     })
   })
 
+  describe('POST /api/memory/v2/graph/rebuild', () => {
+    it('creates a memory_rebuild worker task and dispatches it via start_task', async () => {
+      const token = await loginAndGetToken()
+
+      // agent 端口就绪（>0 时 ensureAgentPort 直接返回，跳过 resolve）+ stub start_task 派发
+      admin['agentPort'] = 19002
+      const callSpy = vi
+        .spyOn(admin['rpcClient'], 'call')
+        .mockImplementation(async (_port, method, params) => {
+          if (method === 'start_task') {
+            return {
+              task_id: (params as { task_id: string }).task_id,
+              assigned_worker: 'worker-1',
+            } as never
+          }
+          return {} as never
+        })
+
+      const response = await makeWebRequest<{ task_id: string }>(
+        TEST_WEB_PORT,
+        '/api/memory/v2/graph/rebuild',
+        'POST',
+        {},
+        token,
+      )
+
+      expect(response.statusCode).toBe(200)
+      expect(typeof response.body.task_id).toBe('string')
+      expect(response.body.task_id.length).toBeGreaterThan(0)
+
+      const task = admin['tasks'].get(response.body.task_id as never)
+      expect(task).toBeDefined()
+      expect(task!.tags).toContain('memory_rebuild')
+      expect(task!.title).toBe('重建长期记忆图谱')
+      expect(task!.source).toEqual({ origin: 'system', trigger_type: 'manual' })
+      expect(task!.messages[0]?.role).toBe('human')
+      expect(task!.messages[0]?.content).toContain('set_memory_links')
+
+      // 关键：任务通过通用 start_task RPC 被真正派发给 agent 后台执行（不是静默 pending）
+      expect(callSpy).toHaveBeenCalledWith(
+        19002,
+        'start_task',
+        { task_id: response.body.task_id },
+        expect.anything(),
+      )
+    })
+  })
+
+  describe('POST /api/memory/v2/graph/data', () => {
+    it('透传 get_memory_graph 返回图谱数据', async () => {
+      const token = await loginAndGetToken()
+      vi.spyOn(admin['rpcClient'], 'resolve').mockResolvedValue([
+        { module_id: 'memory-test', module_type: 'memory', version: '0.1.0', port: 19001 },
+      ] as any)
+      const fakeGraph = { nodes: [{ id: 'mem-l-a', kind: 'memory' }], edges: [], stats: { node_count: 1, edge_count: 0 } }
+      vi.spyOn(admin['rpcClient'], 'call').mockImplementation(async (_port, method) => {
+        if (method === 'get_memory_graph') return fakeGraph as any
+        return {} as any
+      })
+      const res = await makeWebRequest<typeof fakeGraph>(TEST_WEB_PORT, '/api/memory/v2/graph/data', 'POST', {}, token)
+      expect(res.statusCode).toBe(200)
+      expect(res.body.stats.node_count).toBe(1)
+      expect(res.body.nodes[0].id).toBe('mem-l-a')
+    })
+  })
+
   describe('PATCH /api/scene-profiles/:key', () => {
     it('trims label/content and preserves existing label when blank value is submitted', async () => {
       const token = await loginAndGetToken()

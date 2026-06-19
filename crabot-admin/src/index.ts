@@ -2168,6 +2168,14 @@ export class AdminModule extends ModuleBase {
         return
       }
 
+      // Memory v2 图谱重建：触发一次性 worker 任务全量重建记忆关联链接。
+      // 必须在通用 memoryV2Router dispatch 之前——该 router 只持有 memory 模块 RPC，
+      // 不能创建 admin 侧 task；重建语义是建一条 pending worker 任务。
+      if (req.method === 'POST' && pathname === '/api/memory/v2/graph/rebuild') {
+        await wrapJsonHandler(res, 'memory graph rebuild failed', () => this.handleRebuildMemoryGraph())
+        return
+      }
+
       // Memory v2 REST API
       if (pathname.startsWith('/api/memory/v2/')) {
         const bodyText = req.method && ['POST', 'PATCH', 'PUT'].includes(req.method)
@@ -4300,6 +4308,38 @@ export class AdminModule extends ModuleBase {
     this.publishAdminEvent('admin.task_created', { task })
 
     return { task }
+  }
+
+  /**
+   * 触发"全量重建长期记忆图谱"——建一条 pending 一次性 worker 任务，指令里要求 agent
+   * 遍历所有 confirmed 条目、对每条搜相关候选并用 set_memory_links 建有类型关联链接。
+   *
+   * 反思（daily-reflection）已会增量建链；本端点是给人类"立刻全量重建 / 冷启动回填"用。
+   *
+   * 派发：建出 pending 任务后立即用通用 start_task RPC 派发给 agent 后台执行（与 self-healing
+   * recovery 同一条 hand-off 路径，复用 unified-agent.handleStartTask → executeScheduledTaskInBackground，
+   * 即每日反思的同一执行引擎）。await 派发以便 agent 不可用时端点显式报错，而非静默留下不跑的 pending 任务。
+   */
+  private async handleRebuildMemoryGraph(): Promise<{ task_id: string }> {
+    const params: CreateTaskParams = {
+      title: '重建长期记忆图谱',
+      tags: ['memory_rebuild'],
+      priority: 'normal',
+      source: { origin: 'system', trigger_type: 'manual' },
+      initial_message: {
+        role: 'human',
+        content:
+          '请全量重建长期记忆图谱：用 list_entries 翻页遍历所有 status=confirmed 的长期记忆条目，'
+          + '对每条调 search_long_term 找相关候选，再用 set_memory_links 建立有类型的关联链接。'
+          + 'relation 只能取 related / refines / depends_on / part_of 四种之一；'
+          + '宁缺毋滥，只在确有关联时建链，避免噪音链接；'
+          + '完成后报告建链统计（遍历条目数、新建链接数、按 relation 类型的分布）。',
+      },
+    }
+    const { task } = await this.handleCreateTask(params)
+    // 通用派发：让 agent 后台真正执行这条任务（非静默 pending）。
+    await this.callAgentRpc('start_task', { task_id: task.id })
+    return { task_id: task.id }
   }
 
   private async handleGetTask(params: GetTaskParams): Promise<{ task: Task }> {

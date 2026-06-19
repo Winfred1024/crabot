@@ -181,6 +181,7 @@ class MemoryModule:
             "mark_observation_pass": self._lt_v2_rpc.mark_observation_pass,
             "extend_observation_window": self._lt_v2_rpc.extend_observation_window,
             "get_confirmed_snapshot": self._lt_v2_rpc.get_confirmed_snapshot,
+            "get_memory_graph": self._lt_v2_rpc.get_memory_graph,
             "bump_lesson_use": self._lt_v2_rpc.bump_lesson_use,
             "list_entries": self._lt_v2_rpc.list_entries,
             "keyword_search": self._lt_v2_rpc.keyword_search,

@@ -82,6 +82,37 @@ describe('crab-memory MCP server ↔ SKILL.md 引用契约', () => {
   })
 })
 
+describe('crab-memory 反思建链工具（P2-T6）', () => {
+  it('注册了 list_entries 与 set_memory_links', () => {
+    const tools = extractRegisteredToolNames()
+    expect(tools).toContain('list_entries')
+    expect(tools).toContain('set_memory_links')
+  })
+
+  it('set_memory_links 的 relation 词表恰好是 4 个受控值', () => {
+    const src = fs.readFileSync(CRAB_MEMORY_TS, 'utf-8')
+    const schemaIdx = src.indexOf('SET_MEMORY_LINKS_SCHEMA')
+    expect(schemaIdx).toBeGreaterThan(-1)
+    const enumMatch = src
+      .slice(schemaIdx, schemaIdx + 600)
+      .match(/relation:\s*z\.enum\(\[([^\]]*)\]\)/)
+    expect(enumMatch).not.toBeNull()
+    const relations = (enumMatch![1].match(/'([a-z_]+)'/g) ?? []).map((s) => s.replace(/'/g, ''))
+    expect(relations.sort()).toEqual(['depends_on', 'part_of', 'refines', 'related'])
+  })
+
+  it('set_memory_links 底层映射到 update_long_term 的 links patch', () => {
+    const desc = extractToolDescription('set_memory_links')
+    // 注册体里透传 callRpc('update_long_term', { ... patch: { links } })
+    const src = fs.readFileSync(CRAB_MEMORY_TS, 'utf-8')
+    const toolStart = src.search(/server\.registerTool\(\s*['"]set_memory_links['"]/)
+    const body = src.slice(toolStart, toolStart + 600)
+    expect(body).toContain("callRpc('update_long_term'")
+    expect(body).toContain('patch: { links:')
+    expect(desc).toContain('relation')
+  })
+})
+
 describe('crab-memory.set_scene_profile（合并版 E.1）', () => {
   it('工具列表中含 set_scene_profile，不含 set_scene_anchor / upsert_scene_profile', () => {
     const toolNames = extractRegisteredToolNames()

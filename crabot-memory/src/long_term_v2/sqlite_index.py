@@ -38,6 +38,14 @@ CREATE TABLE IF NOT EXISTS lesson_task_usage (
     PRIMARY KEY (task_id, lesson_id)
 );
 CREATE INDEX IF NOT EXISTS idx_lesson_task_usage_task ON lesson_task_usage(task_id);
+
+CREATE TABLE IF NOT EXISTS links (
+    source_id TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    relation  TEXT NOT NULL,
+    PRIMARY KEY (source_id, target_id, relation)
+);
+CREATE INDEX IF NOT EXISTS idx_links_target ON links(target_id);
 """
 
 _PHASE3_ADDITIVE_COLUMNS = [
@@ -81,6 +89,7 @@ class SqliteIndex:
         cur = self.conn.cursor()
         cur.execute("DELETE FROM entity_index WHERE memory_id = ?", (fm.id,))
         cur.execute("DELETE FROM tag_index WHERE memory_id = ?", (fm.id,))
+        cur.execute("DELETE FROM links WHERE source_id = ?", (fm.id,))
 
         # Phase 3 optional fields
         observation_started_at = fm.observation.started_at if fm.observation else None
@@ -116,6 +125,11 @@ class SqliteIndex:
                 "INSERT OR IGNORE INTO tag_index (tag, memory_id) VALUES (?, ?)",
                 (tag, fm.id),
             )
+        for lk in fm.links:
+            cur.execute(
+                "INSERT OR IGNORE INTO links (source_id, target_id, relation) VALUES (?, ?, ?)",
+                (fm.id, lk.target, lk.relation),
+            )
         self.conn.commit()
 
     def delete(self, mem_id: str) -> None:
@@ -123,6 +137,7 @@ class SqliteIndex:
         cur.execute("DELETE FROM memories WHERE id = ?", (mem_id,))
         cur.execute("DELETE FROM entity_index WHERE memory_id = ?", (mem_id,))
         cur.execute("DELETE FROM tag_index WHERE memory_id = ?", (mem_id,))
+        cur.execute("DELETE FROM links WHERE source_id = ? OR target_id = ?", (mem_id, mem_id))
         self.conn.commit()
 
     def find_by_entity(self, entity_id: str) -> List[str]:
@@ -134,6 +149,27 @@ class SqliteIndex:
         cur = self.conn.cursor()
         cur.execute("SELECT memory_id FROM tag_index WHERE tag = ?", (tag,))
         return [row[0] for row in cur.fetchall()]
+
+    def find_links_from(self, source_id: str) -> list[dict]:
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT target_id, relation FROM links WHERE source_id = ? ORDER BY target_id, relation",
+            (source_id,),
+        )
+        return [{"target": r[0], "relation": r[1]} for r in cur.fetchall()]
+
+    def find_links_to(self, target_id: str) -> list[str]:
+        cur = self.conn.cursor()
+        cur.execute(
+            "SELECT DISTINCT source_id FROM links WHERE target_id = ? ORDER BY source_id",
+            (target_id,),
+        )
+        return [r[0] for r in cur.fetchall()]
+
+    def all_link_sources(self) -> list[str]:
+        cur = self.conn.cursor()
+        cur.execute("SELECT DISTINCT source_id FROM links")
+        return [r[0] for r in cur.fetchall()]
 
     def iter_all_confirmed_briefs(self):
         """Yield {id, type, brief, tags} for status='confirmed'."""

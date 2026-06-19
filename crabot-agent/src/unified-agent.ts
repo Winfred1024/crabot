@@ -435,7 +435,9 @@ export class UnifiedAgent extends ModuleBase {
     // 编排接口
     this.registerMethod('process_message', this.handleProcessMessage.bind(this))
     this.registerMethod('create_task_from_schedule', this.handleCreateTaskFromSchedule.bind(this))
-    this.registerMethod('start_recovery_task', this.handleStartRecoveryTask.bind(this))
+    // 通用「按 id 派发任意 pending 任务到后台 worker」入口；start_recovery_task 为历史兼容别名。
+    this.registerMethod('start_task', this.handleStartTask.bind(this))
+    this.registerMethod('start_recovery_task', this.handleStartTask.bind(this))
     this.registerMethod('resume_task', this.handleResumeTask.bind(this))
     this.registerMethod('finalize_orphan_checkpoints', this.handleFinalizeOrphanCheckpoints.bind(this))
 
@@ -1800,7 +1802,13 @@ export class UnifiedAgent extends ModuleBase {
    * 但 agent 没订阅这个事件，task 永远停留在 pending → 自愈机制半失败。本 RPC 是
    * schedule 路径的同款 hand-off：admin 直接 RPC push agent，跟事件总线无关。
    */
-  private async handleStartRecoveryTask(params: {
+  /**
+   * 按 task_id 派发任意一条 admin pending 任务到后台 worker 执行。
+   * 与 recovery / 重建图谱等 admin 触发的一次性任务共用此入口——逻辑不依赖任何
+   * 「recovery」语义，只是 fetch task → 装配 scheduled 上下文 → executeScheduledTaskInBackground
+   * （与每日反思走的同一条执行引擎）。RPC 名 start_task；start_recovery_task 为兼容别名。
+   */
+  private async handleStartTask(params: {
     task_id: string
   }): Promise<{ task_id: string; assigned_worker: ModuleId }> {
     const { task_id } = params
@@ -1822,7 +1830,7 @@ export class UnifiedAgent extends ModuleBase {
       >(adminPort, 'get_task', { task_id }, this.config.moduleId)
 
       console.log(
-        `[${this.config.moduleId}] Starting recovery task ${task.id}, assigned to ${workerId}`
+        `[${this.config.moduleId}] Starting task ${task.id}, assigned to ${workerId}`
       )
 
       const workerContext = await this.contextAssembler.assembleScheduledTaskContext()
@@ -1841,10 +1849,10 @@ export class UnifiedAgent extends ModuleBase {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       console.error(
-        `[${this.config.moduleId}] Failed to start recovery task ${task_id}:`,
+        `[${this.config.moduleId}] Failed to start task ${task_id}:`,
         message
       )
-      throw new Error(`Failed to start recovery task: ${message}`)
+      throw new Error(`Failed to start task: ${message}`)
     }
   }
 

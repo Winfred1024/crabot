@@ -5,7 +5,7 @@ import { useToast } from '../../../contexts/ToastContext'
 import {
   memoryV2Service,
   type MemoryType, type MemoryStatus, type MemoryEntryV2,
-  type EvolutionMode, type CreateEntryParams,
+  type EvolutionMode, type CreateEntryParams, type MemoryGraphData,
 } from '../../../services/memoryV2'
 import { TypeChips } from './components/TypeChips'
 import { StatusChips } from './components/StatusChips'
@@ -20,8 +20,9 @@ import { BatchActionBar } from './components/BatchActionBar'
 import { MaintenanceDropdown, type MaintenanceScope } from './components/MaintenanceDropdown'
 import { SearchBox, type SearchMode } from './components/SearchBox'
 import { DiffReviewModal } from './components/DiffReviewModal'
+import { MemoryGraphPanel } from './components/MemoryGraphPanel'
 
-type TopTab = 'all' | 'observation'
+type TopTab = 'all' | 'observation' | 'graph'
 type DrawerState =
   | { kind: 'closed' }
   | { kind: 'view'; entry: MemoryEntryV2 }
@@ -64,6 +65,11 @@ export const MemoryV2Page: React.FC = () => {
 
   const [compareOld, setCompareOld] = useState<{ version: number; body: string } | null>(null)
 
+  const [rebuildingGraph, setRebuildingGraph] = useState(false)
+
+  const [graphData, setGraphData] = useState<MemoryGraphData | null>(null)
+  const [graphLoading, setGraphLoading] = useState(false)
+
   useEffect(() => {
     const p = new URLSearchParams(loc.search)
     p.set('tab', tab)
@@ -102,8 +108,21 @@ export const MemoryV2Page: React.FC = () => {
     try { const r = await memoryV2Service.getObservationPending(); setObservationCount(r.items.length) } catch { /* ignore */ }
   }, [])
 
+  const refreshGraph = useCallback(async () => {
+    setGraphLoading(true)
+    try {
+      const r = await memoryV2Service.getMemoryGraph()
+      setGraphData(r)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '加载图谱失败')
+    } finally {
+      setGraphLoading(false)
+    }
+  }, [toast])
+
   useEffect(() => { refreshEntries() }, [refreshEntries])
   useEffect(() => { refreshMode(); refreshObservation() }, [refreshMode, refreshObservation])
+  useEffect(() => { if (tab === 'graph') refreshGraph() }, [tab, refreshGraph])
 
   function toggleSelect(id: string) {
     setSelectedIds(prev => {
@@ -154,6 +173,19 @@ export const MemoryV2Page: React.FC = () => {
       await Promise.all([refreshEntries(), refreshObservation()])
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '维护执行失败')
+    }
+  }
+
+  async function handleRebuildGraph() {
+    if (!confirm('确认重建记忆图谱？将后台遍历全部已确认记忆并重建关联链接，耗时取决于条目数。')) return
+    setRebuildingGraph(true)
+    try {
+      const { task_id } = await memoryV2Service.rebuildMemoryGraph()
+      toast.success?.(`重建任务已创建（${task_id}），后台执行中`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '创建重建任务失败')
+    } finally {
+      setRebuildingGraph(false)
     }
   }
 
@@ -223,6 +255,14 @@ export const MemoryV2Page: React.FC = () => {
             <MaintenanceDropdown onRun={handleMaintenance} />
             <button
               type="button"
+              className="mem-maint__trigger"
+              onClick={handleRebuildGraph}
+              disabled={rebuildingGraph}
+            >
+              {rebuildingGraph ? '重建中…' : '重建记忆图谱'}
+            </button>
+            <button
+              type="button"
               className="mem-page__btn-primary"
               onClick={() => setDrawer({ kind: 'create' })}
             >
@@ -247,6 +287,13 @@ export const MemoryV2Page: React.FC = () => {
           >
             <span>观察期</span>
             <span className={'mem-tab__count' + (observationCount > 0 ? ' mem-tab__count--warn' : '')}>({observationCount})</span>
+          </button>
+          <button
+            type="button"
+            className={'mem-tab ' + (tab === 'graph' ? 'mem-tab--active' : '')}
+            onClick={() => setTab('graph')}
+          >
+            <span>图谱</span>
           </button>
         </nav>
 
@@ -283,8 +330,16 @@ export const MemoryV2Page: React.FC = () => {
                     />}
             </div>
           </>
-        ) : (
+        ) : tab === 'observation' ? (
           <ObservationPendingPanel />
+        ) : (
+          <div className="mem-list-panel">
+            {graphLoading && !graphData
+              ? <div className="mem-list-panel__loading">· · · 加载图谱中 · · ·</div>
+              : !graphData || graphData.nodes.length === 0
+                ? <div className="mem-list-panel__empty">暂无图谱，可点右上角「重建记忆图谱」生成关联</div>
+                : <MemoryGraphPanel data={graphData} />}
+          </div>
         )}
 
         <MemoryDrawer

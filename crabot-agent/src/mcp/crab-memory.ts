@@ -218,6 +218,28 @@ const LIST_RECENT_SCHEMA = {
   limit: z.number().int().min(1).max(100).default(20),
 }
 
+const LIST_ENTRIES_SCHEMA = {
+  type: z.enum(['fact', 'lesson', 'concept']).optional()
+    .describe('按记忆类型过滤'),
+  status: z.enum(['inbox', 'confirmed', 'trash']).optional()
+    .describe('按审核状态过滤'),
+  tags: z.array(z.string()).optional()
+    .describe('按标签过滤'),
+  limit: z.number().int().min(1).max(200).optional()
+    .describe('返回数量上限'),
+  offset: z.number().int().min(0).optional()
+    .describe('分页偏移'),
+}
+
+const SET_MEMORY_LINKS_SCHEMA = {
+  id: z.string().describe('记忆 ID'),
+  links: z.array(z.object({
+    target: z.string().describe('关联目标记忆 ID'),
+    relation: z.enum(['related', 'refines', 'depends_on', 'part_of'])
+      .describe('关联关系：related=相关 / refines=细化 / depends_on=依赖 / part_of=从属'),
+  })).describe('关联链接列表（覆盖式写入 links 字段）'),
+}
+
 const RUN_MAINTENANCE_SCHEMA = {
   scope: z.enum(['all', 'observation_check', 'stale_aging', 'trash_cleanup']).default('all'),
   now_iso: z.string().optional().describe('覆盖当前时间（测试用）'),
@@ -479,6 +501,27 @@ export function createCrabMemoryServer(
       inputSchema: LIST_RECENT_SCHEMA,
     },
     async (args) => callRpc('list_recent', args as Record<string, unknown>),
+  )
+
+  server.registerTool(
+    'list_entries',
+    {
+      description: '列出长期记忆条目（按 type/status/tags 过滤、分页）。全量重建 / 批量建链时遍历 confirmed 用。',
+      inputSchema: LIST_ENTRIES_SCHEMA,
+    },
+    async (args) => callRpc('list_entries', args as Record<string, unknown>),
+  )
+
+  server.registerTool(
+    'set_memory_links',
+    {
+      description: '为某条记忆设置关联链接（relation ∈ related/refines/depends_on/part_of）。反思批量建链用。',
+      inputSchema: SET_MEMORY_LINKS_SCHEMA,
+    },
+    async (args) => callRpc('update_long_term', {
+      id: (args as { id: string }).id,
+      patch: { links: (args as { links: unknown }).links },
+    }),
   )
 
   server.registerTool(
