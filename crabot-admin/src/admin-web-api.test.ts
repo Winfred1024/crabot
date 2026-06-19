@@ -410,6 +410,8 @@ describe('Admin Web API', () => {
       expect(task!.title).toBe('重建长期记忆图谱')
       expect(task!.source).toEqual({ origin: 'system', trigger_type: 'manual' })
       expect(task!.messages[0]?.role).toBe('human')
+      // 重建指令引用 memory-graph-linking skill（判据单一真相来源）+ 覆盖式 set_memory_links
+      expect(task!.messages[0]?.content).toContain('memory-graph-linking')
       expect(task!.messages[0]?.content).toContain('set_memory_links')
 
       // 关键：任务通过通用 start_task RPC 被真正派发给 agent 后台执行（不是静默 pending），

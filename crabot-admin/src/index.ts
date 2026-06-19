@@ -4333,7 +4333,7 @@ export class AdminModule extends ModuleBase {
 
   /**
    * 触发"全量重建长期记忆图谱"——建一条 pending 一次性 worker 任务，指令里要求 agent
-   * 遍历所有 confirmed 条目、对每条搜相关候选并用 set_memory_links 建有类型关联链接。
+   * 用 memory-graph-linking skill 对所有 confirmed 条目覆盖式全量建链（建链判据见该技能）。
    *
    * 反思（daily-reflection）已会增量建链；本端点是给人类"立刻全量重建 / 冷启动回填"用。
    *
@@ -4350,16 +4350,12 @@ export class AdminModule extends ModuleBase {
       initial_message: {
         role: 'human',
         content:
-          '请全量重建长期记忆图谱（覆盖式：先清旧链接再建新）：\n'
-          + '1) 用 list_entries 翻页遍历所有 status=confirmed 的长期记忆条目；\n'
-          + '2) 对【每一条】条目都调一次 set_memory_links，传入它的完整新链接列表来覆盖旧链接——'
-          + '即使判断它没有合适链接，也要显式传 links:[] 把旧的泛链接清掉；\n'
-          + '3) 建链判据（惜墨如金、宁缺毋滥，目标是稀疏但有信息量的图，不是毛球）：默认不连，'
-          + '只在两条目间确有【具体、有信息量】的关系时才连。relation 取值与优先级：\n'
-          + '   - 优先 refines（A 细化/深化 B）/ depends_on（A 以 B 为前提）/ part_of（A 是 B 的组成部分）；\n'
-          + '   - related 仅留给【真有意义、非显而易见】的跨条目引用；'
-          + '【严禁】因为"同项目/同主题/话题接近"就连 related——同主题由实体/标签聚类表达，不是建链的职责；\n'
-          + '   - search_long_term 找到的相似条目多数只是"同主题"，相似≠该连；拿不准就【不连】。\n'
+          '请用 memory-graph-linking skill 全量重建长期记忆图谱（覆盖式：先清旧链接再建新）：\n'
+          + '1) 先调 Skill("memory-graph-linking") 加载建链指引——建链判定（默认不连 / relation 词表 / '
+          + 'related 对称不重复 / 严禁同主题就连）全部以该技能为准；\n'
+          + '2) 用 list_entries 翻页遍历【所有】 status=confirmed 长期记忆条目；\n'
+          + '3) 覆盖式：对【每一条】条目都调一次 set_memory_links 传入它的完整新链接列表来覆盖旧链接——'
+          + '即使按 skill 判定它没有合适链接，也要显式传 links:[] 把旧链接清掉；\n'
           + '4) 完成后报告：遍历条目数、清空(置空)条目数、新建链接数、按 relation 类型的分布。',
       },
     }

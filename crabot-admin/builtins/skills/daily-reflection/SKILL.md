@@ -117,26 +117,11 @@ mcp__crab-memory__quick_capture({
 
 ### 第五步 b：批量建链
 
-**目的**：给近期 confirmed 条目之间建立**有类型的关联链接**，让长期记忆从孤立条目长成知识图谱，供后续召回时沿链补全上下文。
+给近期 confirmed 条目**增量建链**（反思是增量：只处理近期/本轮新增，**不清空**已有链接），判据统一走 `memory-graph-linking` 技能：
 
-1. **取数**：用 `mcp__crab-memory__list_entries({ status: "confirmed", limit: 50, offset: 0 })` 翻页拿待处理的 confirmed 条目；也可只对本轮新写入的条目处理（或复用 `mcp__crab-memory__list_recent` 拿近期新增）。逐页推进 offset 直到取完。
-
-2. **找候选**：对每条目标条目，调 `mcp__crab-memory__search_long_term({ query: <该条 brief>, filters: { status: "confirmed" }, k: 5 })` 拉相关候选。
-
-3. **LLM 判定（默认不连）**：逐个候选判断该条目与候选间**是否确有【具体、有信息量】的关系**。目标是稀疏但有信息量的图，不是毛球。**search_long_term 找到的相似条目多数只是"同主题"，相似 ≠ 该连**。只有确有关系时才从下方 4 个 relation 选 **0 或 1 个最贴切**的；**拿不准 / 只是话题接近 → 不建链**。
-
-4. **写入**：`mcp__crab-memory__set_memory_links({ id: <该条目 id>, links: [{ target: <候选 id>, relation: <relation> }] })`。
-
-**relation 受控词表（只能取以下 4 个之一）**：
-
-- `related`：仅留给**真有意义、非显而易见**的跨条目引用。**【严禁】因为"同项目 / 同主题 / 话题接近"就连 related**——同主题由实体/标签聚类表达，不是建链的职责。能用下面 3 个更具体的就别退回 related。
-- `refines`：A 细化 / 深化 B（同一主题下 A 更具体、更深入）。该用：A 是 B 的进阶说明 / 更细颗粒的版本。
-- `depends_on`：A 以 B 为前提、依赖 B 才成立。该用：不先满足 B，A 的结论就不成立。
-- `part_of`：A 是 B 的组成部分。该用：A 是 B 这个更大整体里的一块；不该用：A 只是和 B 话题接近（那是 related）。
-
-5. **去重**：不与该条目**已有 links** 重复；也不与既有结构关系（`source_cases` / `invalidated_by`）重复造边。
-
-6. **惜墨如金**：宁缺毋滥，稀疏但有信息量 > 密集毛球。绝大多数条目对之间**不该有边**；给一条目堆一堆 `related` 是明确的反模式。
+1. **加载指引**：先调 `Skill("memory-graph-linking")`——relation 受控词表、默认不连、related 对称不重复、严禁因同主题就连、与结构边去重等所有判定**全部以该技能为准**（不要在这里另立判据，避免与重建路径漂移）。
+2. **取数（增量）**：用 `mcp__crab-memory__list_recent` 或 `mcp__crab-memory__list_entries({ status: "confirmed" })` 拿**本轮新增 / 近期**条目，不必全量、不清旧链。
+3. **建链**：对这些条目按 skill 指引执行（search_long_term 找候选 → 判定 → set_memory_links）。
 
 ### 第六步：生成报告（落 outcome，不外发）
 
