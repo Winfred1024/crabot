@@ -35,7 +35,7 @@ if (!process.env.CRABOT_HOME) {
 const args = process.argv.slice(2)
 const command = args[0] ?? 'help'
 
-const bootstrapCommands = new Set(['start', 'stop', 'check', 'help', 'upgrade', 'status', 'init', 'sync', 'vendor'])
+const bootstrapCommands = new Set(['start', 'stop', 'check', 'help', 'upgrade', 'status', 'init', 'sync', 'vendor', 'backup'])
 
 if (command === 'password') {
   await importPath(resolve(__dirname, 'scripts/password.mjs'))

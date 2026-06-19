@@ -16,6 +16,7 @@ const lines = [
   `  ${cyan('crabot check')}              检查模块运行状态`,
   `  ${cyan('crabot upgrade')}            升级到最新版本（release 模式）或重装依赖（源码模式）`,
   `  ${cyan('crabot password')}           修改管理员密码`,
+  `  ${cyan('crabot backup')}             导出备份归档（离线可用，--include <类别> --out <路径>）`,
   '',
   bold('业务管理（CLI 覆盖 Admin WebUI 全部能力）'),
   `  ${cyan('crabot provider list')}      查看模型供应商`,
