@@ -358,7 +358,7 @@ export function createCrabMemoryServer(
                 ...(ctx.taskId ? { task_id: ctx.taskId } : {}),
               },
               moduleId
-            ) as { results: Array<{ id: string; type: string; status: string; brief: string; tags?: string[] }> }
+            ) as { results: Array<{ id: string; type: string; status: string; brief: string; tags?: string[]; maturity?: string; invalidated?: boolean }> }
             return {
               content: [{ type: 'text' as const, text: JSON.stringify({ results: result.results }) }],
             }
