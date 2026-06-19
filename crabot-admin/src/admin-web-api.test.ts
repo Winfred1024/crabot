@@ -412,13 +412,16 @@ describe('Admin Web API', () => {
       expect(task!.messages[0]?.role).toBe('human')
       expect(task!.messages[0]?.content).toContain('set_memory_links')
 
-      // 关键：任务通过通用 start_task RPC 被真正派发给 agent 后台执行（不是静默 pending）
+      // 关键：任务通过通用 start_task RPC 被真正派发给 agent 后台执行（不是静默 pending），
+      // 且带上 master 权限（否则 worker fail-closed 拿不到工具）。
       expect(callSpy).toHaveBeenCalledWith(
         19002,
         'start_task',
-        { task_id: response.body.task_id },
+        expect.objectContaining({ task_id: response.body.task_id }),
         expect.anything(),
       )
+      const startCall = callSpy.mock.calls.find(c => c[1] === 'start_task')
+      expect(startCall?.[2]).toHaveProperty('resolved_permissions')
     })
   })
 

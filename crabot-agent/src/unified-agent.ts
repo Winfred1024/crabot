@@ -1810,8 +1810,10 @@ export class UnifiedAgent extends ModuleBase {
    */
   private async handleStartTask(params: {
     task_id: string
+    /** Admin 解析后下发的执行权限（系统任务用 master_private）。缺省则 worker fail-closed 拿不到工具。 */
+    resolved_permissions?: ResolvedPermissions
   }): Promise<{ task_id: string; assigned_worker: ModuleId }> {
-    const { task_id } = params
+    const { task_id, resolved_permissions } = params
 
     try {
       const workerId = await this.workerSelector.selectWorker({})
@@ -1825,6 +1827,7 @@ export class UnifiedAgent extends ModuleBase {
             title: string
             priority: string
             plan?: string
+            messages?: Array<{ content: string }>
           }
         }
       >(adminPort, 'get_task', { task_id }, this.config.moduleId)
@@ -1833,7 +1836,16 @@ export class UnifiedAgent extends ModuleBase {
         `[${this.config.moduleId}] Starting task ${task.id}, assigned to ${workerId}`
       )
 
-      const workerContext = await this.contextAssembler.assembleScheduledTaskContext()
+      // 任务指令在 messages（initial_message → messages[0]）。scheduled-task-runner 用
+      // task.description 拼 trigger 文本，故把首条消息内容透传为 description，否则 worker 只见标题。
+      const description = task.messages?.[0]?.content ?? ''
+
+      const baseContext = await this.contextAssembler.assembleScheduledTaskContext()
+      // 无 resolved_permissions 时 worker 走 FAIL_CLOSED → tools 全被 deny（tools:[]）。
+      // 系统任务必须带 Admin 算好的 master 权限，worker 才有 memory/file/shell 等工具。
+      const workerContext: WorkerAgentContext = resolved_permissions
+        ? { ...baseContext, resolved_permissions }
+        : baseContext
 
       this.scheduledTaskRunner.executeScheduledTaskInBackground(
         {
@@ -1841,6 +1853,7 @@ export class UnifiedAgent extends ModuleBase {
           title: task.title,
           priority: task.priority,
           plan: task.plan,
+          description,
         },
         workerContext,
       )
