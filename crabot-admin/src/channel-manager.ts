@@ -20,6 +20,7 @@ import type {
   ListChannelInstancesParams,
   ChannelOnboardingMethod,
 } from './types.js'
+import type { OnConflict } from './backup/import/import-types.js'
 
 // ============================================================================
 // 内置模块声明（只声明路径，元数据从 crabot-module.yaml 动态加载）
@@ -575,6 +576,21 @@ export class ChannelManager {
     } catch {
       // 文件不存在，忽略
     }
+  }
+
+  async upsertInstanceById(
+    instance: ChannelInstance,
+    config: Record<string, string> | null,
+    onConflict: OnConflict,
+  ): Promise<'imported' | 'overwritten' | 'skipped'> {
+    const exists = this.instances.has(instance.id)
+    if (exists && onConflict === 'skip') return 'skipped'
+    this.instances.set(instance.id, instance)
+    await this.saveInstances()
+    if (config !== null) {
+      await this.saveLocalConfig(instance.id, config)
+    }
+    return exists ? 'overwritten' : 'imported'
   }
 
   private async ensureDefaults(): Promise<void> {
