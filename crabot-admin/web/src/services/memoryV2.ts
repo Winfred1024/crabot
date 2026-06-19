@@ -191,4 +191,8 @@ export const memoryV2Service = {
   ): Promise<{ ran: string[]; report: Record<string, unknown> }> {
     return api.post('/memory/v2/maintenance/run', { scope })
   },
+
+  async rebuildMemoryGraph(): Promise<{ task_id: string }> {
+    return api.post('/memory/v2/graph/rebuild', {})
+  },
 }

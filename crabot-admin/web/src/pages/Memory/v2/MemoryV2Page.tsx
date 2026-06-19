@@ -64,6 +64,8 @@ export const MemoryV2Page: React.FC = () => {
 
   const [compareOld, setCompareOld] = useState<{ version: number; body: string } | null>(null)
 
+  const [rebuildingGraph, setRebuildingGraph] = useState(false)
+
   useEffect(() => {
     const p = new URLSearchParams(loc.search)
     p.set('tab', tab)
@@ -157,6 +159,19 @@ export const MemoryV2Page: React.FC = () => {
     }
   }
 
+  async function handleRebuildGraph() {
+    if (!confirm('确认重建记忆图谱？将后台遍历全部已确认记忆并重建关联链接，耗时取决于条目数。')) return
+    setRebuildingGraph(true)
+    try {
+      const { task_id } = await memoryV2Service.rebuildMemoryGraph()
+      toast.success?.(`重建任务已创建（${task_id}），后台执行中`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '创建重建任务失败')
+    } finally {
+      setRebuildingGraph(false)
+    }
+  }
+
   async function handleCreate(payload: CreateEntryParams) {
     await memoryV2Service.createEntry(payload)
     await refreshEntries()
@@ -221,6 +236,14 @@ export const MemoryV2Page: React.FC = () => {
           <div className="mem-page__actions">
             <EvolutionModeBadge mode={mode} onClick={() => setModeModalOpen(true)} />
             <MaintenanceDropdown onRun={handleMaintenance} />
+            <button
+              type="button"
+              className="mem-maint__trigger"
+              onClick={handleRebuildGraph}
+              disabled={rebuildingGraph}
+            >
+              {rebuildingGraph ? '重建中…' : '重建记忆图谱'}
+            </button>
             <button
               type="button"
               className="mem-page__btn-primary"
