@@ -13,7 +13,6 @@ export const CATEGORY_PATHS: Record<BackupCategory, CategoryPath[]> = {
     { rel: 'global_model_config.json', kind: 'file' },
     { rel: 'model_providers.json', kind: 'file' },
     { rel: 'agent-instances.json', kind: 'file' },
-    { rel: 'agent-implementations.json', kind: 'file' },
     { rel: 'agent-configs', kind: 'dir' },
     { rel: 'templates.json', kind: 'file' },
     { rel: 'subagents.json', kind: 'file' },
@@ -23,7 +22,6 @@ export const CATEGORY_PATHS: Record<BackupCategory, CategoryPath[]> = {
   ],
   channels: [
     { rel: 'channel-instances.json', kind: 'file' },
-    { rel: 'channel-implementations.json', kind: 'file' },
     { rel: 'channel-configs', kind: 'dir' },
     { rel: 'friends.json', kind: 'file' },
     { rel: 'friend-permission-configs.json', kind: 'file' },
