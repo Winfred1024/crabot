@@ -166,6 +166,11 @@ class SqliteIndex:
         )
         return [r[0] for r in cur.fetchall()]
 
+    def all_link_sources(self) -> list[str]:
+        cur = self.conn.cursor()
+        cur.execute("SELECT DISTINCT source_id FROM links")
+        return [r[0] for r in cur.fetchall()]
+
     def iter_all_confirmed_briefs(self):
         """Yield {id, type, brief, tags} for status='confirmed'."""
         cur = self.conn.execute(

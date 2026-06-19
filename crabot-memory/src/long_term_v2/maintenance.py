@@ -18,7 +18,7 @@ class MaintenanceConfig:
     trash_retention_days: int = 30
 
 
-Scope = Literal["observation_check", "stale_aging", "trash_cleanup", "all"]
+Scope = Literal["observation_check", "stale_aging", "trash_cleanup", "link_gc", "all"]
 
 
 def _now() -> str:
@@ -142,6 +142,60 @@ def _trash_cleanup(store: MemoryStore, index: SqliteIndex, cfg: MaintenanceConfi
     return {"deleted": deleted}
 
 
+def _link_gc(store: MemoryStore, index: SqliteIndex, cfg: MaintenanceConfig) -> dict:
+    """链接清理（P2）：删死链 + 重定向被取代链接。
+
+    对每个有出链的源，逐条 link 解析 target：
+    - target 在 index 中不存在（已 purge）→ 删该 link
+    - target 在 trash → 删该 link
+    - target.invalidated_by 指向 successor → 若 successor 可达则把 link 的 target
+      改为 successor（保留 relation，沿一跳）；不可达则删该 link
+    有变更则把新 links 落盘 + 重建 index。
+    """
+    changed = 0
+    for source_id in index.all_link_sources():
+        loc = index.locate(source_id)
+        if loc is None:
+            continue
+        status, type_, _ = loc[0], loc[1], loc[2]
+        entry = store.read(status, type_, source_id)
+        new_links = []
+        mutated = False
+        for link in entry.frontmatter.links:
+            target_loc = index.locate(link.target)
+            # 死链：target 已不存在
+            if target_loc is None:
+                mutated = True
+                continue
+            target_status = target_loc[0]
+            # target 在 trash → 删
+            if target_status == "trash":
+                mutated = True
+                continue
+            target_entry = store.read(target_status, target_loc[1], link.target)
+            successor = target_entry.frontmatter.invalidated_by
+            if successor:
+                # 被取代：沿一跳重定向到 successor（若可达），否则删
+                if index.locate(successor) is not None:
+                    new_links.append(link.model_copy(update={"target": successor}))
+                mutated = True
+                continue
+            new_links.append(link)
+
+        if mutated:
+            new_fm = entry.frontmatter.model_copy(update={"links": new_links})
+            new_entry = entry.model_copy(update={"frontmatter": new_fm})
+            store.write(new_entry, status=status)
+            index.upsert(
+                new_entry,
+                path=entry_path(store.data_root, status, type_, source_id),
+                status=status,
+            )
+            changed += 1
+
+    return {"changed": changed}
+
+
 def run_maintenance(store: MemoryStore, index: SqliteIndex, scope: Scope, config: MaintenanceConfig) -> dict:
     report: dict = {}
     if scope in ("observation_check", "all"):
@@ -150,5 +204,7 @@ def run_maintenance(store: MemoryStore, index: SqliteIndex, scope: Scope, config
         report["stale_aging"] = _stale_aging(store, index, config)
     if scope in ("trash_cleanup", "all"):
         report["trash_cleanup"] = _trash_cleanup(store, index, config)
+    if scope in ("link_gc", "all"):
+        report["link_gc"] = _link_gc(store, index, config)
     report["completed_at"] = _now()
     return report
