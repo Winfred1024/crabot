@@ -133,7 +133,7 @@ class ImportMemoriesParams(BaseModel):
 class ImportLongTermParams(BaseModel):
     """导入长期记忆参数"""
     entries: list[dict]
-    mode: str = "merge"  # "merge" 跳过已存在 id；"replace" 覆盖
+    mode: Literal["merge", "replace"] = "merge"  # "merge" 跳过已存在 id；"replace" 覆盖
 
 
 # ============================================================================
