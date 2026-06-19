@@ -199,17 +199,26 @@ class RecallPipeline:
                 continue
             status, type_, _ = loc
             entry = self.store.read(status, type_, mid)
-            fm = entry.frontmatter
-            out.append({
-                "id": mid,
-                "type": type_,
-                "status": status,
-                "brief": fm.brief,
-                "score": fused_score,
-                "paths": sorted(paths),
-                "in_time_window": mid in in_time_window_ids,
-                "invalidated": fm.invalidated_by is not None,
-                "use_count": (fm.lesson_meta.use_count if fm.lesson_meta else 0),
-                "outcome": (fm.lesson_meta.outcome if fm.lesson_meta else None),
-            })
+            out.append(self._enrich_one(
+                mid, status, type_, entry, score=fused_score,
+                paths=sorted(paths), in_time_window=mid in in_time_window_ids,
+            ))
         return out
+
+    def _enrich_one(self, mid, status, type_, entry, *, score,
+                    paths=None, in_time_window=False) -> Dict[str, Any]:
+        fm = entry.frontmatter
+        return {
+            "id": mid,
+            "type": type_,
+            "status": status,
+            "maturity": fm.maturity,
+            "brief": fm.brief,
+            "score": score,
+            "paths": paths if paths is not None else [],
+            "in_time_window": in_time_window,
+            "invalidated": fm.invalidated_by is not None,
+            "invalidated_by": fm.invalidated_by,
+            "use_count": (fm.lesson_meta.use_count if fm.lesson_meta else 0),
+            "outcome": (fm.lesson_meta.outcome if fm.lesson_meta else None),
+        }
