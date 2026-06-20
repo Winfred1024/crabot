@@ -82,8 +82,13 @@ function handle(req, res) {
     let body = ''
     let tooBig = false
     req.on('data', (c) => {
+      if (tooBig) return
       body += c
-      if (body.length > MAX_SUBMIT_BYTES) { tooBig = true; req.destroy() }
+      if (body.length > MAX_SUBMIT_BYTES) {
+        tooBig = true
+        send(res, 413, 'application/json', JSON.stringify({ error: 'payload too large' }))
+        req.destroy()
+      }
     })
     req.on('end', () => {
       if (tooBig) return

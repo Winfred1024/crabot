@@ -1,6 +1,21 @@
 import { describe, it, expect, afterAll, beforeAll } from 'vitest'
 import http from 'node:http'
-import { proxyTmpPage } from './tmp-page-proxy'
+import { proxyTmpPage, isManagePath } from './tmp-page-proxy'
+
+describe('isManagePath', () => {
+  it('命中 _manage 端点', () => {
+    expect(isManagePath('/tmp-pages/_manage/list')).toBe(true)
+    expect(isManagePath('/tmp-pages/_manage')).toBe(true)
+  })
+  it('堵住连续斜杠绕过（与 server.cjs 折叠空段对齐）', () => {
+    expect(isManagePath('/tmp-pages//_manage/list')).toBe(true)
+    expect(isManagePath('/tmp-pages///_manage/abc')).toBe(true)
+  })
+  it('放行普通 page 路径', () => {
+    expect(isManagePath('/tmp-pages/abcdef0123456789')).toBe(false)
+    expect(isManagePath('/tmp-pages/abcdef0123456789/submit')).toBe(false)
+  })
+})
 
 let upstream: http.Server, front: http.Server
 let upstreamPort: number, frontPort: number

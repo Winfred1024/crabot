@@ -40,6 +40,15 @@ export function proxyTmpPage(
   })
 }
 
+/**
+ * 判断路径是否命中 _manage 管理端点（应仅 agent 本机直连 127.0.0.1:<port>，不经公网反代）。
+ * 必须先归一化连续斜杠再判：否则 `/tmp-pages//_manage/list` 这类绕过——admin 守卫漏判 →
+ * 照常反代 → server.cjs 用 split('/').filter(Boolean) 折叠空段后仍命中 _manage → 匿名枚举/删除泄露。
+ */
+export function isManagePath(pathname: string): boolean {
+  return pathname.replace(/\/{2,}/g, '/').startsWith('/tmp-pages/_manage')
+}
+
 /** 解析对外 base URL：env 优先，去尾斜杠；未配置退化为本地 web 地址 */
 export function resolveTmpPageBaseUrl(
   envBaseUrl: string | undefined,

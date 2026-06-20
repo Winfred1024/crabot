@@ -183,7 +183,7 @@ import {
 import { ModuleInstaller } from './module-installer.js'
 import { ChatManager, buildChatTaskSnapshot } from './chat-manager.js'
 import { MediaStore } from './media-store.js'
-import { proxyTmpPage, resolveTmpPageBaseUrl } from './tmp-page-proxy.js'
+import { proxyTmpPage, resolveTmpPageBaseUrl, isManagePath } from './tmp-page-proxy.js'
 import {
   MCPServerManager,
   SkillManager,
@@ -2308,7 +2308,8 @@ export class AdminModule extends ModuleBase {
       if (pathname.startsWith('/tmp-pages/')) {
         // _manage 端点（列出/删除 page）仅供 agent 本机直连 127.0.0.1:<port> 使用，
         // 不经公网反代暴露，否则匿名访问者可枚举/删除任意 page。
-        if (pathname.startsWith('/tmp-pages/_manage')) {
+        // isManagePath 归一化连续斜杠后再判，堵住 /tmp-pages//_manage 这类绕过。
+        if (isManagePath(pathname)) {
           res.writeHead(404)
           res.end(JSON.stringify({ error: 'Not found' }))
           return
