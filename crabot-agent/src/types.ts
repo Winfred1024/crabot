@@ -139,6 +139,8 @@ export interface AgentLayerConfig {
   timezone?: string
   /** Subagent 列表（Phase 5），由 admin 推过来 */
   subagents?: SubAgentConfig[]
+  /** 对外可达 base URL，供 worker 拼临时页面链接（<base>/tmp-pages/<id>）；由 admin handleGetAgentConfig 注入 */
+  tmp_page_base_url?: string
 }
 
 export interface UnifiedAgentConfig {
@@ -988,6 +990,8 @@ export interface ToolCallDetails {
   error?: string
   /** 指向 sub-agent 的独立 trace（delegate_task 等场景） */
   child_trace_id?: string
+  /** 本工具对应的 tool_use id,供 UI 从 messages 精确匹配完整 I/O。 */
+  tool_use_id?: string
 }
 
 export interface SubAgentCallDetails {
@@ -1186,7 +1190,7 @@ export interface TraceCallback {
    * agent-handler's onTurn fires after the LLM call already completed). */
   onLlmCallStart(iteration: number, inputSummary: string, attempt?: number, startedAtMs?: number): string
   onLlmCallEnd(spanId: string, result: { stopReason?: string; outputSummary?: string; toolCallsCount?: number; error?: string; forcedSummaryAttempt?: number; usage?: TokenUsage; messageCountAfter?: number }, endedAtMs?: number): void
-  onToolCallStart(toolName: string, inputSummary: string, startedAtMs?: number): string
+  onToolCallStart(toolName: string, inputSummary: string, startedAtMs?: number, toolUseId?: string): string
   /**
    * `childTraceId` 标识由本次工具调用派生出的子 trace（如 `delegate_task` 派 subagent）。
    * 写入后 Admin UI 可从该 tool_call span 内联展开子 trace span 树。

@@ -7,7 +7,7 @@
       body: JSON.stringify(data),
     }).then(() => {
       const el = document.getElementById('crabot-status')
-      if (el) el.textContent = '已提交，可关闭本页'
+      if (el) el.textContent = '已提交，可以回去等它继续'
     }).catch(() => {})
   }
 

@@ -6849,7 +6849,7 @@ export class AdminModule extends ModuleBase {
 
     // 对外可达 base URL，供 agent 拼临时页面链接（<base>/tmp-pages/<id>）
     const tmpPageBaseUrl = resolveTmpPageBaseUrl(
-      process.env.CRABOT_PUBLIC_BASE_URL,
+      this.modelProviderManager.getGlobalConfig().public_base_url,
       this.adminConfig.web_port,
     )
 

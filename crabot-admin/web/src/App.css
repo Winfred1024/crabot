@@ -2989,6 +2989,39 @@ input[type="radio"]:disabled {
   margin-top: 0.25rem;
 }
 
+/* Public base URL (对外访问地址) */
+.public-base-url {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.public-base-url__row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.public-base-url__input {
+  flex: 1;
+  min-width: min(100%, 360px);
+  margin: 0;
+}
+
+.public-base-url__warning {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.public-base-url__actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.25rem;
+}
+
 /* Trace status bar */
 .trace-status-bar {
   display: flex;

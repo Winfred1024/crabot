@@ -1254,6 +1254,11 @@ export interface GlobalModelConfig {
   default_llm_model_id?: string
   proxy?: ProxyConfig
   /**
+   * 对外可达 base URL，供 agent 拼临时页面链接（<base>/tmp-pages/<id>）。
+   * 可选；未配置时 resolveTmpPageBaseUrl 退化为 http://localhost:<web_port>。
+   */
+  public_base_url?: string
+  /**
    * 自动清理的保留天数；null/undefined = 不按天清理。
    * trace_retention_days 和 task_retention_count 互斥：同时存在时 days 优先；都为空 = 不自动清理。
    */

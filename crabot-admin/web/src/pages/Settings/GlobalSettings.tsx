@@ -7,6 +7,7 @@ import { useToast } from '../../contexts/ToastContext'
 import { api } from '../../services/api'
 import { browserService } from '../../services/browser'
 import { ProxyConfigCard } from './ProxyConfigCard'
+import { PublicBaseUrlCard } from './PublicBaseUrlCard'
 
 interface ConfigStatus {
   configured: boolean
@@ -94,7 +95,7 @@ export const GlobalSettings: React.FC = () => {
     <MainLayout>
       <header className="settings-page__header">
         <h1 className="settings-page__title">全局设置</h1>
-        <p className="settings-page__subtitle">默认模型、浏览器和网络代理的配置。</p>
+        <p className="settings-page__subtitle">默认模型、浏览器、对外访问地址和网络代理的配置。</p>
       </header>
 
       {status && !status.configured && (
@@ -206,6 +207,10 @@ export const GlobalSettings: React.FC = () => {
           <p className="settings-card__hint">无法加载浏览器配置</p>
         )}
       </Card>
+
+      <div className="settings-card">
+        <PublicBaseUrlCard />
+      </div>
 
       <div className="settings-card">
         <ProxyConfigCard />

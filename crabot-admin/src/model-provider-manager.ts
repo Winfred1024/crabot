@@ -1004,6 +1004,7 @@ export class ModelProviderManager {
         default_llm_provider_id: raw.default_llm_provider_id,
         default_llm_model_id: raw.default_llm_model_id,
         proxy: raw.proxy,
+        public_base_url: raw.public_base_url,
         trace_retention_days: raw.trace_retention_days ?? null,
         task_retention_count: taskRetentionCount,
       }

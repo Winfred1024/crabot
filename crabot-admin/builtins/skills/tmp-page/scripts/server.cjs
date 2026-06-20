@@ -94,7 +94,9 @@ function handle(req, res) {
       if (tooBig) return
       const line = JSON.stringify({ at: new Date().toISOString(), data: safeParse(body) }) + '\n'
       fs.appendFileSync(path.join(dir, 'events.jsonl'), line)
+      // 反馈已落盘，先回 200；再尝试唤醒 owner task（缺失跳过、失败只记日志，不阻塞返回）
       send(res, 200, 'application/json', JSON.stringify({ ok: true }))
+      wakeOwnerTask(meta && meta.owner_task_id)
     })
     return
   }
@@ -116,6 +118,48 @@ function handle(req, res) {
 }
 
 function safeParse(s) { try { return JSON.parse(s) } catch { return s } }
+
+// 经 MM RPC 唤醒 owner task：先 resolve agent 端口，再 POST deliver_page_feedback。
+// owner_task_id 缺失直接跳过；任一步失败只 console.error，不影响 submit 已返回的 200（反馈已落盘 events.jsonl）。
+function rpc(port, method, params) {
+  return new Promise((resolve) => {
+    const body = JSON.stringify({
+      id: `tmp-page-${Date.now()}`,
+      source: 'tmp-page-server',
+      method,
+      params,
+      timestamp: new Date().toISOString(),
+    })
+    const req = http.request(
+      { hostname: 'localhost', port, method: 'POST', path: `/${method}`, headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } },
+      (r) => {
+        let data = ''
+        r.on('data', (c) => { data += c })
+        r.on('end', () => { try { resolve(JSON.parse(data)) } catch { resolve(null) } })
+      },
+    )
+    req.on('error', () => resolve(null))
+    req.write(body)
+    req.end()
+  })
+}
+
+async function wakeOwnerTask(taskId) {
+  if (!taskId) return
+  try {
+    const mmPort = parseInt(process.env.CRABOT_MM_PORT || '19000', 10)
+    const resolved = await rpc(mmPort, 'resolve', { module_type: 'agent' })
+    const agent = resolved && resolved.success && resolved.data && resolved.data.modules && resolved.data.modules.find((m) => m.port)
+    if (!agent) {
+      console.error(JSON.stringify({ type: 'wake-failed', task_id: taskId, reason: 'agent-unresolved' }))
+      return
+    }
+    await rpc(agent.port, 'deliver_page_feedback', { task_id: taskId })
+  } catch (err) {
+    // 反馈已落盘 events.jsonl，唤醒尽力而为：只记日志，不影响 submit 已返回的 200
+    console.error(JSON.stringify({ type: 'wake-failed', task_id: taskId, error: err && err.message }))
+  }
+}
 
 if (!fs.existsSync(PAGES_DIR)) fs.mkdirSync(PAGES_DIR, { recursive: true })
 const server = http.createServer(handle)

@@ -60,6 +60,8 @@ function buildAdmin(deps: {
     resolveModelConfig: async () => {
       throw new Error('no global llm')
     },
+    // tmp_page_base_url 注入需读全局设置的 public_base_url（默认未配置）
+    getGlobalConfig: () => ({}),
   }
   // subagents 现也由 get_agent_config 下发（buildSubAgentConfigsForPush 调 subAgentManager）；
   // 本测试只验 mcp/skills，stub 成无 enabled subagent 即可。
@@ -67,6 +69,8 @@ function buildAdmin(deps: {
     listEnabled: () => [],
   }
   admin.config = { moduleId: 'test-admin' }
+  // tmp_page_base_url 注入需读 web_port 退化为本地地址
+  admin.adminConfig = { web_port: 3000 }
   return admin
 }
 

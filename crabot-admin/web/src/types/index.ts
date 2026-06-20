@@ -59,6 +59,11 @@ export interface PresetVendor {
 export interface GlobalModelConfig {
   default_llm_provider_id?: string
   default_llm_model_id?: string
+  /**
+   * 对外可达 base URL，供 agent 拼临时页面链接（<base>/tmp-pages/<id>）。
+   * 可选；未配置时后端退化为 http://localhost:<web_port>。
+   */
+  public_base_url?: string
   /** 自动清理保留天数；null = 不按天清理。与 task_retention_count 互斥，同时存在时 days 优先 */
   trace_retention_days?: number | null
   /**

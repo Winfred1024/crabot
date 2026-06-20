@@ -49,13 +49,13 @@ export function isManagePath(pathname: string): boolean {
   return pathname.replace(/\/{2,}/g, '/').startsWith('/tmp-pages/_manage')
 }
 
-/** 解析对外 base URL：env 优先，去尾斜杠；未配置退化为本地 web 地址 */
+/** 解析对外 base URL：优先用全局设置的 public_base_url，去尾斜杠；未配置退化为本地 web 地址 */
 export function resolveTmpPageBaseUrl(
-  envBaseUrl: string | undefined,
+  publicBaseUrl: string | undefined,
   webPort: number,
 ): string {
-  if (envBaseUrl && envBaseUrl.trim()) {
-    return envBaseUrl.trim().replace(/\/+$/, '')
+  if (publicBaseUrl && publicBaseUrl.trim()) {
+    return publicBaseUrl.trim().replace(/\/+$/, '')
   }
   return `http://localhost:${webPort}`
 }

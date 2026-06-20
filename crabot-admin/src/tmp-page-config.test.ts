@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { resolveTmpPageBaseUrl } from './tmp-page-proxy'
 
 describe('resolveTmpPageBaseUrl', () => {
-  it('优先用 CRABOT_PUBLIC_BASE_URL', () => {
+  it('优先用全局设置的 public_base_url', () => {
     expect(resolveTmpPageBaseUrl('https://x.example.com', 3000)).toBe('https://x.example.com')
   })
   it('去掉尾部斜杠', () => {

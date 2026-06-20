@@ -249,6 +249,8 @@ export interface AgentHandlerConfig {
   extra?: Record<string, unknown>
   /** 解析已校验的 IANA 时区，用于 prompt 时间感知。每次 LLM 调用 / 工具执行前重新读取，反映 admin 配置热更新 */
   getTimezone?: () => string
+  /** 对外可达 base URL，注入 worker system prompt 供拼临时页面链接（<base>/tmp-pages/<id>）。未配置时不注入。 */
+  tmpPageBaseUrl?: string
 }
 
 export interface AgentHandlerDeps {
@@ -462,6 +464,8 @@ export class AgentHandler {
   private memoryWriter?: MemoryWriter
   private readonly promptManager?: PromptManager
   private readonly getTimezone: () => string
+  /** 对外 base URL（临时页面链接拼接用），注入 worker system prompt；未配置时为 undefined（不注入） */
+  private readonly tmpPageBaseUrl?: string
   /** Worker-singleton bg entity registry (persistent, disk-backed) */
   private readonly bgRegistry = new BgEntityRegistry()
   /** Worker-singleton transient shell registry (in-memory, task-bound) */
@@ -503,6 +507,7 @@ export class AgentHandler {
     this.memoryWriter = options?.memoryWriter
     this.promptManager = options?.promptManager
     this.getTimezone = config.getTimezone ?? (() => resolveTimezone(undefined))
+    this.tmpPageBaseUrl = config.tmpPageBaseUrl
 
     // Startup: recover persistent bg entities (mark dead shells as failed, stalled agents)
     void this.bgRegistry.recoverPersistent().catch((err) => {
@@ -1253,7 +1258,7 @@ export class AgentHandler {
       // goalModeEnabled 沿用 runWorkerLoop 启动时计算的快照（line 810），跟 audit gate 口径一致：
       // extra.goal_mode_enabled !== false && trigger_type !== 'scheduled'。
       const buildSystemPromptDynamic = (): string =>
-        this.buildSystemPrompt(context, subAgentsSnapshot, goalModeEnabled)
+        this.buildSystemPrompt(context, subAgentsSnapshot, goalModeEnabled, task.task_id)
 
       // 5. Build task message（一次性，task 启动后用户请求/记忆等不变）
       // 若 opts 提供了 initialPrompt，跳过 buildTaskMessage（trigger 流自己构造 prompt）。
@@ -1629,6 +1634,7 @@ export class AgentHandler {
                 tc.name,
                 JSON.stringify(tc.input ?? {}).slice(0, 200),
                 tc.startedAtMs,
+                tc.id,
               )
               if (toolSpanId) {
                 // tool 若返回 JSON 且含 child_trace_id（如 delegate_task），抓出来挂到 span.details
@@ -2723,6 +2729,21 @@ export class AgentHandler {
     this.humanQueues.get(taskId)?.push(`[系统] ${note}`)
   }
 
+  /**
+   * 临时页面（tmp-page）收到人类反馈 → 唤醒等待中的 owner worker。
+   * spec: 2026-06-19-temp-interactive-page-design.md §5.2
+   *
+   * 两步（对两种挂法都成立，见 §5.2 表）：
+   *   ① humanQueue.push(note)：同一套 barrier，无论 worker 用 ask_human 还是 wait_for_signal 挂起都唤醒。
+   *   ② transitionTaskStatus(taskId, 'executing')：把 ask_human 留下的 waiting_human 切回 executing；
+   *      wait_for_signal 场景本就 executing，是 no-op（transitionTaskStatus 自带幂等/智能恢复）。
+   * fire-and-forget：status 切换失败由 admin reconciliation 兜底，不阻塞反馈唤醒（反馈已落盘 events.jsonl）。
+   */
+  wakeForPageFeedback(taskId: TaskId, note: string): void {
+    this.humanQueues.get(taskId)?.push(note)
+    void this.transitionTaskStatus(taskId, 'executing')
+  }
+
   getActiveTasksForQuery(): Array<{ task_id: string; started_at: string; title?: string }> {
     // status 字段已从 WorkerTaskState 删除（SSOT 重整 2026-06-09）：admin tasks.json 是 status 权威，
     // 调用方需要 status 自行从 admin 拉。本接口只暴露 agent 内存里的纯执行态字段。
@@ -3385,6 +3406,7 @@ export class AgentHandler {
     context: WorkerAgentContext,
     subAgents: ReadonlyArray<SubAgentConfig>,
     goalModeEnabled: boolean,
+    taskId: TaskId,
   ): string {
     // unified loop spec §3.1：使用 assembleAgentPrompt。
     const sceneProfile = context.scene_profile
@@ -3416,6 +3438,14 @@ export class AgentHandler {
         parts.push(`- ${m.sandbox_path} -> ${m.host_path} (${m.read_only ? '只读' : '读写'})`)
       }
     }
+    // 临时页面（tmp-page skill）上下文：把对外 base URL + 本 worker 的 task_id 注入，
+    // 让 worker 拼 <base>/tmp-pages/<page_id> 链接、并把 meta.owner_task_id 写成真实 task_id。
+    // spec: 2026-06-19-temp-interactive-page-design.md §5.1 / §5.2
+    if (this.tmpPageBaseUrl) {
+      parts.push('\n## 临时页面')
+      parts.push(`临时页面对外地址: ${this.tmpPageBaseUrl}；你的 task_id: ${taskId}`)
+    }
+
     // 系统触发任务 + 无 target_session 时给 worker 明确指引（避免它对着 SYSTEM_SESSION 占位 session 调 send_message）
     const firstTrigger = context.trigger_messages?.[0]
     if (
