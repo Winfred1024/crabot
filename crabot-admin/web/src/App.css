@@ -2306,6 +2306,15 @@ input[type="radio"]:disabled {
   padding-right: 2rem;
 }
 
+/* 完整对话弹窗：body 在全高 flex 列里占满剩余高度并内部滚动，
+   避免超长对话把标题/关闭键挤出视口（见 Traces 完整对话弹窗） */
+.conv-modal .modal-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+}
+
 /* Change-password dialog scoped styles */
 .change-pwd-form {
   display: flex;

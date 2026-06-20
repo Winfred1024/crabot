@@ -425,7 +425,8 @@ export function TraceDetailPanel({
           open={convModalOpen}
           onClose={() => setConvModalOpen(false)}
           title="完整对话"
-          size="xl"
+          size="full"
+          contentClassName="conv-modal"
         >
           <div style={{ marginBottom: 10 }}>
             <button
