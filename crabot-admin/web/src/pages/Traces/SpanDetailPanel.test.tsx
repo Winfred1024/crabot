@@ -56,5 +56,6 @@ describe('SpanDetailPanel llm span', () => {
     expect(screen.getByText(/我来固化目标/)).toBeTruthy()
     expect(screen.getByText(/set_task_goal/)).toBeTruthy()
     expect(screen.queryByText(/OUT_FULL_CONTENT/)).toBeNull()
+    expect(screen.queryByText(/OBJ_FULL_CONTENT/)).toBeNull()
   })
 })
