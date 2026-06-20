@@ -180,6 +180,9 @@ if (!await probePort(19000 + OFFSET)) {
 
 const MM_PORT = 19000 + OFFSET
 const WEB_PORT = 3000 + OFFSET
+const TMP_PAGE_PORT = 21000 + OFFSET
+process.env.CRABOT_TMP_PAGE_PORT = String(TMP_PAGE_PORT)
+console.log(`[crabot] Tmp-page proxy target: 127.0.0.1:${TMP_PAGE_PORT}`)
 
 console.log(`[crabot] Starting Module Manager (port ${MM_PORT})...`)
 console.log(`[crabot] Admin Web: http://localhost:${WEB_PORT}`)
