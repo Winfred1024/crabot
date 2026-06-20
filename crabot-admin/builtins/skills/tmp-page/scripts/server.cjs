@@ -2,7 +2,7 @@ const http = require('http')
 const fs = require('fs')
 const path = require('path')
 
-const PORT = parseInt(process.env.CRABOT_TMP_PAGE_PORT || '21000', 10)
+const PORT = parseInt(process.env.CRABOT_TMP_PAGE_PORT || '19099', 10)
 const HOST = '127.0.0.1'
 const DATA_DIR = process.env.DATA_DIR || process.cwd()
 const PAGES_DIR = path.join(DATA_DIR, 'tmp-pages')

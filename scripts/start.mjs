@@ -180,7 +180,9 @@ if (!await probePort(19000 + OFFSET)) {
 
 const MM_PORT = 19000 + OFFSET
 const WEB_PORT = 3000 + OFFSET
-const TMP_PAGE_PORT = 21000 + OFFSET
+// tmp-page server 用子模块池尾部保留的 slot（MM 的 PORT_RANGE_END 缩到 19098 给它让位）：
+// 落在 19000 系列段内，跟 OFFSET 走、每租户独占 [19000,19099]+OFFSET，跨租户不撞、不落 ephemeral。
+const TMP_PAGE_PORT = 19099 + OFFSET
 process.env.CRABOT_TMP_PAGE_PORT = String(TMP_PAGE_PORT)
 console.log(`[crabot] Tmp-page proxy target: 127.0.0.1:${TMP_PAGE_PORT}`)
 

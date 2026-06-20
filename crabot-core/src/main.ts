@@ -57,7 +57,9 @@ const PORT_OFFSET = parseInt(process.env.CRABOT_PORT_OFFSET || '0', 10)
 
 const PORT = parseInt(process.env.PORT || String(19000 + PORT_OFFSET), 10)
 const PORT_RANGE_START = parseInt(process.env.PORT_RANGE_START || String(19002 + PORT_OFFSET), 10)
-const PORT_RANGE_END = parseInt(process.env.PORT_RANGE_END || String(19099 + PORT_OFFSET), 10)
+// 子模块池尾部保留 19099+OFFSET 给 tmp-page server（见 scripts/start.mjs 的 TMP_PAGE_PORT）：
+// 池缩到 19098，让 tmp 端口落在 19000 系列段内、跟 OFFSET 走，避免固定 21000+OFFSET 在多租户时撞本段。
+const PORT_RANGE_END = parseInt(process.env.PORT_RANGE_END || String(19098 + PORT_OFFSET), 10)
 const HEALTH_CHECK_INTERVAL = parseInt(process.env.HEALTH_CHECK_INTERVAL || '30', 10)
 
 // 派生端口（基于偏移自动计算，也可通过各自环境变量显式覆盖）

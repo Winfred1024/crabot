@@ -2314,7 +2314,7 @@ export class AdminModule extends ModuleBase {
           res.end(JSON.stringify({ error: 'Not found' }))
           return
         }
-        const tmpPort = parseInt(process.env.CRABOT_TMP_PAGE_PORT ?? '21000', 10)
+        const tmpPort = parseInt(process.env.CRABOT_TMP_PAGE_PORT ?? '19099', 10)
         await proxyTmpPage(req, res, tmpPort)
         return
       }

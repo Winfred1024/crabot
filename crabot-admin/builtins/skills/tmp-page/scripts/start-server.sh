@@ -3,7 +3,7 @@
 # 用法：在 agent 的 Bash 工具里以 run_in_background=true 调用本脚本。
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PORT="${CRABOT_TMP_PAGE_PORT:-21000}"
+PORT="${CRABOT_TMP_PAGE_PORT:-19099}"
 
 # 已在监听 → 直接成功返回，不重复起
 if command -v nc >/dev/null 2>&1 && nc -z 127.0.0.1 "$PORT" 2>/dev/null; then
