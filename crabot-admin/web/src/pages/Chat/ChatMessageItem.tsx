@@ -177,6 +177,12 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({ message, on
                         style={{ maxWidth: '100%', borderRadius: '8px' }}
                       />
                     ),
+                    // 链接（含临时页面 URL）在新标签打开，不顶掉当前 Admin 页面
+                    a: ({ href, children }) => (
+                      <a href={href} target="_blank" rel="noopener noreferrer">
+                        {children}
+                      </a>
+                    ),
                   }}
                 >
                   {message.content.text ?? ''}

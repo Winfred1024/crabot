@@ -8247,6 +8247,7 @@ export class AdminModule extends ModuleBase {
         skills: config.skills,
         extra: config.extra,
         subagents,
+        tmp_page_base_url: config.tmp_page_base_url,
       }
 
       const result = await this.rpcClient.call<typeof updateParams, { restart_required: boolean; changed_fields: string[] }>(

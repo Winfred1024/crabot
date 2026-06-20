@@ -28,6 +28,8 @@ interface GetAgentConfigResult {
     max_iterations?: number
     tools_readonly?: boolean
     extra?: Record<string, unknown>
+    /** 对外可达 base URL（admin handleGetAgentConfig 注入），供 worker 拼临时页面链接 */
+    tmp_page_base_url?: string
   }
 }
 
@@ -99,6 +101,7 @@ export class ConfigLoader {
       mcp_servers: adminConfig.mcp_servers,
       skills: adminConfig.skills,
       tools_readonly: adminConfig.tools_readonly,
+      ...(adminConfig.tmp_page_base_url ? { tmp_page_base_url: adminConfig.tmp_page_base_url } : {}),
       specialization: 'Unified agent with front and worker capabilities',
     }
 
