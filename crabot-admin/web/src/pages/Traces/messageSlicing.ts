@@ -1,3 +1,5 @@
+import type { EngineMessageLike } from '../../services/trace'
+
 /**
  * Worker trace 消息切片工具
  *
@@ -28,4 +30,68 @@ export function sliceSpanMessages<T extends { role?: string }>(
     prev = firstAssistant >= 0 ? firstAssistant : 0
   }
   return messages.slice(prev, end) as T[]
+}
+
+export interface ToolIO {
+  input: Record<string, unknown> | undefined
+  output: string | undefined
+  isError: boolean
+}
+
+/** 按 tool_use_id 从 messages 取该工具的完整入参(tool_use 块)与结果(toolResults)。找不到返回 null。 */
+export function findToolIO(
+  messages: ReadonlyArray<EngineMessageLike>,
+  toolUseId: string,
+): ToolIO | null {
+  let input: Record<string, unknown> | undefined
+  let output: string | undefined
+  let isError = false
+  let found = false
+  for (const m of messages) {
+    if (Array.isArray(m.content)) {
+      for (const b of m.content as Array<Record<string, unknown>>) {
+        if (b.type === 'tool_use' && b.id === toolUseId) {
+          input = (b.input as Record<string, unknown>) ?? {}
+          found = true
+        }
+      }
+    }
+    if (Array.isArray(m.toolResults)) {
+      for (const tr of m.toolResults as Array<Record<string, unknown>>) {
+        if (tr.tool_use_id === toolUseId) {
+          output = typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content, null, 2)
+          isError = Boolean(tr.is_error)
+          found = true
+        }
+      }
+    }
+  }
+  return found ? { input, output, isError } : null
+}
+
+export interface AssistantOutput {
+  /** assistant 文本块拼接(保序)。 */
+  text: string
+  /** 本轮调用的工具名(按出现序)。 */
+  toolNames: string[]
+}
+
+/** 从 llm 轮切片里只取 assistant 的文本块与所调工具名,丢弃 tool_result。 */
+export function extractAssistantOutput(
+  slice: ReadonlyArray<EngineMessageLike>,
+): AssistantOutput {
+  const texts: string[] = []
+  const toolNames: string[] = []
+  for (const m of slice) {
+    if (m.role !== 'assistant') continue
+    if (typeof m.content === 'string') {
+      if (m.content) texts.push(m.content)
+    } else if (Array.isArray(m.content)) {
+      for (const b of m.content as Array<Record<string, unknown>>) {
+        if (b.type === 'text' && typeof b.text === 'string' && b.text) texts.push(b.text)
+        else if (b.type === 'tool_use' && typeof b.name === 'string') toolNames.push(b.name)
+      }
+    }
+  }
+  return { text: texts.join('\n\n'), toolNames }
 }
