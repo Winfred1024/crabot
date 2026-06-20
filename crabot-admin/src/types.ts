@@ -1598,6 +1598,8 @@ export interface ResolvedAgentConfig extends Omit<AgentInstanceConfig, 'model_co
   model_config: Record<string, LLMConnectionInfo>
   /** startup pull 时一并下发已解析的 subagents（与 push 同源），避免 agent 启动期 subagents 空窗 */
   subagents?: SubAgentConfig[]
+  /** 对外可达 base URL，供 agent 拼临时页面链接（<base>/tmp-pages/<id>）；未配置时为 admin 本地地址 */
+  tmp_page_base_url?: string
 }
 
 // Agent 实现管理 API 参数类型
