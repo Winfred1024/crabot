@@ -183,6 +183,7 @@ import {
 import { ModuleInstaller } from './module-installer.js'
 import { ChatManager, buildChatTaskSnapshot } from './chat-manager.js'
 import { MediaStore } from './media-store.js'
+import { proxyTmpPage, resolveTmpPageBaseUrl, isManagePath } from './tmp-page-proxy.js'
 import {
   MCPServerManager,
   SkillManager,
@@ -2299,6 +2300,22 @@ export class AdminModule extends ModuleBase {
       if (pathname.match(/^\/api\/schedules\/[^/]+$/) && req.method === 'DELETE') {
         const id = decodeURIComponent(pathname.split('/')[3])
         await this.handleDeleteScheduleApi(req, res, id)
+        return
+      }
+
+      // 临时交互页面反代（/tmp-pages/*）：纯透明转发到 agent 起的 server，不鉴权（匿名访问）
+      // 注意：/tmp-pages/ 不以 /api/ 开头，认证拦截本就不触发。
+      if (pathname.startsWith('/tmp-pages/')) {
+        // _manage 端点（列出/删除 page）仅供 agent 本机直连 127.0.0.1:<port> 使用，
+        // 不经公网反代暴露，否则匿名访问者可枚举/删除任意 page。
+        // isManagePath 归一化连续斜杠后再判，堵住 /tmp-pages//_manage 这类绕过。
+        if (isManagePath(pathname)) {
+          res.writeHead(404)
+          res.end(JSON.stringify({ error: 'Not found' }))
+          return
+        }
+        const tmpPort = parseInt(process.env.CRABOT_TMP_PAGE_PORT ?? '21000', 10)
+        await proxyTmpPage(req, res, tmpPort)
         return
       }
 
@@ -6830,10 +6847,17 @@ export class AdminModule extends ModuleBase {
     // end-turn gate fail open → goal 任务没满足目标就被放完成。startup 就带上从根上消除该 race。
     const subagents = await this.buildSubAgentConfigsForPush(config, resolvedModelConfig)
 
+    // 对外可达 base URL，供 agent 拼临时页面链接（<base>/tmp-pages/<id>）
+    const tmpPageBaseUrl = resolveTmpPageBaseUrl(
+      process.env.CRABOT_PUBLIC_BASE_URL,
+      this.adminConfig.web_port,
+    )
+
     return {
       config: {
         ...config,
         model_config: resolvedModelConfig,
+        tmp_page_base_url: tmpPageBaseUrl,
         // 所有 enabled MCP server 自动对所有 agent 可见，
         // 不再读 config.mcp_server_ids（已 @deprecated）
         mcp_servers: mcpServerConfigs,
