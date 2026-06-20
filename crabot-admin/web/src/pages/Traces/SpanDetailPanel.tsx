@@ -9,8 +9,7 @@ import {
 import { Tooltip } from '../../components/Common/Tooltip'
 import { formatDateTimeLocal, formatDuration, formatTokens, agentLoopLabel } from './utils'
 import { TraceLink } from './TraceTable'
-import { MessageBlocks } from './MessageBlocks'
-import { sliceSpanMessages } from './messageSlicing'
+import { sliceSpanMessages, findToolIO, extractAssistantOutput } from './messageSlicing'
 
 // ============================================================================
 // 子组件：SpanDetailPanel — 单个 span 的详情展开
@@ -98,10 +97,7 @@ export const SpanDetailPanel: React.FC<{
         ),
       })
     }
-    if (d.input_summary) rows.push({ label: 'Input', value: String(d.input_summary), monospace: true })
-    if (d.output_summary) rows.push({ label: 'Output', value: String(d.output_summary), monospace: true })
-
-    // 本轮产出切片：仅当有完整消息快照 + 本 span 在 llm_call 列表中 + 有 message_count_after 时渲染
+    // 有完整消息快照时:显示模型文本 + 工具名,不再倒出截断 summary 与工具结果(已下沉到各 tool span)
     const hasSliceData =
       messages != null &&
       orderedLlmSpans != null &&
@@ -110,19 +106,30 @@ export const SpanDetailPanel: React.FC<{
       (d.message_count_after as number | undefined) != null
     if (hasSliceData) {
       const slice = sliceSpanMessages(messages!, orderedLlmSpans!, spanIndexInLlm!)
-      if (slice.length > 0) {
-        rows.push({
-          label: '本轮产出',
-          value: <MessageBlocks messages={slice} />,
-        })
-      }
+      const out = extractAssistantOutput(slice)
+      if (out.text) rows.push({ label: '模型输出', value: out.text, monospace: true })
+      if (out.toolNames.length > 0) rows.push({ label: '调用工具', value: out.toolNames.join('、') })
+    } else {
+      if (d.input_summary) rows.push({ label: 'Input', value: String(d.input_summary), monospace: true })
+      if (d.output_summary) rows.push({ label: 'Output', value: String(d.output_summary), monospace: true })
     }
   }
 
   if (span.type === 'tool_call') {
     if (d.tool_name) rows.push({ label: 'Tool', value: String(d.tool_name) })
-    if (d.input_summary) rows.push({ label: 'Input', value: String(d.input_summary), monospace: true })
-    if (d.output_summary) rows.push({ label: 'Output', value: String(d.output_summary), monospace: true })
+    const toolUseId = d.tool_use_id as string | undefined
+    const io = messages != null && toolUseId ? findToolIO(messages, toolUseId) : null
+    if (io) {
+      if (io.input !== undefined) {
+        rows.push({ label: 'Input', value: JSON.stringify(io.input, null, 2), monospace: true })
+      }
+      if (io.output !== undefined) {
+        rows.push({ label: io.isError ? 'Output(错误)' : 'Output', value: io.output, monospace: true })
+      }
+    } else {
+      if (d.input_summary) rows.push({ label: 'Input', value: String(d.input_summary), monospace: true })
+      if (d.output_summary) rows.push({ label: 'Output', value: String(d.output_summary), monospace: true })
+    }
     if (d.error) rows.push({ label: 'Error', value: String(d.error), monospace: true })
     if (d.child_trace_id) {
       rows.push({
