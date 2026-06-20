@@ -86,7 +86,7 @@ export const PublicBaseUrlCard: React.FC = () => {
 
         {filledFromCurrent && (
           <p className="public-base-url__warning" role="note">
-            已填入当前访问地址；请确认它对外可达。开发环境若通过 5173 访问，请改成 Admin 端口（3000）。
+            已填入当前访问地址；请确认它对别人也可达。
           </p>
         )}
 
