@@ -256,7 +256,9 @@ describe('streamWithRetry', () => {
     expect(calls[1]).toBeLessThanOrEqual(baseDelay * 2 * 1.2 + 1)
   })
 
-  it('withRetry: keeps fixed delay for non-overloaded retryable errors', async () => {
+  it('withRetry: uses exponential backoff for non-overloaded retryable (network) errors', async () => {
+    // 新语义：网络错误（ECONNRESET 等）与过载错误一样走指数退避，不再固定间隔。
+    // attempt 0 delay ≈ base (±20%); attempt 1 delay ≈ base*2 (±20%)
     const calls: number[] = []
     const baseDelay = 50
     let attempts = 0
@@ -278,7 +280,31 @@ describe('streamWithRetry', () => {
       },
     )
 
-    expect(calls).toEqual([baseDelay, baseDelay])
+    expect(calls).toHaveLength(2)
+    // attempt 0 → computeRetryDelayMs(0, 50, true) ≈ 50 ± 20%
+    expect(calls[0]).toBeGreaterThanOrEqual(baseDelay * 0.8 - 1)
+    expect(calls[0]).toBeLessThanOrEqual(baseDelay * 1.2 + 1)
+    // attempt 1 → computeRetryDelayMs(1, 50, true) ≈ 100 ± 20%
+    expect(calls[1]).toBeGreaterThanOrEqual(baseDelay * 2 * 0.8 - 1)
+    expect(calls[1]).toBeLessThanOrEqual(baseDelay * 2 * 1.2 + 1)
+  })
+
+  it('gives up by time window on persistent pre-material network error', async () => {
+    let attempts = 0
+    await expect((async () => {
+      const stream = streamWithRetry<Chunk>(
+        'test',
+        async function* () {
+          attempts += 1
+          yield { type: 'message_start' } as Chunk
+          throw makeRetryableError()
+        },
+        { isMaterial, delayMs: 50, maxRetryWindowMs: 180, maxRetries: 100 },
+      )
+      for await (const _ of stream) { /* drain */ }
+    })()).rejects.toThrow('terminated')
+    expect(attempts).toBeGreaterThanOrEqual(2)
+    expect(attempts).toBeLessThan(8)
   })
 
   it('honors maxRetries cap when failures keep happening pre-material', async () => {
@@ -301,5 +327,42 @@ describe('streamWithRetry', () => {
     }).rejects.toThrow(/terminated/)
 
     expect(attempts).toBe(3)
+  })
+})
+
+describe('withRetry time-budget termination', () => {
+  it('gives up by time window (not by maxRetries count) on persistent network error', async () => {
+    let attempts = 0
+    const started = Date.now()
+    await expect(
+      withRetry(
+        'test',
+        async () => { attempts += 1; throw makeRetryableError() },
+        { delayMs: 50, maxRetryWindowMs: 180, maxRetries: 100 },
+      ),
+    ).rejects.toThrow('terminated')
+    const elapsed = Date.now() - started
+    expect(attempts).toBeGreaterThanOrEqual(2)
+    expect(attempts).toBeLessThan(8)
+    expect(elapsed).toBeLessThan(180 + 300)
+  })
+
+  it('uses exponential backoff for network errors (delays grow across attempts)', async () => {
+    const delays: number[] = []
+    let attempts = 0
+    await expect(
+      withRetry(
+        'test',
+        async () => { attempts += 1; throw makeRetryableError() },
+        {
+          delayMs: 20,
+          maxRetryWindowMs: 200,
+          maxRetries: 100,
+          onRetry: (e) => delays.push(e.delayMs),
+        },
+      ),
+    ).rejects.toThrow('terminated')
+    expect(delays.length).toBeGreaterThanOrEqual(2)
+    expect(delays[1]!).toBeGreaterThan(delays[0]! * 1.2)
   })
 })
