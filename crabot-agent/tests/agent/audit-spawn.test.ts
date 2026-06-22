@@ -182,6 +182,19 @@ describe('spawnAuditSubagent', () => {
     expect(toolNames).toContain('submit_audit_result')
   })
 
+  it('forwards subTrace config with task_type=goal_audit so audit shows in Traces 页 (regression)', async () => {
+    const depsWithTrace = makeDeps({
+      humanQueue,
+      traceContext: { traceStore: {} as any, traceId: 'parent-trace-1' },
+    })
+    await spawnAuditSubagent(depsWithTrace)
+    const opts = (depsWithTrace.spawnFn as any).mock.calls[0][0]
+    expect(opts.subTrace).toBeDefined()
+    expect(opts.subTrace.taskType).toBe('goal_audit')
+    expect(opts.subTrace.parentTraceId).toBe('parent-trace-1')
+    expect(opts.subTrace.relatedTaskId).toBe('task-parent-1')
+  })
+
   it('onExit with submit_audit_result(pass=true) pushes audit_result(pass) marker', async () => {
     await spawnAuditSubagent(deps)
     expect(deps.capturedOnExit.current).toBeDefined()

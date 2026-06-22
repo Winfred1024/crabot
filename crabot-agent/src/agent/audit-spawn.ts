@@ -149,6 +149,19 @@ export async function spawnAuditSubagent(
     registry: deps.registry,
     abortControllers: deps.abortControllers,
     ...(deps.traceContext ? { traceContext: deps.traceContext } : {}),
+    // audit 自己的 sub_agent_call 子 trace（taskType='goal_audit'）—— 让审计跑完
+    // 在 Admin Traces 页以"审计"行显示并可 drill-in（spec 2026-06-07）。
+    ...(deps.traceContext
+      ? {
+          subTrace: {
+            traceStore: deps.traceContext.traceStore,
+            parentTraceId: deps.traceContext.traceId,
+            relatedTaskId: deps.parentTaskId,
+            taskType: 'goal_audit',
+            summaryPrefix: '[goal_audit]',
+          },
+        }
+      : {}),
     onExit: (info) => {
       handleAuditExit(info as BgAgentExitInfo, deps)
     },

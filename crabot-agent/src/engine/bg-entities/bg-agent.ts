@@ -19,6 +19,8 @@ import { getBgEntitiesLogsDir } from '../../core/data-paths.js'
 import type { BgEntityRegistry } from './registry.js'
 import type { BgEntityOwner, BgAgentRegistryRecord } from './types.js'
 import { emitInstantSpan, type BgEntityTraceContext } from './trace.js'
+import type { TraceStore } from '../../core/trace-store.js'
+import { recordSubAgentTurn } from '../sub-agent-trace.js'
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -51,6 +53,26 @@ export interface SpawnPersistentAgentOpts {
   /** Worker-maintained abort-controller map: written on spawn, deleted on finish/kill. */
   readonly abortControllers: Map<string, AbortController>
   readonly traceContext?: BgEntityTraceContext
+  /**
+   * 这个 sub-agent 自己的子 trace 配置（与 traceContext 区分：traceContext 往
+   * 父 trace emit bg_entity_* 生命周期 span；subTrace 是 sub-agent 自己的
+   * `sub_agent_call` 子 trace，记录内部 llm/tool span，让它在 Admin Traces 页
+   * 以独立行显示并可 drill-in）。
+   *
+   * audit subagent 必须传 taskType='goal_audit'（spec
+   * 2026-06-07-goal-audit-async-buffered-info-design.md），否则审计跑完不在
+   * Traces 页显示（异步化重构丢失子 trace 的回归）。
+   */
+  readonly subTrace?: {
+    readonly traceStore: TraceStore
+    readonly parentTraceId: string
+    readonly parentSpanId?: string
+    readonly relatedTaskId?: string
+    /** trigger.task_type，如 'goal_audit'（驱动 Admin Traces 的"审计"badge）。 */
+    readonly taskType?: string
+    /** summary 前缀，如 '[goal_audit]'。缺省直接用 task_description。 */
+    readonly summaryPrefix?: string
+  }
   /**
    * Async exit hook —— sub-agent loop 自然结束 / 失败时调用（killed 由 Kill 工具发出，不走这里）。
    * 用于 worker 推 push notification。抛错只 log。
@@ -113,6 +135,25 @@ export async function spawnPersistentAgent(opts: SpawnPersistentAgentOpts): Prom
   }
   await opts.registry.register(record)
 
+  // 子 trace 在 fire-and-forget 外同步起，保证 spawn 返回时 Admin Traces 立刻可见。
+  const subTrace = opts.subTrace
+    ? opts.subTrace.traceStore.startTrace({
+        module_id: 'sub-agent',
+        trigger: {
+          type: 'sub_agent_call',
+          summary: (opts.subTrace.summaryPrefix
+            ? `${opts.subTrace.summaryPrefix} ${opts.task_description}`
+            : opts.task_description
+          ).slice(0, 200),
+          ...(opts.subTrace.taskType ? { task_type: opts.subTrace.taskType } : {}),
+        },
+        parent_trace_id: opts.subTrace.parentTraceId,
+        ...(opts.subTrace.parentSpanId ? { parent_span_id: opts.subTrace.parentSpanId } : {}),
+        ...(opts.subTrace.relatedTaskId ? { related_task_id: opts.subTrace.relatedTaskId } : {}),
+      })
+    : undefined
+  const subTraceStore = opts.subTrace?.traceStore
+
   const agentSpawnedAtMs = Date.now()
 
   // fire-and-forget — intentionally not awaited by caller
@@ -131,6 +172,12 @@ export async function spawnPersistentAgent(opts: SpawnPersistentAgentOpts): Prom
           // 同 forkEngine：bg-agent 也是 subagent 派发路径，禁用 compaction。
           // 详见 EngineOptions.disableCompaction 注释。
           disableCompaction: true,
+          ...(subTrace && subTraceStore
+            ? {
+                onTurn: (event) =>
+                  recordSubAgentTurn(subTraceStore, subTrace.trace_id, event),
+              }
+            : {}),
           onLiveProgress: (event) => {
             // Append event as a JSONL line; errors are silently swallowed so
             // logging failures never crash the agent loop.
@@ -163,6 +210,14 @@ export async function spawnPersistentAgent(opts: SpawnPersistentAgentOpts): Prom
           exit_code: exitCode,
           runtime_ms: runtimeMs,
         }, endedStatus)
+      }
+      if (subTrace && subTraceStore) {
+        subTraceStore.endTrace(subTrace.trace_id, endedStatus, {
+          summary: (result.finalText ?? '').slice(0, 200),
+          ...(endedStatus === 'failed' && result.error
+            ? { error: result.error.slice(0, 200) }
+            : {}),
+        })
       }
       await opts.registry
         .update(entity_id, {
@@ -202,6 +257,12 @@ export async function spawnPersistentAgent(opts: SpawnPersistentAgentOpts): Prom
           exit_code: 1,
           runtime_ms: runtimeMs,
         }, 'failed')
+      }
+      if (subTrace && subTraceStore) {
+        subTraceStore.endTrace(subTrace.trace_id, 'failed', {
+          summary: 'sub-agent aborted or errored',
+          error: 'sub-agent aborted or errored',
+        })
       }
       await opts.registry
         .update(entity_id, {

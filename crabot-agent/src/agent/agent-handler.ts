@@ -472,7 +472,7 @@ export class AgentHandler {
   private readonly transientShells = new TransientShellRegistry()
   /** Per-task output cursor map: key = `${taskId}:${entityId}` → byte offset */
   private readonly bgCursorMap = new Map<string, number>()
-  /** AbortControllers for running bg sub-agents (key=entity_id); shared with BgToolDeps + SubAgentBgContext */
+  /** AbortControllers for running bg sub-agents (key=entity_id); shared with BgToolDeps */
   private readonly agentAbortControllers = new Map<string, AbortController>()
   /** resume checkpoint 用：per-task traceStore 引用（与 traceContext.traceStore 同引用，onStop 补 flush 用） */
   private readonly taskTraceStores = new Map<TaskId, import('../core/trace-store').TraceStore>()
@@ -3381,6 +3381,19 @@ export class AgentHandler {
       registry: this.bgRegistry,
       abortControllers: this.agentAbortControllers,
       ...(bgTraceCtx ? { traceContext: bgTraceCtx } : {}),
+      // 子 agent 自己的 sub_agent_call 子 trace —— 让异步 delegate 在 Admin Traces
+      // 页以独立行显示并可 drill-in（与同步 runSubAgentDirect 路径一致）。
+      ...(deps.traceConfig
+        ? {
+            subTrace: {
+              traceStore: deps.traceConfig.traceStore,
+              parentTraceId: deps.traceConfig.parentTraceId,
+              ...(deps.traceConfig.parentSpanId ? { parentSpanId: deps.traceConfig.parentSpanId } : {}),
+              ...(deps.traceConfig.relatedTaskId ? { relatedTaskId: deps.traceConfig.relatedTaskId } : {}),
+              summaryPrefix: `[${subagent.name}]`,
+            },
+          }
+        : {}),
       onExit: (info) => {
         if (!deps.humanQueue) return
         const notification = [

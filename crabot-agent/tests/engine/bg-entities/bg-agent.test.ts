@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { spawnPersistentAgent } from '../../../src/engine/bg-entities/bg-agent'
 import { BgEntityRegistry } from '../../../src/engine/bg-entities/registry'
+import { TraceStore } from '../../../src/core/trace-store'
 import type { LLMAdapter } from '../../../src/engine/llm-adapter'
 import type { StreamChunk } from '../../../src/engine/types'
 
@@ -252,6 +253,41 @@ describe('spawnPersistentAgent', () => {
     // bypass 下 dangerous 工具应被实际执行；不传 permissionConfig 时会被
     // checkToolPermission 默认拒绝（"marked as dangerous"）
     expect(toolCalls).toEqual(['Bash'])
+  })
+
+  it('creates a sub_agent_call child trace with task_type when subTrace config provided (regression: audit 不显示在 Traces 页)', async () => {
+    const traceStore = new TraceStore()
+    const parent = traceStore.startTrace({
+      module_id: 'agent',
+      trigger: { type: 'task', summary: 'parent worker task' },
+    })
+    const adapter = mockAdapter([textResponse('audit done')])
+
+    const id = await spawnPersistentAgent({
+      ...baseOpts(adapter),
+      task_description: '[goal_audit] verify acceptance criteria',
+      subTrace: {
+        traceStore,
+        parentTraceId: parent.trace_id,
+        relatedTaskId: 'task-123',
+        taskType: 'goal_audit',
+        summaryPrefix: '[goal_audit]',
+      },
+    })
+
+    await waitFor(async () => (await registry.get(id))?.status === 'completed')
+
+    const childTraces = traceStore
+      .getTraces(50, 0)
+      .traces.filter((t) => t.trigger.type === 'sub_agent_call')
+    expect(childTraces).toHaveLength(1)
+    const audit = childTraces[0]
+    expect(audit.trigger.task_type).toBe('goal_audit')
+    expect(audit.parent_trace_id).toBe(parent.trace_id)
+    expect(audit.related_task_id).toBe('task-123')
+    // 子 trace 应记录内部 llm span（drill-in 才有内容）
+    expect(audit.spans.some((s) => s.type === 'llm_call')).toBe(true)
+    expect(audit.status).toBe('completed')
   })
 
   it('multiple parallel spawns produce independent result_files without mixing', async () => {
