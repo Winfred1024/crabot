@@ -11,6 +11,7 @@
 
 import { spawn } from 'node:child_process'
 import { rgPath } from '@vscode/ripgrep'
+import { shouldScanProtectedDirs } from './fda-check'
 
 export interface RipgrepResult {
   /** rg 进程的 stdout 全文（已按 maxBytes 截断）。 */
@@ -19,12 +20,18 @@ export interface RipgrepResult {
   stderr: string
   /** 是否因 maxBytes 提前 kill。 */
   truncated: boolean
+  /** 是否因墙钟超时被 kill（区别于 maxBytes 截断，调用方据此提示"缩小范围"）。 */
+  timedOut: boolean
   /** 进程退出码。rg 约定：0=找到匹配，1=没匹配，2=错误，128+=信号。 */
   exitCode: number
 }
 
 const DEFAULT_MAX_BYTES = 16 * 1024 * 1024 // 16MB stdout 上限——再多上层也消化不了
 const KILL_GRACE_MS = 500
+// 墙钟超时上限。rg 卡在巨型目录遍历（网络盘 / FUSE / 海量缓存）或 macOS TCC 权限
+// 弹窗时会无限挂起，把 agent 主循环一起拖死（实测挂过 144 分钟）。源码工程的合理
+// glob/grep 远用不到 60s，超出即 kill 返回 partial，让上层提示缩小范围。
+const DEFAULT_TIMEOUT_MS = 60_000
 
 /**
  * 强制注入到每次 rg 调用的硬限制。这些 flag 不可让上层覆盖：
@@ -63,10 +70,12 @@ export function runRipgrep(
   opts: {
     cwd?: string
     maxBytes?: number
+    timeoutMs?: number
     signal?: AbortSignal
   } = {},
 ): Promise<RipgrepResult> {
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
 
   return new Promise((resolve, reject) => {
     const proc = spawn(rgPath, [...FORCED_LIMITS, ...args], {
@@ -78,7 +87,9 @@ export function runRipgrep(
     let stderr = ''
     let stdoutBytes = 0
     let truncated = false
+    let timedOut = false
     let killed = false
+    let timer: ReturnType<typeof setTimeout> | undefined
 
     const killProc = () => {
       if (killed) return
@@ -100,10 +111,18 @@ export function runRipgrep(
     if (opts.signal) {
       if (opts.signal.aborted) {
         onAbort()
-        return resolve({ stdout: '', stderr: '', truncated: true, exitCode: 130 })
+        return resolve({ stdout: '', stderr: '', truncated: true, timedOut: false, exitCode: 130 })
       }
       opts.signal.addEventListener('abort', onAbort, { once: true })
     }
+
+    // 墙钟超时：到点 kill rg 并标 timedOut，已收到的 stdout 作为 partial 返回。
+    timer = setTimeout(() => {
+      timedOut = true
+      truncated = true
+      killProc()
+    }, timeoutMs)
+    timer.unref()
 
     proc.stdout.on('data', (chunk: Buffer) => {
       if (truncated) return
@@ -124,14 +143,16 @@ export function runRipgrep(
     })
 
     proc.on('error', (err) => {
+      if (timer) clearTimeout(timer)
       if (opts.signal) opts.signal.removeEventListener('abort', onAbort)
       reject(new Error(`ripgrep spawn failed: ${err.message}`))
     })
 
     proc.on('close', (code, signal) => {
+      if (timer) clearTimeout(timer)
       if (opts.signal) opts.signal.removeEventListener('abort', onAbort)
       const exitCode = code ?? (signal ? 128 + (signalNumber(signal) ?? 0) : 0)
-      resolve({ stdout, stderr, truncated, exitCode })
+      resolve({ stdout, stderr, truncated, timedOut, exitCode })
     })
   })
 }
@@ -160,3 +181,34 @@ export const DEFAULT_EXCLUDE_GLOBS: ReadonlyArray<string> = [
   '!.cache',
   '!*.heapsnapshot',
 ]
+
+/**
+ * macOS 受保护目录排除。agent 工作目录默认是家目录（~），rg 带 `--hidden --no-ignore`
+ * 会爬进 `~/Library/Containers` 等别的 App 的数据容器 → 触发 TCC「访问其他 App 数据」
+ * 弹窗（卡死）/ EPERM（退出码 2）。默认跳过这两个目录名。
+ *
+ * 只在 macOS 加（其它系统没这俩目录名）。`!Library` 会排除任意深度名为 Library 的目录，
+ * 对家目录根的助手场景正确——`~/Library` 正是 TCC 触发源，且海量缓存也拖慢遍历。
+ */
+export const MACOS_PROTECTED_EXCLUDE_GLOBS: ReadonlyArray<string> = [
+  '!Library',
+  '!.Trash',
+]
+
+/**
+ * 返回应注入的「受保护目录」排除 glob 列表。
+ *
+ * - 非 darwin：恒返回 []（没有这些目录名，无需排除）。
+ * - darwin 且 `scanProtected`（= CRABOT_ENABLE_FDA 意图开启 **且** 真持有 FDA）：返回 []，
+ *   即放开扫描 ~/Library 等。
+ * - darwin 其余情况：返回 MACOS_PROTECTED_EXCLUDE_GLOBS，跳过受保护目录。
+ *
+ * 参数可注入仅为单测；运行时调用方用默认值（实时探针 + 实际平台）。
+ */
+export function getProtectedExcludeGlobs(
+  scanProtected: boolean = shouldScanProtectedDirs(),
+  platform: NodeJS.Platform = process.platform,
+): ReadonlyArray<string> {
+  if (platform !== 'darwin') return []
+  return scanProtected ? [] : MACOS_PROTECTED_EXCLUDE_GLOBS
+}

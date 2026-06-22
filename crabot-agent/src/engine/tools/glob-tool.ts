@@ -1,7 +1,7 @@
 import { resolve, isAbsolute, relative } from 'path'
 import { defineTool } from '../tool-framework'
 import type { ToolDefinition } from '../types'
-import { runRipgrep, DEFAULT_EXCLUDE_GLOBS } from './ripgrep-helper'
+import { runRipgrep, DEFAULT_EXCLUDE_GLOBS, getProtectedExcludeGlobs } from './ripgrep-helper'
 
 const MAX_RESULTS = 200
 
@@ -48,6 +48,11 @@ export function createGlobTool(getCwd: () => string): ToolDefinition {
       for (const g of DEFAULT_EXCLUDE_GLOBS) {
         args.push('--glob', g)
       }
+      // macOS 受保护目录（~/Library 等）：默认排除以避开 TCC 弹窗 / EPERM，
+      // 仅当用户开启 CRABOT_ENABLE_FDA 且真持有 FDA 时才放开。
+      for (const g of getProtectedExcludeGlobs()) {
+        args.push('--glob', g)
+      }
       args.push(resolvedPath)
 
       let rg
@@ -58,7 +63,10 @@ export function createGlobTool(getCwd: () => string): ToolDefinition {
         return { output: `Glob error: ${message}`, isError: true }
       }
 
-      if (rg.exitCode === 2) {
+      // 退出码 2 且没有任何 stdout = 真错误（路径不存在 / 参数非法）。
+      // 有 stdout 时（如某子目录权限被拒 EPERM，其它目录已列出文件）→ 当 partial
+      // 处理，不丢弃已搜到的结果（--no-messages 已抑制 stderr 噪音）。
+      if (rg.exitCode === 2 && !rg.stdout) {
         const msg = (rg.stderr || '').trim() || 'ripgrep exited with code 2'
         return { output: `Glob error: ${msg}`, isError: true }
       }
@@ -75,7 +83,15 @@ export function createGlobTool(getCwd: () => string): ToolDefinition {
 
       const sorted = [...allEntries].sort()
 
+      // 超时提示：rg 被墙钟超时 kill，结果可能不完整，引导收窄范围。
+      const timeoutHint = rg.timedOut
+        ? `\n[搜索超时，结果可能不完整。请用更具体的 path 缩小目录、或收窄 pattern。]`
+        : ''
+
       if (sorted.length === 0) {
+        if (rg.timedOut) {
+          return { output: `Glob 搜索超时，未在时限内列出任何文件。请缩小 path 或收窄 pattern。`, isError: false }
+        }
         return { output: `No files found matching pattern: ${pattern}`, isError: false }
       }
 
@@ -85,7 +101,7 @@ export function createGlobTool(getCwd: () => string): ToolDefinition {
         ? [...displayed, `[...${sorted.length - MAX_RESULTS} more results truncated]`]
         : displayed
 
-      return { output: lines.join('\n'), isError: false }
+      return { output: lines.join('\n') + timeoutHint, isError: false }
     },
   })
 }

@@ -124,6 +124,9 @@ const CORE_MODULES: Array<ModuleDefinition & Record<string, unknown>> = [
       CRABOT_MM_ENDPOINT: MM_ENDPOINT,
       CRABOT_MM_PORT: String(PORT),
       CRABOT_MODULE_ID: 'crabot-agent',
+      // macOS FDA 意图开关：透传给 agent，决定 glob/grep 是否放开扫描 ~/Library
+      // 等受保护目录（仍需进程真正持有「完全磁盘访问权限」才生效，见 fda-check.ts）。
+      CRABOT_ENABLE_FDA: process.env.CRABOT_ENABLE_FDA || '',
     } as Record<string, string>,
   },
   {

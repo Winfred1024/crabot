@@ -1,7 +1,7 @@
 import { defineTool } from '../tool-framework'
 import type { ToolDefinition } from '../types'
 import { byteLength } from '../byte-cap'
-import { runRipgrep, DEFAULT_EXCLUDE_GLOBS } from './ripgrep-helper'
+import { runRipgrep, DEFAULT_EXCLUDE_GLOBS, getProtectedExcludeGlobs } from './ripgrep-helper'
 
 // Grep 输出按 UTF-8 字节累加上限。命中行内容很长（K 线 / CSV / JSON 单行数 KB～MB）时，
 // 仅靠 head_limit（行数）无法兜住——必须按字节裁剪，否则会塞 N MB 进 toolResult。
@@ -131,6 +131,11 @@ export function createGrepTool(getCwd: () => string): ToolDefinition {
       for (const g of DEFAULT_EXCLUDE_GLOBS) {
         args.push('--glob', g)
       }
+      // macOS 受保护目录（~/Library 等）：默认排除以避开 TCC 弹窗 / EPERM，
+      // 仅当用户开启 CRABOT_ENABLE_FDA 且真持有 FDA 时才放开。
+      for (const g of getProtectedExcludeGlobs()) {
+        args.push('--glob', g)
+      }
 
       // 模式输出参数
       if (outputMode === 'files_with_matches') {
@@ -157,8 +162,10 @@ export function createGrepTool(getCwd: () => string): ToolDefinition {
       }
 
       // exitCode 1 = 无匹配（合法，对外 "No matches found"）
-      // exitCode 2 = 错误（路径不存在 / 真正异常）
-      if (rg.exitCode === 2) {
+      // exitCode 2 = 错误，但仅当没有任何 stdout 时才判错（路径不存在 / 真正异常）。
+      // 有 stdout 时（如某子目录权限被拒 EPERM，其它文件已命中）→ 当 partial 返回，
+      // 不丢弃已搜到的结果（--no-messages 已抑制 stderr 噪音）。
+      if (rg.exitCode === 2 && !rg.stdout) {
         const msg = (rg.stderr || '').trim() || 'ripgrep exited with code 2'
         return { output: `Grep error: ${msg}`, isError: true }
       }
@@ -166,9 +173,13 @@ export function createGrepTool(getCwd: () => string): ToolDefinition {
       const output = joinWithCap(splitLines(rg.stdout), headLimit)
 
       // rg stdout 自己被 ripgrep-helper 截断时，附带提示——优先于无字节超限的情况。
-      const finalOutput = rg.truncated && !output.endsWith(truncationHint())
+      let finalOutput = rg.truncated && !rg.timedOut && !output.endsWith(truncationHint())
         ? output + truncationHint()
         : output
+      // 超时单独提示：墙钟超时被 kill，结果可能不完整，引导收窄范围。
+      if (rg.timedOut) {
+        finalOutput += `\n[搜索超时，结果可能不完整。请用更具体的 path / glob 缩小范围。]`
+      }
 
       return { output: finalOutput, isError: false }
     },

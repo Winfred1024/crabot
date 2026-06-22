@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'fs'
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, chmodSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { createGlobTool } from '../../../src/engine/tools/glob-tool'
@@ -122,5 +122,31 @@ describe('createGlobTool', () => {
     // 200 file lines + 1 truncation message
     expect(lines).toHaveLength(201)
     expect(lines[200]).toBe('[...10 more results truncated]')
+  })
+
+  it('某子目录权限被拒（rg 退出码 2）但有结果时，返回 partial 而非整体报错', async () => {
+    // root 绕过权限位，无法构造 EACCES，跳过。
+    if (typeof process.getuid === 'function' && process.getuid() === 0) return
+
+    createFiles(['src/a.ts', 'src/b.ts'])
+    // 0o000 目录：owner 也无法 traverse → rg 对它 EACCES → 退出码 2，
+    // 但 src/*.ts 已经在 stdout 里列出。
+    const locked = join(tempDir, 'locked')
+    mkdirSync(locked, { recursive: true })
+    chmodSync(locked, 0o000)
+
+    try {
+      const tool = createGlobTool(() => tempDir)
+      const result = await tool.call({ pattern: '**/*.ts' }, {})
+
+      // 关键：不因 locked 目录的 EACCES 整体判错，已搜到的文件照常返回。
+      expect(result.isError).toBe(false)
+      const lines = result.output.split('\n')
+      expect(lines).toContain('src/a.ts')
+      expect(lines).toContain('src/b.ts')
+    } finally {
+      // 还原权限，否则 afterEach 的 rmSync 删不掉。
+      chmodSync(locked, 0o755)
+    }
   })
 })

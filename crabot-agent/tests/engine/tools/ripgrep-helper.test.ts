@@ -2,7 +2,11 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { runRipgrep } from '../../../src/engine/tools/ripgrep-helper'
+import {
+  runRipgrep,
+  getProtectedExcludeGlobs,
+  MACOS_PROTECTED_EXCLUDE_GLOBS,
+} from '../../../src/engine/tools/ripgrep-helper'
 
 describe('runRipgrep', () => {
   let tmp: string
@@ -92,5 +96,47 @@ describe('runRipgrep', () => {
     const r = await runRipgrep(['--files', tmp])
     expect(r.exitCode).toBe(0)
     expect(r.stdout).toContain('a.txt')
+  })
+
+  it('正常完成时 timedOut=false', async () => {
+    writeFileSync(join(tmp, 'a.txt'), 'foo\n')
+    const r = await runRipgrep(['--no-ignore', '--hidden', '-e', 'foo', tmp])
+    expect(r.timedOut).toBe(false)
+  })
+
+  it('墙钟超时会 kill rg 并标 timedOut/truncated', async () => {
+    // 写若干文件让 rg 有活干；timeoutMs=1 远小于 rg 进程 exec+扫描时间，
+    // 计时器必先于 rg 完成触发（进程启动本身就 >1ms），稳定命中超时分支。
+    mkdirSync(join(tmp, 'src'), { recursive: true })
+    for (let i = 0; i < 200; i++) {
+      writeFileSync(join(tmp, 'src', `f${i}.txt`), 'MATCH_ME\n'.repeat(50))
+    }
+    const r = await runRipgrep(
+      ['--no-ignore', '--hidden', '-e', 'MATCH_ME', tmp],
+      { timeoutMs: 1 },
+    )
+    expect(r.timedOut).toBe(true)
+    expect(r.truncated).toBe(true)
+  })
+})
+
+describe('getProtectedExcludeGlobs', () => {
+  it('MACOS_PROTECTED_EXCLUDE_GLOBS 含 Library / .Trash 排除', () => {
+    expect(MACOS_PROTECTED_EXCLUDE_GLOBS).toContain('!Library')
+    expect(MACOS_PROTECTED_EXCLUDE_GLOBS).toContain('!.Trash')
+  })
+
+  it('darwin 默认（未授权扫描）返回受保护排除列表', () => {
+    expect(getProtectedExcludeGlobs(false, 'darwin')).toEqual(MACOS_PROTECTED_EXCLUDE_GLOBS)
+  })
+
+  it('darwin 且放开扫描（FDA 生效）返回空', () => {
+    expect(getProtectedExcludeGlobs(true, 'darwin')).toEqual([])
+  })
+
+  it('非 darwin 恒返回空（无这些目录名）', () => {
+    expect(getProtectedExcludeGlobs(false, 'linux')).toEqual([])
+    expect(getProtectedExcludeGlobs(false, 'win32')).toEqual([])
+    expect(getProtectedExcludeGlobs(true, 'linux')).toEqual([])
   })
 })
