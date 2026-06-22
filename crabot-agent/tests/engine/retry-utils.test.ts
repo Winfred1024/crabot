@@ -289,6 +289,24 @@ describe('streamWithRetry', () => {
     expect(calls[1]).toBeLessThanOrEqual(baseDelay * 2 * 1.2 + 1)
   })
 
+  it('gives up by time window on persistent pre-material network error', async () => {
+    let attempts = 0
+    await expect((async () => {
+      const stream = streamWithRetry<Chunk>(
+        'test',
+        async function* () {
+          attempts += 1
+          yield { type: 'message_start' } as Chunk
+          throw makeRetryableError()
+        },
+        { isMaterial, delayMs: 50, maxRetryWindowMs: 180, maxRetries: 100 },
+      )
+      for await (const _ of stream) { /* drain */ }
+    })()).rejects.toThrow('terminated')
+    expect(attempts).toBeGreaterThanOrEqual(2)
+    expect(attempts).toBeLessThan(8)
+  })
+
   it('honors maxRetries cap when failures keep happening pre-material', async () => {
     let attempts = 0
 

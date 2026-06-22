@@ -257,9 +257,11 @@ export async function withRetry<T>(
 
 /**
  * Wraps an async generator factory with retry semantics.
- * Retries are only attempted BEFORE the first chunk is yielded; once any chunk
- * has been forwarded to the consumer, errors propagate (partial output cannot
- * be safely replayed).
+ * Retries are only attempted BEFORE the first *material* chunk is yielded;
+ * once a material chunk has been forwarded to the consumer, errors propagate
+ * (partial output cannot be safely replayed).
+ * Uses exponential backoff for all retryable errors, and terminates by a
+ * time budget (maxRetryWindowMs) rather than a fixed count.
  */
 export async function* streamWithRetry<T>(
   label: string,
@@ -268,10 +270,12 @@ export async function* streamWithRetry<T>(
 ): AsyncGenerator<T> {
   const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES
   const delayMs = options.delayMs ?? DEFAULT_RETRY_DELAY_MS
+  const windowMs = options.maxRetryWindowMs ?? DEFAULT_RETRY_WINDOW_MS
   const abortSignal = options.abortSignal
   const isMaterial = options.isMaterial ?? (() => true)
+  const startedAt = Date.now()
 
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+  for (let attempt = 0; ; attempt++) {
     let materialYielded = false
     try {
       for await (const chunk of makeStream()) {
@@ -286,10 +290,10 @@ export async function* streamWithRetry<T>(
       if (abortSignal?.aborted) throw err
       if (!isRetryableError(err)) throw err
       if (attempt >= maxRetries) throw err
-      const useBackoff = isOverloadedError(err)
-      const actualDelay = computeRetryDelayMs(attempt, delayMs, useBackoff)
+      const actualDelay = computeRetryDelayMs(attempt, delayMs, true)
+      if (Date.now() - startedAt + actualDelay > windowMs) throw err
       console.error(
-        `[${label}] attempt ${attempt + 1}/${maxRetries + 1} failed, retrying in ${actualDelay}ms${useBackoff ? ' (backoff)' : ''}:`,
+        `[${label}] attempt ${attempt + 1} failed, retrying in ${actualDelay}ms (backoff, window ${windowMs}ms):`,
         err,
       )
       try {
