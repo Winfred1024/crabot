@@ -50,8 +50,8 @@ export { StreamProcessor } from './stream-processor'
 export { ContextManager } from './context-manager'
 
 // --- Sub-Agent ---
-export { forkEngine, createSubAgentTool } from './sub-agent'
-export type { ForkEngineParams, ForkEngineResult, SubAgentToolConfig } from './sub-agent'
+export { forkEngine } from './sub-agent'
+export type { ForkEngineParams, ForkEngineResult } from './sub-agent'
 
 // --- Built-in Tools ---
 export { getAllBuiltinTools, getConfiguredBuiltinTools } from './tools/index'
