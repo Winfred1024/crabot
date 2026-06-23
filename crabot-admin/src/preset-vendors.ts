@@ -44,10 +44,6 @@ const DASHSCOPE_MODELS: ModelInfo[] = [
 ]
 
 /**
- * 百炼 Coding Plan 静态模型列表
- * 百炼 Coding Plan 提供 Anthropic 兼容接口，不支持 GET /models
- */
-/**
  * ChatGPT 订阅模型列表（Codex 后端）
  *
  * 通过 OAuth 认证后可用的模型（ChatGPT Plus/Pro/Enterprise）
@@ -64,19 +60,31 @@ const CHATGPT_SUBSCRIPTION_MODELS: ModelInfo[] = [
 ]
 
 /**
- * 智谱国际版（Z.AI）静态模型列表
- * Z.AI 提供 Anthropic 兼容接口，不支持 GET /models
- * 参考: https://docs.z.ai/scenario-example/develop-tools/claude
+ * 智谱 Coding Plan 静态模型列表
+ * GLM Coding Plan 提供 Anthropic 兼容入口，不提供通用模型拉取接口。
+ * 参考: https://docs.bigmodel.cn/cn/guide/develop/claude
+ * 参考: https://docs.bigmodel.cn/cn/coding-plan/latest-model
  */
-const ZAI_MODELS: ModelInfo[] = [
-  { model_id: 'glm-5.1', display_name: 'GLM-5.1', type: 'llm', supports_vision: false },
-  { model_id: 'glm-5', display_name: 'GLM-5', type: 'llm', supports_vision: false },
+const ZHIPU_CODING_MODELS: ModelInfo[] = [
+  { model_id: 'glm-5.2[1m]', display_name: 'GLM-5.2 1M', type: 'llm', supports_vision: false, context_window: 1000000 },
+  { model_id: 'glm-5.2', display_name: 'GLM-5.2', type: 'llm', supports_vision: false },
   { model_id: 'glm-5-turbo', display_name: 'GLM-5 Turbo', type: 'llm', supports_vision: false },
-  { model_id: 'glm-5v-turbo', display_name: 'GLM-5V Turbo', type: 'llm', supports_vision: true },
   { model_id: 'glm-4.7', display_name: 'GLM-4.7', type: 'llm', supports_vision: false },
-  { model_id: 'glm-4.7-flash', display_name: 'GLM-4.7 Flash', type: 'llm', supports_vision: false },
 ]
 
+/**
+ * Kimi Coding Plan 静态模型列表
+ * Kimi K2.7 Code 提供 Anthropic 兼容入口，官方 Claude Code 文档按静态模型配置。
+ * 参考: https://platform.moonshot.cn/docs/guide/agent-support
+ */
+const KIMI_CODING_MODELS: ModelInfo[] = [
+  { model_id: 'kimi-k2.7-code', display_name: 'Kimi K2.7 Code', type: 'llm', supports_vision: false, context_window: 262144 },
+]
+
+/**
+ * 百炼 Coding Plan 静态模型列表
+ * 百炼 Coding Plan 提供 Anthropic 兼容接口，不支持 GET /models
+ */
 const DASHSCOPE_CODING_MODELS: ModelInfo[] = [
   { model_id: 'qwen3.6-plus', display_name: 'Qwen3.6 Plus', type: 'llm', supports_vision: true, context_window: 131072 },
   { model_id: 'kimi-k2.5', display_name: 'Kimi K2.5', type: 'llm', supports_vision: true, context_window: 131072 },
@@ -142,22 +150,31 @@ export const BUILTIN_PRESET_VENDORS: readonly PresetVendor[] = [
     default_models: DASHSCOPE_CODING_MODELS,
   },
   {
-    id: 'zhipu',
-    name: '智谱 AI',
-    format: 'openai',
-    endpoint: 'https://open.bigmodel.cn/api/paas/v4',
-    models_api: '/models',
-    docs_url: 'https://open.bigmodel.cn/dev/howuse/introduction',
-    api_key_help_url: 'https://open.bigmodel.cn/usercenter/apikeys',
+    id: 'zhipu-coding',
+    name: '智谱 Coding Plan',
+    format: 'anthropic',
+    endpoint: 'https://open.bigmodel.cn/api/anthropic',
+    docs_url: 'https://docs.bigmodel.cn/cn/guide/develop/claude',
+    api_key_help_url: 'https://open.bigmodel.cn/usercenter/proj-mgmt/apikeys',
+    default_models: ZHIPU_CODING_MODELS,
   },
   {
-    id: 'zhipu-international',
-    name: '智谱国际版 (Z.AI)',
+    id: 'kimi-coding',
+    name: 'Kimi Coding Plan',
     format: 'anthropic',
-    endpoint: 'https://api.z.ai/api/anthropic',
-    docs_url: 'https://docs.z.ai/scenario-example/develop-tools/claude',
-    api_key_help_url: 'https://z.ai/model-api',
-    default_models: ZAI_MODELS,
+    endpoint: 'https://api.moonshot.cn/anthropic',
+    docs_url: 'https://platform.moonshot.cn/docs/guide/agent-support',
+    api_key_help_url: 'https://platform.kimi.com/console/api-keys',
+    default_models: KIMI_CODING_MODELS,
+  },
+  {
+    id: 'deepseek',
+    name: 'DeepSeek',
+    format: 'openai',
+    endpoint: 'https://api.deepseek.com',
+    models_api: '/models',
+    docs_url: 'https://api-docs.deepseek.com/',
+    api_key_help_url: 'https://platform.deepseek.com/api_keys',
   },
   {
     id: 'openrouter',
