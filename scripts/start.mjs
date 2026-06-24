@@ -5,7 +5,7 @@
 
 import './_preflight.mjs'
 
-import { existsSync, readFileSync, mkdirSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, openSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { createInterface } from 'node:readline'
 import { resolve, dirname } from 'node:path'
@@ -240,9 +240,16 @@ if (!DAEMON_MODE) {
 } else {
   // 后台模式：spawn detached supervisor，父进程轮询 health 后退出
   const supervisorEntry = resolve(__dirname, 'supervisor.mjs')
+  // supervisor 自身的 boot 日志：它若在顶层 import 阶段就崩（如缺运行时依赖），
+  // stdio:'ignore' 会让它静默消失、连 mm.stderr.log 都来不及建（supervisor.mjs
+  // 在更后面才 createStream）。把 supervisor 进程自己的 stdout/stderr 落到这里，
+  // 保证这类「起不来且没日志」的崩溃留下堆栈。
+  const bootLogDir = resolve(DATA_DIR, 'logs')
+  mkdirSync(bootLogDir, { recursive: true })
+  const bootLogFd = openSync(resolve(bootLogDir, 'supervisor.boot.log'), 'a')
   const sup = spawn(process.execPath, [supervisorEntry], {
     detached: true,
-    stdio: 'ignore',
+    stdio: ['ignore', bootLogFd, bootLogFd],
     env: {
       ...process.env,
       CRABOT_SUPERVISOR_DATA_DIR: DATA_DIR,
@@ -261,7 +268,7 @@ if (!DAEMON_MODE) {
   const deadline = Date.now() + 30_000
   while (Date.now() < deadline) {
     if (!isPidAlive(sup.pid)) {
-      console.error('[crabot] supervisor exited unexpectedly. Check logs at', resolve(DATA_DIR, 'logs/mm.stderr.log'))
+      console.error('[crabot] supervisor exited unexpectedly. Check logs at', resolve(DATA_DIR, 'logs/supervisor.boot.log'))
       process.exit(1)
     }
     try {
