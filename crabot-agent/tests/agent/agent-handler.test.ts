@@ -630,6 +630,75 @@ describe('AgentHandler', () => {
     })
   })
 
+  describe('task-scoped cwd persistence across turns', () => {
+    // 回归用例：currentCwd 曾声明在 buildToolsDynamic 内部，而 query-loop 每轮 LLM 调用
+    // 都重建工具列表 → 每轮把 currentCwd 重置回 getWorkspaceDir()（home），上一轮 set_cwd
+    // 的结果被丢弃。表现为「set_cwd 调用过了，但下一轮 Grep/Glob 仍从 home 搜」。
+    it('set_cwd 的结果在工具列表重建后仍然保留', async () => {
+      mockRunEngine.mockResolvedValue(makeEngineResult())
+
+      const handler = makeHandler()
+      await handler.executeTask({ task: makeTask(), context: makeContext() })
+
+      const callArgs = mockRunEngine.mock.calls[0][0]
+      const buildTools = callArgs.options.tools as () => ReadonlyArray<{
+        name: string
+        call: (input: Record<string, unknown>, ctx: unknown) => Promise<{ output: string; isError?: boolean }>
+      }>
+
+      const projectDir = mkdtempSync(join(tmpdir(), 'crabot-cwd-'))
+      try {
+        // turn 1：把 cwd 锚定到 projectDir
+        const setCwd1 = buildTools().find(t => t.name === 'set_cwd')
+        expect(setCwd1).toBeDefined()
+        const res1 = await setCwd1!.call({ path: projectDir }, {})
+        expect(res1.isError ?? false).toBe(false)
+
+        // turn 2：query-loop 重建工具列表后，用相对路径 '.' 解析当前 cwd——
+        // cwd 若跨 turn 持久应解析回 projectDir；若被重置回 home 则解析成 home。
+        const setCwd2 = buildTools().find(t => t.name === 'set_cwd')
+        const res2 = await setCwd2!.call({ path: '.' }, {})
+        expect(res2.isError ?? false).toBe(false)
+        expect(res2.output).toContain(projectDir)
+      } finally {
+        rmSync(projectDir, { recursive: true, force: true })
+      }
+    })
+
+    it('跨重启 resume：从 checkpoint 恢复 cwd，不回退 home', async () => {
+      mockRunEngine.mockResolvedValue(makeEngineResult())
+
+      const projectDir = mkdtempSync(join(tmpdir(), 'crabot-cwd-resume-'))
+      try {
+        const handler = makeHandler()
+        // resumeFrom 携带 checkpoint 里的 cwd（模拟 agent 重启后 admin 驱动的续跑）
+        await handler.executeTask({
+          task: makeTask(),
+          context: makeContext(),
+          resumeFrom: {
+            initialMessages: [{ id: 'm1', role: 'user', content: 'resume me', timestamp: 1 }] as never,
+            todoItems: [],
+            cwd: projectDir,
+          },
+        })
+
+        const callArgs = mockRunEngine.mock.calls[0][0]
+        const buildTools = callArgs.options.tools as () => ReadonlyArray<{
+          name: string
+          call: (input: Record<string, unknown>, ctx: unknown) => Promise<{ output: string; isError?: boolean }>
+        }>
+
+        // resumed worker 的 cwd 应是 checkpoint 里的 projectDir，而非 home
+        const setCwd = buildTools().find(t => t.name === 'set_cwd')
+        const res = await setCwd!.call({ path: '.' }, {})
+        expect(res.isError ?? false).toBe(false)
+        expect(res.output).toContain(projectDir)
+      } finally {
+        rmSync(projectDir, { recursive: true, force: true })
+      }
+    })
+  })
+
   describe('resolveSceneAnchorLabel', () => {
     it('preserves an existing scene label when a profile already exists', async () => {
       const rpcClient = {

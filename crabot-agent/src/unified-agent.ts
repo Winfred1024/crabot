@@ -1971,6 +1971,7 @@ export class UnifiedAgent extends ModuleBase {
             initialMessages: [...entry.checkpoint.messages],
             todoItems: entry.checkpoint.worker_state.todo_items,
             goalRevisionUnlocked: entry.checkpoint.worker_state.goal_revision_unlocked,
+            cwd: entry.checkpoint.worker_state.cwd,
           },
         },
       )

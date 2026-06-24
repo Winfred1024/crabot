@@ -764,6 +764,8 @@ export interface ExecuteTaskParams {
     initialMessages: import('./engine/types.js').EngineMessage[]
     todoItems: import('./agent/worker-todo-store.js').TodoItem[]
     goalRevisionUnlocked?: boolean
+    /** Task-scoped cwd（set_cwd 设置）；从 checkpoint worker_state.cwd 恢复，缺失则回退 home。 */
+    cwd?: string
   }
 }
 
@@ -871,6 +873,14 @@ export interface WorkerTaskState {
    * spec: 2026-06-07-goal-audit-async-buffered-info-design.md §4.13.3 / §4.13.4
    */
   silentNoDeliveryRetries: number
+  /**
+   * Task-scoped 工作根目录（spec 2026-06-08-task-scoped-cwd-design §3.1）。
+   * set_cwd 工具改它、Grep/Glob/Read/Write/Bash 默认以它为根。挂在 taskState 上
+   * 是为了 runWorkerLoop 跨 iteration 持久——task 进 waiting 后 resume 仍保留 cwd，
+   * 否则 resume 重置回 home 会让后续上下文（相对路径解析）错位。
+   * undefined = 还未初始化（runWorkerLoop 启动时填 getWorkspaceDir()）。
+   */
+  cwd?: string
 }
 
 export interface SupplementTaskDecision {
@@ -1117,6 +1127,11 @@ export interface WorkerStateSnapshot {
   todo_items: import('./agent/worker-todo-store.js').TodoItem[]
   /** 改目标券是否已解锁（可选，丢了顶多改目标被门控一次） */
   goal_revision_unlocked?: boolean
+  /**
+   * Task-scoped 工作根目录（set_cwd 设置）。无法从 messages 重建，必须随 checkpoint
+   * 持久——否则跨重启 resume 后 cwd 回退到 home，相对路径解析错位、后续上下文出问题。
+   */
+  cwd?: string
 }
 
 /**

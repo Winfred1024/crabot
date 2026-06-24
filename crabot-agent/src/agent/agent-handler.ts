@@ -655,7 +655,7 @@ export class AgentHandler {
     // runWorkerLoop 检查 activeTasks.get(task_id)——提前写入即可完成 todoStore/goalRevisionUnlocked 的恢复。
     let currentInitialMessages: ReadonlyArray<EngineMessage> | undefined
     if (params.resumeFrom) {
-      const { initialMessages, todoItems, goalRevisionUnlocked } = params.resumeFrom
+      const { initialMessages, todoItems, goalRevisionUnlocked, cwd: resumedCwd } = params.resumeFrom
       // 唤醒消息只注入一次（resume 首轮）；后续 waiting 续跑沿用现有重设逻辑。
       currentInitialMessages = [...initialMessages, buildResumeWakeupMessage()]
       // 预建 taskState 让 runWorkerLoop 直接复用（不再用 new TodoStore()）
@@ -676,6 +676,7 @@ export class AgentHandler {
           everBufferedMessage: false,
           silentNoDeliveryRetries: 0,
           ...(goalRevisionUnlocked !== undefined ? { goalRevisionUnlocked } : {}),
+          ...(resumedCwd !== undefined ? { cwd: resumedCwd } : {}),
         })
       }
     }
@@ -965,6 +966,16 @@ export class AgentHandler {
       let auditBaseTools: ReadonlyArray<ToolDefinition> = []
       let auditPermissionConfig: ToolPermissionConfig | undefined
 
+      // task-scoped cwd state（spec 2026-06-08-task-scoped-cwd-design §3.1）。
+      // 存在 taskState 上（不是局部变量），两条原因：
+      //   1. 跨 turn：query-loop 每轮 LLM 调用都重建工具列表（buildToolsDynamic），局部变量
+      //      会每轮重置回 home，丢掉上一轮 set_cwd——表现为「set_cwd 调过了但下轮 Grep/Glob 仍搜 home」。
+      //   2. 跨 resume：task 进 waiting 后 resume 会重新调 runWorkerLoop（新栈帧），局部变量同样丢失；
+      //      挂在跨 iteration 持久的 taskState 上才能让 resumed worker 拿回原 cwd，避免相对路径错位。
+      // 未设置时回退到 WORKSPACE_DIR env 或 homedir；set_cwd 设置后本 task 内持久。
+      const getCwd = (): string => taskState.cwd ?? getWorkspaceDir()
+      const setCwd = (newCwd: string): void => { taskState.cwd = newCwd }
+
       // wait_for_signal 用：跟踪本任务派出的 async subagent entity_ids。
       // delegate_task 异步路径返回 `{agent_id, status:'launched'}`，我们在 wrapper 里
       // 抽出 agent_id 加入 taskState.activeAsyncSubagentIds；判断"是否还有 active subagent"时
@@ -1045,13 +1056,9 @@ export class AgentHandler {
           tools.push(...externalTools)
         }
 
-        // task-scoped cwd state（spec 2026-06-08-task-scoped-cwd-design §3.1）
-        // 默认 = WORKSPACE_DIR env 或 homedir；LLM 可通过 set_cwd 工具改。
+        // task-scoped cwd（getCwd/setCwd 声明在 buildToolsDynamic 外，跨 turn 持久——见上）。
         // 子 subagent 通过 parentTools 继承 main 的工具列表（其工具内部 closure 在 getCwd 上），
         // 自动继承当前 cwd；但 set_cwd 工具单独 push 在 baseToolsRaw capture 之后，所以子不含。
-        let currentCwd: string = getWorkspaceDir()
-        const getCwd = (): string => currentCwd
-        const setCwd = (newCwd: string): void => { currentCwd = newCwd }
 
         // 3e. Built-in file/shell tools (filtered by Admin config)
         const skillsSnapshot = this.skills
@@ -1707,6 +1714,7 @@ export class AgentHandler {
                 worker_state: {
                   todo_items: [...taskState.todoStore.list()],
                   goal_revision_unlocked: taskState.goalRevisionUnlocked,
+                  ...(taskState.cwd !== undefined ? { cwd: taskState.cwd } : {}),
                 },
                 ...(taskState.resumeWorkerContext ? { worker_context: taskState.resumeWorkerContext } : {}),
               })
@@ -2662,6 +2670,7 @@ export class AgentHandler {
           worker_state: {
             todo_items: [...taskState.todoStore.list()],
             goal_revision_unlocked: taskState.goalRevisionUnlocked,
+            ...(taskState.cwd !== undefined ? { cwd: taskState.cwd } : {}),
           },
           ...(taskState.resumeWorkerContext ? { worker_context: taskState.resumeWorkerContext } : {}),
         })
