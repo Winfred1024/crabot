@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { readUpgradeStatus, canUpgrade } from './upgrade-runner.js'
+import { readUpgradeStatus, canUpgrade, isUpgradeInProgress } from './upgrade-runner.js'
 import type { VersionState } from './types.js'
 
 function tmpDataDir(): string {
@@ -19,6 +19,30 @@ describe('readUpgradeStatus', () => {
     const dir = tmpDataDir()
     writeFileSync(join(dir, 'upgrade-status.json'), JSON.stringify({ phase: 'done', started_at: 'x' }))
     expect(readUpgradeStatus(dir)?.phase).toBe('done')
+  })
+})
+
+describe('isUpgradeInProgress', () => {
+  it('phase=upgrading 且 started_at 是当前时间 → true', () => {
+    const dir = tmpDataDir()
+    writeFileSync(join(dir, 'upgrade-status.json'), JSON.stringify({ phase: 'upgrading', started_at: new Date().toISOString() }))
+    expect(isUpgradeInProgress(dir)).toBe(true)
+  })
+  it('phase=upgrading 且 started_at 是 11 分钟前 → false（stale lock）', () => {
+    const dir = tmpDataDir()
+    const stale = new Date(Date.now() - 11 * 60 * 1000).toISOString()
+    writeFileSync(join(dir, 'upgrade-status.json'), JSON.stringify({ phase: 'upgrading', started_at: stale }))
+    expect(isUpgradeInProgress(dir)).toBe(false)
+  })
+  it('started_at 非法字符串 → false', () => {
+    const dir = tmpDataDir()
+    writeFileSync(join(dir, 'upgrade-status.json'), JSON.stringify({ phase: 'upgrading', started_at: 'not-a-date' }))
+    expect(isUpgradeInProgress(dir)).toBe(false)
+  })
+  it('phase=done → false', () => {
+    const dir = tmpDataDir()
+    writeFileSync(join(dir, 'upgrade-status.json'), JSON.stringify({ phase: 'done', started_at: new Date().toISOString() }))
+    expect(isUpgradeInProgress(dir)).toBe(false)
   })
 })
 

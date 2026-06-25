@@ -107,4 +107,14 @@ describe('VersionService source', () => {
     const s = await svc.check()
     expect(s.upgrade_available).toBe(false)
   })
+
+  it('ls-remote 返回空串 → state.error 非空且 upgrade_available 为 false', async () => {
+    const svc = makeSourceSvc((args) => {
+      if (args[0] === 'ls-remote') return '' // 空输出，找不到 main 分支
+      return ''
+    })
+    const s = await svc.check()
+    expect(s.error).toBeTruthy()
+    expect(s.upgrade_available).toBe(false)
+  })
 })

@@ -7591,6 +7591,8 @@ input[type="radio"]:disabled {
 }
 
 /* Version upgrade card */
+.version-card { display: flex; flex-direction: column; }
+.version-card__value { font-weight: 500; }
 .version-card__row { display: flex; justify-content: space-between; padding: 6px 0; }
 .version-card__label { color: var(--text-secondary, #888); }
 .version-card__tag { margin-left: 8px; color: #e5484d; font-size: 12px; }

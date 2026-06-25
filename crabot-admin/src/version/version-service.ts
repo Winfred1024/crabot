@@ -120,6 +120,7 @@ export class VersionService {
 
     const remoteLine = git(['ls-remote', 'origin', 'main'], { cwd: home, proxyUrl })
     const remoteSha = remoteLine.split(/\s+/)[0] ?? ''
+    if (!remoteSha) throw new Error('ls-remote: origin 上找不到 main 分支')
 
     let localHasCommit = true
     try {

@@ -47,8 +47,12 @@ export function startUpgrade(crabotHome: string): { status: 'started' } {
   return { status: 'started' }
 }
 
-/** 是否有升级正在进行（用于防重） */
+/** 是否有升级正在进行（用于防重）；10 分钟后视为 stale lock，不再阻塞 */
 export function isUpgradeInProgress(dataDir: string): boolean {
   const s = readUpgradeStatus(dataDir)
-  return s?.phase === 'upgrading' || s?.phase === 'restarting'
+  if (!s) return false
+  if (s.phase !== 'upgrading' && s.phase !== 'restarting') return false
+  const startedMs = new Date(s.started_at).getTime()
+  if (!Number.isFinite(startedMs)) return false
+  return Date.now() - startedMs < 10 * 60 * 1000
 }

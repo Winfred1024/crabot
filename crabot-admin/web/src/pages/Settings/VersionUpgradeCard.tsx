@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { Card } from '../../components/Common/Card'
 import { Button } from '../../components/Common/Button'
 import { useToast } from '../../contexts/ToastContext'
@@ -16,6 +16,12 @@ export const VersionUpgradeCard: React.FC = () => {
   const [checking, setChecking] = useState(false)
   const [phase, setPhase] = useState<Phase>('idle')
   const targetVersion = useRef<string | null>(null)
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // 组件卸载时清理轮询定时器
+  useEffect(() => () => {
+    if (timerRef.current) clearInterval(timerRef.current)
+  }, [])
 
   // system mode 不渲染整张卡片
   if (state && state.upgrade_capability === 'system') return null
@@ -29,16 +35,18 @@ export const VersionUpgradeCard: React.FC = () => {
     const startedAt = Date.now()
     targetVersion.current = expected
     setPhase('upgrading')
-    const timer = setInterval(async () => {
+    timerRef.current = setInterval(async () => {
       if (Date.now() - startedAt > TIMEOUT_MS) {
-        clearInterval(timer)
+        clearInterval(timerRef.current!)
+        timerRef.current = null
         setPhase('timeout')
         return
       }
       try {
         const fresh: VersionState = await pollVersion()
         if (fresh.last_upgrade?.phase === 'failed') {
-          clearInterval(timer)
+          clearInterval(timerRef.current!)
+          timerRef.current = null
           setPhase('failed')
           return
         }
@@ -47,7 +55,8 @@ export const VersionUpgradeCard: React.FC = () => {
           fresh.last_upgrade?.phase === 'done' ||
           (expected && fresh.current_version === expected)
         ) {
-          clearInterval(timer)
+          clearInterval(timerRef.current!)
+          timerRef.current = null
           setPhase('success')
           toast.success('升级完成')
         }
@@ -117,6 +126,10 @@ export const VersionUpgradeCard: React.FC = () => {
         )}
         {phase === 'timeout' && (
           <div className="version-card__error">升级超时未恢复，请手动检查 <code>crabot status</code>。</div>
+        )}
+
+        {state.upgrade_capability === 'source' && state.upgrade_available && (state.source_blockers?.length ?? 0) === 0 && (
+          <div className="version-card__hint">升级将通过 git pull 拉取最新代码并重新构建。</div>
         )}
 
         <div className="version-card__actions">

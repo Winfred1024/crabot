@@ -65,4 +65,27 @@ describe('VersionUpgradeCard', () => {
     const { container } = render(<VersionUpgradeCard />)
     await waitFor(() => expect(container).toBeEmptyDOMElement())
   })
+
+  it('source 有更新且无 blockers → 显示 git pull 提示', async () => {
+    __state.current = {
+      ...__state.current,
+      upgrade_capability: 'source',
+      source_blockers: [],
+    }
+    render(<VersionUpgradeCard />)
+    await waitFor(() =>
+      expect(screen.getByText(/git pull 拉取最新代码并重新构建/)).toBeInTheDocument()
+    )
+  })
+
+  it('source 有更新但有 blockers → 不显示 git pull 提示', async () => {
+    __state.current = {
+      ...__state.current,
+      upgrade_capability: 'source',
+      source_blockers: ['工作区有未提交改动'],
+    }
+    render(<VersionUpgradeCard />)
+    await waitFor(() => expect(screen.getByText(/工作区有未提交改动/)).toBeInTheDocument())
+    expect(screen.queryByText(/git pull 拉取最新代码并重新构建/)).not.toBeInTheDocument()
+  })
 })
