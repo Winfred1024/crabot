@@ -43,3 +43,10 @@ export function useSystemVersion() {
 export function pollVersion(): Promise<VersionState> {
   return versionService.get().then((s) => { setCache(s); return s })
 }
+
+/** 仅供测试使用：重置模块级缓存，防止用例间串扰 */
+export function __resetForTest() {
+  cache = null
+  inflight = null
+  listeners.clear()
+}

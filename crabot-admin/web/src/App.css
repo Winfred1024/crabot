@@ -7589,3 +7589,14 @@ input[type="radio"]:disabled {
   font-size: 0.78rem;
   color: var(--text-secondary);
 }
+
+/* Version upgrade card */
+.version-card__row { display: flex; justify-content: space-between; padding: 6px 0; }
+.version-card__label { color: var(--text-secondary, #888); }
+.version-card__tag { margin-left: 8px; color: #e5484d; font-size: 12px; }
+.version-card__hint { color: #888; font-size: 12px; margin-top: 8px; }
+.version-card__warning { color: #b5820a; margin-top: 8px; }
+.version-card__error { color: #e5484d; margin-top: 8px; }
+.version-card__ok { color: #30a46c; margin-top: 8px; }
+.version-card__progress { color: #0a72e5; margin-top: 8px; }
+.version-card__actions { display: flex; gap: 8px; margin-top: 12px; }
