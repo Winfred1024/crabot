@@ -292,7 +292,7 @@ sync_memory_deps() {
   fi
 
   log_info "同步 Memory 依赖..."
-  (cd "$MEMORY_DIR" && uv sync 2>/dev/null) || {
+  (cd "$MEMORY_DIR" && uv sync --frozen 2>/dev/null) || {
     log_warn "Memory 依赖同步失败"
     return 0
   }

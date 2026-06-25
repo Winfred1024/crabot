@@ -50,7 +50,7 @@ if ! command -v uv &> /dev/null; then
 fi
 
 # 使用 uv 运行
-uv run python src/main.py
+uv run --frozen python src/main.py
 
 # 捕获退出信号
 trap 'echo -e "\n${YELLOW}Shutting down...${NC}"; exit 0' INT TERM

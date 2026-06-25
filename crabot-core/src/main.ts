@@ -134,7 +134,7 @@ const CORE_MODULES: Array<ModuleDefinition & Record<string, unknown>> = [
     module_type: 'memory',
     version: '0.1.0',
     protocol_version: '0.1.0',
-    entry: 'uv run python -m src.main',
+    entry: 'uv run --frozen python -m src.main',
     cwd: MEMORY_DIR,
     data_dir: path.join(DATA_DIR, 'memory'),
     auto_start: fs.existsSync(path.join(MEMORY_DIR, 'src', 'main.py')),
