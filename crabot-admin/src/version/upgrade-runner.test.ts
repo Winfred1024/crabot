@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { readUpgradeStatus, canUpgrade, isUpgradeInProgress } from './upgrade-runner.js'
+import { readUpgradeStatus, canUpgrade, isUpgradeInProgress, writeUpgradeStarting } from './upgrade-runner.js'
 import type { VersionState } from './types.js'
 
 function tmpDataDir(): string {
@@ -43,6 +43,24 @@ describe('isUpgradeInProgress', () => {
     const dir = tmpDataDir()
     writeFileSync(join(dir, 'upgrade-status.json'), JSON.stringify({ phase: 'done', started_at: new Date().toISOString() }))
     expect(isUpgradeInProgress(dir)).toBe(false)
+  })
+})
+
+describe('writeUpgradeStarting', () => {
+  it('同步写 upgrading 状态，isUpgradeInProgress 立即为 true', () => {
+    const dir = tmpDataDir()
+    writeUpgradeStarting(dir, 'v1.0.0')
+    const s = readUpgradeStatus(dir)
+    expect(s?.phase).toBe('upgrading')
+    expect(s?.from_version).toBe('v1.0.0')
+    expect(isUpgradeInProgress(dir)).toBe(true)
+  })
+  it('覆盖上一次残留的 done 状态（竞态修复核心）', () => {
+    const dir = tmpDataDir()
+    writeFileSync(join(dir, 'upgrade-status.json'), JSON.stringify({ phase: 'done', started_at: 'x', finished_at: 'y' }))
+    writeUpgradeStarting(dir)
+    expect(readUpgradeStatus(dir)?.phase).toBe('upgrading')
+    expect(readUpgradeStatus(dir)?.finished_at).toBeUndefined()
   })
 })
 

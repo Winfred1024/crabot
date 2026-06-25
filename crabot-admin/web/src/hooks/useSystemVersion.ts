@@ -34,8 +34,6 @@ export function useSystemVersion() {
   return {
     state,
     refresh: () => load(true),
-    /** 直接替换缓存（升级状态机轮询时用） */
-    setCache,
   }
 }
 

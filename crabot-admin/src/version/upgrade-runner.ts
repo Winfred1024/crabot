@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { UpgradeStatus, VersionState } from './types.js'
 
@@ -27,10 +27,26 @@ export function canUpgrade(state: VersionState): { ok: boolean; reason?: string 
 }
 
 /**
- * spawn detached 升级进程（scripts/ui-upgrade.mjs）。
- * 立即返回；进程脱离 admin 进程组，stop MM 时不被杀。
+ * spawn 前同步落 upgrading 状态。消除两个竞态：
+ * 1. 前端轮询读到上一次升级残留的 done 而误判成功（detached 进程异步写 upgrading 有延迟）；
+ * 2. 快速双击在 ui-upgrade.mjs 写 status 前并发 spawn 第二个升级进程。
  */
-export function startUpgrade(crabotHome: string): { status: 'started' } {
+export function writeUpgradeStarting(dataDir: string, fromVersion?: string | null): void {
+  mkdirSync(dataDir, { recursive: true })
+  const status: UpgradeStatus = {
+    phase: 'upgrading',
+    started_at: new Date().toISOString(),
+    from_version: fromVersion ?? undefined,
+  }
+  writeFileSync(join(dataDir, 'upgrade-status.json'), JSON.stringify(status, null, 2))
+}
+
+/**
+ * spawn detached 升级进程（scripts/ui-upgrade.mjs）。
+ * 先同步落 upgrading 状态再 spawn；进程脱离 admin 进程组，stop MM 时不被杀。
+ */
+export function startUpgrade(crabotHome: string, dataDir: string, fromVersion?: string | null): { status: 'started' } {
+  writeUpgradeStarting(dataDir, fromVersion)
   const script = join(crabotHome, 'scripts', 'ui-upgrade.mjs')
   const child = spawn(process.execPath, [script], {
     cwd: crabotHome,

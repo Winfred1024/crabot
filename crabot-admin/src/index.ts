@@ -6410,7 +6410,7 @@ export class AdminModule extends ModuleBase {
       return
     }
     const crabotHome = path.resolve(this.adminConfig.data_dir, '../..')
-    sendJson(res, 200, startUpgrade(crabotHome))
+    sendJson(res, 200, startUpgrade(crabotHome, this.adminConfig.data_dir, state.current_version))
   }
 
   private async handleGetProxyConfigApi(_req: IncomingMessage, res: ServerResponse): Promise<void> {

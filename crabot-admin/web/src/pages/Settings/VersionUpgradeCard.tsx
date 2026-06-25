@@ -15,7 +15,6 @@ export const VersionUpgradeCard: React.FC = () => {
   const toast = useToast()
   const [checking, setChecking] = useState(false)
   const [phase, setPhase] = useState<Phase>('idle')
-  const targetVersion = useRef<string | null>(null)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // 组件卸载时清理轮询定时器
@@ -33,7 +32,6 @@ export const VersionUpgradeCard: React.FC = () => {
 
   const startUpgradePolling = (expected: string | null) => {
     const startedAt = Date.now()
-    targetVersion.current = expected
     setPhase('upgrading')
     timerRef.current = setInterval(async () => {
       if (Date.now() - startedAt > TIMEOUT_MS) {
