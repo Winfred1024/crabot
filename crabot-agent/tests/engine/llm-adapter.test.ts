@@ -11,6 +11,7 @@ import {
   type LLMAdapterConfig,
 } from '../../src/engine/llm-adapter'
 import { normalizeMessagesForResponses } from '../../src/engine/openai-responses-adapter'
+import { StreamProcessor } from '../../src/engine/stream-processor'
 import type { StreamChunk } from '../../src/engine/types'
 import {
   createUserMessage,
@@ -885,6 +886,102 @@ describe('OpenAIAdapter', () => {
       adapter.updateConfig({ endpoint: 'http://localhost:5000' })
       expect(adapter).toBeDefined()
     })
+  })
+})
+
+describe('OpenAIAdapter.stream', () => {
+  const originalFetch = global.fetch
+  afterEach(() => {
+    global.fetch = originalFetch
+  })
+
+  // Chat Completions SSE 用纯 `data: {...}` 行，[DONE] 收尾。
+  function makeChatSSEResponse(chunks: Array<Record<string, unknown>>): Response {
+    const encoder = new TextEncoder()
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`))
+        }
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+        controller.close()
+      },
+    })
+    return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+  }
+
+  async function collectOpenAIChunks(adapter: OpenAIAdapter): Promise<StreamChunk[]> {
+    const chunks: StreamChunk[] = []
+    for await (const c of adapter.stream({
+      messages: [createUserMessage('hi')],
+      systemPrompt: '',
+      tools: [],
+      model: 'gpt-5.5',
+    })) {
+      chunks.push(c)
+    }
+    return chunks
+  }
+
+  // 回归：finish_reason='tool_calls' 之后还有一个只带 usage 的尾包（choices=[]，
+  // OpenAI include_usage 的标准收尾）。早期实现对尾包再发一次 message_end{stopReason:null}，
+  // 经 StreamProcessor 覆盖把 'tool_use' 抹成 null → query-loop 不执行工具 → 下一轮带着
+  // 无 output 的 function_call → 后端报 "No tool output found for function call fc_xxx"。
+  it('keeps stopReason=tool_use when a trailing usage-only chunk follows finish_reason', async () => {
+    const streamChunks = [
+      {
+        id: 'chatcmpl-1',
+        choices: [{ index: 0, delta: { role: 'assistant', tool_calls: [{ index: 0, id: 'fc_E0olfe24', type: 'function', function: { name: 'Bash', arguments: '' } }] }, finish_reason: null }],
+      },
+      {
+        id: 'chatcmpl-1',
+        choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '{"command":"ls"}' } }] }, finish_reason: null }],
+      },
+      {
+        id: 'chatcmpl-1',
+        choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+      },
+      // 尾包：choices 为空，仅 usage
+      {
+        id: 'chatcmpl-1',
+        choices: [],
+        usage: { prompt_tokens: 100, completion_tokens: 20 },
+      },
+    ]
+    global.fetch = vi.fn().mockResolvedValue(makeChatSSEResponse(streamChunks)) as unknown as typeof fetch
+
+    const adapter = new OpenAIAdapter({ endpoint: 'https://mirror.example.ai/v1', apikey: 'k' })
+    const chunks = await collectOpenAIChunks(adapter)
+
+    // 还原 query-loop 的累积路径：所有 chunk 喂进 StreamProcessor。
+    const processor = new StreamProcessor()
+    for (const c of chunks) processor.process(c)
+    const result = processor.finalize()
+
+    expect(result.toolUseBlocks).toHaveLength(1)
+    expect(result.toolUseBlocks[0]?.id).toBe('fc_E0olfe24')
+    expect(result.stopReason).toBe('tool_use')
+    expect(result.usage?.outputTokens).toBe(20)
+  })
+
+  it('reports end_turn for a plain text completion with trailing usage chunk', async () => {
+    const streamChunks = [
+      { id: 'c', choices: [{ index: 0, delta: { role: 'assistant', content: 'Hello' }, finish_reason: null }] },
+      { id: 'c', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
+      { id: 'c', choices: [], usage: { prompt_tokens: 50, completion_tokens: 3 } },
+    ]
+    global.fetch = vi.fn().mockResolvedValue(makeChatSSEResponse(streamChunks)) as unknown as typeof fetch
+
+    const adapter = new OpenAIAdapter({ endpoint: 'https://mirror.example.ai/v1', apikey: 'k' })
+    const chunks = await collectOpenAIChunks(adapter)
+
+    const processor = new StreamProcessor()
+    for (const c of chunks) processor.process(c)
+    const result = processor.finalize()
+
+    expect(result.text).toBe('Hello')
+    expect(result.stopReason).toBe('end_turn')
+    expect(result.usage?.outputTokens).toBe(3)
   })
 })
 

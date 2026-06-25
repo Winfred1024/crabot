@@ -204,6 +204,14 @@ export class OpenAIAdapter implements LLMAdapter {
 
     let messageStarted = false
     const activeToolCalls = new Map<number, string>()
+    // Chat Completions 流式把 finish_reason 和（include_usage 的）usage 分别放在两个尾包里：
+    // 先来 choices[0].finish_reason，再来一个 choices=[] 只带 usage 的收尾包。message_end 必须
+    // 在整条流结束后只发一次，携带累积的 stopReason + usage —— 与 anthropic/responses adapter
+    // 的「单次 message_end」契约一致。早期实现对两个尾包各发一次 message_end，第二次
+    // stopReason=null 经 StreamProcessor 覆盖把 'tool_use' 抹成 null，导致 query-loop 不执行工具、
+    // 留下无 output 的 function_call，下一轮被后端拒为 "No tool output found for function call"。
+    let finalStopReason: EngineStopReason = null
+    let finalUsage: LLMTokenUsage | undefined = undefined
     // response.body 是 ReadableStream。提前 break（[DONE]）或异常退出时不显式 cancel，
     // undici 在 keep-alive 路径下可能晚释放 socket / decompressor（这块是 native heap，
     // V8 看不见）。详见 2026-06-06 kernel watchdog panic 复盘 —— anthropic-adapter 是
@@ -226,6 +234,7 @@ export class OpenAIAdapter implements LLMAdapter {
       }
 
       const usage = extractOpenAIUsage(data.usage)
+      if (usage) finalUsage = usage
       const choices = data.choices as Array<{
         delta?: {
           content?: string | null
@@ -269,30 +278,28 @@ export class OpenAIAdapter implements LLMAdapter {
 
         const stopReason = mapOpenAIFinishReason(choice.finish_reason)
         if (stopReason !== null) {
+          finalStopReason = stopReason
           if (choice.finish_reason === 'tool_calls') {
             for (const [, id] of activeToolCalls) {
               yield { type: 'tool_use_end', id }
             }
             activeToolCalls.clear()
           }
-          yield {
-            type: 'message_end',
-            stopReason,
-            ...(usage ? { usage } : {}),
-          }
-        }
-      }
-
-      if (usage && (!choices || choices.length === 0)) {
-        yield {
-          type: 'message_end',
-          stopReason: null,
-          usage,
         }
       }
     }
     } finally {
       try { await sseBody.cancel() } catch { /* already drained / errored */ }
+    }
+
+    // 单次 message_end：流正常结束（[DONE] / 自然收尾）后发出。中途 throw 不会走到这里
+    // （异常从 for-await 抛出，经 finally 后传播），符合「不重放半截流」的重试语义。
+    if (messageStarted) {
+      yield {
+        type: 'message_end',
+        stopReason: finalStopReason,
+        ...(finalUsage ? { usage: finalUsage } : {}),
+      }
     }
   }
 }
