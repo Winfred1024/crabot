@@ -8,6 +8,7 @@ import { api } from '../../services/api'
 import { browserService } from '../../services/browser'
 import { ProxyConfigCard } from './ProxyConfigCard'
 import { PublicBaseUrlCard } from './PublicBaseUrlCard'
+import { VersionUpgradeCard } from './VersionUpgradeCard'
 
 interface ConfigStatus {
   configured: boolean
@@ -214,6 +215,10 @@ export const GlobalSettings: React.FC = () => {
 
       <div className="settings-card">
         <ProxyConfigCard />
+      </div>
+
+      <div className="settings-card">
+        <VersionUpgradeCard />
       </div>
     </MainLayout>
   )
