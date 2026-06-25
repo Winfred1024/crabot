@@ -27,16 +27,16 @@ version: "1.5.0"
 ### 第二步：获取任务概览
 
 ```
-search_traces({
+find_task({
   time_range: {
     start: "<watermark 时间>",
     end: "<当前时间>"
   },
-  limit: 50
+  page_size: 100
 })
 ```
 
-浏览每条 trace 的 status、trigger_type、trigger_summary、trigger_task_type、span_count、duration。
+浏览每条任务的 status、trigger_type、title、task_type、span_count、duration。
 
 ### 第三步：筛选值得分析的任务
 
@@ -57,25 +57,21 @@ search_traces({
 delegate_task({
   task: "深入分析任务执行过程。
 
-任务 trace_id: <trace_id>
-任务 related_task_id: <task_id>（如有）
+任务 task_id: <task_id>
 
 执行步骤：
-1. 查 trace span 树：search_traces({ task_id: '<task_id>', include_spans: true })
-   - 逐层钻取关键 span（特别是 llm_call 和 tool_call 类型）
-   - 注意失败的 span 和重试模式
+1. 读完整执行复盘：get_task_progress(task_id: '<task_id>')
+   - 返回含对话流 + 工具调用序列，逐层看关键步骤（特别是 llm_call 和 tool_call）
+   - 注意失败的步骤、重试模式，以及对话里人类的反馈和情绪变化
 
-2. 如有对话历史，查询：mcp__crab-messaging__get_history({ session_id: '<session_id>', limit: 30 })
-   - 分析人类反馈和情绪变化
-
-3. 识别关键模式：
+2. 识别关键模式：
    - 踩坑点：哪个步骤出错、为什么
    - 弯路：尝试了哪些不可行方案
    - 最终方案：怎么解决的
    - 反面模式：哪些做法应该避免
    - 最佳路径：如果重来，最优执行路径是什么
 
-4. 返回结构化分析结果（不要调用 quick_capture，由 main worker 统一处理）：
+3. 返回结构化分析结果（不要调用 quick_capture，由 main worker 统一处理）：
    - summary: 一句话总结
    - experiences: 数组，每条包含 { brief, body, importance_factors, tags, scenario, outcome }
      - brief：一行（≤80 字）面向召回的结论，包含关键场景词
@@ -125,7 +121,7 @@ mcp__crab-memory__quick_capture({
 
 ### 第六步：生成报告（落 outcome，不外发）
 
-生成结构化报告作为 **task outcome**（task 的执行结果，落库后由 Admin UI / get_task_details 查看），内容包含：
+生成结构化报告作为 **task outcome**（task 的执行结果，落库后由 Admin UI / get_task_progress 查看），内容包含：
 - 反思时间范围
 - 分析的任务数量
 - 提炼的经验数量

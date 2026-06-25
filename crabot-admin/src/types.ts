@@ -2099,7 +2099,7 @@ export interface BuiltinCapabilities {
   file_system: boolean
   /** Bash（含 run_in_background）/ Output / Kill / ListEntities — shell + 后台进程管理 */
   shell: boolean
-  /** search_traces / get_task_details / search_short_term — 任务情报查询 */
+  /** find_task / get_task_progress — 任务情报查询 */
   task_intel: boolean
   /** crab-memory MCP 全部工具 — 长期记忆读写 */
   crab_memory: boolean

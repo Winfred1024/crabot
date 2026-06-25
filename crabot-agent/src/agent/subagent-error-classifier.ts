@@ -163,7 +163,7 @@ export function classifySubAgentError(err: unknown): SubAgentErrorClassification
     kind: 'unknown',
     retryable: true,
     summary: 'Subagent 调用失败，错误类型未识别。',
-    hint: '建议先用 search_traces / get_task_details 查 child_trace_id 的详细 span，再决定是否重试或上报给 master。',
+    hint: '建议先用 find_task / get_task_progress 查该子任务的执行进度，再决定是否重试或上报给 master。',
   }
 }
 
@@ -229,7 +229,7 @@ function classifyMaxTurns(): SubAgentErrorClassification {
       '不要原 prompt 直接重试——同样的 budget 会再次触顶。' +
       '处理选项：(a) 把任务拆成更小子步骤分多次 delegate；(b) 调更强的 subagent；' +
       '(c) 若已多次截断，调 ask_human 把 partial_output 给 master 让人判断。' +
-      '可用 search_traces 看 child_trace_id 找出卡在哪一步。',
+      '可用 get_task_progress 查该子任务进度找出卡在哪一步。',
   }
 }
 

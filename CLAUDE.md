@@ -193,7 +193,7 @@ node scripts/debug-agent.mjs modules  # 查看 MM 注册的模块
 - agent 重启（restart_count>0）后，admin 自动：
   1. 把所有 status=executing 任务标 failed
   2. 为非 recovery in-flight 任务生成一条 recovery worker 任务（tags=['recovery'], priority=high）
-  3. 让 agent 用 search_traces / get_task_details 自查每条进度并续办或汇报
+  3. 让 agent 用 find_task / get_task_progress 自查每条进度并续办或汇报
 - 防雪崩：recovery 任务自身崩了不再派生新 recovery
 
 ## 开发环境（必须了解）

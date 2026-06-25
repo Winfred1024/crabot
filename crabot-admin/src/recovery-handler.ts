@@ -2,8 +2,8 @@
  * Self-healing recovery 任务生成器
  *
  * Agent 模块意外重启后，把所有 status=executing 的非 recovery 任务标 failed，
- * 然后生成一条新的 recovery worker 任务，让 agent 自己用 search_traces 工具
- * 调研每条中断任务的实际进度，决定继续 / 记录 / 放弃。
+ * 然后生成一条新的 recovery worker 任务，让 agent 自己用 find_task / get_task_progress
+ * 工具调研每条中断任务的实际进度，决定继续 / 记录 / 放弃。
  *
  * @see crabot-docs/protocols/protocol-admin.md "Recovery Task 约定"
  */
@@ -81,7 +81,7 @@ export function buildRecoveryTask(
     ...lines,
     '',
     '请对每条任务：',
-    '1. 用 search_traces / get_task_details 工具查实际进度',
+    '1. 用 find_task / get_task_progress 工具查实际进度',
     '2. 判断进度：「基本完成、只缺收尾」/「做到一半」/「刚开始」三类',
     '3. 如果有 master 在等结果（看 task source.session_id 是否还活着），先在该会话发一条状态消息',
     '4. 决定：继续推进 / 记录到 memory / 直接放弃，每条要有结论',

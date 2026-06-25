@@ -31,7 +31,7 @@ export function buildResumeWakeupMessage(): EngineMessage {
     role: 'user',
     content:
       '[系统] 你（agent）刚重启过，正在恢复此 task。若你之前 spawn 过子 agent 或在 wait_for_signal 等待，' +
-      '它们已随重启中断——用 list_entities / search_traces / 读 result 文件自查进度后，继续把任务做完。',
+      '它们已随重启中断——用 list_entities / find_task / get_task_progress / 读 result 文件自查进度后，继续把任务做完。',
     timestamp: Date.now(),
   }
 }

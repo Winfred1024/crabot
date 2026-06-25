@@ -363,7 +363,7 @@ Self-check: 这句话的事实来源是 prompt 里的哪一段，或本 loop 哪
 工具返回？
 - 能指认 → end_turn OK
 - 答"我印象里..." / "记得是..." / "应该是这样" → 凭印象编。
-  不要 end_turn，先用 get_history / search_traces / get_task_details /
+  不要 end_turn，先用 get_history / find_task / get_task_progress /
   search_short_term / search_long_term 实际查到证据后再交付
 
 真实反例：对方问"我提的框架几层"，agent prompt
