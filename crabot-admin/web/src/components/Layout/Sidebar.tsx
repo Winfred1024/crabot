@@ -1,6 +1,7 @@
 import React from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { useDialogApplications } from '../../contexts/DialogApplicationsContext'
+import { useSystemVersion } from '../../hooks/useSystemVersion'
 
 interface NavItem {
   to: string
@@ -58,6 +59,9 @@ const navSections: NavSection[] = [
 export const Sidebar: React.FC = () => {
   const location = useLocation()
   const { count: pendingApplicationCount } = useDialogApplications()
+  const { state: versionState } = useSystemVersion()
+  const showUpgradeDot =
+    !!versionState?.upgrade_available && versionState.upgrade_capability !== 'system'
 
   const activeItem = navSections
     .flatMap((section) => section.items)
@@ -94,6 +98,9 @@ export const Sidebar: React.FC = () => {
                 >
                   <span className="sidebar-nav-dot" />
                   <span className="sidebar-nav-label">{item.label}</span>
+                  {item.match === '/settings' && showUpgradeDot && (
+                    <span className="sidebar-nav-upgrade-dot" aria-label="有新版本可升级" />
+                  )}
                   {badge !== null && (
                     <span
                       className="sidebar-nav-badge"

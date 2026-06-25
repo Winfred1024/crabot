@@ -258,6 +258,14 @@ code, pre, .mono {
   animation: ember-pulse 2.4s ease-out infinite;
 }
 
+.sidebar-nav-upgrade-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #e5484d;
+  margin-left: 6px;
+}
+
 @keyframes ember-pulse {
   0% {
     box-shadow: 0 0 0 0 rgba(217, 124, 74, 0.55);
