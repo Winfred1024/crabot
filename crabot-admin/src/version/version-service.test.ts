@@ -52,3 +52,59 @@ describe('VersionService capability', () => {
     rmSync(home, { recursive: true, force: true })
   })
 })
+
+describe('VersionService source', () => {
+  function makeSourceSvc(git: (args: string[]) => string) {
+    const home = mkdtempSync(join(tmpdir(), 'crabot-src-'))
+    mkdirSync(join(home, '.git'))
+    return new VersionService({
+      crabotHome: home, dataDir: home, etcDir: join(home, 'no-etc'),
+      gitRunner: git,
+    })
+  }
+
+  it('远端 main 领先且工作区干净 → 有更新无 blockers', async () => {
+    const svc = makeSourceSvc((args) => {
+      if (args[0] === 'ls-remote') return 'abc123\trefs/heads/main'
+      if (args[0] === 'cat-file') throw new Error('not found') // 本地不含该 commit
+      if (args[0] === 'status') return ''
+      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return 'main'
+      if (args[0] === 'rev-parse' && args[1] === '--short') return 'def456'
+      return ''
+    })
+    const s = await svc.check()
+    expect(s.upgrade_capability).toBe('source')
+    expect(s.upgrade_available).toBe(true)
+    expect(s.source_blockers ?? []).toEqual([])
+    expect(s.latest_version).toBe('abc123')
+    expect(s.current_version).toBe('def456')
+  })
+
+  it('工作区脏 + 非 main 分支 → 有更新但两条 blockers', async () => {
+    const svc = makeSourceSvc((args) => {
+      if (args[0] === 'ls-remote') return 'abc123\trefs/heads/main'
+      if (args[0] === 'cat-file') throw new Error('not found')
+      if (args[0] === 'status') return ' M crabot-admin/src/x.ts'
+      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return 'feature/y'
+      if (args[0] === 'rev-parse' && args[1] === '--short') return 'def456'
+      return ''
+    })
+    const s = await svc.check()
+    expect(s.upgrade_available).toBe(true)
+    expect(s.source_blockers).toContain('工作区有未提交改动')
+    expect(s.source_blockers).toContain('当前不在 main 分支')
+  })
+
+  it('本地已含远端 commit → 无更新', async () => {
+    const svc = makeSourceSvc((args) => {
+      if (args[0] === 'ls-remote') return 'abc123\trefs/heads/main'
+      if (args[0] === 'cat-file') return '' // 不抛 = 本地已含
+      if (args[0] === 'status') return ''
+      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return 'main'
+      if (args[0] === 'rev-parse' && args[1] === '--short') return 'abc123'
+      return ''
+    })
+    const s = await svc.check()
+    expect(s.upgrade_available).toBe(false)
+  })
+})
