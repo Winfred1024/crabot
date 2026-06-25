@@ -881,6 +881,13 @@ export interface WorkerTaskState {
    * undefined = 还未初始化（runWorkerLoop 启动时填 getWorkspaceDir()）。
    */
   cwd?: string
+  /**
+   * Read 去重缓存（read dedup，仅 main worker 用）。见 engine/tools/file-read-state.ts。
+   * 跨 turn 持久（同 task 内重复读同一文件返回 stub 省 token），但**不随 checkpoint 持久**——
+   * resume 后为空即可：旧 Read 的 tool_result 此时也已不在新上下文，重新全量读才安全。
+   * 压缩（onCompactionStart）时清空。
+   */
+  readFileState?: import('./engine/tools/file-read-state.js').FileReadState
 }
 
 export interface SupplementTaskDecision {

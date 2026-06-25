@@ -17,7 +17,7 @@ import {
   ProgressDigest,
   filterToolsByPermission,
 } from '../engine/index.js'
-import { createSetCwdTool } from '../engine/tools/index.js'
+import { createSetCwdTool, createReadTool } from '../engine/tools/index.js'
 import { BgEntityRegistry } from '../engine/bg-entities/registry.js'
 import { TransientShellRegistry, killShellTree } from '../engine/bg-entities/bg-shell.js'
 import type { BgEntityOwner, BgEntityRecord, BgEntityStatus, BgEntityType } from '../engine/bg-entities/types.js'
@@ -1126,6 +1126,19 @@ export class AgentHandler {
         // baseToolsPermissionConfig 仅基于 base 工具集，给 sub-agent 用：
         //   sub-agent 内部只能见 baseTools，所以它的 permissionConfig 也只需覆盖 base 工具命名。
         const baseToolsRaw = [...tools]
+        // Read dedup：仅 main worker 启用（subagent 用 baseToolsRaw 里的普通 Read，
+        // 避免 stub 指向不在自己上下文里的旧读）。baseToolsRaw 已在上一行 capture（普通 Read），
+        // 这里替换 main 的 tools[Read] 为带去重缓存的版本——不影响 subagent。
+        // mtime 为准，Edit/Write/Bash/外部改文件后 mtime 变会自动失效，故无需主动失效。
+        taskState.readFileState ??= new Map()
+        const readIdx = tools.findIndex((t) => t.name === 'Read')
+        if (readIdx >= 0) {
+          const prevRead = tools[readIdx]
+          tools[readIdx] = {
+            ...createReadTool(getCwd, taskState.readFileState),
+            permissionLevel: prevRead.permissionLevel,
+          }
+        }
         // set_cwd 工具单独 push（仅 main worker 用；子 subagent 严格继承 parent cwd 不允许改）
         tools.push(createSetCwdTool({ getCwd, setCwd }))
         const baseToolsPermissionConfig: ToolPermissionConfig =
@@ -1543,6 +1556,9 @@ export class AgentHandler {
             }
           },
           onCompactionStart: () => {
+            // 压缩会把旧消息（含早先的 Read tool_result）摘要掉。清空 read dedup 缓存，
+            // 让压缩后首次读重新全量填充——否则 stub 会指向已被摘要掉的旧 tool_result（悬空）。
+            taskState.readFileState?.clear()
             // 上下文压缩开始——开个 __compaction__ span，结束时填入压缩前后消息数和耗时
             compactionStartedAtMs = Date.now()
             compactionSpanId = traceCallback?.onToolCallStart('__compaction__', 'context compaction', compactionStartedAtMs)

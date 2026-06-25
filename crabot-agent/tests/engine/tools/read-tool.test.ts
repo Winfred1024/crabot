@@ -3,6 +3,8 @@ import * as fs from 'fs/promises'
 import * as path from 'path'
 import * as os from 'os'
 import { createReadTool } from '../../../src/engine/tools/read-tool'
+import { FILE_UNCHANGED_STUB } from '../../../src/engine/tools/file-read-state'
+import type { FileReadState } from '../../../src/engine/tools/file-read-state'
 
 describe('createReadTool', () => {
   let tmpDir: string
@@ -142,5 +144,71 @@ describe('createReadTool', () => {
     expect(result.isError).toBe(true)
     expect(result.output).toContain('Binary file')
     expect(result.images).toBeUndefined()
+  })
+})
+
+describe('createReadTool — read dedup', () => {
+  let tmpDir: string
+  let state: FileReadState
+  let tool: ReturnType<typeof createReadTool>
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'read-dedup-test-'))
+    state = new Map()
+    tool = createReadTool(() => tmpDir, state)
+  })
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true })
+  })
+
+  it('returns full content on first read, stub on identical second read', async () => {
+    const filePath = path.join(tmpDir, 'a.txt')
+    await fs.writeFile(filePath, 'line one\nline two\n')
+
+    const first = await tool.call({ file_path: filePath }, {})
+    expect(first.isError).toBe(false)
+    expect(first.output).toContain('1\tline one')
+
+    const second = await tool.call({ file_path: filePath }, {})
+    expect(second.isError).toBe(false)
+    expect(second.output).toBe(FILE_UNCHANGED_STUB)
+  })
+
+  it('re-reads full content after the file changes on disk (mtime bump)', async () => {
+    const filePath = path.join(tmpDir, 'b.txt')
+    await fs.writeFile(filePath, 'original\n')
+    await tool.call({ file_path: filePath }, {})
+
+    // 改文件并显式把 mtime 推到将来，确保 mtime 变化（避免同毫秒写入测不出）
+    await fs.writeFile(filePath, 'changed\n')
+    const future = new Date(Date.now() + 5000)
+    await fs.utimes(filePath, future, future)
+
+    const after = await tool.call({ file_path: filePath }, {})
+    expect(after.isError).toBe(false)
+    expect(after.output).toContain('1\tchanged')
+  })
+
+  it('does not stub a different offset/limit range', async () => {
+    const filePath = path.join(tmpDir, 'c.txt')
+    await fs.writeFile(filePath, Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join('\n'))
+    await tool.call({ file_path: filePath }, {})
+
+    const other = await tool.call({ file_path: filePath, offset: 2, limit: 2 }, {})
+    expect(other.output).not.toBe(FILE_UNCHANGED_STUB)
+    expect(other.output).toContain('3\tline 3')
+  })
+
+  it('without a state map (subagent path), never stubs — always full read', async () => {
+    const plain = createReadTool(() => tmpDir)
+    const filePath = path.join(tmpDir, 'd.txt')
+    await fs.writeFile(filePath, 'hello\n')
+
+    const r1 = await plain.call({ file_path: filePath }, {})
+    const r2 = await plain.call({ file_path: filePath }, {})
+    expect(r1.output).toContain('1\thello')
+    expect(r2.output).toContain('1\thello')
+    expect(r2.output).not.toBe(FILE_UNCHANGED_STUB)
   })
 })

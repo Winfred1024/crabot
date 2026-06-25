@@ -4,6 +4,8 @@ import { defineTool } from '../tool-framework'
 import type { ToolDefinition } from '../types'
 import { compressImage } from '../image-utils'
 import { inferMediaType } from '../../agent/media-resolver'
+import { FILE_UNCHANGED_STUB } from './file-read-state'
+import type { FileReadState } from './file-read-state'
 
 const MAX_FILE_SIZE = 500 * 1024
 const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp'])
@@ -50,7 +52,11 @@ function isSensitivePath(filePath: string): boolean {
   return SENSITIVE_PATH_PATTERNS.some(p => p.test(filePath))
 }
 
-export function createReadTool(getCwd: () => string): ToolDefinition {
+/**
+ * @param fileReadState 可选的 task 级去重缓存。提供时启用 read dedup（见 file-read-state.ts）；
+ *   不提供时退化为普通无状态 Read。仅 main worker 传入，subagent 不传。
+ */
+export function createReadTool(getCwd: () => string, fileReadState?: FileReadState): ToolDefinition {
   return defineTool({
     name: 'Read',
     category: 'file_io',
@@ -124,6 +130,16 @@ export function createReadTool(getCwd: () => string): ToolDefinition {
         }
 
         const truncated = fileSize > MAX_FILE_SIZE
+
+        // Read dedup：相同范围 + 磁盘 mtime 未变 → 返回 stub，不把整文件重复回灌进 context。
+        // 截断读（truncated）不参与：是部分视图，全量读才安全。mtime 为准，文件被改过会自动失效。
+        if (fileReadState && !truncated) {
+          const prev = fileReadState.get(filePath)
+          if (prev && prev.offset === offset && prev.limit === limit && prev.mtimeMs === stat.mtimeMs) {
+            return { output: FILE_UNCHANGED_STUB, isError: false }
+          }
+        }
+
         const bytesToRead = truncated ? MAX_FILE_SIZE : fileSize
 
         const fileHandle = await fs.open(filePath, 'r')
@@ -150,6 +166,7 @@ export function createReadTool(getCwd: () => string): ToolDefinition {
                 isError: false,
               }
             }
+            fileReadState?.set(filePath, { mtimeMs: stat.mtimeMs, offset, limit })
             return { output: formatted, isError: false }
           }
 
