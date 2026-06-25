@@ -14,7 +14,7 @@ const MAX_RESULTS = 200
  */
 export function createGlobTool(getCwd: () => string): ToolDefinition {
   return defineTool({
-    name: 'glob',
+    name: 'Glob',
     category: 'file_io',
     description: 'Fast file pattern matching (powered by ripgrep). Returns matching file paths sorted alphabetically.',
     inputSchema: {
@@ -50,7 +50,7 @@ export function createGlobTool(getCwd: () => string): ToolDefinition {
       }
       // macOS 受保护目录（~/Library 等）：默认排除以避开 TCC 弹窗 / EPERM，
       // 仅当用户开启 CRABOT_ENABLE_FDA 且真持有 FDA 时才放开。
-      for (const g of getProtectedExcludeGlobs()) {
+      for (const g of getProtectedExcludeGlobs(resolvedPath)) {
         args.push('--glob', g)
       }
       args.push(resolvedPath)

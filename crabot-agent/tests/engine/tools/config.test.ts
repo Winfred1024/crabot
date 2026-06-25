@@ -9,7 +9,7 @@ describe('getConfiguredBuiltinTools', () => {
     const tools = getConfiguredBuiltinTools(CWD)
     expect(tools).toHaveLength(6)
     const names = tools.map((t) => t.name)
-    expect(names).toEqual(['Bash', 'Read', 'Write', 'Edit', 'glob', 'Grep'])
+    expect(names).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep'])
   })
 
   it('returns all 6 tools when config is undefined', () => {

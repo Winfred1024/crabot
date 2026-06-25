@@ -21,9 +21,23 @@ export type ToolGroup =
   | 'delegate_task'
   | 'unknown'
 
+// 注意：这些名字必须与工具 ToolDefinition.name 逐字一致（含大小写）。工具改名/删除时
+// 必同步这里，否则工具会落入 'unknown' 被静默剔除。subagent-tool-filter.guard.test.ts
+// 会实例化真实工具核对，漂移即测试失败。
 const FILE_SYSTEM_NAMES: ReadonlySet<string> = new Set(['Read', 'Write', 'Edit', 'Glob', 'Grep'])
 const SHELL_NAMES: ReadonlySet<string> = new Set(['Bash', 'Output', 'Kill', 'ListEntities'])
-const TASK_INTEL_NAMES: ReadonlySet<string> = new Set(['search_traces', 'get_task_details', 'search_short_term'])
+// 任务情报工具的当前真实名字（spec 2026-06-09 §4.1）：
+// - search_traces 已从 LLM 工具盘删除，查历史任务改走 find_task
+// - get_task_details 已改名 get_task_progress
+// - search_short_term 是 mcp__crab-memory__ 工具，归 crab_memory 组，不在此处
+const TASK_INTEL_NAMES: ReadonlySet<string> = new Set(['find_task', 'get_task_progress'])
+
+/** 仅供守卫测试核对"名字集 ↔ 真实工具名"是否漂移；运行时不用 */
+export const _BUILTIN_NAME_SETS = {
+  file_system: FILE_SYSTEM_NAMES,
+  shell: SHELL_NAMES,
+  task_intel: TASK_INTEL_NAMES,
+} as const
 
 const MCP_PREFIX = 'mcp__'
 

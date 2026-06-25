@@ -1,3 +1,4 @@
+import { resolve, isAbsolute } from 'path'
 import { defineTool } from '../tool-framework'
 import type { ToolDefinition } from '../types'
 import { byteLength } from '../byte-cap'
@@ -131,9 +132,10 @@ export function createGrepTool(getCwd: () => string): ToolDefinition {
       for (const g of DEFAULT_EXCLUDE_GLOBS) {
         args.push('--glob', g)
       }
-      // macOS 受保护目录（~/Library 等）：默认排除以避开 TCC 弹窗 / EPERM，
-      // 仅当用户开启 CRABOT_ENABLE_FDA 且真持有 FDA 时才放开。
-      for (const g of getProtectedExcludeGlobs()) {
+      // macOS 受保护目录（~/Library / ~/Documents 等）：搜索根落在家目录或其祖先时
+      // 默认排除以避开 TCC 弹窗 / EPERM，仅当用户开启 CRABOT_ENABLE_FDA 且真持有 FDA 时放开。
+      const searchRoot = isAbsolute(searchPath) ? searchPath : resolve(getCwd(), searchPath)
+      for (const g of getProtectedExcludeGlobs(searchRoot)) {
         args.push('--glob', g)
       }
 

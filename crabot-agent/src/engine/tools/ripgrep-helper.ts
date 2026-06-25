@@ -10,6 +10,8 @@
  */
 
 import { spawn } from 'node:child_process'
+import { homedir } from 'node:os'
+import { relative, isAbsolute } from 'node:path'
 import { rgPath } from '@vscode/ripgrep'
 import { shouldScanProtectedDirs } from './fda-check'
 
@@ -184,16 +186,32 @@ export const DEFAULT_EXCLUDE_GLOBS: ReadonlyArray<string> = [
 
 /**
  * macOS 受保护目录排除。agent 工作目录默认是家目录（~），rg 带 `--hidden --no-ignore`
- * 会爬进 `~/Library/Containers` 等别的 App 的数据容器 → 触发 TCC「访问其他 App 数据」
- * 弹窗（卡死）/ EPERM（退出码 2）。默认跳过这两个目录名。
+ * 会爬进 `~/Library/Containers` 等别的 App 数据容器，以及 `~/Desktop`、`~/Documents`、
+ * `~/Downloads` 等 macOS TCC「文件与文件夹」保护目录 → 触发 TCC 弹窗（卡死）/ EPERM
+ * （退出码 2）。这些目录名都要跳过。
  *
- * 只在 macOS 加（其它系统没这俩目录名）。`!Library` 会排除任意深度名为 Library 的目录，
- * 对家目录根的助手场景正确——`~/Library` 正是 TCC 触发源，且海量缓存也拖慢遍历。
+ * 只在 macOS 加（其它系统没这些目录名）。`!Name` 按名字排除任意深度同名目录——所以
+ * 这份列表**仅在搜索根是家目录或其祖先时**才注入（见 getProtectedExcludeGlobs），
+ * 避免 set_cwd 到具体项目后误跳项目里叫 Documents/Downloads 的业务目录。
  */
 export const MACOS_PROTECTED_EXCLUDE_GLOBS: ReadonlyArray<string> = [
   '!Library',
   '!.Trash',
+  '!Desktop',
+  '!Documents',
+  '!Downloads',
+  '!Movies',
+  '!Music',
+  '!Pictures',
 ]
+
+/** searchRoot 是否就是家目录、或家目录的祖先（如 /Users、/）——只有这时扫描才会
+ *  遍历到家目录下的 TCC 保护目录，需要注入排除。relative 处理了 '/' 等边界。 */
+function isHomeOrAncestor(searchRoot: string): boolean {
+  const rel = relative(searchRoot, homedir())
+  // rel === '' → 相等；非 '..' 开头且非绝对 → searchRoot 是 home 的祖先
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+}
 
 /**
  * 返回应注入的「受保护目录」排除 glob 列表。
@@ -201,14 +219,18 @@ export const MACOS_PROTECTED_EXCLUDE_GLOBS: ReadonlyArray<string> = [
  * - 非 darwin：恒返回 []（没有这些目录名，无需排除）。
  * - darwin 且 `scanProtected`（= CRABOT_ENABLE_FDA 意图开启 **且** 真持有 FDA）：返回 []，
  *   即放开扫描 ~/Library 等。
- * - darwin 其余情况：返回 MACOS_PROTECTED_EXCLUDE_GLOBS，跳过受保护目录。
+ * - darwin、未持 FDA、且搜索根是家目录或其祖先：返回 MACOS_PROTECTED_EXCLUDE_GLOBS。
+ * - darwin、未持 FDA、但搜索根是某个具体项目（TCC 目录是兄弟而非子节点）：返回 []，
+ *   不注入排除，避免误跳项目里的同名目录。
  *
- * 参数可注入仅为单测；运行时调用方用默认值（实时探针 + 实际平台）。
+ * scanProtected / platform 参数可注入仅为单测；运行时调用方只传 searchRoot。
  */
 export function getProtectedExcludeGlobs(
+  searchRoot: string,
   scanProtected: boolean = shouldScanProtectedDirs(),
   platform: NodeJS.Platform = process.platform,
 ): ReadonlyArray<string> {
   if (platform !== 'darwin') return []
-  return scanProtected ? [] : MACOS_PROTECTED_EXCLUDE_GLOBS
+  if (scanProtected) return []
+  return isHomeOrAncestor(searchRoot) ? MACOS_PROTECTED_EXCLUDE_GLOBS : []
 }

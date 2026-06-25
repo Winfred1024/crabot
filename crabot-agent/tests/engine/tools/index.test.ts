@@ -10,7 +10,7 @@ describe('getAllBuiltinTools', () => {
 
   it('returns tools with correct names', () => {
     const names = tools.map((t) => t.name)
-    expect(names).toEqual(['Bash', 'Read', 'Write', 'Edit', 'glob', 'Grep'])
+    expect(names).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep'])
   })
 
   it('all tools have a valid inputSchema with type "object"', () => {
@@ -22,7 +22,7 @@ describe('getAllBuiltinTools', () => {
   })
 
   it('read-only tools have isReadOnly=true', () => {
-    const readOnlyNames = new Set(['Read', 'glob', 'Grep'])
+    const readOnlyNames = new Set(['Read', 'Glob', 'Grep'])
     for (const tool of tools) {
       if (readOnlyNames.has(tool.name)) {
         expect(tool.isReadOnly, `${tool.name} should be read-only`).toBe(true)

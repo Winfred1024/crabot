@@ -31,9 +31,9 @@ describe('classifyTool', () => {
     ['Output', 'shell'],
     ['Kill', 'shell'],
     ['ListEntities', 'shell'],
-    ['search_traces', 'task_intel'],
-    ['get_task_details', 'task_intel'],
-    ['search_short_term', 'task_intel'],
+    ['find_task', 'task_intel'],
+    ['get_task_progress', 'task_intel'],
+    ['mcp__crab-memory__search_short_term', 'crab_memory'],
     ['mcp__crab-memory__remember', 'crab_memory'],
     ['mcp__crab-messaging__send_message', 'crab_messaging'],
     ['Skill', 'skill_loading'],
@@ -48,7 +48,7 @@ describe('classifyTool', () => {
 describe('filterToolsForSubAgent', () => {
   it('全开能力 + 空 mcp/skill 白名单 → 通过 builtin + 排除 mcp_user/skill/delegate_task', () => {
     const tools = [
-      fakeTool('Read'), fakeTool('Bash'), fakeTool('search_traces'),
+      fakeTool('Read'), fakeTool('Bash'), fakeTool('get_task_progress'),
       fakeTool('mcp__crab-memory__remember'), fakeTool('mcp__user-mcp-x__do'),
       fakeTool('Skill'), fakeTool('delegate_task'),
     ]
@@ -56,7 +56,7 @@ describe('filterToolsForSubAgent', () => {
     const names = out.map((t) => t.name)
     expect(names).toContain('Read')
     expect(names).toContain('Bash')
-    expect(names).toContain('search_traces')
+    expect(names).toContain('get_task_progress')
     expect(names).toContain('mcp__crab-memory__remember')
     expect(names).not.toContain('mcp__user-mcp-x__do')      // 白名单空
     expect(names).not.toContain('Skill')                    // skill 白名单空

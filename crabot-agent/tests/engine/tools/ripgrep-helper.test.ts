@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { tmpdir } from 'node:os'
+import { tmpdir, homedir } from 'node:os'
 import {
   runRipgrep,
   getProtectedExcludeGlobs,
@@ -121,22 +121,33 @@ describe('runRipgrep', () => {
 })
 
 describe('getProtectedExcludeGlobs', () => {
-  it('MACOS_PROTECTED_EXCLUDE_GLOBS 含 Library / .Trash 排除', () => {
-    expect(MACOS_PROTECTED_EXCLUDE_GLOBS).toContain('!Library')
-    expect(MACOS_PROTECTED_EXCLUDE_GLOBS).toContain('!.Trash')
+  const home = homedir()
+
+  it('MACOS_PROTECTED_EXCLUDE_GLOBS 覆盖全部 TCC 保护用户目录', () => {
+    for (const name of ['!Library', '!.Trash', '!Desktop', '!Documents', '!Downloads', '!Movies', '!Music', '!Pictures']) {
+      expect(MACOS_PROTECTED_EXCLUDE_GLOBS).toContain(name)
+    }
   })
 
-  it('darwin 默认（未授权扫描）返回受保护排除列表', () => {
-    expect(getProtectedExcludeGlobs(false, 'darwin')).toEqual(MACOS_PROTECTED_EXCLUDE_GLOBS)
+  it('darwin + 搜索根是家目录（未授权扫描）→ 返回受保护排除列表', () => {
+    expect(getProtectedExcludeGlobs(home, false, 'darwin')).toEqual(MACOS_PROTECTED_EXCLUDE_GLOBS)
   })
 
-  it('darwin 且放开扫描（FDA 生效）返回空', () => {
-    expect(getProtectedExcludeGlobs(true, 'darwin')).toEqual([])
+  it('darwin + 搜索根是家目录的祖先（/）→ 返回受保护排除列表', () => {
+    expect(getProtectedExcludeGlobs('/', false, 'darwin')).toEqual(MACOS_PROTECTED_EXCLUDE_GLOBS)
+  })
+
+  it('darwin + 搜索根是具体项目目录 → 返回空（TCC 目录是兄弟，不注入避免误跳同名目录）', () => {
+    expect(getProtectedExcludeGlobs(join(home, 'codes', 'some-project'), false, 'darwin')).toEqual([])
+  })
+
+  it('darwin 且放开扫描（FDA 生效）→ 即便根是家目录也返回空', () => {
+    expect(getProtectedExcludeGlobs(home, true, 'darwin')).toEqual([])
   })
 
   it('非 darwin 恒返回空（无这些目录名）', () => {
-    expect(getProtectedExcludeGlobs(false, 'linux')).toEqual([])
-    expect(getProtectedExcludeGlobs(false, 'win32')).toEqual([])
-    expect(getProtectedExcludeGlobs(true, 'linux')).toEqual([])
+    expect(getProtectedExcludeGlobs(home, false, 'linux')).toEqual([])
+    expect(getProtectedExcludeGlobs(home, false, 'win32')).toEqual([])
+    expect(getProtectedExcludeGlobs('/', true, 'linux')).toEqual([])
   })
 })

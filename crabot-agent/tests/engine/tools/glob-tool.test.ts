@@ -27,7 +27,7 @@ describe('createGlobTool', () => {
   it('returns correct ToolDefinition metadata', () => {
     const tool = createGlobTool(() => tempDir)
 
-    expect(tool.name).toBe('glob')
+    expect(tool.name).toBe('Glob')
     expect(tool.description).toContain('file')
     expect(tool.isReadOnly).toBe(true)
     expect(tool.permissionLevel).toBe('safe')
