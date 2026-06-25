@@ -23,6 +23,8 @@ import { validateBackupManifest } from './backup/manifest.js'
 import { runCrabotImport, type ImportDeps } from './backup/import/run-import.js'
 import type { ImportStatus, OnConflict, ImportItemResult } from './backup/import/import-types.js'
 import { shouldDisableOnImport } from './backup/import/schedule-arm.js'
+import { VersionService } from './version/version-service.js'
+import { startUpgrade, canUpgrade, isUpgradeInProgress } from './version/upgrade-runner.js'
 import { readArchiveTextFile, listArchiveEntries } from './openclaw-import/archive-reader.js'
 import { extractArchiveSubtree } from './openclaw-import/extract-subtree.js'
 import { BrowserManager } from './browser-manager.js'
@@ -440,6 +442,9 @@ export class AdminModule extends ModuleBase {
   private openclawImportStore: StagedUploadStore | null = null
   private openclawImportSweepTimer: NodeJS.Timeout | null = null
 
+  // 版本检查与升级服务
+  private versionService!: VersionService
+
   // 模块 env 配置缓存
   private moduleEnvConfigCache: Map<string, Record<string, string>> = new Map()
 
@@ -513,6 +518,12 @@ export class AdminModule extends ModuleBase {
     })
 
     this.onboardingManager = new OnboardingManager()
+
+    this.versionService = new VersionService({
+      crabotHome: path.resolve(this.adminConfig.data_dir, '../..'),
+      dataDir: this.adminConfig.data_dir,
+      proxyUrlProvider: () => proxyManager.getProxyUrl(),
+    })
 
     this.memoryV2Router = createMemoryV2RestRouter({
       rpcClient: this.rpcClient,
@@ -817,6 +828,10 @@ export class AdminModule extends ModuleBase {
     await this.startWebServer()
 
     console.log(`[Admin] Web server started on port ${this.adminConfig.web_port}`)
+
+    void this.versionService.check().catch((err) => {
+      console.warn('[Admin] 首次版本检查失败:', err instanceof Error ? err.message : err)
+    })
 
     // 启动 waiting_human 超时扫描器
     this.waitingHumanScanTimer = setInterval(
@@ -1268,6 +1283,19 @@ export class AdminModule extends ModuleBase {
 
       if (pathname === '/api/model-config/global' && req.method === 'PATCH') {
         await this.handleUpdateGlobalConfigApi(req, res)
+        return
+      }
+
+      if (pathname === '/api/system/version' && req.method === 'GET') {
+        await this.handleGetSystemVersionApi(req, res)
+        return
+      }
+      if (pathname === '/api/system/version/check' && req.method === 'POST') {
+        await this.handleCheckSystemVersionApi(req, res)
+        return
+      }
+      if (pathname === '/api/system/upgrade' && req.method === 'POST') {
+        await this.handleStartUpgradeApi(req, res)
         return
       }
 
@@ -6360,6 +6388,29 @@ export class AdminModule extends ModuleBase {
       console.warn('[Admin] syncGlobalConfigToMemoryModules failed:', err.message)
     })
     this.triggerPushAfter('global config update')
+  }
+
+  private async handleGetSystemVersionApi(_req: IncomingMessage, res: ServerResponse): Promise<void> {
+    await wrapJsonHandler(res, '获取版本信息失败', async () => this.versionService.getState())
+  }
+
+  private async handleCheckSystemVersionApi(_req: IncomingMessage, res: ServerResponse): Promise<void> {
+    await wrapJsonHandler(res, '检查更新失败', async () => this.versionService.check())
+  }
+
+  private async handleStartUpgradeApi(_req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const state = await this.versionService.check()
+    const verdict = canUpgrade(state)
+    if (!verdict.ok) {
+      sendJson(res, 409, { error: verdict.reason ?? '当前不支持一键升级' })
+      return
+    }
+    if (isUpgradeInProgress(this.adminConfig.data_dir)) {
+      sendJson(res, 409, { error: '升级已在进行中' })
+      return
+    }
+    const crabotHome = path.resolve(this.adminConfig.data_dir, '../..')
+    sendJson(res, 200, startUpgrade(crabotHome))
   }
 
   private async handleGetProxyConfigApi(_req: IncomingMessage, res: ServerResponse): Promise<void> {
