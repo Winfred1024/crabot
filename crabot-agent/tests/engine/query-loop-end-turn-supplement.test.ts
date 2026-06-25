@@ -2,19 +2,19 @@ import { describe, it, expect, vi } from 'vitest'
 import { runEngine } from '../../src/engine/query-loop.js'
 import { HumanMessageQueue } from '../../src/engine/human-message-queue.js'
 import type { LLMAdapter } from '../../src/engine/llm-adapter-types.js'
+import { chunksFromContent } from './helpers/mock-stream.js'
 
 function makeAdapter(responses: Array<{ text: string; stopReason: 'end_turn' | 'tool_use' }>): LLMAdapter {
   let i = 0
   return {
-    complete: vi.fn(async () => {
+    stream: vi.fn(async function* () {
       const r = responses[i++] ?? responses[responses.length - 1]
-      return {
-        content: [{ type: 'text' as const, text: r.text }],
-        stopReason: r.stopReason,
-        usage: { inputTokens: 100, outputTokens: 50 },
-      }
+      yield* chunksFromContent(
+        [{ type: 'text' as const, text: r.text }],
+        r.stopReason,
+        { inputTokens: 100, outputTokens: 50 },
+      )
     }),
-    stream: async function* () { /* unused */ },
     updateConfig: () => {},
   } as unknown as LLMAdapter
 }
@@ -41,7 +41,7 @@ describe('query-loop: end_turn 收口前再 check humanMessageQueue', () => {
     })
 
     // 两次 LLM 调用：第一次 end_turn 但被 supplement 截胡，第二次才真正结束
-    expect((adapter.complete as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2)
+    expect((adapter.stream as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2)
     expect(result.outcome).toBe('completed')
     expect(result.finalText).toBe('收到，改做 X')
     expect(queue.hasPending).toBe(false)
@@ -62,7 +62,7 @@ describe('query-loop: end_turn 收口前再 check humanMessageQueue', () => {
         model: 'test',
       },
     })
-    expect((adapter.complete as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1)
+    expect((adapter.stream as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1)
     expect(result.finalText).toBe('结束')
   })
 })

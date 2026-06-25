@@ -72,6 +72,21 @@ export class HttpResponseError extends Error {
   }
 }
 
+/**
+ * 流式超时错误：首 chunk 超 TTFB 未到（phase='ttfb'）、或相邻 chunk 间隔超过空闲
+ * 阈值（phase='idle'）时由 withStreamTimeout 抛出。视为可重试——换一条新连接重发整
+ * 请求；与用户主动取消（AbortError，不可重试）严格区分。
+ */
+export class StreamTimeoutError extends Error {
+  constructor(
+    public readonly phase: 'ttfb' | 'idle',
+    public readonly timeoutMs: number,
+  ) {
+    super(`stream ${phase} timeout after ${timeoutMs}ms`)
+    this.name = 'StreamTimeoutError'
+  }
+}
+
 // OpenAI 风格错误体把 code 放在 `error.code`（如 `{error:{code,message,type}}`）；
 // 仅少数上游用顶层 `code`。优先读嵌套，找不到再回退顶层，保证两种结构都能识别。
 function extractBodyCode(body: string): string | null {
@@ -133,6 +148,9 @@ export function computeRetryDelayMs(attempt: number, baseDelayMs: number, useBac
 export function isRetryableError(err: unknown): boolean {
   if (!(err instanceof Error)) return false
   if (err.name === 'AbortError') return false
+
+  // 流式超时（TTFB / 空闲）总是可重试——换新连接重发
+  if (err instanceof StreamTimeoutError) return true
 
   if (err instanceof HttpResponseError) {
     // 先短路 body code 黑名单（如 content_filter）—— 这类错误即使包在 5xx 里也不该重试

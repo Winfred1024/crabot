@@ -2590,7 +2590,7 @@ export class UnifiedAgent extends ModuleBase {
         return span.span_id
       },
 
-      onLlmCallEnd(spanId: string, result: { stopReason?: string; outputSummary?: string; toolCallsCount?: number; error?: string; forcedSummaryAttempt?: number; usage?: import('./types.js').TokenUsage; messageCountAfter?: number }, endedAtMs?: number): void {
+      onLlmCallEnd(spanId: string, result: { stopReason?: string; outputSummary?: string; toolCallsCount?: number; error?: string; forcedSummaryAttempt?: number; usage?: import('./types.js').TokenUsage; messageCountAfter?: number; diagnostics?: import('./engine/types.js').LLMCallDiagnostics }, endedAtMs?: number): void {
         store.endSpan(
           traceId,
           spanId,
@@ -2602,6 +2602,11 @@ export class UnifiedAgent extends ModuleBase {
             forced_summary_attempt: result.forcedSummaryAttempt,
             ...(result.usage ? { usage: result.usage } : {}),
             ...(result.messageCountAfter !== undefined ? { message_count_after: result.messageCountAfter } : {}),
+            ...(result.diagnostics ? {
+              stream_retries: result.diagnostics.retries,
+              ...(result.diagnostics.firstChunkMs !== undefined ? { first_chunk_ms: result.diagnostics.firstChunkMs } : {}),
+              chunk_count: result.diagnostics.chunkCount,
+            } : {}),
           } as Partial<import('./types.js').LlmCallDetails>,
           endedAtMs,
         )

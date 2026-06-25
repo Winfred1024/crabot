@@ -201,6 +201,18 @@ export interface EngineTurnEvent {
   readonly forcedSummaryAttempt?: number
   /** 本轮 LLM 调用的 token 用量；adapter 透传，无则缺省 */
   readonly usage?: LLMTokenUsage
+  /** 本轮 LLM 流式消费诊断（首 chunk 延迟 / chunk 数 / 重试次数）；无则缺省 */
+  readonly diagnostics?: LLMCallDiagnostics
+}
+
+/** 流式消费诊断（仅成功路径填充），供 trace/span 观测 */
+export interface LLMCallDiagnostics {
+  /** 成功前重试了几次（0 = 一次成功） */
+  readonly retries: number
+  /** 本次成功 attempt 的首 chunk 延迟（ms）；流未出 chunk 即结束时为 undefined */
+  readonly firstChunkMs?: number
+  /** 本次成功 attempt 收到的 chunk 数 */
+  readonly chunkCount: number
 }
 
 /** 既可传静态值也可传 callback（每轮 resolve） */
@@ -250,7 +262,7 @@ export type LiveProgressEvent =
       readonly turn: number          // 当前正在尝试的 turn 编号
       readonly attempt: number       // 第几次失败 (1-indexed)
       readonly maxAttempts: number   // 总配额
-      readonly source: 'pre-stream' | 'mid-stream' | 'complete'
+      readonly source: 'pre-stream' | 'mid-stream'
       readonly error: string         // 触发 retry 的 error message（截断 200）
     }
 

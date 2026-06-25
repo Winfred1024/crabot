@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
 import { dispatch, buildUserPrompt } from '../../src/dispatcher/dispatcher.js'
 import type { DispatchContext, DispatchAction } from '../../src/dispatcher/dispatcher-types.js'
-import type { LLMAdapter, LLMStreamParams, LLMCallResponse } from '../../src/engine/llm-adapter-types.js'
+import type { LLMAdapter, LLMStreamParams } from '../../src/engine/llm-adapter-types.js'
+import { chunksFromContent } from '../engine/helpers/mock-stream.js'
 import type { ChannelMessage, TaskSummary } from '../../src/types.js'
 
 function makeTask(id: string): TaskSummary {
@@ -36,11 +37,9 @@ function makeCtx(overrides: Partial<DispatchContext> = {}): DispatchContext {
 
 function makeMockAdapter(responseText: string): LLMAdapter {
   return {
-    stream: async function* () { /* not used */ },
-    complete: vi.fn().mockResolvedValue({
-      content: [{ type: 'text', text: responseText }],
-      stopReason: 'end_turn',
-    } satisfies LLMCallResponse),
+    stream: vi.fn(async function* () {
+      yield* chunksFromContent([{ type: 'text', text: responseText }], 'end_turn')
+    }),
     updateConfig: () => {},
   }
 }
@@ -84,11 +83,9 @@ describe('dispatch', () => {
 
   it('LLM 输出格式错误 → 重试用完后 sendErrorToUser 被调', async () => {
     const adapter: LLMAdapter = {
-      stream: async function* () { /* not used */ },
-      complete: vi.fn().mockResolvedValue({
-        content: [{ type: 'text', text: 'this is not json at all' }],
-        stopReason: 'end_turn',
-      } satisfies LLMCallResponse),
+      stream: vi.fn(async function* () {
+        yield* chunksFromContent([{ type: 'text', text: 'this is not json at all' }], 'end_turn')
+      }),
       updateConfig: () => {},
     }
     const sendErrorToUser = vi.fn().mockResolvedValue(undefined)
@@ -174,13 +171,12 @@ describe('dispatch', () => {
   it('LLM 输出 supplement 但 target_task_id 不在 activeTasks → 校验失败触发 retry', async () => {
     let callCount = 0
     const adapter: LLMAdapter = {
-      stream: async function* () { /* not used */ },
-      complete: vi.fn().mockImplementation(async (_p: LLMStreamParams): Promise<LLMCallResponse> => {
+      stream: vi.fn(async function* () {
         callCount++
         const text = callCount === 1
           ? JSON.stringify({ actions: [{ kind: 'supplement', target_task_id: 'task-NONEXISTENT', text: 'x' }] })
           : JSON.stringify({ actions: [{ kind: 'new_task', text: '查 X' }] })
-        return { content: [{ type: 'text', text }], stopReason: 'end_turn' }
+        yield* chunksFromContent([{ type: 'text', text }], 'end_turn')
       }),
       updateConfig: () => {},
     }
@@ -195,13 +191,12 @@ describe('dispatch', () => {
   it('空 activeTasks + LLM 编造 supplement → 校验失败 retry → LLM 改输出 new_task', async () => {
     let callCount = 0
     const adapter: LLMAdapter = {
-      stream: async function* () { /* not used */ },
-      complete: vi.fn().mockImplementation(async (_p: LLMStreamParams): Promise<LLMCallResponse> => {
+      stream: vi.fn(async function* () {
         callCount++
         const text = callCount === 1
           ? JSON.stringify({ actions: [{ kind: 'supplement', target_task_id: 'trigger-fake', text: 'x' }] })
           : JSON.stringify({ actions: [{ kind: 'new_task', text: 'hi' }] })
-        return { content: [{ type: 'text', text }], stopReason: 'end_turn' }
+        yield* chunksFromContent([{ type: 'text', text }], 'end_turn')
       }),
       updateConfig: () => {},
     }
@@ -217,8 +212,7 @@ describe('dispatch', () => {
     const seenMessages: string[] = []
     let callCount = 0
     const adapter: LLMAdapter = {
-      stream: async function* () { /* not used */ },
-      complete: vi.fn().mockImplementation(async (p: LLMStreamParams): Promise<LLMCallResponse> => {
+      stream: vi.fn(async function* (p: LLMStreamParams) {
         const last = p.messages[p.messages.length - 1]
         const c = 'content' in last ? last.content : ''
         seenMessages.push(typeof c === 'string' ? c : JSON.stringify(c))
@@ -226,7 +220,7 @@ describe('dispatch', () => {
         const text = callCount === 1
           ? JSON.stringify({ actions: [{ kind: 'supplement', target_task_id: 'bogus', text: 'x' }] })
           : JSON.stringify({ actions: [{ kind: 'new_task', text: 'ok' }] })
-        return { content: [{ type: 'text', text }], stopReason: 'end_turn' }
+        yield* chunksFromContent([{ type: 'text', text }], 'end_turn')
       }),
       updateConfig: () => {},
     }
@@ -245,13 +239,12 @@ describe('dispatch', () => {
   it('私聊场景下 LLM 误输出 stay_silent → 校验失败 retry', async () => {
     let callCount = 0
     const adapter: LLMAdapter = {
-      stream: async function* () { /* not used */ },
-      complete: vi.fn().mockImplementation(async (_params: LLMStreamParams): Promise<LLMCallResponse> => {
+      stream: vi.fn(async function* (_params: LLMStreamParams) {
         callCount++
         const text = callCount === 1
           ? JSON.stringify({ actions: [{ kind: 'stay_silent', reason: '...' }] })
           : JSON.stringify({ actions: [{ kind: 'new_task', text: 'hi' }] })
-        return { content: [{ type: 'text', text }], stopReason: 'end_turn' }
+        yield* chunksFromContent([{ type: 'text', text }], 'end_turn')
       }),
       updateConfig: () => {},
     }

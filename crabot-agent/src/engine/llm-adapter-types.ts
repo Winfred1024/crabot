@@ -6,6 +6,7 @@ import { StreamProcessor } from './stream-processor.js'
 import {
   DEFAULT_MAX_RETRIES,
   DEFAULT_RETRY_DELAY_MS,
+  DEFAULT_RETRY_WINDOW_MS,
   computeRetryDelayMs,
   isOverloadedError,
   isRetryableError,
@@ -19,6 +20,7 @@ import type {
   StreamChunk,
   ContentBlock,
   LLMTokenUsage,
+  LLMCallDiagnostics,
 } from './types.js'
 
 // --- Interfaces ---
@@ -28,7 +30,7 @@ export interface LLMRetryEvent {
   readonly maxAttempts: number  // 总配额
   readonly delayMs: number      // 即将 sleep 多久后 retry
   readonly error: Error         // 触发本次 retry 的错
-  readonly source: 'pre-stream' | 'mid-stream' | 'complete'  // 哪一层 retry
+  readonly source: 'pre-stream' | 'mid-stream'  // 哪一层 retry
 }
 
 /**
@@ -55,15 +57,9 @@ export interface LLMStreamParams {
 }
 
 export interface LLMAdapter {
+  // 统一只暴露 stream()：所有 LLM 调用走流式消费 + 缓冲整流重试（见 callNonStreaming）。
+  // 2026-06 起移除了非流式 complete()——静默连接易被链路网关掐断，详见 stream-timeout.ts。
   stream(params: LLMStreamParams): AsyncGenerator<StreamChunk>
-  /**
-   * Optional non-streaming completion. Preferred over `stream()` when available —
-   * avoids SSE parsing and makes mid-response network failures naturally retryable.
-   * Adapters that can't express their full response via a single non-streaming call
-   * (e.g. Codex with encrypted reasoning) may omit this; callers will fall back to
-   * consuming `stream()`.
-   */
-  complete?(params: LLMStreamParams): Promise<LLMCallResponse>
   updateConfig(config: Partial<LLMAdapterConfig>): void
 }
 
@@ -77,6 +73,8 @@ export interface LLMCallResponse {
   readonly content: ContentBlock[]
   readonly stopReason: string | null
   readonly usage?: LLMTokenUsage
+  /** 流式消费诊断（仅成功路径填充），供 trace/span 观测。定义见 ./types.js */
+  readonly diagnostics?: LLMCallDiagnostics
 }
 
 // --- Non-streaming convenience ---
@@ -85,21 +83,12 @@ export async function callNonStreaming(
   adapter: LLMAdapter,
   params: LLMStreamParams,
 ): Promise<LLMCallResponse> {
-  // 不在这里加默认 timeout：LLM provider 响应慢是常态，时长不可预知；
-  // retry 由 streamWithRetry / withStreamConsumptionRetry 负责，socket-level
-  // 真错误由 SDK 抛。caller 想限时自己传 signal。
-  if (adapter.complete) {
-    return adapter.complete(params)
-  }
-
-  // Fallback: consume stream and aggregate. Some adapters（如 OpenAI Responses）
-  // 不支持 stream:false——必须走 SSE。streamWithRetry 内部仅在首 chunk 前能 retry，
-  // 一旦中途断流（mid-stream socket drop），它会向上抛错。
-  //
-  // 但 callNonStreaming 这一层是纯 buffer 消费——丢弃 partial processor 状态、
-  // 重发整个请求是安全的（server 端会生成新 response，没有下游 streaming 消费者
-  // 看得到重复 chunk）。所以这里加 iter-level retry：mid-stream 断了就重跑全流，
-  // 直到拿到完整结果或耗尽 retry 配额。
+  // 统一走流式消费 + 缓冲整流重试（2026-06 起移除非流式 complete() 路径）：
+  //   - 流式让字节持续流动，链路网关 / 反代不易把"静默连接"当死连接掐掉；
+  //   - 本层是纯 buffer 消费——丢弃 partial、重发整请求是安全的（无下游看得到重复
+  //     chunk），所以 mid-stream 断流也能整流重跑，直到成功或耗尽时间预算；
+  //   - 单次 attempt 的 TTFB / 空闲超时由各 adapter stream() 内的 withStreamTimeout 负责，
+  //     超时抛 StreamTimeoutError（可重试）→ 在这里换新连接重发。
   return await withStreamConsumptionRetry(adapter, params)
 }
 
@@ -109,14 +98,21 @@ async function withStreamConsumptionRetry(
 ): Promise<LLMCallResponse> {
   const maxRetries = DEFAULT_MAX_RETRIES
   const delayMs = DEFAULT_RETRY_DELAY_MS
+  const windowMs = DEFAULT_RETRY_WINDOW_MS
+  const startedAt = Date.now()
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const attemptStart = Date.now()
+    let firstChunkMs: number | undefined
+    let chunkCount = 0
     try {
       const processor = new StreamProcessor()
       for await (const chunk of adapter.stream(params)) {
         if (params.signal?.aborted) {
           throw new DOMException('Aborted', 'AbortError')
         }
+        if (firstChunkMs === undefined) firstChunkMs = Date.now() - attemptStart
+        chunkCount++
         if (chunk.type === 'error') {
           throw new Error(chunk.error)
         }
@@ -132,13 +128,23 @@ async function withStreamConsumptionRetry(
         ],
         stopReason: result.stopReason,
         usage: result.usage,
+        diagnostics: {
+          retries: attempt,
+          firstChunkMs,
+          chunkCount,
+        },
       }
     } catch (err) {
       if (params.signal?.aborted) throw err
       if (!isRetryableError(err)) throw err
-      if (attempt >= maxRetries) throw err
+      // 放弃可重试错误时把"尝试次数/总耗时"写进错误，让失败 trace 可诊断
+      // （否则 outcome 只剩一句裸 "fetch failed"，看不出是重试耗尽还是首次即挂）
+      if (attempt >= maxRetries) throw enrichGiveUp(err, attempt + 1, Date.now() - startedAt)
       const useBackoff = isOverloadedError(err)
       const actualDelay = computeRetryDelayMs(attempt, delayMs, useBackoff)
+      // 时间预算：本次睡完会越过窗口则放弃（与 maxRetries 取先到者）。每个 attempt 自身
+      // 还可能因 TTFB / 空闲超时跑满数十秒，没有这道闸会在持续抖动的上游上无限堆叠。
+      if (Date.now() - startedAt + actualDelay > windowMs) throw enrichGiveUp(err, attempt + 1, Date.now() - startedAt)
       console.error(
         `[callNonStreaming] stream attempt ${attempt + 1}/${maxRetries + 1} failed, retrying in ${actualDelay}ms${useBackoff ? ' (backoff)' : ''}:`,
         err,
@@ -158,6 +164,16 @@ async function withStreamConsumptionRetry(
     }
   }
   throw new Error('callNonStreaming: retry loop exited unexpectedly')
+}
+
+/** 放弃重试时给错误补上"尝试次数/总耗时"上下文，原错误挂在 cause 上。 */
+function enrichGiveUp(err: unknown, attempts: number, elapsedMs: number): Error {
+  const base = err instanceof Error ? err : new Error(String(err))
+  const elapsedS = Math.round(elapsedMs / 1000)
+  const wrapped = new Error(`${base.message}（流式重试放弃：${attempts} 次尝试 / ${elapsedS}s）`)
+  wrapped.name = base.name
+  ;(wrapped as Error & { cause?: unknown }).cause = base
+  return wrapped
 }
 
 // --- Shared Helpers ---

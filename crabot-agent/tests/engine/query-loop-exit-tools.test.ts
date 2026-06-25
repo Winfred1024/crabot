@@ -3,6 +3,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { runEngine } from '../../src/engine/query-loop.js'
 import type { LLMAdapter } from '../../src/engine/llm-adapter-types.js'
 import type { ToolDefinition } from '../../src/engine/types.js'
+import { chunksFromContent } from './helpers/mock-stream.js'
 
 function makeAdapter(
   responses: Array<{
@@ -13,20 +14,15 @@ function makeAdapter(
 ): LLMAdapter {
   let i = 0
   return {
-    complete: vi.fn(async () => {
+    stream: vi.fn(async function* () {
       const r = responses[i++] ?? responses[responses.length - 1]
       const content: unknown[] = []
       if (r.text) content.push({ type: 'text', text: r.text })
       for (const tc of r.toolCalls ?? []) {
         content.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.input })
       }
-      return {
-        content,
-        stopReason: r.stopReason,
-        usage: { inputTokens: 100, outputTokens: 50 },
-      }
+      yield* chunksFromContent(content, r.stopReason, { inputTokens: 100, outputTokens: 50 })
     }),
-    stream: async function* () { /* unused */ },
     updateConfig: () => {},
   } as unknown as LLMAdapter
 }
@@ -74,7 +70,7 @@ describe('query-loop: exitsLoop 工具退出', () => {
       input: { reason: 'turn 0 决定退出' },
     })
     expect(result.totalTurns).toBe(1)
-    expect((adapter.complete as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1)
+    expect((adapter.stream as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1)
   })
 
   it('未触发 exit 工具时 exitToolCall undefined', async () => {

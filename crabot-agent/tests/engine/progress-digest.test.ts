@@ -2,8 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { ProgressDigest } from '../../src/engine/progress-digest'
 import type { ProgressDigestConfig, ProgressDigestDeps } from '../../src/engine/progress-digest'
 import type { EngineMessage, EngineMessagesRef, EngineTurnEvent, ToolDefinition } from '../../src/engine/types'
-import type { LLMAdapter, LLMCallResponse, LLMStreamParams } from '../../src/engine/llm-adapter'
+import type { LLMAdapter, LLMStreamParams } from '../../src/engine/llm-adapter'
 import { createUserMessage, createAssistantMessage, createToolResultMessage } from '../../src/engine/types'
+import { chunksFromContent } from './helpers/mock-stream.js'
 
 const FAKE_DIGEST = '正在 grep 关键字定位错误位置；下一步看 stack trace 决定改哪一行。'
 
@@ -22,18 +23,15 @@ function makeRef(messages: ReadonlyArray<EngineMessage>): EngineMessagesRef {
 }
 
 function makeAdapter(reply: string = FAKE_DIGEST) {
-  const complete = vi.fn().mockImplementation(
-    async (_p: LLMStreamParams): Promise<LLMCallResponse> => ({
-      content: [{ type: 'text', text: reply }],
-      stopReason: 'end_turn',
-    }),
-  )
+  const stream = vi.fn(async function* (_p: LLMStreamParams) {
+    const content = [{ type: 'text' as const, text: reply }]
+    yield* chunksFromContent(content, 'end_turn')
+  })
   const adapter: LLMAdapter = {
-    stream: async function* () { /* unused */ },
-    complete,
+    stream,
     updateConfig() { /* noop */ },
   }
-  return { adapter, complete }
+  return { adapter, complete: stream }
 }
 
 function makeDeps(opts: {
@@ -109,21 +107,20 @@ describe('ProgressDigest fork mode', () => {
 
   it('intercepts send_message tool_use content as the digest output', async () => {
     const sendToUser = vi.fn().mockResolvedValue(undefined)
-    const complete = vi.fn(async (): Promise<LLMCallResponse> => ({
-      content: [
-        { type: 'text', text: '我来汇报一下' },
+    const stream = vi.fn(async function* () {
+      const content = [
+        { type: 'text' as const, text: '我来汇报一下' },
         {
-          type: 'tool_use',
+          type: 'tool_use' as const,
           id: 'call-1',
           name: 'mcp__crab-messaging__send_message',
           input: { channel_id: 'c1', session_id: 's1', content: '正在修 bug，已定位到根因' },
         },
-      ],
-      stopReason: 'tool_use',
-    }))
+      ]
+      yield* chunksFromContent(content, 'tool_use')
+    })
     const adapter: LLMAdapter = {
-      stream: async function* () { /* unused */ },
-      complete,
+      stream,
       updateConfig() { /* noop */ },
     }
     const messagesRef = makeRef([createUserMessage('go')])
@@ -263,10 +260,9 @@ describe('ProgressDigest fork mode', () => {
 
   it('adapter throw is swallowed, no sendToUser', async () => {
     const sendToUser = vi.fn().mockResolvedValue(undefined)
-    const complete = vi.fn(async (): Promise<LLMCallResponse> => { throw new Error('boom') })
+    const stream = vi.fn(async function* () { throw new Error('boom') })
     const adapter: LLMAdapter = {
-      stream: async function* () { /* unused */ },
-      complete,
+      stream,
       updateConfig() { /* noop */ },
     }
     const messagesRef = makeRef([createUserMessage('go')])
@@ -277,7 +273,7 @@ describe('ProgressDigest fork mode', () => {
     await Promise.resolve()
     await Promise.resolve()
 
-    expect(complete).toHaveBeenCalledTimes(1)
+    expect(stream).toHaveBeenCalledTimes(1)
     expect(sendToUser).not.toHaveBeenCalled()
     digest.dispose()
   })
@@ -359,10 +355,8 @@ describe('ProgressDigest fork mode', () => {
   })
 
   it('trace reports failure when adapter throws', async () => {
-    const complete = vi.fn(async (): Promise<LLMCallResponse> => { throw new Error('boom') })
     const adapter: LLMAdapter = {
-      stream: async function* () { /* unused */ },
-      complete,
+      stream: vi.fn(async function* () { throw new Error('boom') }),
       updateConfig() { /* noop */ },
     }
     const messagesRef = makeRef([createUserMessage('go')])

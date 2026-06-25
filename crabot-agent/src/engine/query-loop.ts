@@ -788,6 +788,7 @@ export async function runEngine(params: RunEngineParams): Promise<EngineResult> 
       llmStartedAtMs,
       ...(forcedSummaryAttempt !== undefined ? { forcedSummaryAttempt } : {}),
       ...(response.usage ? { usage: response.usage } : {}),
+      ...(response.diagnostics ? { diagnostics: response.diagnostics } : {}),
     })
 
     // Process images based on model capability

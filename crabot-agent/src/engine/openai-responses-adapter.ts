@@ -5,10 +5,10 @@
  */
 
 import type { LLMAdapter, LLMAdapterConfig, LLMStreamParams } from './llm-adapter-types.js'
-import { isToolResultMessage, extractText, buildImageUrl, readSSEEvents, wrapOnRetry, capToolResultForLLM } from './llm-adapter-types.js'
+import { isToolResultMessage, extractText, buildImageUrl, readSSEEvents, capToolResultForLLM } from './llm-adapter-types.js'
 import type { EngineMessage, ToolDefinition, StreamChunk, ContentBlock, LLMTokenUsage } from './types.js'
-import { HttpResponseError, streamWithRetry } from './retry-utils.js'
-import { isMaterialChunk } from './stream-processor.js'
+import { HttpResponseError } from './retry-utils.js'
+import { streamWithTimeoutAndRetry } from './stream-timeout.js'
 
 // --- Responses API Message Normalization ---
 
@@ -149,15 +149,7 @@ export class OpenAIResponsesAdapter implements LLMAdapter {
   }
 
   async *stream(params: LLMStreamParams): AsyncGenerator<StreamChunk> {
-    yield* streamWithRetry(
-      'openai-responses-adapter',
-      () => this.streamOnce(params),
-      {
-        abortSignal: params.signal,
-        isMaterial: isMaterialChunk,
-        onRetry: wrapOnRetry(params.onRetry, 'pre-stream'),
-      },
-    )
+    yield* streamWithTimeoutAndRetry('openai-responses-adapter', (p) => this.streamOnce(p), params)
   }
 
   private async *streamOnce(params: LLMStreamParams): AsyncGenerator<StreamChunk> {

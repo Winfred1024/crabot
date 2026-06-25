@@ -2,11 +2,11 @@
  * OpenAI Chat Completions LLM Adapter
  */
 
-import type { LLMAdapter, LLMAdapterConfig, LLMStreamParams, LLMCallResponse } from './llm-adapter-types.js'
-import { isToolResultMessage, extractText, buildImageUrl, readSSELines, mergeConsecutiveUserMessages, wrapOnRetry, capToolResultForLLM } from './llm-adapter-types.js'
+import type { LLMAdapter, LLMAdapterConfig, LLMStreamParams } from './llm-adapter-types.js'
+import { isToolResultMessage, extractText, buildImageUrl, readSSELines, mergeConsecutiveUserMessages, capToolResultForLLM } from './llm-adapter-types.js'
 import type { EngineMessage, ToolDefinition, StreamChunk, ContentBlock, LLMTokenUsage } from './types.js'
-import { HttpResponseError, streamWithRetry, withRetry } from './retry-utils.js'
-import { isMaterialChunk, parseToolInput } from './stream-processor.js'
+import { HttpResponseError } from './retry-utils.js'
+import { streamWithTimeoutAndRetry } from './stream-timeout.js'
 
 // --- OpenAI Message Types ---
 
@@ -164,104 +164,7 @@ export class OpenAIAdapter implements LLMAdapter {
   }
 
   async *stream(params: LLMStreamParams): AsyncGenerator<StreamChunk> {
-    yield* streamWithRetry(
-      'openai-adapter',
-      () => this.streamOnce(params),
-      {
-        abortSignal: params.signal,
-        isMaterial: isMaterialChunk,
-        onRetry: wrapOnRetry(params.onRetry, 'pre-stream'),
-      },
-    )
-  }
-
-  async complete(params: LLMStreamParams): Promise<LLMCallResponse> {
-    const messages = normalizeMessagesForOpenAI(params.messages)
-    const tools = params.tools.map(toOpenAITool)
-
-    const body: Record<string, unknown> = {
-      model: params.model,
-      ...(params.maxTokens !== undefined ? { max_tokens: params.maxTokens } : {}),
-      messages: [{ role: 'system', content: params.systemPrompt }, ...messages],
-      stream: false,
-    }
-    if (tools.length > 0) {
-      body.tools = tools
-    }
-
-    const data = await withRetry(
-      'openai-adapter',
-      async () => {
-        const response = await fetch(`${this.config.endpoint}/chat/completions`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${this.config.apikey}`,
-          },
-          body: JSON.stringify(body),
-          signal: params.signal,
-        })
-
-        if (!response.ok) {
-          const errorText = await response.text()
-          throw new HttpResponseError(response.status, errorText, 'openai-adapter')
-        }
-        return response.json() as Promise<{
-          choices?: Array<{
-            message?: {
-              content?: string | null
-              reasoning_content?: string | null
-              tool_calls?: Array<{
-                id: string
-                function?: { name?: string; arguments?: string }
-              }>
-            }
-            finish_reason?: string | null
-          }>
-          usage?: { prompt_tokens?: number; completion_tokens?: number }
-        }>
-      },
-      {
-        abortSignal: params.signal,
-        onRetry: wrapOnRetry(params.onRetry, 'complete'),
-      },
-    )
-
-    const choice = data.choices?.[0]
-    const msg = choice?.message
-    const content: ContentBlock[] = []
-
-    // DeepSeek thinking mode：reasoning_content 必须放在 text 之前（buildAssistantContent 依赖此顺序）
-    if (msg?.reasoning_content) {
-      content.push({ type: 'raw_reasoning', data: { reasoning_content: msg.reasoning_content } })
-    }
-    if (msg?.content) {
-      content.push({ type: 'text', text: msg.content })
-    }
-    if (msg?.tool_calls) {
-      for (const tc of msg.tool_calls) {
-        content.push({
-          type: 'tool_use',
-          id: tc.id,
-          name: tc.function?.name ?? '',
-          input: parseToolInput(tc.function?.arguments ?? ''),
-        })
-      }
-    }
-
-    const stopReason = mapOpenAIFinishReason(choice?.finish_reason ?? null)
-    const usage = extractOpenAIUsage(data.usage)
-    if (!usage) {
-      // 第三方 OpenAI 代理（mirror、sub2api 等）有时 stream:false 不回 usage——
-      // 让运维能从日志确认是上游问题，不是 trace 漏埋点
-      const dataKeys = data && typeof data === 'object' ? Object.keys(data as object).join(',') : 'non-object'
-      console.warn(`[openai-adapter] complete: response missing usage (model=${params.model}, endpoint=${this.config.endpoint}, top-level keys=[${dataKeys}])`)
-    }
-    return {
-      content,
-      stopReason,
-      ...(usage ? { usage } : {}),
-    }
+    yield* streamWithTimeoutAndRetry('openai-adapter', (p) => this.streamOnce(p), params)
   }
 
   private async *streamOnce(params: LLMStreamParams): AsyncGenerator<StreamChunk> {

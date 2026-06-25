@@ -258,7 +258,7 @@ export interface AgentHandlerDeps {
   moduleId: string
   resolveChannelPort: (channelId: string) => Promise<number>
   getMemoryPort: () => Promise<number>
-  /** Admin RPC 端口解析（get_task_details 工具用） */
+  /** Admin RPC 端口解析（get_task_progress 工具用） */
   getAdminPort?: () => Promise<number>
   /**
    * 返回当前 task 的 permissionConfig（基于 task 自带的 resolved_permissions，
@@ -1667,6 +1667,7 @@ export class AgentHandler {
                   ...(event.forcedSummaryAttempt !== undefined ? { forcedSummaryAttempt: event.forcedSummaryAttempt } : {}),
                   ...(event.usage ? { usage: llmUsageToTrace(event.usage) } : {}),
                   messageCountAfter: messagesRef.current.length,
+                  ...(event.diagnostics ? { diagnostics: event.diagnostics } : {}),
                 },
                 llmEndedAtMs,
               )

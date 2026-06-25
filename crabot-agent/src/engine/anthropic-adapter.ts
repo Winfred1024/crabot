@@ -12,11 +12,10 @@ import type {
   ToolResultBlockParam,
 } from '@anthropic-ai/sdk/resources/messages'
 import { proxyManager } from 'crabot-shared'
-import type { LLMAdapter, LLMAdapterConfig, LLMStreamParams, LLMCallResponse } from './llm-adapter-types.js'
-import { streamWithRetry, withRetry } from './retry-utils.js'
-import { isToolResultMessage, mergeConsecutiveUserMessages, wrapOnRetry, capToolResultForLLM } from './llm-adapter-types.js'
-import { isMaterialChunk } from './stream-processor.js'
-import type { EngineMessage, ToolDefinition, StreamChunk, ContentBlock, LLMTokenUsage } from './types.js'
+import type { LLMAdapter, LLMAdapterConfig, LLMStreamParams } from './llm-adapter-types.js'
+import { streamWithTimeoutAndRetry } from './stream-timeout.js'
+import { isToolResultMessage, mergeConsecutiveUserMessages, capToolResultForLLM } from './llm-adapter-types.js'
+import type { EngineMessage, ToolDefinition, StreamChunk, LLMTokenUsage } from './types.js'
 
 // --- Default max_tokens by model family ---
 // Anthropic SDK 强制要求 max_tokens；当上游（admin provider config）没配时，
@@ -163,57 +162,7 @@ export class AnthropicAdapter implements LLMAdapter {
   }
 
   async *stream(params: LLMStreamParams): AsyncGenerator<StreamChunk> {
-    yield* streamWithRetry(
-      'anthropic-adapter',
-      () => this.streamOnce(params),
-      {
-        abortSignal: params.signal,
-        isMaterial: isMaterialChunk,
-        onRetry: wrapOnRetry(params.onRetry, 'pre-stream'),
-      },
-    )
-  }
-
-  async complete(params: LLMStreamParams): Promise<LLMCallResponse> {
-    const messages = normalizeMessagesForAnthropic(params.messages)
-    const tools = params.tools.map(AnthropicAdapter.toAnthropicTool)
-
-    const response = await withRetry(
-      'anthropic-adapter',
-      () =>
-        this.client.messages.create({
-          model: params.model,
-          max_tokens: params.maxTokens ?? defaultAnthropicMaxTokens(params.model),
-          system: params.systemPrompt,
-          messages,
-          ...(tools.length > 0 ? { tools } : {}),
-        }, { signal: params.signal }),
-      {
-        abortSignal: params.signal,
-        onRetry: wrapOnRetry(params.onRetry, 'complete'),
-      },
-    )
-
-    const content: ContentBlock[] = []
-    for (const block of response.content) {
-      if (block.type === 'text') {
-        content.push({ type: 'text', text: block.text })
-      } else if (block.type === 'tool_use') {
-        content.push({
-          type: 'tool_use',
-          id: block.id,
-          name: block.name,
-          input: (block.input ?? {}) as Record<string, unknown>,
-        })
-      }
-      // thinking / other block types: ignored (Anthropic doesn't require replay)
-    }
-
-    return {
-      content,
-      stopReason: response.stop_reason ?? null,
-      usage: extractAnthropicUsage(response.usage),
-    }
+    yield* streamWithTimeoutAndRetry('anthropic-adapter', (p) => this.streamOnce(p), params)
   }
 
   private async *streamOnce(params: LLMStreamParams): AsyncGenerator<StreamChunk> {

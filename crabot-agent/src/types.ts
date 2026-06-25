@@ -73,7 +73,7 @@ export interface BuiltinCapabilities {
   file_system: boolean
   /** Bash（含 run_in_background）/ Output / Kill / ListEntities — shell + 后台进程管理 */
   shell: boolean
-  /** search_traces / get_task_details / search_short_term — 任务情报查询 */
+  /** find_task / get_task_progress — 任务情报查询 */
   task_intel: boolean
   /** crab-memory MCP 全部工具 — 长期记忆读写 */
   crab_memory: boolean
@@ -432,7 +432,7 @@ export interface LiveTaskSnapshot {
   readonly llm_retry?: {
     readonly attempt: number
     readonly max_attempts: number
-    readonly source: 'pre-stream' | 'mid-stream' | 'complete'
+    readonly source: 'pre-stream' | 'mid-stream'
     readonly last_error: string
     readonly since: number  // ms timestamp
   }
@@ -993,6 +993,12 @@ export interface LlmCallDetails {
   usage?: TokenUsage
   /** 该 turn 结束时 messages[] 的长度，供 trace UI 把 span 映射到 messages 切片。 */
   message_count_after?: number
+  /** 本轮成功前的流式重试次数（0 = 一次成功） */
+  stream_retries?: number
+  /** 首 chunk 延迟（ms）；排查"静默连接被掐"类问题用 */
+  first_chunk_ms?: number
+  /** 本轮收到的流 chunk 数 */
+  chunk_count?: number
 }
 
 export interface ToolCallDetails {
@@ -1206,7 +1212,7 @@ export interface TraceCallback {
   /** `startedAtMs`/`endedAtMs` back-date spans for post-hoc callers (e.g.
    * agent-handler's onTurn fires after the LLM call already completed). */
   onLlmCallStart(iteration: number, inputSummary: string, attempt?: number, startedAtMs?: number): string
-  onLlmCallEnd(spanId: string, result: { stopReason?: string; outputSummary?: string; toolCallsCount?: number; error?: string; forcedSummaryAttempt?: number; usage?: TokenUsage; messageCountAfter?: number }, endedAtMs?: number): void
+  onLlmCallEnd(spanId: string, result: { stopReason?: string; outputSummary?: string; toolCallsCount?: number; error?: string; forcedSummaryAttempt?: number; usage?: TokenUsage; messageCountAfter?: number; diagnostics?: import('./engine/types.js').LLMCallDiagnostics }, endedAtMs?: number): void
   onToolCallStart(toolName: string, inputSummary: string, startedAtMs?: number, toolUseId?: string): string
   /**
    * `childTraceId` 标识由本次工具调用派生出的子 trace（如 `delegate_task` 派 subagent）。

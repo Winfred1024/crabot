@@ -12,21 +12,21 @@ import { runEngine } from '../../src/engine/query-loop'
 import { HumanMessageQueue } from '../../src/engine/human-message-queue'
 import { buildAuditResultMarker } from '../../src/agent/audit-result-marker'
 import type { LLMAdapter } from '../../src/engine/llm-adapter-types'
+import { chunksFromContent } from './helpers/mock-stream'
 
 type AdapterStep = { kind: 'end_turn'; text: string }
 
 function makeAdapter(steps: ReadonlyArray<AdapterStep>): LLMAdapter {
   let i = 0
   return {
-    complete: vi.fn(async () => {
+    stream: vi.fn(async function* () {
       const s = steps[i++] ?? steps[steps.length - 1]
-      return {
-        content: [{ type: 'text' as const, text: s.text }],
-        stopReason: 'end_turn' as const,
-        usage: { inputTokens: 10, outputTokens: 5 },
-      }
+      yield* chunksFromContent(
+        [{ type: 'text' as const, text: s.text }],
+        'end_turn',
+        { inputTokens: 10, outputTokens: 5 },
+      )
     }),
-    stream: async function* () { /* unused */ },
     updateConfig: () => {},
   } as unknown as LLMAdapter
 }

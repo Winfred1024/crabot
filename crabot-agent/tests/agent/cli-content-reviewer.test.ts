@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import type { ResolvedPermissions } from '../../src/types.js'
-import type { LLMAdapter, LLMStreamParams, LLMCallResponse } from '../../src/engine/llm-adapter-types.js'
+import type { LLMAdapter } from '../../src/engine/llm-adapter-types.js'
 import { reviewCliContent } from '../../src/agent/cli-content-reviewer.js'
+import { chunksFromContent } from '../engine/helpers/mock-stream.js'
 
 const groupSchedulerPerms: ResolvedPermissions = {
   tool_access: {
@@ -20,14 +21,13 @@ const groupSchedulerPerms: ResolvedPermissions = {
 
 function makeAdapter(opts: { response?: string; throws?: Error }): LLMAdapter {
   return {
-    stream: async function* () { /* not used */ },
-    complete: async (_params: LLMStreamParams): Promise<LLMCallResponse> => {
+    stream: async function* () {
       if (opts.throws) throw opts.throws
-      return {
-        content: [{ type: 'text', text: opts.response ?? '' }],
-        stopReason: 'end_turn',
-        usage: { inputTokens: 100, outputTokens: 20 },
-      }
+      yield* chunksFromContent(
+        [{ type: 'text', text: opts.response ?? '' }],
+        'end_turn',
+        { inputTokens: 100, outputTokens: 20 },
+      )
     },
     updateConfig: () => {},
   }

@@ -2,16 +2,18 @@ import { describe, it, expect } from 'vitest'
 import { reflectStructuredOutcome } from '../../src/orchestration/structured-outcome-reflector.js'
 import type { EngineMessage } from '../../src/engine/types.js'
 import type { LLMAdapter } from '../../src/engine/llm-adapter-types.js'
+import { chunksFromContent } from '../engine/helpers/mock-stream.js'
 
 function makeAdapter(responses: string[]): LLMAdapter {
   let i = 0
   return {
-    complete: async () => ({
-      content: [{ type: 'text' as const, text: responses[i++] ?? '' }],
-      stopReason: 'end_turn',
-      usage: { inputTokens: 100, outputTokens: 50 },
-    }),
-    stream: async function* () { /* unused when complete is present */ },
+    stream: async function* () {
+      yield* chunksFromContent(
+        [{ type: 'text' as const, text: responses[i++] ?? '' }],
+        'end_turn',
+        { inputTokens: 100, outputTokens: 50 },
+      )
+    },
     updateConfig: () => {},
   } as unknown as LLMAdapter
 }

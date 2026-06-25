@@ -11,16 +11,15 @@ import { describe, it, expect, vi } from 'vitest'
 import { dispatch } from '../../src/dispatcher/dispatcher.js'
 import { executeDispatchActions } from '../../src/dispatcher/dispatcher-executor.js'
 import type { DispatchContext, ExecuteContext, DispatchAction } from '../../src/dispatcher/dispatcher-types.js'
-import type { LLMAdapter, LLMCallResponse } from '../../src/engine/llm-adapter-types.js'
+import type { LLMAdapter } from '../../src/engine/llm-adapter-types.js'
 import type { TaskSummary } from '../../src/types.js'
+import { chunksFromContent } from '../engine/helpers/mock-stream.js'
 
 function makeMockAdapter(responseText: string): LLMAdapter {
   return {
-    stream: async function* () { /* not used */ },
-    complete: vi.fn().mockResolvedValue({
-      content: [{ type: 'text', text: responseText }],
-      stopReason: 'end_turn',
-    } satisfies LLMCallResponse),
+    stream: vi.fn(async function* () {
+      yield* chunksFromContent([{ type: 'text', text: responseText }], 'end_turn')
+    }),
     updateConfig: () => {},
   }
 }

@@ -35,6 +35,7 @@ import {
   buildAuditAbortedMarker,
 } from '../../src/agent/audit-result-marker.js'
 import type { LLMAdapter } from '../../src/engine/llm-adapter-types.js'
+import { chunksFromContent } from '../engine/helpers/mock-stream.js'
 import type { OutboundBufferEntry } from '../../src/agent/outbound-flush.js'
 import type { ToolDefinition } from '../../src/engine/types.js'
 
@@ -49,29 +50,22 @@ type AdapterStep =
 function makeAdapter(steps: ReadonlyArray<AdapterStep>): LLMAdapter {
   let i = 0
   return {
-    complete: vi.fn(async () => {
+    stream: vi.fn(async function* () {
       const s = steps[i++] ?? steps[steps.length - 1]
       if (s.kind === 'tool') {
-        return {
-          content: [
-            {
-              type: 'tool_use' as const,
-              id: s.toolId,
-              name: s.toolName,
-              input: s.input ?? {},
-            },
-          ],
-          stopReason: 'tool_use' as const,
-          usage: { inputTokens: 20, outputTokens: 10 },
-        }
+        yield* chunksFromContent(
+          [{ type: 'tool_use' as const, id: s.toolId, name: s.toolName, input: s.input ?? {} }],
+          'tool_use',
+          { inputTokens: 20, outputTokens: 10 },
+        )
+        return
       }
-      return {
-        content: [{ type: 'text' as const, text: s.text }],
-        stopReason: 'end_turn' as const,
-        usage: { inputTokens: 10, outputTokens: 5 },
-      }
+      yield* chunksFromContent(
+        [{ type: 'text' as const, text: s.text }],
+        'end_turn',
+        { inputTokens: 10, outputTokens: 5 },
+      )
     }),
-    stream: async function* () { /* unused */ },
     updateConfig: () => {},
   } as unknown as LLMAdapter
 }

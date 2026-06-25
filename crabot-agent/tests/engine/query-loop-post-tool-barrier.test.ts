@@ -2,26 +2,27 @@ import { describe, it, expect, vi } from 'vitest'
 import { runEngine } from '../../src/engine/query-loop.js'
 import { HumanMessageQueue } from '../../src/engine/human-message-queue.js'
 import type { LLMAdapter } from '../../src/engine/llm-adapter-types.js'
+import { chunksFromContent } from './helpers/mock-stream.js'
 
 function makeAdapter(responses: Array<{ text: string; stopReason: 'end_turn' | 'tool_use'; toolId?: string; toolName?: string }>): LLMAdapter {
   let i = 0
   return {
-    complete: vi.fn(async () => {
+    stream: vi.fn(async function* () {
       const r = responses[i++] ?? responses[responses.length - 1]
       if (r.stopReason === 'tool_use' && r.toolId && r.toolName) {
-        return {
-          content: [{ type: 'tool_use' as const, id: r.toolId, name: r.toolName, input: {} }],
-          stopReason: r.stopReason,
-          usage: { inputTokens: 20, outputTokens: 10 },
-        }
+        yield* chunksFromContent(
+          [{ type: 'tool_use' as const, id: r.toolId, name: r.toolName, input: {} }],
+          r.stopReason,
+          { inputTokens: 20, outputTokens: 10 },
+        )
+        return
       }
-      return {
-        content: [{ type: 'text' as const, text: r.text }],
-        stopReason: r.stopReason,
-        usage: { inputTokens: 10, outputTokens: 5 },
-      }
+      yield* chunksFromContent(
+        [{ type: 'text' as const, text: r.text }],
+        r.stopReason,
+        { inputTokens: 10, outputTokens: 5 },
+      )
     }),
-    stream: async function* () { /* unused */ },
     updateConfig: () => {},
   } as unknown as LLMAdapter
 }
@@ -63,7 +64,7 @@ describe('query-loop: post-tool barrier check', () => {
     })
     const elapsed = Date.now() - startMs
 
-    const callCount = (adapter.complete as ReturnType<typeof vi.fn>).mock.calls.length
+    const callCount = (adapter.stream as ReturnType<typeof vi.fn>).mock.calls.length
     expect(callCount).toBe(2)  // 第二轮 LLM 在 barrier 释放后执行
     expect(result.outcome).toBe('completed')
     expect(elapsed).toBeGreaterThanOrEqual(40)     // 至少等了 ~50ms

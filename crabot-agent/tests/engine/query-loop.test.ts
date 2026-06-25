@@ -4,6 +4,7 @@ import { defineTool } from '../../src/engine/tool-framework.js'
 import type { LLMAdapter } from '../../src/engine/llm-adapter.js'
 import type { StreamChunk, EngineOptions, EngineMessage } from '../../src/engine/types.js'
 import { HumanMessageQueue } from '../../src/engine/human-message-queue.js'
+import { chunksFromContent } from './helpers/mock-stream.js'
 
 // --- Test Helpers ---
 
@@ -861,12 +862,11 @@ import type { ToolDefinition } from '../../src/engine/types'
 function makeAdapter(responses: LLMCallResponse[]): LLMAdapter {
   let i = 0
   return {
-    complete: vi.fn().mockImplementation(async () => {
+    stream: vi.fn(async function* () {
       const r = responses[Math.min(i, responses.length - 1)]
       i++
-      return r
+      yield* chunksFromContent(r.content, r.stopReason, r.usage)
     }),
-    completeStreaming: vi.fn(),
     updateConfig: vi.fn(),
   } as unknown as LLMAdapter
 }
@@ -900,8 +900,8 @@ describe('runEngine — Resolvable callback', () => {
       },
     })
     expect(result.outcome).toBe('completed')
-    expect(adapter.complete).toHaveBeenCalledTimes(1)
-    const call = (adapter.complete as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(adapter.stream).toHaveBeenCalledTimes(1)
+    const call = (adapter.stream as ReturnType<typeof vi.fn>).mock.calls[0][0]
     expect(call.tools).toEqual([dummyTool])
   })
 
@@ -915,7 +915,7 @@ describe('runEngine — Resolvable callback', () => {
     }
     await runEngine({ prompt: 'hi', adapter, options })
     expect(cb).toHaveBeenCalled()
-    const call = (adapter.complete as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    const call = (adapter.stream as ReturnType<typeof vi.fn>).mock.calls[0][0]
     expect(call.tools).toEqual([dummyTool])
     expect(call.systemPrompt).toBe('sys-dynamic')
   })
