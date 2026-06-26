@@ -21,8 +21,6 @@ import type { EngineMessage, EngineMessagesRef } from './engine/types.js'
 // ============================================================================
 
 export interface OrchestrationConfig {
-  /** Admin 共享存储路径 */
-  admin_config_path: string
   /** Front Agent 近期聊天记录的时间窗口（小时） */
   front_context_recent_messages_window_hours: number
   /** Front Agent 近期聊天记录的硬上限（防止 busy 群爆 prompt） */

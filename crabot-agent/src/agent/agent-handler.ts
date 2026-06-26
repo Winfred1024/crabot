@@ -93,7 +93,7 @@ import { resolveSenderIdentity } from '../utils/sender-identity.js'
 import { prefetchQuotedMessages } from './quoted-message-prefetcher.js'
 import { formatNow, formatChannelMessageTime, resolveTimezone, formatRuntimeMs } from '../utils/time.js'
 import { renderActiveTasksSection } from './active-tasks-section.js'
-import { getAgentDataDir, getWorkspaceDir } from '../core/data-paths.js'
+import { getAgentDataDir, getAdminInternalTokenPath, getWorkspaceDir } from '../core/data-paths.js'
 import { llmUsageToTrace } from '../core/trace-usage.js'
 import { TodoStore } from './worker-todo-store.js'
 import { createTodoTool } from './worker-todo-tool.js'
@@ -1424,8 +1424,7 @@ export class AgentHandler {
       // 真正的权限边界在 cli-permission-gate hook（按 effective cli_access 判定）。
       // 不注入会让群聊/非 master 任务的 read 类 CLI（如 'crabot mcp list'）也跑不起来。
       if (!process.env.CRABOT_TOKEN) {
-        const dataDir = process.env.DATA_DIR ?? './data'
-        const tokenPath = path.join(dataDir, 'admin', 'internal-token')
+        const tokenPath = getAdminInternalTokenPath()
         try {
           const token = fs.readFileSync(tokenPath, 'utf-8').trim()
           process.env.CRABOT_TOKEN = token
