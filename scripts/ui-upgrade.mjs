@@ -36,7 +36,16 @@ const logger = {
   error: (m) => console.error(m),
 }
 
-function readVersion() {
+// release 安装的版本是 VERSION 文件；source 安装没有 VERSION，版本就是 git 短 sha。
+// 否则 source 模式 from/to_version 永远是 null，升级记录看不到「从哪升到哪」。
+function readVersion(mode) {
+  if (mode === 'source') {
+    try {
+      return execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: CRABOT_HOME, encoding: 'utf-8' }).trim()
+    } catch {
+      return null
+    }
+  }
   const p = join(CRABOT_HOME, 'VERSION')
   return existsSync(p) ? readFileSync(p, 'utf-8').trim() : null
 }
@@ -60,7 +69,7 @@ function stamp() {
 
 async function main() {
   const mode = detectMode(CRABOT_HOME) // 'release' | 'source'
-  const fromVersion = readVersion()
+  const fromVersion = readVersion(mode)
   console.log(`[ui-upgrade] start mode=${mode} from=${fromVersion} at=${stamp()}`)
   writeStatus({
     phase: 'preparing',
@@ -127,7 +136,7 @@ async function main() {
     console.log('[ui-upgrade] (switch) start -d')
     node(['start', '-d'])
 
-    writeStatus({ phase: 'done', to_version: readVersion(), finished_at: stamp() })
+    writeStatus({ phase: 'done', to_version: readVersion(mode), finished_at: stamp() })
     console.log(`[ui-upgrade] done at=${stamp()}`)
   } catch (err) {
     const msg = err?.message || String(err)
