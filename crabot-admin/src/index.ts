@@ -8285,6 +8285,25 @@ export class AdminModule extends ModuleBase {
     return result
   }
 
+  /**
+   * 启动末尾的主动配置对账：补推配置给「已在运行」的 agent / memory 模块。
+   *
+   * onEvent 里的 module_started 推送只能覆盖「admin 订阅之后才启动」的模块。但 admin 只在
+   * onStart 重活（loadData / 供应商初始化 / 起 web server）跑完、再 register() 时才订阅事件；
+   * 若 admin 单独重启、或启动慢于 agent（system mode 版本检查等会拖慢），agent 的 module_started
+   * 会在 admin 订阅前就发完且不重放 → 永久错过 → agent 卡 unconfigured（"未配置 LLM" +
+   * bg-entities "Worker handler not initialized"）。
+   *
+   * 本方法在 register()（订阅已生效）之后调用：订阅覆盖「未来启动」的模块，本快照覆盖「当下已在
+   * 运行」的模块，两者无缝衔接、消除竞态。端口经 MM resolve 自解析，无运行模块时安全 no-op。
+   */
+  async reconcileRunningModuleConfigs(): Promise<void> {
+    await this.pushConfigToAgentModules()
+    await this.syncGlobalConfigToMemoryModules().catch((err: Error) => {
+      console.warn('[Admin] 启动对账同步 memory 配置失败:', err.message)
+    })
+  }
+
   private async pushConfigToAgentModules(): Promise<void> {
     try {
       const port = await this.ensureAgentPort()

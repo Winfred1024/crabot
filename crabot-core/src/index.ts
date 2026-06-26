@@ -741,6 +741,17 @@ export class ModuleManager {
     const logStream = fs.createWriteStream(logFile, { flags: 'a' })
     logStream.write(`\n[${generateTimestamp()}] === spawn ${moduleId} ===\n`)
 
+    // CRABOT_ADMIN_ENDPOINT 的权威来源是 MM 的端口分配，不是 main.ts 里 `19001+OFFSET`
+    // 的静态猜测。历史 bug：main.ts 派生 ADMIN_RPC_PORT=19001，但 admin 实际绑端口池分配到的
+    // 端口（首个池端口=19002），两者不一致 → agent/memory 启动 pull get_agent_config 连 19001
+    // （无人监听）永远失败，只能靠 module_started 推送兜底；一旦错过推送竞态就永久 unconfigured。
+    // 这里用 admin 模块真实分配的端口覆盖静态值，让启动 pull 这条主路径可靠工作。
+    const adminRpcPort = this.modules.get('admin-web')?.port
+    const adminEndpointOverride =
+      adminRpcPort && moduleId !== 'admin-web'
+        ? { CRABOT_ADMIN_ENDPOINT: `http://localhost:${adminRpcPort}` }
+        : {}
+
     const proc = spawn(command, args, {
       cwd: runtime.cwd,
       env: {
@@ -754,6 +765,7 @@ export class ModuleManager {
         // RpcClient 会 fallback 到默认 19000，在多实例/端口偏移部署下连到错误的 MM。
         CRABOT_MM_PORT: String(this.config.port),
         CRABOT_MM_ENDPOINT: `http://localhost:${this.config.port}`,
+        ...adminEndpointOverride,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
