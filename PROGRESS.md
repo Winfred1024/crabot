@@ -1,18 +1,18 @@
 # Crabot 项目进度
 
-> 最后更新：2026-06-26 — Admin UI 升级提醒与一键升级（已合 main，端到端待验证）
+> 最后更新：2026-06-26 — Admin UI 升级提醒与一键升级（已合 main + push origin bf8b3f7，端到端验证通过）
 
-## 2026-06-26 — Admin UI 升级提醒与一键升级（已合 main，本地未推送）
+## 2026-06-26 — Admin UI 升级提醒与一键升级（已合 main + push origin `bf8b3f7`）
 
-设计/计划：`crabot-docs/superpowers/specs/2026-06-25-admin-ui-upgrade-design.md` + `crabot-docs/superpowers/plans/2026-06-25-admin-ui-upgrade.md`。
+设计/计划：`crabot-docs/superpowers/specs/2026-06-25-admin-ui-upgrade-design.md` + `crabot-docs/superpowers/plans/2026-06-25-admin-ui-upgrade.md`。**source 模式一键升级端到端真实跑通（preparing→restarting→done），真空期仅 9 秒。**
 
-- **三态安装形态适配**：`release`（无 `.git`，比 GitHub latest tag）/ `source`（有 `.git`，比远端 main 是否领先本地 commit，`git ls-remote` + `cat-file -e`，不 fetch）/ `system`（`/etc/crabot/cluster.version` 存在 → 完全不显示该功能，由管理员终端 `sudo crabot upgrade`）。source 仅工作区干净且在 main 分支才启用一键升级。
-- **后端**（`crabot-admin/src/version/`）：`VersionService`（capability 判定 + 6h TTL 缓存 + release/source 检查，HTTP 走 admin 全局代理、git 子进程注入 proxy env）；`UpgradeRunner`（`canUpgrade` 受理判定 + `startUpgrade` spawn detached + `upgrade-status.json` 读写 + 10min stale lock 守卫）；3 接口 `GET /api/system/version`、`POST /api/system/version/check`、`POST /api/system/upgrade`。
-- **detached 升级脚本** `scripts/ui-upgrade.mjs`：脱离 admin 进程组后串行 `stop → (source: git pull --ff-only) → upgrade -y → start -d`，全程状态落盘。`crabot stop` 的 pkill pattern 不匹配本脚本故不会被误杀。
-- **前端**：`services/version.ts` + `hooks/useSystemVersion.ts`（module-level 共享缓存，徽标与卡片共用一次请求）+ Sidebar `/settings` 红点 + `VersionUpgradeCard`（升级中轮询状态机 idle/starting/upgrading/restarting/success/failed/timeout，失联=重启中、5min 超时兜底）。
-- **前置根治**：memory 启动 `uv run`/`uv sync` 加 `--frozen`（`crabot-core/src/main.ts`、`crabot-memory/start.sh`、`dev.sh`），禁止启动静默重写 `uv.lock`——否则 source 模式「工作区干净」判定被 uv.lock 漂移永久打挂。
-- **质量**：每 task TDD + 逐个验证 + fresh-eyes 终审 APPROVE（修了 timer 卸载泄漏 / stale lock / CSS / ls-remote 空串守卫 / source 升级提示）；自审又揪出**升级启动竞态**（spawn 前不写 status → 前端轮询读到上次残留 done 误判成功 + 快速双击并发 spawn）已修（`startUpgrade` spawn 前同步落 upgrading），并清理死代码（`targetVersion` ref / `setCache` 返回）。后端 version 20 测试 + 前端 6 测试 + admin 932 / web 250 全量回归全绿、两端 build 干净。
-- **待办**：**Task 11 端到端验证未做**——最高风险的 detached 自我重启真实链路（需起 `dev.sh`，与 live 实例抢端口）仅逻辑审查、无实跑背书；release 链路无法在 dev 源码仓库实测（dev 仓库恒为 source）。`start -d` 30s 健康检查超时会误报 failed（已知设计权衡）。
+- **三态安装形态适配**：`release`（无 `.git`，比 GitHub latest tag）/ `source`（有 `.git`，`git ls-remote origin main` + `merge-base --is-ancestor` 判远端是否领先本地，**不 fetch、不用 cat-file**）/ `system`（`/etc/crabot/cluster.version` 存在）。**deploy_mode（个人/团队）与 install_kind（源码/release）拆成独立维度做卡片标注**；system mode 改渲染只读卡片（版本+提示 `sudo crabot upgrade`，无升级按钮）。source 仅工作区干净且在 main 才启用一键升级。
+- **后端**（`crabot-admin/src/version/`）：`VersionService`（capability + 6h 缓存 + release/source 检查，HTTP 走全局代理、git 注入 proxy env）；`UpgradeRunner`（canUpgrade 受理 + startUpgrade spawn detached + status 读写 + 10min stale 守卫）；3 接口 `/api/system/version{,/check}` + `/upgrade`。**`crabotHome` 用运行代码根（`CRABOT_HOME` env / 模块编译位置），不从 data_dir 反推**。
+- **升级脚本 `scripts/ui-upgrade.mjs`（build 前置两阶段）**：① 准备阶段（实例照常运行）`git pull` + build/download，**失败不停服务、零影响**；② 切换阶段（停机秒级）`stop → migrate → start -d`。stdio 重定向到 `data/logs/upgrade.log`（失败可查死因）。脱离 admin 进程组，`crabot stop` pkill 不误杀。`release.mjs` 拆 `downloadRelease`（运行期）/`extractRelease`（停机期），`downloadAndExtract` 留兼容 CLI。
+- **前端**：`services/version.ts` + `useSystemVersion`（共享缓存）+ Sidebar 红点 + `VersionUpgradeCard`（轮询状态机 preparing/restarting/done/failed，失联=重启中、5min 超时）。
+- **前置根治**：memory `uv run/sync` 加 `--frozen`，禁启动改写 `uv.lock`（否则 source「工作区干净」判定被漂移打挂）。
+- **端到端测试揪出并修复的真 bug**（多轮真实升级实证）：① crabotHome 从 data_dir 反推 → 误判 release + `current_version=null` + spawn 不存在脚本 → 改运行代码根；② `cat-file -e` 被任意 fetch 污染误判已含 → 改 `merge-base --is-ancestor`；③ 升级启动竞态（spawn 前同步写 status）；④ **build 在 stop 之后**（真空期=整个 rebuild）→ build 前置，真空期压到 9 秒；⑤ `stdio:ignore` 升级失败零日志 → 重定向 `upgrade.log`；⑥ **DATA_DIR 漂移**（ui-upgrade 继承模块级 DATA_DIR 当顶层 → status 写 `data/admin/admin/` 双层、`start -d` 误报「无密码」停机后起不来）→ startUpgrade 传顶层 DATA_DIR。终审另修 timer 卸载泄漏 / stale lock / CSS / ls-remote 空串守卫 + 清死代码。
+- **遗留 minor**：source 模式 `last_upgrade.from/to_version` 显示 `null`（readVersion 读 VERSION 文件，source 用 git）——改读 `git rev-parse --short HEAD` 即可，纯显示不影响功能。
 
 ## 2026-06-19 — Crabot 备份/迁移 Plan 2：导入（worktree `crabot-backup-import`，未合 main）
 
