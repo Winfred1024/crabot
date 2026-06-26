@@ -1,6 +1,8 @@
 import { api } from './api'
 
 export type UpgradeCapability = 'release' | 'source' | 'system'
+export type DeployMode = 'user' | 'system'
+export type InstallKind = 'source' | 'release'
 
 export interface UpgradeStatus {
   phase: 'upgrading' | 'restarting' | 'done' | 'failed'
@@ -16,6 +18,8 @@ export interface VersionState {
   latest_version: string | null
   upgrade_available: boolean
   upgrade_capability: UpgradeCapability
+  deploy_mode: DeployMode
+  install_kind: InstallKind
   source_blockers?: string[]
   last_checked: string | null
   checking: boolean

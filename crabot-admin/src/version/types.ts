@@ -1,4 +1,8 @@
 export type UpgradeCapability = 'release' | 'source' | 'system'
+/** 部署模式：个人（user）/ 团队（system，/etc/crabot/cluster.version 存在） */
+export type DeployMode = 'user' | 'system'
+/** 安装方式：源码（有 .git）/ release（预构建产物） */
+export type InstallKind = 'source' | 'release'
 
 export interface UpgradeStatus {
   phase: 'upgrading' | 'restarting' | 'done' | 'failed'
@@ -14,6 +18,8 @@ export interface VersionState {
   latest_version: string | null
   upgrade_available: boolean
   upgrade_capability: UpgradeCapability
+  deploy_mode: DeployMode
+  install_kind: InstallKind
   source_blockers?: string[]
   last_checked: string | null
   checking: boolean

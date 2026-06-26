@@ -22,9 +22,6 @@ export const VersionUpgradeCard: React.FC = () => {
     if (timerRef.current) clearInterval(timerRef.current)
   }, [])
 
-  // system mode 不渲染整张卡片
-  if (state && state.upgrade_capability === 'system') return null
-
   const handleCheck = () => {
     setChecking(true)
     refresh().finally(() => setChecking(false))
@@ -81,14 +78,20 @@ export const VersionUpgradeCard: React.FC = () => {
   }
 
   const blockers = state.source_blockers ?? []
+  const isSystem = state.deploy_mode === 'system'
   const inProgress = phase === 'starting' || phase === 'upgrading' || phase === 'restarting'
   const canUpgrade =
+    !isSystem &&
     state.upgrade_available &&
-    !(state.upgrade_capability === 'source' && blockers.length > 0)
+    !(state.install_kind === 'source' && blockers.length > 0)
 
   return (
     <Card title="版本与升级">
       <div className="version-card">
+        <div className="version-card__badges">
+          <span className="version-card__badge">{state.deploy_mode === 'user' ? '个人模式' : '团队模式'}</span>
+          <span className="version-card__badge">{state.install_kind === 'source' ? '源码安装' : 'release 安装'}</span>
+        </div>
         <div className="version-card__row">
           <span className="version-card__label">当前版本</span>
           <span className="version-card__value">{state.current_version ?? '未知'}</span>
@@ -107,7 +110,7 @@ export const VersionUpgradeCard: React.FC = () => {
         )}
         {state.error && <div className="version-card__error">检查更新失败：{state.error}</div>}
 
-        {state.upgrade_capability === 'source' && blockers.length > 0 && (
+        {!isSystem && state.install_kind === 'source' && blockers.length > 0 && (
           <div className="version-card__warning">
             无法一键升级：{blockers.join('；')}。请在终端 <code>git pull && ./dev.sh</code>。
           </div>
@@ -126,7 +129,7 @@ export const VersionUpgradeCard: React.FC = () => {
           <div className="version-card__error">升级超时未恢复，请手动检查 <code>crabot status</code>。</div>
         )}
 
-        {state.upgrade_capability === 'source' && state.upgrade_available && (state.source_blockers?.length ?? 0) === 0 && (
+        {!isSystem && state.install_kind === 'source' && state.upgrade_available && (state.source_blockers?.length ?? 0) === 0 && (
           <div className="version-card__hint">升级将通过 git pull 拉取最新代码并重新构建。</div>
         )}
 
@@ -134,13 +137,19 @@ export const VersionUpgradeCard: React.FC = () => {
           <Button variant="secondary" onClick={handleCheck} disabled={checking || inProgress}>
             {checking ? '检查中…' : '检查更新'}
           </Button>
-          <Button
-            variant="primary"
-            onClick={handleUpgrade}
-            disabled={!canUpgrade || inProgress}
-          >
-            {inProgress ? '升级中…' : '升级到最新版本'}
-          </Button>
+          {isSystem ? (
+            <span className="version-card__sysnote">
+              团队模式：请联系管理员在终端运行 <code>sudo crabot upgrade</code>
+            </span>
+          ) : (
+            <Button
+              variant="primary"
+              onClick={handleUpgrade}
+              disabled={!canUpgrade || inProgress}
+            >
+              {inProgress ? '升级中…' : '升级到最新版本'}
+            </Button>
+          )}
         </div>
       </div>
     </Card>

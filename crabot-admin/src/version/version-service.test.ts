@@ -11,13 +11,25 @@ function tmpHome(withGit = false): string {
 }
 
 describe('VersionService capability', () => {
-  it('system mode 优先（etcDir 有 cluster.version）', async () => {
+  it('system mode 优先（capability=system，但仍独立标注 deploy_mode/install_kind）', async () => {
     const etc = mkdtempSync(join(tmpdir(), 'crabot-etc-'))
     writeFileSync(join(etc, 'cluster.version'), '1\n')
-    const home = tmpHome(true)
-    const svc = new VersionService({ crabotHome: home, dataDir: home, etcDir: etc })
+    const home = tmpHome(true) // 有 .git → install_kind=source
+    const svc = new VersionService({
+      crabotHome: home, dataDir: home, etcDir: etc,
+      gitRunner: (args) => {
+        if (args[0] === 'ls-remote') return 'abc1234\trefs/heads/main'
+        if (args[0] === 'cat-file') return '' // 本地已含 → 无更新
+        if (args[0] === 'status') return ''
+        if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return 'main'
+        if (args[0] === 'rev-parse' && args[1] === '--short') return 'abc1234'
+        return ''
+      },
+    })
     const s = await svc.check()
     expect(s.upgrade_capability).toBe('system')
+    expect(s.deploy_mode).toBe('system')
+    expect(s.install_kind).toBe('source')
     expect(s.upgrade_available).toBe(false)
     rmSync(etc, { recursive: true, force: true })
     rmSync(home, { recursive: true, force: true })
@@ -34,6 +46,8 @@ describe('VersionService capability', () => {
     })
     const s = await svc.check()
     expect(s.upgrade_capability).toBe('release')
+    expect(s.deploy_mode).toBe('user')
+    expect(s.install_kind).toBe('release')
     expect(s.current_version).toBe('v1.0.0')
     expect(s.latest_version).toBe('v1.1.0')
     expect(s.upgrade_available).toBe(true)
@@ -74,6 +88,8 @@ describe('VersionService source', () => {
     })
     const s = await svc.check()
     expect(s.upgrade_capability).toBe('source')
+    expect(s.deploy_mode).toBe('user')
+    expect(s.install_kind).toBe('source')
     expect(s.upgrade_available).toBe(true)
     expect(s.source_blockers ?? []).toEqual([])
     expect(s.latest_version).toBe('abc123')

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { UpgradeCapability, VersionState } from './types.js'
+import type { UpgradeCapability, VersionState, DeployMode, InstallKind } from './types.js'
 import { defaultGitRunner } from './git.js'
 import { readUpgradeStatus } from './upgrade-runner.js'
 
@@ -45,9 +45,16 @@ export class VersionService {
     }
   }
 
-  private resolveCapability(): UpgradeCapability {
-    if (existsSync(join(this.deps.etcDir, 'cluster.version'))) return 'system'
+  private resolveDeployMode(): DeployMode {
+    return existsSync(join(this.deps.etcDir, 'cluster.version')) ? 'system' : 'user'
+  }
+
+  private resolveInstallKind(): InstallKind {
     return existsSync(join(this.deps.crabotHome, '.git')) ? 'source' : 'release'
+  }
+
+  private resolveCapability(): UpgradeCapability {
+    return this.resolveDeployMode() === 'system' ? 'system' : this.resolveInstallKind()
   }
 
   private readVersionFile(): string | null {
@@ -59,11 +66,13 @@ export class VersionService {
 
   /** 同步读缓存；TTL 过期且非进行中时触发后台刷新 */
   getState(): VersionState {
-    const capability = this.cache?.upgrade_capability ?? this.resolveCapability()
     if (!this.cache) {
       return {
         current_version: null, latest_version: null, upgrade_available: false,
-        upgrade_capability: capability, last_checked: null, checking: this.checking,
+        upgrade_capability: this.resolveCapability(),
+        deploy_mode: this.resolveDeployMode(),
+        install_kind: this.resolveInstallKind(),
+        last_checked: null, checking: this.checking,
         last_upgrade: readUpgradeStatus(this.deps.dataDir),
       }
     }
@@ -77,20 +86,20 @@ export class VersionService {
   async check(): Promise<VersionState> {
     if (this.checking) return this.getState()
     this.checking = true
-    const capability = this.resolveCapability()
+    const deployMode = this.resolveDeployMode()
+    const installKind = this.resolveInstallKind()
+    const capability: UpgradeCapability = deployMode === 'system' ? 'system' : installKind
     const base: VersionState = {
       current_version: null, latest_version: null, upgrade_available: false,
-      upgrade_capability: capability, last_checked: null, checking: true, error: null,
+      upgrade_capability: capability, deploy_mode: deployMode, install_kind: installKind,
+      last_checked: null, checking: true, error: null,
       last_upgrade: readUpgradeStatus(this.deps.dataDir),
     }
     try {
-      if (capability === 'system') {
-        this.cache = { ...base, checking: false, last_checked: new Date(this.deps.now()).toISOString() }
-      } else if (capability === 'release') {
-        this.cache = await this.checkRelease(base)
-      } else {
-        this.cache = this.checkSource(base)
-      }
+      // 不论 user/system 都按安装方式查版本（system mode 卡片只读展示，升级按钮在前端禁掉）
+      this.cache = installKind === 'release'
+        ? await this.checkRelease(base)
+        : this.checkSource(base)
       this.lastCheckedMs = this.deps.now()
       return this.cache
     } catch (err) {
