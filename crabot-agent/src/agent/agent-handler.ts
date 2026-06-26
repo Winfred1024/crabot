@@ -74,6 +74,7 @@ import type { SubAgentTraceConfig } from '../engine/sub-agent.js'
 import { createDelegateTaskTool } from './delegate-task-tool.js'
 import type { RunSubAgentFn, RunSubAgentInput } from './delegate-task-tool.js'
 import { createSubagentCoordinatorTools } from './subagent-coordinator-tools.js'
+import { createRestartInstanceTool } from './restart-instance-tool.js'
 import { buildSubAgentFailureOutput } from './subagent-error-classifier.js'
 import { filterToolsForSubAgent } from './subagent-tool-filter.js'
 import { assembleSubAgentPrompt } from './subagent-prompt-assembler.js'
@@ -93,7 +94,7 @@ import { resolveSenderIdentity } from '../utils/sender-identity.js'
 import { prefetchQuotedMessages } from './quoted-message-prefetcher.js'
 import { formatNow, formatChannelMessageTime, resolveTimezone, formatRuntimeMs } from '../utils/time.js'
 import { renderActiveTasksSection } from './active-tasks-section.js'
-import { getAgentDataDir, getAdminInternalTokenPath, getWorkspaceDir } from '../core/data-paths.js'
+import { getAgentDataDir, getAdminDataDir, getAdminInternalTokenPath, getWorkspaceDir } from '../core/data-paths.js'
 import { llmUsageToTrace } from '../core/trace-usage.js'
 import { TodoStore } from './worker-todo-store.js'
 import { createTodoTool } from './worker-todo-tool.js'
@@ -1246,6 +1247,10 @@ export class AgentHandler {
             taskId: task.task_id,
             bgRegistry: this.bgRegistry,
             killBgEntity: (entity_id) => this.killBgEntity(entity_id),
+          }))
+          tools.push(createRestartInstanceTool({
+            crabotHome: process.env.CRABOT_HOME ?? path.resolve(__dirname, '../..'),
+            adminDataDir: getAdminDataDir(),
           }))
         }
 
