@@ -39,6 +39,8 @@ export interface BgAgentRegistryRecord extends BgEntityBase {
   readonly task_description: string
   readonly messages_log_file: string
   result_file: string | null
+  /** 失败原因（status='failed' 时填）。供 get_subagent_output 把失败原因回传给父 agent。 */
+  error?: string | null
 }
 
 export type BgEntityRecord = BgShellRegistryRecord | BgAgentRegistryRecord

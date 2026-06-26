@@ -15,6 +15,7 @@ import * as path from 'node:path'
 import type { LLMAdapter } from '../llm-adapter.js'
 import type { ToolDefinition, ToolPermissionConfig } from '../types.js'
 import { runEngine } from '../query-loop.js'
+import { getErrorMessage } from '../tools/utils.js'
 import { getBgEntitiesLogsDir } from '../../core/data-paths.js'
 import type { BgEntityRegistry } from './registry.js'
 import type { BgEntityOwner, BgAgentRegistryRecord } from './types.js'
@@ -90,6 +91,8 @@ export interface SpawnPersistentAgentOpts {
     runtime_ms: number
     spawned_at: string
     result_file: string | null
+    /** 失败原因（status='failed' 时填），供 caller 把失败原因回传给父 agent / 通知人类。 */
+    error?: string
     outcome?: 'completed' | 'failed' | 'max_turns' | 'aborted'
     exitToolCall?: { readonly name: string; readonly input: Record<string, unknown> }
     finalText?: string
@@ -202,6 +205,8 @@ export async function spawnPersistentAgent(opts: SpawnPersistentAgentOpts): Prom
         result.outcome === 'completed' ? ('completed' as const) : ('failed' as const)
       const exitCode = result.outcome === 'completed' ? 0 : 1
       const runtimeMs = Date.now() - agentSpawnedAtMs
+      // 失败原因：一路透传给 trace / registry / onExit，让父 agent 能拿到失败原因。
+      const failureError = endedStatus === 'failed' && result.error ? result.error : undefined
       if (opts.traceContext) {
         emitInstantSpan(opts.traceContext, 'bg_entity_exit', {
           entity_id,
@@ -214,9 +219,7 @@ export async function spawnPersistentAgent(opts: SpawnPersistentAgentOpts): Prom
       if (subTrace && subTraceStore) {
         subTraceStore.endTrace(subTrace.trace_id, endedStatus, {
           summary: (result.finalText ?? '').slice(0, 200),
-          ...(endedStatus === 'failed' && result.error
-            ? { error: result.error.slice(0, 200) }
-            : {}),
+          ...(failureError ? { error: failureError.slice(0, 200) } : {}),
         })
       }
       await opts.registry
@@ -225,6 +228,7 @@ export async function spawnPersistentAgent(opts: SpawnPersistentAgentOpts): Prom
           result_file: resultFile,
           exit_code: exitCode,
           ended_at: new Date().toISOString(),
+          ...(failureError ? { error: failureError } : {}),
         } as Partial<BgAgentRegistryRecord>)
         .catch(() => {})
       if (opts.onExit) {
@@ -237,6 +241,7 @@ export async function spawnPersistentAgent(opts: SpawnPersistentAgentOpts): Prom
             runtime_ms: runtimeMs,
             spawned_at: now,
             result_file: resultFile,
+            ...(failureError ? { error: failureError } : {}),
             outcome: result.outcome,
             ...(result.exitToolCall ? { exitToolCall: result.exitToolCall } : {}),
             finalText: result.finalText ?? '',
@@ -245,10 +250,11 @@ export async function spawnPersistentAgent(opts: SpawnPersistentAgentOpts): Prom
           console.error(`[bg-agent] onExit callback failed for ${entity_id}:`, err)
         }
       }
-    } catch {
+    } catch (err) {
       // Handles both abort and unexpected errors.
       // registry.update's status-guard prevents overwriting an already-killed entry.
       const runtimeMs = Date.now() - agentSpawnedAtMs
+      const errMsg = getErrorMessage(err) || 'sub-agent aborted or errored'
       if (opts.traceContext) {
         emitInstantSpan(opts.traceContext, 'bg_entity_exit', {
           entity_id,
@@ -260,8 +266,8 @@ export async function spawnPersistentAgent(opts: SpawnPersistentAgentOpts): Prom
       }
       if (subTrace && subTraceStore) {
         subTraceStore.endTrace(subTrace.trace_id, 'failed', {
-          summary: 'sub-agent aborted or errored',
-          error: 'sub-agent aborted or errored',
+          summary: errMsg.slice(0, 200),
+          error: errMsg.slice(0, 200),
         })
       }
       await opts.registry
@@ -269,6 +275,7 @@ export async function spawnPersistentAgent(opts: SpawnPersistentAgentOpts): Prom
           status: 'failed' as const,
           exit_code: 1,
           ended_at: new Date().toISOString(),
+          error: errMsg,
         } as Partial<BgAgentRegistryRecord>)
         .catch(() => {})
       if (opts.onExit) {
@@ -281,6 +288,7 @@ export async function spawnPersistentAgent(opts: SpawnPersistentAgentOpts): Prom
             runtime_ms: runtimeMs,
             spawned_at: now,
             result_file: null,
+            error: errMsg,
           })
         } catch (err) {
           console.error(`[bg-agent] onExit callback failed for ${entity_id}:`, err)

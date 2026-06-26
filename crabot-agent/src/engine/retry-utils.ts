@@ -100,6 +100,14 @@ function extractBodyCode(body: string): string | null {
       }
       const topCode = (obj as { code?: unknown }).code
       if (typeof topCode === 'string') return topCode
+      // OpenAI 风格永久错误（如 invalid_request_error）只在 error.type 给判别符，不带 code。
+      // 黑名单里就列了 invalid_request_error，必须把 type 也纳入识别——否则 HTTP 400
+      // invalid_request_error 会落到状态码默认重试，白烧整轮时间预算（见 deepseek 模型打到
+      // Codex 端点的 400 案例）。优先级最低：code 命中时不会走到这里。
+      if (err && typeof err === 'object') {
+        const nestedType = (err as { type?: unknown }).type
+        if (typeof nestedType === 'string') return nestedType
+      }
     }
   } catch { /* not JSON */ }
   return null

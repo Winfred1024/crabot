@@ -344,6 +344,21 @@ export function adapterFromSdkEnv(sdkEnv: SdkEnvConfig) {
 }
 
 /**
+ * 按 subagent / auditor 解析出的 model（LLMConnectionInfo）自建 adapter。
+ * 同步(runSubAgentDirect)、异步(runSubAgentAsync)、goal_audit 三条派发路径共用，
+ * 确保子 agent 始终用自己 provider 的 endpoint/apikey，绝不复用父 agent 的 adapter
+ * （否则会把子模型名发到父端点，如 deepseek 模型打到 Codex 镜像 → HTTP 400）。
+ */
+function adapterFromModel(model: SubAgentConfig['model']) {
+  return createAdapter({
+    endpoint: model.endpoint,
+    apikey: model.apikey,
+    format: model.format,
+    ...(model.account_id ? { accountId: model.account_id } : {}),
+  })
+}
+
+/**
  * 给 skills 列表算一个身份 hash 用于热加载防抖去重。
  *
  * 新协议下 admin 传 `{name, skill_dir}` 引用、不传 content；agent 直接 fs.read skill_dir，
@@ -1165,7 +1180,6 @@ export class AgentHandler {
                 session_id: context.task_origin?.session_id,
                 channel_id: context.task_origin?.channel_id,
               },
-              adapter,
             },
           })
           // wrap：异步路径返回 `{agent_id, status:'launched'}` → 抓出来加入 taskState.activeAsyncSubagentIds，
@@ -2896,12 +2910,7 @@ export class AgentHandler {
     })
 
     // 3. build adapter from subagent's resolved model
-    const subAdapter = createAdapter({
-      endpoint: subagent.model.endpoint,
-      apikey: subagent.model.apikey,
-      format: subagent.model.format,
-      ...(subagent.model.account_id ? { accountId: subagent.model.account_id } : {}),
-    })
+    const subAdapter = adapterFromModel(subagent.model)
 
     // 4. resolve hook registry based on hook_preset
     const hookRegistry = subagent.hook_preset === 'coding_expert'
@@ -3291,12 +3300,7 @@ export class AgentHandler {
         if (!auditor) {
           throw new Error('builtin-goal-auditor subagent not configured')
         }
-        const auditAdapter = createAdapter({
-          endpoint: auditor.model.endpoint,
-          apikey: auditor.model.apikey,
-          format: auditor.model.format,
-          ...(auditor.model.account_id ? { accountId: auditor.model.account_id } : {}),
-        })
+        const auditAdapter = adapterFromModel(auditor.model)
         const auditPermission = opts.getAuditPermissionConfig()
         return {
           goal,
@@ -3335,10 +3339,9 @@ export class AgentHandler {
     readonly traceConfig?: SubAgentTraceConfig
     /** 是否允许异步派发（master + 私聊 session）。false 时总走同步。 */
     readonly asyncEnabled?: boolean
-    /** 异步派发时的 subagent 上下文（owner 信息、adapter） */
+    /** 异步派发时的 subagent 上下文（owner 信息） */
     readonly asyncCtx?: {
       readonly owner: import('../engine/bg-entities/types.js').BgEntityOwner
-      readonly adapter: import('../engine/llm-adapter.js').LLMAdapter
     }
   }): RunSubAgentFn {
     return async (subagent, input, ctx) => {
@@ -3361,7 +3364,6 @@ export class AgentHandler {
     input: RunSubAgentInput & { sync?: boolean },
     asyncCtx: {
       readonly owner: import('../engine/bg-entities/types.js').BgEntityOwner
-      readonly adapter: import('../engine/llm-adapter.js').LLMAdapter
     },
     deps: {
       readonly parentTools: ReadonlyArray<import('../engine/types.js').ToolDefinition>
@@ -3374,7 +3376,8 @@ export class AgentHandler {
     const { spawnPersistentAgent } = await import('../engine/bg-entities/bg-agent.js')
 
     const subModel = subagent.model
-    const subAdapter = asyncCtx.adapter
+    // 异步 subagent 必须按自己的 model 自建 adapter，不复用父 adapter（同步路径一致）。
+    const subAdapter = adapterFromModel(subModel)
 
     // 子 agent 工具集：从父工具里过滤（同 runSubAgentDirect 路径）
     const subTools = filterToolsForSubAgent(
@@ -3422,13 +3425,18 @@ export class AgentHandler {
         : {}),
       onExit: (info) => {
         if (!deps.humanQueue) return
+        const failed = info.status === 'failed'
         const notification = [
           '<sub_agent_notification>',
           `<agent_id>${info.entity_id}</agent_id>`,
           `<description>${info.task_description.slice(0, 200)}</description>`,
           `<status>${info.status}</status>`,
           `<runtime_ms>${info.runtime_ms}</runtime_ms>`,
+          failed && info.error ? `<error>${info.error.slice(0, 500)}</error>` : '',
           info.result_file ? `<output_file>${info.result_file}</output_file>` : '',
+          // 失败时由你（main）决定如何处理：若是接口/网络/额度类失败（HTTP 4xx/5xx、超时等），
+          // 通常应通知人类；若是任务逻辑问题，可自行续办或调整方案。
+          failed ? '<guidance>子任务失败，请判断失败性质并决定是否通知人类（接口类失败通常应通知）。</guidance>' : '',
           '</sub_agent_notification>',
         ].filter(Boolean).join('\n')
         deps.humanQueue.push(notification)

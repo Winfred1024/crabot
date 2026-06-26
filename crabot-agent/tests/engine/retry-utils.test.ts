@@ -165,6 +165,23 @@ describe('streamWithRetry', () => {
     expect(isRetryableError(err)).toBe(false)
   })
 
+  it('treats OpenAI-style {error:{type:invalid_request_error}} (no code) as non-retryable', async () => {
+    // 真实形态：mirror/Codex 端点拒绝非兼容模型时返回 error.type 而非 error.code。
+    // 旧实现只读 code → 漏判 → HTTP 400 被当可重试，白烧整轮时间预算。
+    const err = new HttpResponseError(
+      400,
+      JSON.stringify({
+        error: {
+          message: "The 'deepseek-v4-flash' model is not supported when using Codex with a ChatGPT account.",
+          type: 'invalid_request_error',
+        },
+      }),
+      'openai-adapter',
+    )
+    expect(err.bodyCode).toBe('invalid_request_error')
+    expect(isRetryableError(err)).toBe(false)
+  })
+
   it('treats DashScope data_inspection_failed (content moderation) as non-retryable', async () => {
     // 阿里云百炼把内容审核拦截塞进 HTTP 400 + `{error:{code:"data_inspection_failed"}}`。
     // 重试 10 次会原样重发被拦的输入 → 必须 fail-fast。
