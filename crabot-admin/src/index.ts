@@ -360,6 +360,14 @@ function normalizeSceneProfileTextField(
   return trimmed || fallback
 }
 
+/**
+ * Admin 运行代码根（升级目标 = 当前运行的代码，而非 data 目录的家）。
+ * 优先用 cli.mjs 设的 CRABOT_HOME；dev.sh 直起 MM 不经 cli.mjs，回退到本模块编译产物位置
+ * （crabot-admin/dist → 上两级 = 仓库根）。不从 data_dir 反推——代码与 data 可能不同根
+ * （全局 crabot start 用 ~/.crabot/data 但代码在 repo），反推会把 data 的家误当代码的家。
+ */
+const CRABOT_HOME = process.env.CRABOT_HOME ?? path.resolve(__dirname, '../..')
+
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json' })
   res.end(JSON.stringify(body))
@@ -520,7 +528,7 @@ export class AdminModule extends ModuleBase {
     this.onboardingManager = new OnboardingManager()
 
     this.versionService = new VersionService({
-      crabotHome: path.resolve(this.adminConfig.data_dir, '../..'),
+      crabotHome: CRABOT_HOME,
       dataDir: this.adminConfig.data_dir,
       proxyUrlProvider: () => proxyManager.getProxyUrl(),
     })
@@ -6409,8 +6417,7 @@ export class AdminModule extends ModuleBase {
       sendJson(res, 409, { error: '升级已在进行中' })
       return
     }
-    const crabotHome = path.resolve(this.adminConfig.data_dir, '../..')
-    sendJson(res, 200, startUpgrade(crabotHome, this.adminConfig.data_dir, state.current_version))
+    sendJson(res, 200, startUpgrade(CRABOT_HOME, this.adminConfig.data_dir, state.current_version))
   }
 
   private async handleGetProxyConfigApi(_req: IncomingMessage, res: ServerResponse): Promise<void> {
