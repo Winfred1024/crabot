@@ -19,7 +19,7 @@ describe('VersionService capability', () => {
       crabotHome: home, dataDir: home, etcDir: etc,
       gitRunner: (args) => {
         if (args[0] === 'ls-remote') return 'abc1234\trefs/heads/main'
-        if (args[0] === 'cat-file') return '' // 本地已含 → 无更新
+        if (args[0] === 'merge-base') return '' // 本地已含 → 无更新
         if (args[0] === 'status') return ''
         if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return 'main'
         if (args[0] === 'rev-parse' && args[1] === '--short') return 'abc1234'
@@ -80,7 +80,7 @@ describe('VersionService source', () => {
   it('远端 main 领先且工作区干净 → 有更新无 blockers', async () => {
     const svc = makeSourceSvc((args) => {
       if (args[0] === 'ls-remote') return 'abc123\trefs/heads/main'
-      if (args[0] === 'cat-file') throw new Error('not found') // 本地不含该 commit
+      if (args[0] === 'merge-base') throw new Error('not found') // 本地不含该 commit
       if (args[0] === 'status') return ''
       if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return 'main'
       if (args[0] === 'rev-parse' && args[1] === '--short') return 'def456'
@@ -99,7 +99,7 @@ describe('VersionService source', () => {
   it('工作区脏 + 非 main 分支 → 有更新但两条 blockers', async () => {
     const svc = makeSourceSvc((args) => {
       if (args[0] === 'ls-remote') return 'abc123\trefs/heads/main'
-      if (args[0] === 'cat-file') throw new Error('not found')
+      if (args[0] === 'merge-base') throw new Error('not found')
       if (args[0] === 'status') return ' M crabot-admin/src/x.ts'
       if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return 'feature/y'
       if (args[0] === 'rev-parse' && args[1] === '--short') return 'def456'
@@ -114,7 +114,7 @@ describe('VersionService source', () => {
   it('本地已含远端 commit → 无更新', async () => {
     const svc = makeSourceSvc((args) => {
       if (args[0] === 'ls-remote') return 'abc123\trefs/heads/main'
-      if (args[0] === 'cat-file') return '' // 不抛 = 本地已含
+      if (args[0] === 'merge-base') return '' // 不抛 = 本地已含
       if (args[0] === 'status') return ''
       if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return 'main'
       if (args[0] === 'rev-parse' && args[1] === '--short') return 'abc123'

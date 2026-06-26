@@ -131,9 +131,13 @@ export class VersionService {
     const remoteSha = remoteLine.split(/\s+/)[0] ?? ''
     if (!remoteSha) throw new Error('ls-remote: origin 上找不到 main 分支')
 
+    // 本地是否已包含远端 main 这个 commit。用 merge-base --is-ancestor 判断「remoteSha 是否是
+    // HEAD 的祖先」（真正的『已合并』语义），而非 cat-file -e——后者只看对象是否存在于本地库，
+    // 一旦 fetch 过远端对象（手动 / IDE / 其他工具）就会误判已含，导致明明落后却显示『已是最新』。
+    // merge-base 在本地缺该对象时也会非零退出 → 落到 catch → 判定未含，行为正确。
     let localHasCommit = true
     try {
-      git(['cat-file', '-e', `${remoteSha}^{commit}`], { cwd: home })
+      git(['merge-base', '--is-ancestor', remoteSha, 'HEAD'], { cwd: home })
     } catch {
       localHasCommit = false
     }
