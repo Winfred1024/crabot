@@ -84,6 +84,11 @@ function createGetSubagentOutputTool(deps: SubagentCoordinatorDeps): ToolDefinit
       if (rec.type !== 'agent') return { output: `${agentId} is not an agent`, isError: true }
 
       const agent = rec as import('../engine/bg-entities/types.js').BgAgentRegistryRecord
+      // 失败的 subagent 通常没有 result_file（或为空）：把失败原因回传给父 agent，
+      // 让它决定如何处理（接口类失败通常应通知人类），而不是吞成 "(empty output)"。
+      if (agent.status === 'failed' && agent.error) {
+        return { output: `Agent ${agentId} failed: ${agent.error}`, isError: true }
+      }
       if (!agent.result_file) {
         return {
           output: `Agent ${agentId} status=${agent.status}; result file not yet available`,
