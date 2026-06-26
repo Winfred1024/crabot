@@ -58,7 +58,7 @@ export function startUpgrade(crabotHome: string, dataDir: string, fromVersion?: 
     cwd: crabotHome,
     detached: true,
     stdio: ['ignore', logFd, logFd],
-    // DATA_DIR 已全局统一为顶层（admin 进程的 process.env.DATA_DIR 即顶层），
+    // DATA_DIR 已全局统一为顶层（admin 进程继承到的 DATA_DIR 即顶层），
     // ui-upgrade 直接继承即正确，无需覆盖。
     env: process.env,
   })
