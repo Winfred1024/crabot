@@ -1,6 +1,18 @@
 # Crabot 项目进度
 
-> 最后更新：2026-06-19 — Crabot 备份导入 Plan 2 实现完成（worktree `crabot-backup-import`，未合 main）
+> 最后更新：2026-06-26 — Admin UI 升级提醒与一键升级（已合 main，端到端待验证）
+
+## 2026-06-26 — Admin UI 升级提醒与一键升级（已合 main，本地未推送）
+
+设计/计划：`crabot-docs/superpowers/specs/2026-06-25-admin-ui-upgrade-design.md` + `crabot-docs/superpowers/plans/2026-06-25-admin-ui-upgrade.md`。
+
+- **三态安装形态适配**：`release`（无 `.git`，比 GitHub latest tag）/ `source`（有 `.git`，比远端 main 是否领先本地 commit，`git ls-remote` + `cat-file -e`，不 fetch）/ `system`（`/etc/crabot/cluster.version` 存在 → 完全不显示该功能，由管理员终端 `sudo crabot upgrade`）。source 仅工作区干净且在 main 分支才启用一键升级。
+- **后端**（`crabot-admin/src/version/`）：`VersionService`（capability 判定 + 6h TTL 缓存 + release/source 检查，HTTP 走 admin 全局代理、git 子进程注入 proxy env）；`UpgradeRunner`（`canUpgrade` 受理判定 + `startUpgrade` spawn detached + `upgrade-status.json` 读写 + 10min stale lock 守卫）；3 接口 `GET /api/system/version`、`POST /api/system/version/check`、`POST /api/system/upgrade`。
+- **detached 升级脚本** `scripts/ui-upgrade.mjs`：脱离 admin 进程组后串行 `stop → (source: git pull --ff-only) → upgrade -y → start -d`，全程状态落盘。`crabot stop` 的 pkill pattern 不匹配本脚本故不会被误杀。
+- **前端**：`services/version.ts` + `hooks/useSystemVersion.ts`（module-level 共享缓存，徽标与卡片共用一次请求）+ Sidebar `/settings` 红点 + `VersionUpgradeCard`（升级中轮询状态机 idle/starting/upgrading/restarting/success/failed/timeout，失联=重启中、5min 超时兜底）。
+- **前置根治**：memory 启动 `uv run`/`uv sync` 加 `--frozen`（`crabot-core/src/main.ts`、`crabot-memory/start.sh`、`dev.sh`），禁止启动静默重写 `uv.lock`——否则 source 模式「工作区干净」判定被 uv.lock 漂移永久打挂。
+- **质量**：每 task TDD + 逐个验证 + fresh-eyes 终审 APPROVE（修了 timer 卸载泄漏 / stale lock / CSS / ls-remote 空串守卫 / source 升级提示）；自审又揪出**升级启动竞态**（spawn 前不写 status → 前端轮询读到上次残留 done 误判成功 + 快速双击并发 spawn）已修（`startUpgrade` spawn 前同步落 upgrading），并清理死代码（`targetVersion` ref / `setCache` 返回）。后端 version 20 测试 + 前端 6 测试 + admin 932 / web 250 全量回归全绿、两端 build 干净。
+- **待办**：**Task 11 端到端验证未做**——最高风险的 detached 自我重启真实链路（需起 `dev.sh`，与 live 实例抢端口）仅逻辑审查、无实跑背书；release 链路无法在 dev 源码仓库实测（dev 仓库恒为 source）。`start -d` 30s 健康检查超时会误报 failed（已知设计权衡）。
 
 ## 2026-06-19 — Crabot 备份/迁移 Plan 2：导入（worktree `crabot-backup-import`，未合 main）
 
