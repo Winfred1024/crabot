@@ -379,6 +379,23 @@ export class TransientShellRegistry {
     }
   }
 
+  /**
+   * 读取一个已终止 shell 的最终完整输出（ring buffer 全量）并把它从 Map 移除——
+   * 前台宽限期快路径专用：命令在宽限期内退出、已内联返回，读完即清，不让这种
+   * 「从未要求后台」的瞬时命令以 completed 态滞留在 ListEntities。
+   * 封装 ringBuffer / totalOutputChars 的字段访问，调用方不必直接读内部状态。
+   * 返回 undefined 表示 entity 不存在。仅应在 shell 已终止后调用。
+   */
+  takeFinalOutput(entity_id: string): { output: string; dropped: boolean } | undefined {
+    const state = this.shells.get(entity_id)
+    if (!state) return undefined
+    this.shells.delete(entity_id)
+    return {
+      output: state.ringBuffer,
+      dropped: state.totalOutputChars > state.ringBuffer.length,
+    }
+  }
+
   /** entity 数量（用于 debug / metrics） */
   size(): number {
     return this.shells.size

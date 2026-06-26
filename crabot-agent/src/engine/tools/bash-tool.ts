@@ -13,24 +13,15 @@ import { resolveBashPath, BASH_NOT_FOUND_MESSAGE } from '../../utils/resolve-bas
 
 const MAX_OUTPUT_LENGTH = 100000
 const DEFAULT_TIMEOUT_MS = 120000
+/** 无 bgCtx（legacy / subagent 未接 bg）时退回旧同步前台执行的 timeout 上限。 */
 export const MAX_FOREGROUND_TIMEOUT_MS = 600_000
-/**
- * 显式 timeout 超过此阈值时，工具层自动把同步调用转为 background 模式，
- * 避免 agent loop 被堵几十秒。与 prompt-manager.ts 「长任务的处理」段
- * "≥1 分钟必须 run_in_background=true" 的语义边界对齐。
- *
- * 判定条件刻意只覆盖**显式给出 timeout > 60s 的同步调用**——LLM 不传 timeout
- * 时不预先转换（不破坏短命令体验），让默认 120s 兜底。
- */
-export const AUTO_BG_TIMEOUT_THRESHOLD_MS = 60_000
 
 /**
- * 自动转 bg 后建议给 LLM 的 Output(block=true, timeout_ms=...) 上限。
- * 防止 LLM 给 timeout=600000+ 的同步 Bash 被转 bg 后，下一步直接用同样大的
- * timeout_ms 调 Output(block=true)——那等于换种方式同步堵 agent loop。
- * 120s 是 prompt L351 示例值。
+ * 前台宽限期：默认路径（非 run_in_background）的命令先前台运行这么久。
+ * 期内退出 → 同步内联返回（等同普通同步调用）；超过仍在跑 → 转后台（命令不中断）+
+ * 引导 agent 用 wait_for_signal 挂起等待。取代旧的「显式 timeout>60s 直接转 bg」破坏性逻辑。
  */
-export const AUTO_BG_OUTPUT_BLOCK_CAP_MS = 120_000
+export const FOREGROUND_GRACE_PERIOD_MS = 10_000
 
 export interface BashBgContext {
   readonly registry: BgEntityRegistry
@@ -190,26 +181,135 @@ async function runBg(command: string, bgCtx: BashBgContext, cwd: string): Promis
   }
 }
 
+// exit 分支只需退出码 + 状态来格式化内联返回；完整 info 由 onExit（转后台时）转给 onShellExit。
+type GraceOutcome =
+  | { kind: 'exit'; exitCode: number; status: 'completed' | 'failed' | 'killed' }
+  | { kind: 'grace' }
+  | { kind: 'abort' }
+
+/**
+ * 默认前台执行：把命令 spawn 成 transient shell，前台宽限 FOREGROUND_GRACE_PERIOD_MS。
+ * - 宽限期内退出：读输出同步内联返回（等同一次普通同步调用），清理 shell。
+ * - 超过宽限期仍在跑：转入后台（命令**不中断**），返回 entity_id + 引导 wait_for_signal。
+ *   届时 shell 退出会经 onShellExit push 到本 task humanQueue，唤醒挂起的 worker。
+ * - 期间 abort：kill shell，返回 aborted。
+ *
+ * onExit 的 `backgrounded` 门控解决冗余通知：宽限期内退出（backgrounded=false）→ 不 push、
+ * 内联返回；超期后退出（backgrounded=true）→ push 唤醒。grace 定时器**同步**置 backgrounded=true
+ * 后再 resolve race，杜绝「超期瞬间退出但漏 push 导致 worker 永久挂起」的竞态。
+ */
+async function runForegroundWithGrace(
+  command: string,
+  bgCtx: BashBgContext,
+  cwd: string,
+  signal: AbortSignal | undefined,
+  gracePeriodMs: number,
+): Promise<ToolCallResult> {
+  let backgrounded = false
+  // definite-assignment：executor 同步执行，resolveRace 在任何使用前必被赋值。
+  // 不用 `| null`，避免 TS 把它误窄化为 never；重复 resolve 由 Promise 幂等兜底（no-op）。
+  let resolveRace!: (o: GraceOutcome) => void
+  const racePromise = new Promise<GraceOutcome>((resolve) => {
+    resolveRace = resolve
+  })
+
+  const graceTimer = setTimeout(() => {
+    backgrounded = true
+    resolveRace({ kind: 'grace' })
+  }, gracePeriodMs)
+  graceTimer.unref?.()
+
+  const onAbort = () => resolveRace({ kind: 'abort' })
+  if (signal) {
+    // 已 abort 的 signal 不会再派发 'abort' 事件，故需主动判一次；否则挂监听器。
+    if (signal.aborted) {
+      resolveRace({ kind: 'abort' })
+    } else {
+      signal.addEventListener('abort', onAbort, { once: true })
+    }
+  }
+  const cleanup = () => {
+    clearTimeout(graceTimer)
+    if (signal) signal.removeEventListener('abort', onAbort)
+  }
+
+  let entityId: string
+  try {
+    entityId = bgCtx.transient.spawn({
+      command,
+      owner: bgCtx.owner,
+      spawned_by_task_id: bgCtx.taskId,
+      traceContext: bgCtx.traceContext,
+      cwd,
+      onExit: (info) => {
+        if (backgrounded) {
+          bgCtx.onShellExit?.({ ...info, mode: 'transient' })
+        } else {
+          resolveRace({ kind: 'exit', exitCode: info.exit_code, status: info.status })
+        }
+      },
+    })
+  } catch (err) {
+    cleanup()
+    return { output: err instanceof Error ? err.message : String(err), isError: true }
+  }
+
+  const outcome = await racePromise
+  cleanup()
+
+  if (outcome.kind === 'abort') {
+    bgCtx.transient.kill(entityId)
+    return { output: 'Command aborted', isError: true }
+  }
+
+  if (outcome.kind === 'grace') {
+    const sec = Math.round(gracePeriodMs / 1000)
+    return {
+      output:
+        `命令运行已超过 ${sec}s，转入后台继续运行（entity_id: ${entityId}）——命令未中断。\n` +
+        `若你还有别的事可做，现在就去做；若没有，调 wait_for_signal(reason="等 ${command.slice(0, 40)}") 挂起，` +
+        `该命令退出时会自动唤醒你，届时用 Output("${entityId}") 读取完整输出。`,
+      isError: false,
+    }
+  }
+
+  // outcome.kind === 'exit'：宽限期内完成，读最终输出（含移除）后内联同步返回。
+  const snap = bgCtx.transient.takeFinalOutput(entityId)
+  const body = truncateOutput((snap?.output ?? '').replace(/\n$/, ''))
+  const prefix = snap?.dropped ? '[earlier output dropped from ring buffer]\n' : ''
+  const suffix =
+    outcome.exitCode === 0 && outcome.status === 'completed'
+      ? ''
+      : `\n[command exited with code ${outcome.exitCode}]`
+  return { output: `${prefix}${body}${suffix}`.trim(), isError: suffix !== '' }
+}
+
 const SENSITIVE_CMD_RE = /channel-configs[/\\]/
 
 function containsSensitivePath(command: string): boolean {
   return SENSITIVE_CMD_RE.test(command)
 }
 
-export function createBashTool(getCwd: () => string, defaultTimeout?: number, bgCtx?: BashBgContext): ToolDefinition {
+export function createBashTool(
+  getCwd: () => string,
+  defaultTimeout?: number,
+  bgCtx?: BashBgContext,
+  /** 前台宽限期（ms）。默认 FOREGROUND_GRACE_PERIOD_MS；仅测试需要注入短值快速覆盖慢路径。 */
+  gracePeriodMs: number = FOREGROUND_GRACE_PERIOD_MS,
+): ToolDefinition {
   const effectiveDefault = defaultTimeout ?? DEFAULT_TIMEOUT_MS
   return defineTool({
     name: 'Bash',
     category: 'shell',
-    description: 'Executes a bash command in the working directory and returns its output.',
+    description:
+      'Executes a bash command and returns its output. ' +
+      `命令默认前台运行；若运行超过 ${Math.round(FOREGROUND_GRACE_PERIOD_MS / 1000)}s，自动转入后台并返回 entity_id（命令**继续运行、不中断**），` +
+      '随后你可继续做别的，或调 wait_for_signal 挂起等待其退出（退出会自动唤醒你）。' +
+      'run_in_background=true 则立即转后台返回 handle，不在前台等待。',
     inputSchema: {
       type: 'object',
       properties: {
         command: { type: 'string', description: 'The bash command to execute' },
-        timeout: {
-          type: 'number',
-          description: `Foreground timeout in ms (default ${effectiveDefault}, max ${MAX_FOREGROUND_TIMEOUT_MS}). 超过会被 cap。**显式给出 > ${AUTO_BG_TIMEOUT_THRESHOLD_MS}ms 的 timeout 会被工具层自动改写为 run_in_background=true**——预估超 1 分钟的命令请直接用 run_in_background=true，不要靠 timeout 撑长同步等。run_in_background=true 时此参数无效。`,
-        },
         run_in_background: {
           type: 'boolean',
           description:
@@ -244,46 +344,13 @@ export function createBashTool(getCwd: () => string, defaultTimeout?: number, bg
         return runBg(command, bgCtx, getCwd())
       }
 
-      // 自动转 bg：显式 timeout > 60s 且 bgCtx 可用 → 改写为 background 调用
-      // 这样 LLM 即使没遵守 prompt「≥1 分钟必须 bg」规则，工具层也会强制治理，
-      // 避免 agent loop 被堵到 timeout cap。tool_result 明确告知行为 + 拼真实
-      // shell_id + cap Output block 时间，让 LLM 不能变相同步等。
-      const explicitTimeout = typeof input.timeout === 'number' ? input.timeout : null
-      if (
-        explicitTimeout !== null &&
-        explicitTimeout > AUTO_BG_TIMEOUT_THRESHOLD_MS &&
-        bgCtx !== undefined
-      ) {
-        const bgResult = await runBg(command, bgCtx, getCwd())
-        if (bgResult.isError) {
-          return bgResult
-        }
-        // 从 bgResult.output 提取 shell_id（runBg 返回格式："Shell spawned (...): shell_xxx\n..."）
-        const idMatch = bgResult.output.match(/shell_[0-9a-f]+/)
-        const shellId = idMatch ? idMatch[0] : '<shell_id>'
-        // cap Output block 时间，防止 LLM 给 timeout=600000+ 时下一步 Output(block=true) 又堵 agent loop
-        const suggestedBlockMs = Math.min(explicitTimeout, AUTO_BG_OUTPUT_BLOCK_CAP_MS)
-        return {
-          output: [
-            `[auto-converted to background]`,
-            `你给的 timeout=${explicitTimeout}ms 超过 ${AUTO_BG_TIMEOUT_THRESHOLD_MS}ms 阈值——工具层把它改写成了 run_in_background=true。`,
-            `（下次预估超 1 分钟的命令请直接传 run_in_background=true）`,
-            ``,
-            `Shell spawned: ${shellId}`,
-            ``,
-            `下一步（三选一）：`,
-            `  • 想等结果 → Output("${shellId}", block=true, timeout_ms=${suggestedBlockMs})`,
-            `  • 想做别的 → 现在就去做，bg 完成时下次 task prompt 头部会有 <bg-notification> 通知`,
-            `  • 想终止 → Kill("${shellId}")`,
-            `命令已在后台启动，不要重发同一命令。`,
-          ].join('\n'),
-          isError: false,
-        }
+      // 默认路径：前台宽限期内完成则同步内联返回；超期仍在跑则转后台 + 引导 wait_for_signal。
+      if (bgCtx) {
+        return runForegroundWithGrace(command, bgCtx, getCwd(), context.abortSignal, gracePeriodMs)
       }
 
-      // 前台路径：cap timeout（静默，不报错）
-      const requested = explicitTimeout ?? effectiveDefault
-      const timeoutMs = Math.min(requested, MAX_FOREGROUND_TIMEOUT_MS)
+      // 无 bgCtx（legacy / subagent 未接 bg）：退回旧同步前台执行，默认 timeout 兜底。
+      const timeoutMs = Math.min(effectiveDefault, MAX_FOREGROUND_TIMEOUT_MS)
       return execCommand(command, getCwd(), timeoutMs, context.abortSignal)
     },
   })

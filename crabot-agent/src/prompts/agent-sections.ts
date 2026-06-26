@@ -502,7 +502,9 @@ list_groups / list_contacts 的返回是**分页结果**——看到 \`paginatio
 
 ### 长任务 / bg shell
 
-预估执行时间超过 1 分钟的命令，**必须**用 \`Bash(run_in_background=true)\`，拿 shell_id 后**优先靠 push notification**而不是主动 poll。同步 Bash 是给秒级命令的，不要用同步 Bash 等几十分钟——agent loop 被堵住期间无法响应任何其他事情。
+预估执行时间超过 1 分钟的命令，**优先**直接用 \`Bash(run_in_background=true)\`，拿 shell_id 后**靠 push notification / wait_for_signal**而不是主动 poll。
+
+**默认同步 Bash 有 10s 前台宽限期**：命令在 10s 内完成就正常同步返回；**超过 10s 仍在跑会自动转入后台（命令不中断）并返回 entity_id**——所以你不会再因为同步命令堵住 agent loop。收到「已转入后台」后：有别的事就去做，没有就调 \`wait_for_signal({reason:"等 <命令>"})\` 挂起，该命令退出会自动唤醒你，醒来用 \`Output(entity_id)\` 读完整输出。**不要对转后台的命令反复裸 poll \`Output\`。**
 
 **架构：bg entity 的 exit / 完成事件会自动 push 给你**——下一次任意 task 启动时，prompt 头部会出现 \`<bg-notification>\` 块告诉你"shell_xxx 已退出，状态 X，运行 Y"。你不需要主动确认 entity 是否结束。
 

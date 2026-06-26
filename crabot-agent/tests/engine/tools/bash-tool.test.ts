@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   createBashTool,
   MAX_FOREGROUND_TIMEOUT_MS,
-  AUTO_BG_TIMEOUT_THRESHOLD_MS,
+  FOREGROUND_GRACE_PERIOD_MS,
 } from '../../../src/engine/tools/bash-tool'
 import { BgEntityRegistry } from '../../../src/engine/bg-entities/registry'
 import { TransientShellRegistry } from '../../../src/engine/bg-entities/bg-shell'
@@ -21,14 +21,10 @@ describe('createBashTool', () => {
     expect(tool.name).toBe('Bash')
     expect(tool.isReadOnly).toBe(false)
     expect(tool.permissionLevel).toBe('dangerous')
-    expect(tool.inputSchema).toEqual({
+    expect(tool.inputSchema).toMatchObject({
       type: 'object',
       properties: {
         command: { type: 'string', description: 'The bash command to execute' },
-        timeout: {
-          type: 'number',
-          description: `Foreground timeout in ms (default 120000, max ${MAX_FOREGROUND_TIMEOUT_MS}). 超过会被 cap。**显式给出 > ${AUTO_BG_TIMEOUT_THRESHOLD_MS}ms 的 timeout 会被工具层自动改写为 run_in_background=true**——预估超 1 分钟的命令请直接用 run_in_background=true，不要靠 timeout 撑长同步等。run_in_background=true 时此参数无效。`,
-        },
         run_in_background: {
           type: 'boolean',
           description:
@@ -37,6 +33,8 @@ describe('createBashTool', () => {
       },
       required: ['command'],
     })
+    // timeout 参数已移除（契约自洽：要么 timeout 要么 auto-bg，不并存）
+    expect((tool.inputSchema as { properties: Record<string, unknown> }).properties.timeout).toBeUndefined()
   })
 
   it('executes simple command', async () => {
@@ -283,16 +281,6 @@ describe('createBashTool with bgCtx', () => {
     expect(result.output).toContain('20 个上限')
   })
 
-  it('timeout cap: large requested timeout is silently capped at MAX_FOREGROUND_TIMEOUT_MS', async () => {
-    // We cannot wait 10 minutes; instead spy on execFile to verify the capped value.
-    // Use a short command and verify it works without error — the cap doesn't reject.
-    const tool = createBashTool(() => cwd)
-    // Request a huge timeout — the cap silently clamps it
-    const result = await tool.call({ command: 'echo cap-test', timeout: 999_999_999 }, {})
-    expect(result.isError).toBe(false)
-    expect(result.output).toContain('cap-test')
-  })
-
   it('MAX_FOREGROUND_TIMEOUT_MS constant is 600_000', () => {
     expect(MAX_FOREGROUND_TIMEOUT_MS).toBe(600_000)
   })
@@ -315,143 +303,104 @@ describe('createBashTool with bgCtx', () => {
   })
 
   // ---------------------------------------------------------------------------
-  // Auto-conversion: explicit timeout > 60s + bgCtx 可用 → 强制转 bg
-  // 防止 LLM 用同步 Bash 长 timeout 堵 agent loop（spec L340 治理）
+  // 前台宽限期（grace period）：默认路径先前台跑 grace 期；期内完成则内联同步返回，
+  // 超期仍在跑则转后台 + 引导 wait_for_signal。取代旧的破坏性 auto-bg。
   // ---------------------------------------------------------------------------
 
-  it('AUTO_BG_TIMEOUT_THRESHOLD_MS constant is 60_000', () => {
-    expect(AUTO_BG_TIMEOUT_THRESHOLD_MS).toBe(60_000)
+  it('FOREGROUND_GRACE_PERIOD_MS constant is 10_000', () => {
+    expect(FOREGROUND_GRACE_PERIOD_MS).toBe(10_000)
   })
 
-  it('auto-bg: explicit timeout > 60s + bgCtx → 自动转 bg + tool_result 含说明', async () => {
-    const workerContext = makeMasterPrivateCtx()
-    const bgCtx: BashBgContext = {
+  // 等 bg 命令真正退出（onShellExit 触发）后再断言
+  const settle = () => new Promise((r) => setTimeout(r, 500))
+
+  function makeBgCtx(taskId: string): BashBgContext {
+    return {
       registry,
       transient,
-      workerContext,
+      workerContext: makeMasterPrivateCtx(),
       owner: { friend_id: 'friend-master' },
-      taskId: 'task-auto-bg',
+      taskId,
     }
-    const tool = createBashTool(() => cwd, undefined, bgCtx)
+  }
+
+  it('grace 快路径：命令在宽限期内完成 → 同步内联返回，无 [auto-converted]、不残留 entity', async () => {
+    const tool = createBashTool(() => cwd, undefined, makeBgCtx('task-grace-fast'))
+    const result = await tool.call({ command: 'echo grace-fast' }, {} as ToolCallContext)
+    expect(result.isError).toBe(false)
+    expect(result.output).toContain('grace-fast')
+    expect(result.output).not.toContain('auto-converted')
+    expect(result.output).not.toContain('转入后台')
+    // 快路径退出后应 remove，不残留在 ListEntities
+    expect(transient.list({ status: ['running', 'completed', 'failed'] })
+      .filter((s) => s.spawned_by_task_id === 'task-grace-fast')).toHaveLength(0)
+  })
+
+  it('grace 快路径：非零退出码 → isError + 含退出码', async () => {
+    const tool = createBashTool(() => cwd, undefined, makeBgCtx('task-grace-fail'))
+    const result = await tool.call({ command: 'echo oops; exit 3' }, {} as ToolCallContext)
+    expect(result.isError).toBe(true)
+    expect(result.output).toContain('oops')
+    expect(result.output).toContain('exited with code 3')
+  })
+
+  it('grace 慢路径：命令超过宽限期仍在跑 → 转后台 + 返回 entity_id + 引导 wait_for_signal（命令不中断）', async () => {
+    // 注入 50ms 短 grace，命令 sleep 0.4s 必然超期
+    const pushed: string[] = []
+    const bgCtx: BashBgContext = {
+      ...makeBgCtx('task-grace-slow'),
+      onShellExit: (info) => pushed.push(info.entity_id),
+    }
+    const tool = createBashTool(() => cwd, undefined, bgCtx, 50)
 
     const result = await tool.call(
-      { command: 'echo auto-bg-test', timeout: 120_000 },
+      { command: 'sleep 0.4 && echo slow-done' },
       {} as ToolCallContext,
     )
     expect(result.isError).toBe(false)
-    expect(result.output).toContain('[auto-converted to background]')
-    expect(result.output).toContain('120000ms')
-    expect(result.output).toContain('60000ms')
-    // 真实 shell_id 必须直接拼入「下一步」段，不能留 <shell_id> 占位符
+    expect(result.output).toContain('转入后台继续运行')
+    expect(result.output).toContain('wait_for_signal')
     const match = result.output.match(/shell_[0-9a-f]+/)
     expect(match).not.toBeNull()
     const shellId = match![0]
-    expect(result.output).not.toContain('<shell_id>')
-    expect(result.output).toContain(`Output("${shellId}", block=true, timeout_ms=120000)`)
-    expect(result.output).toContain(`Kill("${shellId}")`)
+    // 命令未中断：仍在 transient registry，且属于本 task
+    const state = transient.get(shellId)
+    expect(state).toBeDefined()
+    expect(state!.spawned_by_task_id).toBe('task-grace-slow')
 
-    const entity = await registry.get(shellId)
-    expect(entity).not.toBeNull()
+    // 等命令真正退出 → onShellExit 应被触发（backgrounded=true 门控放行 push）
+    await settle()
+    expect(pushed).toContain(shellId)
   })
 
-  it('auto-bg: 大 timeout (e.g. 600000ms) 时 Output block 时间被 cap 到 120000ms', async () => {
-    // 防止 LLM 给 timeout=600000ms → 转 bg 后下一步用 Output(block=true, timeout_ms=600000)
-    // 又堵 agent loop 10 分钟。Output block 时间需要被 cap 在 120s。
-    const workerContext = makeMasterPrivateCtx()
+  it('grace 慢路径：onShellExit 透传 mode=transient（唤醒走本 task humanQueue）', async () => {
+    const modes: string[] = []
     const bgCtx: BashBgContext = {
-      registry,
-      transient,
-      workerContext,
-      owner: { friend_id: 'friend-master' },
-      taskId: 'task-cap-test',
+      ...makeBgCtx('task-grace-mode'),
+      onShellExit: (info) => modes.push(info.mode),
     }
-    const tool = createBashTool(() => cwd, undefined, bgCtx)
-
-    const result = await tool.call(
-      { command: 'echo cap-test', timeout: 600_000 },
-      {} as ToolCallContext,
-    )
-    expect(result.isError).toBe(false)
-    expect(result.output).toContain('600000ms') // 原 timeout 仍在描述里
-    expect(result.output).toContain('timeout_ms=120000') // 但 Output block cap 到 120s
-    expect(result.output).not.toContain('timeout_ms=600000')
+    const tool = createBashTool(() => cwd, undefined, bgCtx, 50)
+    await tool.call({ command: 'sleep 0.3' }, {} as ToolCallContext)
+    await settle()
+    expect(modes).toContain('transient')
   })
 
-  it('auto-bg: explicit timeout = 60s (boundary) → 不转 bg，正常同步执行', async () => {
-    const workerContext = makeMasterPrivateCtx()
-    const bgCtx: BashBgContext = {
-      registry,
-      transient,
-      workerContext,
-      owner: { friend_id: 'friend-master' },
-      taskId: 'task-boundary',
-    }
-    const tool = createBashTool(() => cwd, undefined, bgCtx)
-
+  it('显式 run_in_background=true：立即转后台返回 handle，不走宽限期', async () => {
+    const tool = createBashTool(() => cwd, undefined, makeBgCtx('task-explicit-bg'))
     const result = await tool.call(
-      { command: 'echo boundary-test', timeout: 60_000 },
+      { command: 'echo explicit-bg', run_in_background: true },
       {} as ToolCallContext,
     )
     expect(result.isError).toBe(false)
-    expect(result.output).not.toContain('auto-converted')
-    expect(result.output).toContain('boundary-test')
-  })
-
-  it('auto-bg: 不传 timeout（用 default 120s）→ 不预先转 bg，保持现有同步行为', async () => {
-    // 设计取舍：default timeout 120s > 阈值 60s，但 LLM 不传 timeout 表示
-    // "默认行为，没意识到长任务"。如果默认也转 bg 会破坏 4000+ 短命令体验，
-    // 所以只对 LLM **显式** 给的 timeout 做判断。
-    const workerContext = makeMasterPrivateCtx()
-    const bgCtx: BashBgContext = {
-      registry,
-      transient,
-      workerContext,
-      owner: { friend_id: 'friend-master' },
-      taskId: 'task-default-timeout',
-    }
-    const tool = createBashTool(() => cwd, undefined, bgCtx)
-
-    const result = await tool.call(
-      { command: 'echo default-test' },
-      {} as ToolCallContext,
-    )
-    expect(result.isError).toBe(false)
-    expect(result.output).not.toContain('auto-converted')
-    expect(result.output).toContain('default-test')
-  })
-
-  it('auto-bg: 显式 timeout > 60s + bgCtx 不可用（legacy/sub-agent）→ 不转 bg，按 cap 处理', async () => {
-    // sub-agent 内部 Bash 没接 bgCtx → 不能转 bg，只能 fall back 到 cap timeout
-    // 跑同步。这是 acceptable 的退化路径——sub-agent 短期任务不该自己开 bg。
-    const tool = createBashTool(() => cwd) // 没传 bgCtx
-
-    const result = await tool.call(
-      { command: 'echo legacy-test', timeout: 120_000 },
-      {} as ToolCallContext,
-    )
-    expect(result.isError).toBe(false)
-    expect(result.output).not.toContain('auto-converted')
-    expect(result.output).toContain('legacy-test')
-  })
-
-  it('auto-bg: 显式 run_in_background=true 优先级最高，不被自动转逻辑干扰', async () => {
-    const workerContext = makeMasterPrivateCtx()
-    const bgCtx: BashBgContext = {
-      registry,
-      transient,
-      workerContext,
-      owner: { friend_id: 'friend-master' },
-      taskId: 'task-explicit-bg',
-    }
-    const tool = createBashTool(() => cwd, undefined, bgCtx)
-
-    const result = await tool.call(
-      { command: 'echo explicit-bg', run_in_background: true, timeout: 120_000 },
-      {} as ToolCallContext,
-    )
-    expect(result.isError).toBe(false)
-    // 走原 bg 路径，不走 auto-conversion 包装
-    expect(result.output).not.toContain('auto-converted')
     expect(result.output).toMatch(/Shell spawned \(persistent\)/)
+    expect(result.output).not.toContain('转入后台继续运行')
+  })
+
+  it('无 bgCtx（legacy/sub-agent）：退回旧同步前台执行', async () => {
+    const tool = createBashTool(() => cwd) // 没传 bgCtx
+    const result = await tool.call({ command: 'echo legacy-sync' }, {} as ToolCallContext)
+    expect(result.isError).toBe(false)
+    expect(result.output).toContain('legacy-sync')
+    expect(result.output).not.toContain('转入后台')
   })
 })
