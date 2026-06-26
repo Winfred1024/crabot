@@ -9,6 +9,17 @@ import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 import { detectMode } from './upgrade-lib/mode.mjs'
 import { resolveCliDataDir } from './lib/instance.mjs'
+import { runScript } from './upgrade-lib/runner.mjs'
+import { runMigrations } from './upgrade-lib/migrate.mjs'
+import { runSourceUpgrade, syncPythonDeps } from './upgrade-lib/source.mjs'
+import {
+  getCurrentVersion,
+  getLatestVersion,
+  detectPlatform,
+  downloadRelease,
+  extractRelease,
+  writeVersionFile,
+} from './upgrade-lib/release.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const CRABOT_HOME = resolve(__dirname, '..')
@@ -16,6 +27,14 @@ const CLI = join(CRABOT_HOME, 'cli.mjs')
 const DATA_DIR = resolveCliDataDir({ homeDir: resolve(homedir(), '.crabot'), repoRoot: CRABOT_HOME })
 const STATUS_DIR = join(DATA_DIR, 'admin')
 const STATUS_FILE = join(STATUS_DIR, 'upgrade-status.json')
+
+// 本进程 stdout/stderr 已由 admin 重定向到 data/logs/upgrade.log（见 upgrade-runner.startUpgrade）。
+// 这里用 console + 子进程 stdio:'inherit' 即可让 git / pnpm / stop / start 全链路输出落盘。
+const logger = {
+  info: (m) => console.log(m),
+  warn: (m) => console.warn(m),
+  error: (m) => console.error(m),
+}
 
 function readVersion() {
   const p = join(CRABOT_HOME, 'VERSION')
@@ -35,50 +54,91 @@ function node(args) {
   execFileSync(process.execPath, [CLI, ...args], { cwd: CRABOT_HOME, stdio: 'inherit' })
 }
 
+function stamp() {
+  return new Date().toISOString()
+}
+
 async function main() {
   const mode = detectMode(CRABOT_HOME) // 'release' | 'source'
   const fromVersion = readVersion()
+  console.log(`[ui-upgrade] start mode=${mode} from=${fromVersion} at=${stamp()}`)
   writeStatus({
-    phase: 'upgrading',
-    started_at: new Date().toISOString(),
+    phase: 'preparing',
+    started_at: stamp(),
     from_version: fromVersion,
     finished_at: undefined,
     error: undefined,
     to_version: undefined,
   })
 
+  // ========== 准备阶段（实例照常运行，最慢、最易失败的步骤都在这里；失败不停服务）==========
+  let releaseArtifact = null
+  let targetVersion = null
   try {
-    // 1) 停 MM（必须先停，否则 upgrade 会因 MM 运行而拒绝）
+    if (mode === 'source') {
+      console.log('[ui-upgrade] (prepare) git pull --ff-only')
+      execFileSync('git', ['pull', '--ff-only'], { cwd: CRABOT_HOME, stdio: 'inherit' })
+      console.log('[ui-upgrade] (prepare) build：install + build 所有模块')
+      await runSourceUpgrade(CRABOT_HOME, logger)
+    } else {
+      const current = getCurrentVersion(CRABOT_HOME)
+      const { tag } = await getLatestVersion()
+      targetVersion = tag
+      if (current === tag) {
+        console.log(`[ui-upgrade] already up to date (${current})`)
+        writeStatus({ phase: 'done', to_version: current, finished_at: stamp() })
+        return
+      }
+      const platform = detectPlatform()
+      const url = `https://github.com/smilefufu/crabot/releases/download/${tag}/crabot-${tag}-${platform}.tar.gz`
+      console.log(`[ui-upgrade] (prepare) download ${url}`)
+      releaseArtifact = await downloadRelease({ url, sha256Url: `${url}.sha256`, logger })
+    }
+  } catch (err) {
+    const msg = err?.message || String(err)
+    console.error('[ui-upgrade] prepare FAILED（服务未停，无影响）:', msg)
+    writeStatus({ phase: 'failed', error: `准备阶段失败，服务未停：${msg}`, finished_at: stamp() })
+    process.exit(1)
+  }
+
+  // ========== 切换阶段（停机，尽量短：只做 stop + 落盘类操作 + start）==========
+  try {
+    writeStatus({ phase: 'restarting' })
+    console.log('[ui-upgrade] (switch) stop')
     node(['stop'])
 
-    // 2) source 模式自己 git pull（runSourceUpgrade 不含 pull）
-    if (mode === 'source') {
-      execFileSync('git', ['pull', '--ff-only'], { cwd: CRABOT_HOME, stdio: 'inherit' })
+    if (mode === 'release' && releaseArtifact) {
+      console.log('[ui-upgrade] (switch) extract release')
+      await extractRelease({ ...releaseArtifact, crabotHome: CRABOT_HOME, logger })
+      console.log('[ui-upgrade] (switch) sync python deps')
+      await syncPythonDeps(CRABOT_HOME, logger)
     }
 
-    // 3) 升级（非交互）：release=下载解压+迁移，source=install+build+迁移
-    node(['upgrade', '-y'])
+    console.log('[ui-upgrade] (switch) run migrations')
+    const result = await runMigrations(CRABOT_HOME, DATA_DIR, runScript, logger)
+    if (!result.ok) {
+      throw new Error(`migration failed in ${result.failedModule} at ${result.failedAt} (backup: ${result.backupPath ?? 'none'})`)
+    }
 
-    // 4) 重启（后台 supervisor，立即返回）
-    writeStatus({ phase: 'restarting' })
+    if (mode === 'release' && targetVersion) {
+      await writeVersionFile(CRABOT_HOME, targetVersion)
+    }
+
+    console.log('[ui-upgrade] (switch) start -d')
     node(['start', '-d'])
 
-    writeStatus({
-      phase: 'done',
-      to_version: readVersion(),
-      finished_at: new Date().toISOString(),
-    })
+    writeStatus({ phase: 'done', to_version: readVersion(), finished_at: stamp() })
+    console.log(`[ui-upgrade] done at=${stamp()}`)
   } catch (err) {
-    writeStatus({
-      phase: 'failed',
-      error: err?.message || String(err),
-      finished_at: new Date().toISOString(),
-    })
+    const msg = err?.message || String(err)
+    console.error('[ui-upgrade] switch FAILED:', msg)
+    writeStatus({ phase: 'failed', error: `切换阶段失败（已停机，需人工恢复）：${msg}`, finished_at: stamp() })
     process.exit(1)
   }
 }
 
 main().catch((err) => {
-  writeStatus({ phase: 'failed', error: err?.message || String(err), finished_at: new Date().toISOString() })
+  const msg = err?.message || String(err)
+  writeStatus({ phase: 'failed', error: msg, finished_at: stamp() })
   process.exit(1)
 })

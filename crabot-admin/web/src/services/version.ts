@@ -5,7 +5,7 @@ export type DeployMode = 'user' | 'system'
 export type InstallKind = 'source' | 'release'
 
 export interface UpgradeStatus {
-  phase: 'upgrading' | 'restarting' | 'done' | 'failed'
+  phase: 'preparing' | 'upgrading' | 'restarting' | 'done' | 'failed'
   started_at: string
   finished_at?: string
   from_version?: string

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, openSync } from 'node:fs'
 import { join } from 'node:path'
 import type { UpgradeStatus, VersionState } from './types.js'
 
@@ -47,11 +47,17 @@ export function writeUpgradeStarting(dataDir: string, fromVersion?: string | nul
  */
 export function startUpgrade(crabotHome: string, dataDir: string, fromVersion?: string | null): { status: 'started' } {
   writeUpgradeStarting(dataDir, fromVersion)
+  // 升级进程日志落文件（dataDir 形如 .../data/admin，logs 是其 sibling）。
+  // stdout/stderr 指向 upgrade.log，ui-upgrade.mjs 的 console 与其 inherit 子进程（git/pnpm/stop/start）输出都汇到此文件，
+  // 修掉「stdio:ignore 导致升级失败零日志」的问题。
+  const logDir = join(dataDir, '..', 'logs')
+  mkdirSync(logDir, { recursive: true })
+  const logFd = openSync(join(logDir, 'upgrade.log'), 'a')
   const script = join(crabotHome, 'scripts', 'ui-upgrade.mjs')
   const child = spawn(process.execPath, [script], {
     cwd: crabotHome,
     detached: true,
-    stdio: 'ignore',
+    stdio: ['ignore', logFd, logFd],
     env: { ...process.env },
   })
   // 必须在 unref 前挂 error 监听：spawn 失败异步 emit 'error'，
@@ -67,7 +73,7 @@ export function startUpgrade(crabotHome: string, dataDir: string, fromVersion?: 
 export function isUpgradeInProgress(dataDir: string): boolean {
   const s = readUpgradeStatus(dataDir)
   if (!s) return false
-  if (s.phase !== 'upgrading' && s.phase !== 'restarting') return false
+  if (s.phase !== 'preparing' && s.phase !== 'upgrading' && s.phase !== 'restarting') return false
   const startedMs = new Date(s.started_at).getTime()
   if (!Number.isFinite(startedMs)) return false
   return Date.now() - startedMs < 10 * 60 * 1000

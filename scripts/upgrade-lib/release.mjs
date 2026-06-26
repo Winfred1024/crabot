@@ -67,7 +67,8 @@ function extractTarGz(tarPath, destDir) {
   })
 }
 
-export async function downloadAndExtract({ url, sha256Url, crabotHome, logger }) {
+// 下载 + 校验（可在实例运行期做，失败不影响服务）。返回临时目录与 tar 路径，留给 extractRelease。
+export async function downloadRelease({ url, sha256Url, logger }) {
   const tmp = join(tmpdir(), `crabot-upgrade-${Date.now()}`)
   mkdirSync(tmp, { recursive: true })
   const tarPath = join(tmp, 'release.tar.gz')
@@ -86,6 +87,11 @@ export async function downloadAndExtract({ url, sha256Url, crabotHome, logger })
     }
   }
 
+  return { tmp, tarPath }
+}
+
+// 解压 + 覆盖安装目录（必须在 stop 之后做：覆盖的是运行代码文件）。
+export async function extractRelease({ tmp, tarPath, crabotHome, logger }) {
   const stage = join(tmp, 'stage')
   await extractTarGz(tarPath, stage)
 
@@ -101,6 +107,13 @@ export async function downloadAndExtract({ url, sha256Url, crabotHome, logger })
   }
 
   rmSync(tmp, { recursive: true, force: true })
+  logger?.info?.('Extracted release')
+}
+
+// 一体版（下载 + 解压），保留给 CLI upgrade.mjs 等现有调用方，行为不变。
+export async function downloadAndExtract({ url, sha256Url, crabotHome, logger }) {
+  const { tmp, tarPath } = await downloadRelease({ url, sha256Url, logger })
+  await extractRelease({ tmp, tarPath, crabotHome, logger })
 }
 
 export async function writeVersionFile(crabotHome, version) {
