@@ -100,7 +100,7 @@ export interface SubAgentConfig {
   allowed_skill_ids: string[]
 
   max_turns: number
-  /** 代码内置 hook bundle 名（如 'coding_expert'） */
+  /** 代码内置 hook bundle 名（如 'lsp_diagnostics'：post-edit LSP 诊断 push） */
   hook_preset?: string
   /** 系统专用：仅由系统隐式触发（如 goal_auditor 由引擎 endTurnGate 触发），
    *  不出现在 delegate_task 工具的 enum / description 里，worker 无法主动调。

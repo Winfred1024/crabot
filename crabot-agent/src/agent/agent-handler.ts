@@ -85,7 +85,7 @@ import {
 } from '../prompts/agent-sections.js'
 import type { SubAgentConfig } from '../types.js'
 import { HumanMessageQueue } from '../engine/human-message-queue.js'
-import { createCodingExpertHookRegistry, createCliPermissionHook, createSkillDirFenceHook } from '../hooks/defaults.js'
+import { createSubAgentHookRegistry, createCliPermissionHook, createSkillDirFenceHook } from '../hooks/defaults.js'
 import { HookRegistry } from '../hooks/hook-registry.js'
 import type { ContentReviewer } from '../hooks/types.js'
 import { reviewCliContent } from './cli-content-reviewer.js'
@@ -2916,11 +2916,14 @@ export class AgentHandler {
     // 3. build adapter from subagent's resolved model
     const subAdapter = adapterFromModel(subagent.model)
 
-    // 4. resolve hook registry based on hook_preset
-    const hookRegistry = subagent.hook_preset === 'coding_expert'
-      ? createCodingExpertHookRegistry()
-      : undefined
-    const lspManager = hookRegistry ? this.lspManager : undefined
+    // 4. resolve hook registry：lsp_diagnostics 预设（post-edit 诊断 push） + git 写操作 fence（按能力叠加）
+    const wantsLspDiagnostics = subagent.hook_preset === 'lsp_diagnostics'
+    const hookRegistry = createSubAgentHookRegistry({
+      lspDiagnostics: wantsLspDiagnostics,
+      gitWriteFence: subagent.allowed_mcp_server_ids.includes('git'),
+    })
+    // lspManager 仅 lsp-diagnostics 钩子需要；git-fence 不依赖它。
+    const lspManager = wantsLspDiagnostics ? this.lspManager : undefined
 
     // 5. trace stitching: create sub-trace linked to parent trace
     const tc = deps.traceConfig
